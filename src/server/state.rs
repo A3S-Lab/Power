@@ -226,8 +226,10 @@ mod tests {
 
     #[test]
     fn test_needs_eviction_at_capacity() {
-        let mut config = PowerConfig::default();
-        config.max_loaded_models = 2;
+        let config = PowerConfig {
+            max_loaded_models: 2,
+            ..Default::default()
+        };
         let state = AppState::new(
             Arc::new(ModelRegistry::new()),
             Arc::new(BackendRegistry::new()),

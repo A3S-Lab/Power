@@ -123,9 +123,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_ensure_loaded_touches_on_cache_hit() {
-        let mut config = PowerConfig::default();
-        config.max_loaded_models = 3;
-        let config = Arc::new(config);
+        let config = Arc::new(PowerConfig {
+            max_loaded_models: 3,
+            ..Default::default()
+        });
         let mut backends = BackendRegistry::new();
         backends.register(Arc::new(MockBackend::success()));
         let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
