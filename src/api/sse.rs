@@ -24,3 +24,29 @@ pub fn format_sse_data<T: serde::Serialize>(value: &T) -> Option<String> {
 
 /// The standard SSE termination marker used by OpenAI-compatible APIs.
 pub const SSE_DONE: &str = "[DONE]";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_sse_data_json() {
+        let data = serde_json::json!({"text": "hello"});
+        let result = format_sse_data(&data);
+        assert!(result.is_some());
+        let s = result.unwrap();
+        assert!(s.contains("hello"));
+    }
+
+    #[test]
+    fn test_format_sse_data_string() {
+        let result = format_sse_data(&"plain text");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "\"plain text\"");
+    }
+
+    #[test]
+    fn test_sse_done_constant() {
+        assert_eq!(SSE_DONE, "[DONE]");
+    }
+}

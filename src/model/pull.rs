@@ -68,6 +68,18 @@ async fn download_with_progress(
     Ok(data)
 }
 
+/// Extract a reasonable model name from a URL.
+///
+/// Strips the file extension (.gguf, .safetensors) and returns the filename.
+pub fn extract_name_from_url(url: &str) -> String {
+    url.rsplit('/')
+        .next()
+        .unwrap_or("unknown")
+        .trim_end_matches(".gguf")
+        .trim_end_matches(".safetensors")
+        .to_string()
+}
+
 /// Detect model format from filename extension.
 fn detect_format(name: &str, path: &std::path::Path) -> ModelFormat {
     let name_lower = name.to_lowercase();
@@ -114,5 +126,43 @@ mod tests {
     fn test_detect_format_default() {
         let path = PathBuf::from("/tmp/sha256-abc123");
         assert_eq!(detect_format("some-model", &path), ModelFormat::Gguf);
+    }
+
+    #[test]
+    fn test_extract_name_from_url_gguf() {
+        assert_eq!(
+            extract_name_from_url("https://example.com/model.gguf"),
+            "model"
+        );
+    }
+
+    #[test]
+    fn test_extract_name_from_url_with_path() {
+        assert_eq!(
+            extract_name_from_url("https://example.com/models/llama3-8b-q4.gguf"),
+            "llama3-8b-q4"
+        );
+    }
+
+    #[test]
+    fn test_extract_name_from_url_safetensors() {
+        assert_eq!(
+            extract_name_from_url("https://example.com/model.safetensors"),
+            "model"
+        );
+    }
+
+    #[test]
+    fn test_extract_name_from_url_no_extension() {
+        assert_eq!(
+            extract_name_from_url("https://example.com/plain-model"),
+            "plain-model"
+        );
+    }
+
+    #[test]
+    fn test_extract_name_from_url_empty() {
+        // rsplit('/') on empty string returns [""], not None
+        assert_eq!(extract_name_from_url(""), "");
     }
 }

@@ -40,6 +40,17 @@ pub async fn handler(
         }
     };
 
+    if let Err(e) = crate::api::autoload::ensure_loaded(&state, &model_name, &manifest, &backend).await {
+        return Json(serde_json::json!({
+            "error": {
+                "message": e.to_string(),
+                "type": "server_error",
+                "code": "model_load_failed"
+            }
+        }))
+        .into_response();
+    }
+
     let input_texts = request.input.into_vec();
     let backend_request = crate::backend::types::EmbeddingRequest {
         input: input_texts.clone(),

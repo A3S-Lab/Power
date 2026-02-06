@@ -1,7 +1,7 @@
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::error::Result;
-use crate::model::pull::pull_model;
+use crate::model::pull::{extract_name_from_url, pull_model};
 use crate::model::registry::ModelRegistry;
 
 /// Execute the `pull` command: download a model from a URL.
@@ -48,35 +48,4 @@ pub async fn execute(model: &str, registry: &ModelRegistry) -> Result<()> {
     println!("Successfully pulled '{name}'");
 
     Ok(())
-}
-
-/// Extract a reasonable model name from a URL.
-fn extract_name_from_url(url: &str) -> String {
-    url.rsplit('/')
-        .next()
-        .unwrap_or("unknown")
-        .trim_end_matches(".gguf")
-        .trim_end_matches(".safetensors")
-        .to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_name_from_url() {
-        assert_eq!(
-            extract_name_from_url("https://example.com/model.gguf"),
-            "model"
-        );
-        assert_eq!(
-            extract_name_from_url("https://example.com/llama3-8b-q4.gguf"),
-            "llama3-8b-q4"
-        );
-        assert_eq!(
-            extract_name_from_url("https://example.com/model.safetensors"),
-            "model"
-        );
-    }
 }

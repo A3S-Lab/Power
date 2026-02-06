@@ -33,6 +33,10 @@ pub async fn handler(
         }
     };
 
+    if let Err(e) = crate::api::autoload::ensure_loaded(&state, &model_name, &manifest, &backend).await {
+        return Json(serde_json::json!({ "error": e.to_string() })).into_response();
+    }
+
     let backend_request = crate::backend::types::CompletionRequest {
         prompt: request.prompt,
         temperature: request.options.as_ref().and_then(|o| o.temperature),

@@ -370,3 +370,106 @@ impl Backend for LlamaCppBackend {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::Backend;
+    use crate::model::manifest::ModelFormat;
+
+    #[test]
+    fn test_new_creates_backend() {
+        let backend = LlamaCppBackend::new();
+        assert_eq!(backend.name(), "llama.cpp");
+    }
+
+    #[test]
+    fn test_default_creates_backend() {
+        let backend = LlamaCppBackend::default();
+        assert_eq!(backend.name(), "llama.cpp");
+    }
+
+    #[test]
+    fn test_supports_gguf() {
+        let backend = LlamaCppBackend::new();
+        assert!(backend.supports(&ModelFormat::Gguf));
+    }
+
+    #[test]
+    fn test_does_not_support_safetensors() {
+        let backend = LlamaCppBackend::new();
+        assert!(!backend.supports(&ModelFormat::SafeTensors));
+    }
+
+    #[cfg(not(feature = "llamacpp"))]
+    #[tokio::test]
+    async fn test_stub_load_returns_error() {
+        use crate::model::manifest::ModelManifest;
+        use std::path::PathBuf;
+
+        let backend = LlamaCppBackend::new();
+        let manifest = ModelManifest {
+            name: "test".to_string(),
+            format: ModelFormat::Gguf,
+            size: 0,
+            sha256: "abc".to_string(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: PathBuf::from("/tmp/test"),
+        };
+        let result = backend.load(&manifest).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("llamacpp"));
+    }
+
+    #[cfg(not(feature = "llamacpp"))]
+    #[tokio::test]
+    async fn test_stub_chat_returns_error() {
+        let backend = LlamaCppBackend::new();
+        let request = ChatRequest {
+            messages: vec![],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop: None,
+            stream: false,
+        };
+        let result = backend.chat("test", request).await;
+        assert!(result.is_err());
+    }
+
+    #[cfg(not(feature = "llamacpp"))]
+    #[tokio::test]
+    async fn test_stub_complete_returns_error() {
+        let backend = LlamaCppBackend::new();
+        let request = CompletionRequest {
+            prompt: "test".to_string(),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop: None,
+            stream: false,
+        };
+        let result = backend.complete("test", request).await;
+        assert!(result.is_err());
+    }
+
+    #[cfg(not(feature = "llamacpp"))]
+    #[tokio::test]
+    async fn test_stub_embed_returns_error() {
+        let backend = LlamaCppBackend::new();
+        let request = EmbeddingRequest {
+            input: vec!["test".to_string()],
+        };
+        let result = backend.embed("test", request).await;
+        assert!(result.is_err());
+    }
+
+    #[cfg(not(feature = "llamacpp"))]
+    #[tokio::test]
+    async fn test_stub_unload_succeeds() {
+        let backend = LlamaCppBackend::new();
+        let result = backend.unload("test").await;
+        assert!(result.is_ok());
+    }
+}

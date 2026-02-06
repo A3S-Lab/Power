@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::api::types::{PullRequest, PullResponse};
+use crate::model::pull::extract_name_from_url;
 use crate::server::state::AppState;
 
 /// POST /api/pull - Pull/download a model (Ollama-compatible).
@@ -149,13 +150,4 @@ pub async fn handler(
             .into_response(),
         }
     }
-}
-
-fn extract_name_from_url(url: &str) -> String {
-    url.rsplit('/')
-        .next()
-        .unwrap_or("unknown")
-        .trim_end_matches(".gguf")
-        .trim_end_matches(".safetensors")
-        .to_string()
 }

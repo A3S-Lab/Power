@@ -48,6 +48,8 @@ a3s-power serve
 - **SSE Streaming**: All inference and pull endpoints support server-sent events
 - **Content-Addressed Storage**: Model blobs stored by SHA-256 hash with automatic deduplication
 - **llama.cpp Backend**: GGUF inference via `llama-cpp-2` Rust bindings (optional feature flag)
+- **Health Check**: `GET /health` endpoint with uptime, version, and loaded model count
+- **Model Auto-Loading**: Models are automatically loaded on first inference request
 - **TOML Configuration**: User-configurable host, port, and storage settings
 - **Async-First**: Built on Tokio for high-performance async operations
 
@@ -55,10 +57,12 @@ a3s-power serve
 
 ### Test Coverage
 
-**96 unit tests** with **50.6% line coverage** / **67.2% function coverage** (via `cargo llvm-cov`):
+**108 unit tests** with **54.2% line coverage** / **70.8% function coverage** (via `cargo llvm-cov`):
 
 | File | Line Coverage | Function Coverage |
 |------|--------------|-------------------|
+| `api/autoload.rs` | 96.4% | 100.0% |
+| `api/health.rs` | 100.0% | 100.0% |
 | `api/types.rs` | 100.0% | 100.0% |
 | `api/openai/mod.rs` | 100.0% | 100.0% |
 | `api/native/mod.rs` | 100.0% | 100.0% |
@@ -77,7 +81,7 @@ a3s-power serve
 | `error.rs` | 100.0% | 100.0% |
 | `server/router.rs` | 100.0% | 100.0% |
 | `server/state.rs` | 100.0% | 100.0% |
-| **TOTAL** | **50.6%** | **67.2%** |
+| **TOTAL** | **54.2%** | **70.8%** |
 
 > CLI handlers (`cli/*`), HTTP handlers (`api/native/{chat,generate,pull,embeddings}.rs`, `api/openai/{chat,completions,embeddings}.rs`), and `server/mod.rs` have 0% coverage — these require integration tests with live backends and are excluded from the unit-test library target.
 
@@ -201,6 +205,12 @@ a3s-power serve --host 0.0.0.0 --port 8080
 ```
 
 ## API Reference
+
+### Server
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check (status, version, uptime, loaded models) |
 
 ### Native API (Ollama-Compatible)
 
@@ -352,7 +362,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 96 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 108 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -399,6 +409,8 @@ power/
     │   ├── state.rs         # Shared AppState
     │   └── router.rs        # Axum router with CORS + tracing
     └── api/
+        ├── autoload.rs      # Model auto-loading on first inference
+        ├── health.rs        # GET /health endpoint
         ├── types.rs         # OpenAI + Ollama request/response types
         ├── sse.rs           # SSE streaming utilities
         ├── native/
@@ -457,7 +469,7 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [x] Model manifest system with JSON persistence
 - [x] TOML configuration
 - [x] Platform-specific directory resolution
-- [x] 96 comprehensive unit tests
+- [x] 108 comprehensive unit tests
 
 ### Phase 2: Backend & Inference ✅
 
@@ -480,10 +492,10 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [ ] Model registry resolution (name-based pulls, not just URLs)
 - [ ] Embedding generation support (model loaded with embedding mode)
 - [ ] Multiple concurrent model loading
-- [ ] Model auto-loading on first API request
+- [x] Model auto-loading on first API request
 - [ ] GPU acceleration configuration
 - [ ] Chat template auto-detection from GGUF metadata
-- [ ] Health check endpoint (`/health`)
+- [x] Health check endpoint (`/health`)
 - [ ] Prometheus metrics endpoint
 
 ## License

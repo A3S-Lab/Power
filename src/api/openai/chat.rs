@@ -5,6 +5,7 @@ use axum::Json;
 use futures::StreamExt;
 use std::convert::Infallible;
 
+use super::openai_error;
 use crate::api::types::{
     ChatChoice, ChatChunkChoice, ChatCompletionChunk, ChatCompletionMessage, ChatCompletionRequest,
     ChatCompletionResponse, ChatDelta, Usage,
@@ -37,6 +38,10 @@ pub async fn handler(
             return openai_error("server_error", &e.to_string()).into_response();
         }
     };
+
+    if let Err(e) = crate::api::autoload::ensure_loaded(&state, &model_name, &manifest, &backend).await {
+        return openai_error("server_error", &e.to_string()).into_response();
+    }
 
     let backend_request = ChatRequest {
         messages: request
@@ -167,14 +172,4 @@ pub async fn handler(
         }
         Err(e) => openai_error("server_error", &e.to_string()).into_response(),
     }
-}
-
-fn openai_error(code: &str, message: &str) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "error": {
-            "message": message,
-            "type": "invalid_request_error",
-            "code": code
-        }
-    }))
 }

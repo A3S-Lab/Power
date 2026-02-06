@@ -347,3 +347,216 @@ pub struct NativeEmbeddingRequest {
 pub struct NativeEmbeddingResponse {
     pub embedding: Vec<f32>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chat_completion_request_deserialize() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.model, "llama3");
+        assert_eq!(req.messages.len(), 1);
+        assert!(req.stream.is_none());
+        assert!(req.temperature.is_none());
+    }
+
+    #[test]
+    fn test_chat_completion_request_with_options() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "max_tokens": 256,
+            "stream": true
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.temperature, Some(0.7));
+        assert_eq!(req.top_p, Some(0.9));
+        assert_eq!(req.max_tokens, Some(256));
+        assert_eq!(req.stream, Some(true));
+    }
+
+    #[test]
+    fn test_chat_completion_response_serialize() {
+        let resp = ChatCompletionResponse {
+            id: "chatcmpl-123".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1700000000,
+            model: "llama3".to_string(),
+            choices: vec![ChatChoice {
+                index: 0,
+                message: ChatCompletionMessage {
+                    role: "assistant".to_string(),
+                    content: "Hello!".to_string(),
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: Usage {
+                prompt_tokens: 5,
+                completion_tokens: 3,
+                total_tokens: 8,
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("chatcmpl-123"));
+        assert!(json.contains("Hello!"));
+    }
+
+    #[test]
+    fn test_chat_delta_skip_none() {
+        let delta = ChatDelta {
+            role: None,
+            content: Some("hi".to_string()),
+        };
+        let json = serde_json::to_string(&delta).unwrap();
+        assert!(!json.contains("role"));
+        assert!(json.contains("hi"));
+    }
+
+    #[test]
+    fn test_completion_request_deserialize() {
+        let json = r#"{"model": "llama3", "prompt": "Hello"}"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.model, "llama3");
+        assert_eq!(req.prompt, "Hello");
+    }
+
+    #[test]
+    fn test_embedding_input_single() {
+        let json = r#"{"model": "embed", "input": "hello"}"#;
+        let req: EmbeddingRequest = serde_json::from_str(json).unwrap();
+        let texts = req.input.into_vec();
+        assert_eq!(texts, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_embedding_input_multiple() {
+        let json = r#"{"model": "embed", "input": ["hello", "world"]}"#;
+        let req: EmbeddingRequest = serde_json::from_str(json).unwrap();
+        let texts = req.input.into_vec();
+        assert_eq!(texts, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_generate_request_deserialize() {
+        let json = r#"{"model": "llama3", "prompt": "test"}"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.model, "llama3");
+        assert!(req.stream.is_none());
+        assert!(req.options.is_none());
+    }
+
+    #[test]
+    fn test_generate_request_with_options() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "test",
+            "options": {"temperature": 0.5, "num_predict": 100}
+        }"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        let opts = req.options.unwrap();
+        assert_eq!(opts.temperature, Some(0.5));
+        assert_eq!(opts.num_predict, Some(100));
+    }
+
+    #[test]
+    fn test_generate_response_skip_none() {
+        let resp = GenerateResponse {
+            model: "llama3".to_string(),
+            response: "hi".to_string(),
+            done: false,
+            total_duration: None,
+            load_duration: None,
+            eval_count: None,
+            eval_duration: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(!json.contains("total_duration"));
+        assert!(!json.contains("eval_count"));
+    }
+
+    #[test]
+    fn test_pull_request_deserialize() {
+        let json = r#"{"name": "llama3"}"#;
+        let req: PullRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "llama3");
+        assert!(req.stream.is_none());
+    }
+
+    #[test]
+    fn test_pull_response_skip_none() {
+        let resp = PullResponse {
+            status: "success".to_string(),
+            digest: None,
+            total: None,
+            completed: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(!json.contains("digest"));
+        assert!(!json.contains("total"));
+    }
+
+    #[test]
+    fn test_model_list_serialize() {
+        let list = ModelList {
+            object: "list".to_string(),
+            data: vec![ModelInfo {
+                id: "llama3".to_string(),
+                object: "model".to_string(),
+                created: 1700000000,
+                owned_by: "local".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&list).unwrap();
+        assert!(json.contains("llama3"));
+        assert!(json.contains("\"object\":\"list\""));
+    }
+
+    #[test]
+    fn test_error_response_serialize() {
+        let resp = ErrorResponse {
+            error: ErrorDetail {
+                message: "not found".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("model_not_found".to_string()),
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("not found"));
+        assert!(json.contains("model_not_found"));
+    }
+
+    #[test]
+    fn test_native_chat_request_deserialize() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}]
+        }"#;
+        let req: NativeChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.model, "llama3");
+        assert_eq!(req.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_show_response_serialize() {
+        let resp = ShowResponse {
+            modelfile: String::new(),
+            parameters: "{}".to_string(),
+            template: String::new(),
+            details: NativeModelDetails {
+                format: "GGUF".to_string(),
+                parameter_size: None,
+                quantization_level: Some("Q4_K_M".to_string()),
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("GGUF"));
+        assert!(json.contains("Q4_K_M"));
+    }
+}
