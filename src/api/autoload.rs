@@ -5,7 +5,10 @@ use crate::error::Result;
 use crate::model::manifest::ModelManifest;
 use crate::server::state::AppState;
 
-/// Ensure a model is loaded before inference. Skips if already loaded.
+/// Ensure a model is loaded before inference.
+///
+/// If the model is already loaded, updates its last-used time.
+/// If not loaded, evicts the LRU model when at capacity, then loads.
 pub async fn ensure_loaded(
     state: &AppState,
     model_name: &str,
@@ -13,8 +16,20 @@ pub async fn ensure_loaded(
     backend: &Arc<dyn Backend>,
 ) -> Result<()> {
     if state.is_model_loaded(model_name) {
+        state.touch_model(model_name);
         return Ok(());
     }
+
+    // Evict LRU models until we have room
+    while state.needs_eviction() {
+        if let Some(lru_name) = state.lru_model() {
+            backend.unload(&lru_name).await?;
+            state.mark_unloaded(&lru_name);
+        } else {
+            break;
+        }
+    }
+
     backend.load(manifest).await?;
     state.mark_loaded(model_name);
     Ok(())
@@ -23,6 +38,7 @@ pub async fn ensure_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
     use crate::backend::BackendRegistry;
     use crate::config::PowerConfig;
     use crate::model::manifest::{ModelFormat, ModelManifest};
@@ -52,7 +68,8 @@ mod tests {
     async fn test_ensure_loaded_skips_when_already_loaded() {
         let state = test_state();
         let manifest = dummy_manifest();
-        let backend = crate::backend::default_backends()
+        let config = Arc::new(PowerConfig::default());
+        let backend = crate::backend::default_backends(config)
             .find_for_format(&ModelFormat::Gguf)
             .unwrap();
 
@@ -67,7 +84,8 @@ mod tests {
     async fn test_ensure_loaded_attempts_load_when_not_loaded() {
         let state = test_state();
         let manifest = dummy_manifest();
-        let backend = crate::backend::default_backends()
+        let config = Arc::new(PowerConfig::default());
+        let backend = crate::backend::default_backends(config)
             .find_for_format(&ModelFormat::Gguf)
             .unwrap();
 
@@ -77,5 +95,64 @@ mod tests {
         assert!(result.is_err());
         // Model should NOT be marked loaded on failure.
         assert!(!state.is_model_loaded("test-model"));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_evicts_lru_when_at_capacity() {
+        let state = test_state_with_mock(MockBackend::success());
+        // Default max_loaded_models is 1, so loading a second model should evict the first.
+        let manifest_a = sample_manifest("model-a");
+        let manifest_b = sample_manifest("model-b");
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        // Load model-a
+        ensure_loaded(&state, "model-a", &manifest_a, &backend)
+            .await
+            .unwrap();
+        assert!(state.is_model_loaded("model-a"));
+        assert_eq!(state.loaded_model_count(), 1);
+
+        // Load model-b — should evict model-a
+        ensure_loaded(&state, "model-b", &manifest_b, &backend)
+            .await
+            .unwrap();
+        assert!(state.is_model_loaded("model-b"));
+        assert!(!state.is_model_loaded("model-a"));
+        assert_eq!(state.loaded_model_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_touches_on_cache_hit() {
+        let mut config = PowerConfig::default();
+        config.max_loaded_models = 3;
+        let config = Arc::new(config);
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(MockBackend::success()));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+
+        let manifest_a = sample_manifest("model-a");
+        let manifest_b = sample_manifest("model-b");
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        // Load both models
+        ensure_loaded(&state, "model-a", &manifest_a, &backend)
+            .await
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        ensure_loaded(&state, "model-b", &manifest_b, &backend)
+            .await
+            .unwrap();
+
+        // model-a is LRU
+        assert_eq!(state.lru_model(), Some("model-a".to_string()));
+
+        // Touch model-a via ensure_loaded (cache hit)
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        ensure_loaded(&state, "model-a", &manifest_a, &backend)
+            .await
+            .unwrap();
+
+        // Now model-b should be LRU
+        assert_eq!(state.lru_model(), Some("model-b".to_string()));
     }
 }

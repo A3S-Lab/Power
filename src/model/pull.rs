@@ -1,21 +1,34 @@
 use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest};
+use crate::model::resolve;
 use crate::model::storage;
 
 /// Progress callback type for download reporting.
 pub type ProgressCallback = Box<dyn Fn(u64, u64) + Send + Sync>;
 
-/// Download a model from a direct URL.
+/// Download a model from a direct URL or resolve a model name first.
 ///
+/// If `name_or_url` is a URL, downloads directly.
+/// Otherwise, resolves the name via the model registry, then downloads.
 /// Returns the resulting `ModelManifest` after download and storage.
 pub async fn pull_model(
-    name: &str,
-    url: &str,
+    name_or_url: &str,
+    url_override: Option<&str>,
     progress: Option<ProgressCallback>,
 ) -> Result<ModelManifest> {
-    tracing::info!(name, url, "Pulling model");
+    let (name, url) = if let Some(url) = url_override {
+        (name_or_url.to_string(), url.to_string())
+    } else if resolve::is_url(name_or_url) {
+        let name = extract_name_from_url(name_or_url);
+        (name, name_or_url.to_string())
+    } else {
+        let resolved = resolve::resolve(name_or_url).await?;
+        (resolved.name, resolved.url)
+    };
 
-    let response = reqwest::get(url)
+    tracing::info!(name = %name, url = %url, "Pulling model");
+
+    let response = reqwest::get(&url)
         .await
         .map_err(|e| PowerError::DownloadFailed {
             model: name.to_string(),
@@ -26,10 +39,10 @@ pub async fn pull_model(
     let bytes = download_with_progress(response, total_size, progress).await?;
 
     let (blob_path, sha256) = storage::store_blob(&bytes)?;
-    let format = detect_format(name, &blob_path);
+    let format = detect_format(&name, &blob_path);
 
     let manifest = ModelManifest {
-        name: name.to_string(),
+        name,
         format,
         size: bytes.len() as u64,
         sha256,

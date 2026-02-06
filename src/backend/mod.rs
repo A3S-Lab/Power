@@ -1,4 +1,7 @@
+pub mod chat_template;
 pub mod llamacpp;
+#[cfg(test)]
+pub mod test_utils;
 pub mod types;
 
 use std::pin::Pin;
@@ -7,6 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::Stream;
 
+use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest};
 
@@ -92,9 +96,9 @@ impl Default for BackendRegistry {
 }
 
 /// Create a `BackendRegistry` with all available backends pre-registered.
-pub fn default_backends() -> BackendRegistry {
+pub fn default_backends(config: Arc<PowerConfig>) -> BackendRegistry {
     let mut registry = BackendRegistry::new();
-    registry.register(Arc::new(llamacpp::LlamaCppBackend::new()));
+    registry.register(Arc::new(llamacpp::LlamaCppBackend::new(config)));
     registry
 }
 
@@ -102,9 +106,13 @@ pub fn default_backends() -> BackendRegistry {
 mod tests {
     use super::*;
 
+    fn test_config() -> Arc<PowerConfig> {
+        Arc::new(PowerConfig::default())
+    }
+
     #[test]
     fn test_backend_registry_find() {
-        let registry = default_backends();
+        let registry = default_backends(test_config());
         let backend = registry.find_for_format(&ModelFormat::Gguf);
         assert!(backend.is_ok());
         assert_eq!(backend.unwrap().name(), "llama.cpp");
@@ -112,15 +120,33 @@ mod tests {
 
     #[test]
     fn test_backend_registry_list() {
-        let registry = default_backends();
+        let registry = default_backends(test_config());
         let names = registry.list_names();
         assert!(names.contains(&"llama.cpp"));
     }
 
     #[test]
     fn test_backend_supports() {
-        let backend = llamacpp::LlamaCppBackend::new();
+        let backend = llamacpp::LlamaCppBackend::new(test_config());
         assert!(backend.supports(&ModelFormat::Gguf));
         assert!(!backend.supports(&ModelFormat::SafeTensors));
+    }
+
+    #[test]
+    fn test_find_for_format_unsupported() {
+        let registry = BackendRegistry::new();
+        let result = registry.find_for_format(&ModelFormat::SafeTensors);
+        assert!(result.is_err());
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(err.to_string().contains("No backend available"));
+    }
+
+    #[test]
+    fn test_backend_registry_default() {
+        let registry = BackendRegistry::default();
+        assert!(registry.list_names().is_empty());
     }
 }

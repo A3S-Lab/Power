@@ -1,8 +1,12 @@
 pub mod chat;
+pub mod copy;
+pub mod embed;
 pub mod embeddings;
 pub mod generate;
 pub mod models;
+pub mod ps;
 pub mod pull;
+pub mod version;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -19,4 +23,8 @@ pub fn routes() -> Router<AppState> {
         .route("/show", post(models::show_handler))
         .route("/delete", delete(models::delete_handler))
         .route("/embeddings", post(embeddings::handler))
+        .route("/version", get(version::handler))
+        .route("/ps", get(ps::handler))
+        .route("/copy", post(copy::handler))
+        .route("/embed", post(embed::handler))
 }

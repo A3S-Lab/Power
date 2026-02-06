@@ -348,6 +348,44 @@ pub struct NativeEmbeddingResponse {
     pub embedding: Vec<f32>,
 }
 
+/// Copy model request (Ollama-compatible).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyRequest {
+    pub source: String,
+    pub destination: String,
+}
+
+/// Native batch embed request (Ollama-compatible POST /api/embed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeEmbedRequest {
+    pub model: String,
+    pub input: NativeEmbedInput,
+}
+
+/// Input for the native embed endpoint — single string or array of strings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum NativeEmbedInput {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl NativeEmbedInput {
+    pub fn into_vec(self) -> Vec<String> {
+        match self {
+            NativeEmbedInput::Single(s) => vec![s],
+            NativeEmbedInput::Multiple(v) => v,
+        }
+    }
+}
+
+/// Native batch embed response (Ollama-compatible).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeEmbedResponse {
+    pub model: String,
+    pub embeddings: Vec<Vec<f32>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

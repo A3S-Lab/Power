@@ -9,7 +9,6 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::api::types::{PullRequest, PullResponse};
-use crate::model::pull::extract_name_from_url;
 use crate::server::state::AppState;
 
 /// POST /api/pull - Pull/download a model (Ollama-compatible).
@@ -32,21 +31,11 @@ pub async fn handler(
         .into_response();
     }
 
-    if !model_name.starts_with("http://") && !model_name.starts_with("https://") {
-        return Json(PullResponse {
-            status: "error: model registry not yet implemented, provide a direct URL".to_string(),
-            digest: None,
-            total: None,
-            completed: None,
-        })
-        .into_response();
-    }
-
     if is_stream {
         // Streaming progress via SSE
         let registry = state.registry.clone();
         let (tx, rx) = mpsc::channel::<PullResponse>(32);
-        let url = model_name.clone();
+        let name_or_url = model_name.clone();
 
         tokio::spawn(async move {
             let _ = tx
@@ -68,8 +57,7 @@ pub async fn handler(
                 });
             });
 
-            let name = extract_name_from_url(&url);
-            match crate::model::pull::pull_model(&name, &url, Some(progress)).await {
+            match crate::model::pull::pull_model(&name_or_url, None, Some(progress)).await {
                 Ok(manifest) => {
                     let digest = format!("sha256:{}", &manifest.sha256);
                     let size = manifest.size;
@@ -119,8 +107,7 @@ pub async fn handler(
             .into_response()
     } else {
         // Non-streaming: download and return final status
-        let name = extract_name_from_url(&model_name);
-        match crate::model::pull::pull_model(&name, &model_name, None).await {
+        match crate::model::pull::pull_model(&model_name, None, None).await {
             Ok(manifest) => {
                 let digest = format!("sha256:{}", &manifest.sha256);
                 let size = manifest.size;

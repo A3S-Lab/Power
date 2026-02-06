@@ -1,3 +1,4 @@
+use axum::middleware;
 use axum::routing::get;
 use axum::Router;
 use tower_http::cors::CorsLayer;
@@ -5,15 +6,21 @@ use tower_http::trace::TraceLayer;
 
 use super::state::AppState;
 use crate::api;
+use crate::server::metrics;
 
 /// Build the complete axum Router with all API routes.
 pub fn build(state: AppState) -> Router {
     Router::new()
         .route("/health", get(api::health::handler))
+        .route("/metrics", get(metrics::handler))
         .nest("/api", api::native::routes())
         .nest("/v1", api::openai::routes())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            metrics::middleware,
+        ))
         .with_state(state)
 }
 
@@ -96,5 +103,32 @@ mod tests {
         assert!(json["version"].is_string());
         assert!(json["uptime_seconds"].is_number());
         assert!(json["loaded_models"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint_returns_ok() {
+        let app = build(test_state());
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint_returns_prometheus_format() {
+        let app = build(test_state());
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("# HELP power_http_requests_total"));
+        assert!(text.contains("power_models_loaded"));
     }
 }

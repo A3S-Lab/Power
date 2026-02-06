@@ -3,6 +3,7 @@ use tracing_subscriber::EnvFilter;
 
 use a3s_power::backend;
 use a3s_power::cli::{Cli, Commands};
+use a3s_power::config::PowerConfig;
 use a3s_power::dirs;
 use a3s_power::model::registry::ModelRegistry;
 
@@ -20,12 +21,15 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    // Load configuration
+    let config = std::sync::Arc::new(PowerConfig::load()?);
+
     // Initialize model registry
     let registry = ModelRegistry::new();
     registry.scan()?;
 
     // Initialize backends
-    let backends = backend::default_backends();
+    let backends = backend::default_backends(config.clone());
 
     match cli.command {
         Commands::Run { model, prompt } => {

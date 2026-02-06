@@ -5,6 +5,18 @@ use serde::{Deserialize, Serialize};
 use crate::dirs;
 use crate::error::Result;
 
+/// GPU acceleration settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GpuConfig {
+    /// Number of layers to offload to GPU. 0 = CPU only, -1 = all layers.
+    #[serde(default)]
+    pub gpu_layers: i32,
+
+    /// Index of the primary GPU to use (default: 0).
+    #[serde(default)]
+    pub main_gpu: i32,
+}
+
 /// User-configurable settings for the Power server and CLI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerConfig {
@@ -23,6 +35,10 @@ pub struct PowerConfig {
     /// Maximum number of models to keep loaded in memory
     #[serde(default = "default_max_loaded_models")]
     pub max_loaded_models: usize,
+
+    /// GPU acceleration settings
+    #[serde(default)]
+    pub gpu: GpuConfig,
 }
 
 fn default_host() -> String {
@@ -44,6 +60,7 @@ impl Default for PowerConfig {
             port: default_port(),
             data_dir: dirs::power_home(),
             max_loaded_models: default_max_loaded_models(),
+            gpu: GpuConfig::default(),
         }
     }
 }
@@ -134,6 +151,7 @@ mod tests {
             port: 9999,
             data_dir: dir.path().to_path_buf(),
             max_loaded_models: 5,
+            gpu: GpuConfig::default(),
         };
         config.save().unwrap();
 
@@ -143,5 +161,38 @@ mod tests {
         assert_eq!(loaded.max_loaded_models, 5);
 
         std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    fn test_gpu_config_defaults() {
+        let config = PowerConfig::default();
+        assert_eq!(config.gpu.gpu_layers, 0);
+        assert_eq!(config.gpu.main_gpu, 0);
+    }
+
+    #[test]
+    fn test_gpu_config_deserialize() {
+        let toml_str = r#"
+            host = "127.0.0.1"
+            port = 11435
+
+            [gpu]
+            gpu_layers = -1
+            main_gpu = 1
+        "#;
+        let config: PowerConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.gpu.gpu_layers, -1);
+        assert_eq!(config.gpu.main_gpu, 1);
+    }
+
+    #[test]
+    fn test_gpu_config_missing_uses_defaults() {
+        let toml_str = r#"
+            host = "127.0.0.1"
+            port = 11435
+        "#;
+        let config: PowerConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.gpu.gpu_layers, 0);
+        assert_eq!(config.gpu.main_gpu, 0);
     }
 }

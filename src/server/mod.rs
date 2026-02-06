@@ -1,3 +1,4 @@
+pub mod metrics;
 pub mod router;
 pub mod state;
 
@@ -19,15 +20,17 @@ pub async fn start(config: PowerConfig) -> Result<()> {
     registry.scan()?;
     tracing::info!(count = registry.count(), "Loaded model registry");
 
+    let bind_addr = config.bind_address();
+    let config = Arc::new(config);
+
     // Initialize backends
-    let backends = Arc::new(backend::default_backends());
+    let backends = Arc::new(backend::default_backends(config.clone()));
     tracing::info!(
         backends = ?backends.list_names(),
         "Initialized backends"
     );
 
-    let bind_addr = config.bind_address();
-    let app_state = state::AppState::new(registry, backends, Arc::new(config));
+    let app_state = state::AppState::new(registry, backends, config);
 
     let app = router::build(app_state);
 

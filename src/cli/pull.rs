@@ -1,25 +1,22 @@
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::error::Result;
-use crate::model::pull::{extract_name_from_url, pull_model};
+use crate::model::pull::pull_model;
 use crate::model::registry::ModelRegistry;
+use crate::model::resolve;
 
-/// Execute the `pull` command: download a model from a URL.
+/// Execute the `pull` command: download a model by name or URL.
 pub async fn execute(model: &str, registry: &ModelRegistry) -> Result<()> {
     if registry.exists(model) {
         println!("Model '{model}' already exists locally.");
         return Ok(());
     }
 
-    // For now, treat the model name as a direct URL if it starts with http
-    let url = if model.starts_with("http://") || model.starts_with("https://") {
-        model.to_string()
+    // Determine display name
+    let display_name = if resolve::is_url(model) {
+        crate::model::pull::extract_name_from_url(model)
     } else {
-        // In the future, this would resolve a model name to a registry URL
-        println!("Model registry resolution not yet implemented.");
-        println!("Please provide a direct URL to a model file.");
-        println!("Example: a3s-power pull https://example.com/model.gguf");
-        return Ok(());
+        model.to_string()
     };
 
     let pb = ProgressBar::new(0);
@@ -38,14 +35,14 @@ pub async fn execute(model: &str, registry: &ModelRegistry) -> Result<()> {
         progress_bar.set_position(downloaded);
     });
 
-    let name = extract_name_from_url(&url);
-    println!("Pulling '{name}' from {url}");
+    println!("Pulling '{display_name}'...");
 
-    let manifest = pull_model(&name, &url, Some(progress)).await?;
+    let manifest = pull_model(model, None, Some(progress)).await?;
     pb.finish_with_message("Download complete");
 
+    let pulled_name = manifest.name.clone();
     registry.register(manifest)?;
-    println!("Successfully pulled '{name}'");
+    println!("Successfully pulled '{pulled_name}'");
 
     Ok(())
 }
