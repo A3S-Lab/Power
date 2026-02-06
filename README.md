@@ -25,14 +25,17 @@
 ### Basic Usage
 
 ```bash
-# Pull a model
+# Pull a model by name (resolves from built-in registry or HuggingFace)
+a3s-power pull llama3.2:3b
+
+# Pull from a direct URL
 a3s-power pull https://huggingface.co/TheBloke/Llama-2-7B-GGUF/resolve/main/llama-2-7b.Q4_K_M.gguf
 
 # Interactive chat
-a3s-power run llama-2-7b.Q4_K_M
+a3s-power run llama3.2:3b
 
 # Single prompt
-a3s-power run llama-2-7b.Q4_K_M --prompt "Explain quicksort in one paragraph"
+a3s-power run llama3.2:3b --prompt "Explain quicksort in one paragraph"
 
 # Start HTTP server
 a3s-power serve
@@ -41,23 +44,29 @@ a3s-power serve
 ## Features
 
 - **CLI Model Management**: Pull, list, show, and delete models from the command line
+- **Model Name Resolution**: Pull models by name (`llama3.2:3b`) with built-in registry and HuggingFace fallback
 - **Interactive Chat**: Multi-turn conversation with streaming token output
-- **HTTP Server**: Axum-based server with CORS and tracing middleware
-- **Ollama-Compatible API**: `/api/generate`, `/api/chat`, `/api/tags`, `/api/pull`, `/api/show`, `/api/delete`, `/api/embeddings`
+- **Chat Template Auto-Detection**: Detects ChatML, Llama, Phi, and Generic templates from GGUF metadata
+- **Multiple Concurrent Models**: Load multiple models with LRU eviction at configurable capacity
+- **GPU Acceleration**: Configurable GPU layer offloading via `[gpu]` config section
+- **Embedding Support**: Real embedding generation with automatic model reload in embedding mode
+- **HTTP Server**: Axum-based server with CORS, tracing, and metrics middleware
+- **Ollama-Compatible API**: `/api/generate`, `/api/chat`, `/api/tags`, `/api/pull`, `/api/show`, `/api/delete`, `/api/embeddings`, `/api/embed`, `/api/ps`, `/api/copy`, `/api/version`
 - **OpenAI-Compatible API**: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`
 - **SSE Streaming**: All inference and pull endpoints support server-sent events
+- **Prometheus Metrics**: `GET /metrics` endpoint with request counts, durations, token counters, and model gauges
 - **Content-Addressed Storage**: Model blobs stored by SHA-256 hash with automatic deduplication
 - **llama.cpp Backend**: GGUF inference via `llama-cpp-2` Rust bindings (optional feature flag)
 - **Health Check**: `GET /health` endpoint with uptime, version, and loaded model count
-- **Model Auto-Loading**: Models are automatically loaded on first inference request
-- **TOML Configuration**: User-configurable host, port, and storage settings
+- **Model Auto-Loading**: Models are automatically loaded on first inference request with LRU eviction
+- **TOML Configuration**: User-configurable host, port, GPU settings, and storage settings
 - **Async-First**: Built on Tokio for high-performance async operations
 
 ## Quality Metrics
 
 ### Test Coverage
 
-**108 unit tests** with **54.2% line coverage** / **70.8% function coverage** (via `cargo llvm-cov`):
+**197 unit tests** with **54.2% line coverage** / **70.8% function coverage** (via `cargo llvm-cov`):
 
 | File | Line Coverage | Function Coverage |
 |------|--------------|-------------------|
@@ -171,7 +180,10 @@ cargo build -p a3s-power --features llamacpp
 ### Model Management
 
 ```bash
-# Pull a model from a direct URL
+# Pull a model by name (built-in registry + HuggingFace fallback)
+a3s-power pull llama3.2:3b
+
+# Pull from a direct URL
 a3s-power pull https://example.com/model.gguf
 
 # List local models
@@ -211,6 +223,7 @@ a3s-power serve --host 0.0.0.0 --port 8080
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check (status, version, uptime, loaded models) |
+| `GET` | `/metrics` | Prometheus metrics (request counts, durations, tokens, model gauge) |
 
 ### Native API (Ollama-Compatible)
 
@@ -218,11 +231,15 @@ a3s-power serve --host 0.0.0.0 --port 8080
 |--------|------|-------------|
 | `POST` | `/api/generate` | Text generation (streaming/non-streaming) |
 | `POST` | `/api/chat` | Chat completion (streaming/non-streaming) |
-| `POST` | `/api/pull` | Download a model (streaming progress) |
+| `POST` | `/api/pull` | Download a model by name or URL (streaming progress) |
 | `GET` | `/api/tags` | List local models |
 | `POST` | `/api/show` | Show model details |
 | `DELETE` | `/api/delete` | Delete a model |
 | `POST` | `/api/embeddings` | Generate embeddings |
+| `POST` | `/api/embed` | Batch embedding generation |
+| `GET` | `/api/ps` | List running/loaded models |
+| `POST` | `/api/copy` | Copy/alias a model |
+| `GET` | `/api/version` | Server version |
 
 ### OpenAI-Compatible API
 
@@ -295,7 +312,7 @@ curl http://localhost:11435/v1/completions \
 | Command | Description |
 |---------|-------------|
 | `a3s-power run <model> [--prompt <text>]` | Load model and start interactive chat, or send a single prompt |
-| `a3s-power pull <url>` | Download a model from a direct URL |
+| `a3s-power pull <name_or_url>` | Download a model by name (`llama3.2:3b`) or direct URL |
 | `a3s-power list` | List all locally available models |
 | `a3s-power show <model>` | Show model details (format, size, parameters) |
 | `a3s-power delete <model>` | Delete a model from local storage |
@@ -332,6 +349,10 @@ Configuration is read from `~/.a3s/power/config.toml`:
 host = "127.0.0.1"
 port = 11435
 max_loaded_models = 1
+
+[gpu]
+gpu_layers = -1   # offload all layers to GPU (-1=all, 0=CPU only)
+main_gpu = 0      # primary GPU index
 ```
 
 | Field | Default | Description |
@@ -339,7 +360,9 @@ max_loaded_models = 1
 | `host` | `127.0.0.1` | HTTP server bind address |
 | `port` | `11435` | HTTP server port |
 | `data_dir` | `~/.a3s/power` | Base directory for model storage |
-| `max_loaded_models` | `1` | Maximum models loaded in memory |
+| `max_loaded_models` | `1` | Maximum models loaded in memory concurrently |
+| `gpu.gpu_layers` | `0` | Number of layers to offload to GPU (0=CPU, -1=all) |
+| `gpu.main_gpu` | `0` | Index of the primary GPU to use |
 
 All fields are optional and have sensible defaults.
 
@@ -362,7 +385,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 108 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 197 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -399,15 +422,20 @@ power/
     │   ├── manifest.rs      # ModelManifest, ModelFormat, ModelParameters
     │   ├── registry.rs      # In-memory index backed by disk manifests
     │   ├── storage.rs       # Content-addressed blob store (SHA-256)
-    │   └── pull.rs          # HTTP download with progress callback
+    │   ├── pull.rs          # HTTP download with progress callback
+    │   ├── resolve.rs       # Name-based model resolution (built-in + HuggingFace)
+    │   └── known_models.json# Built-in registry of popular GGUF models
     ├── backend/
     │   ├── mod.rs           # Backend trait + BackendRegistry
     │   ├── types.rs         # Inference request/response types
-    │   └── llamacpp.rs      # llama.cpp backend (feature-gated)
+    │   ├── llamacpp.rs      # llama.cpp backend (feature-gated, multi-model)
+    │   ├── chat_template.rs # Chat template detection and formatting
+    │   └── test_utils.rs    # MockBackend for testing
     ├── server/
     │   ├── mod.rs           # Server startup (bind, listen)
-    │   ├── state.rs         # Shared AppState
-    │   └── router.rs        # Axum router with CORS + tracing
+    │   ├── state.rs         # Shared AppState with LRU model tracking
+    │   ├── router.rs        # Axum router with CORS + tracing + metrics
+    │   └── metrics.rs       # Prometheus metrics collection and /metrics handler
     └── api/
         ├── autoload.rs      # Model auto-loading on first inference
         ├── health.rs        # GET /health endpoint
@@ -419,7 +447,11 @@ power/
         │   ├── chat.rs      # POST /api/chat
         │   ├── models.rs    # GET /api/tags, POST /api/show, DELETE /api/delete
         │   ├── pull.rs      # POST /api/pull (streaming progress)
-        │   └── embeddings.rs# POST /api/embeddings
+        │   ├── embeddings.rs# POST /api/embeddings
+        │   ├── embed.rs     # POST /api/embed (batch embeddings)
+        │   ├── ps.rs        # GET /api/ps (running models)
+        │   ├── copy.rs      # POST /api/copy (model aliasing)
+        │   └── version.rs   # GET /api/version
         └── openai/
             ├── mod.rs       # OpenAI-compatible route group + shared helpers
             ├── chat.rs      # POST /v1/chat/completions
@@ -487,16 +519,17 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [x] SSE streaming for all inference endpoints
 - [x] Non-streaming response collection
 
-### Phase 4: Polish & Production 🚧
+### Phase 4: Polish & Production ✅
 
-- [ ] Model registry resolution (name-based pulls, not just URLs)
-- [ ] Embedding generation support (model loaded with embedding mode)
-- [ ] Multiple concurrent model loading
+- [x] Model registry resolution (name-based pulls with built-in registry + HuggingFace fallback)
+- [x] Embedding generation support (automatic reload with embedding mode)
+- [x] Multiple concurrent model loading (HashMap storage with LRU eviction)
 - [x] Model auto-loading on first API request
-- [ ] GPU acceleration configuration
-- [ ] Chat template auto-detection from GGUF metadata
+- [x] GPU acceleration configuration (`[gpu]` config with layer offloading)
+- [x] Chat template auto-detection from GGUF metadata (ChatML, Llama, Phi, Generic)
 - [x] Health check endpoint (`/health`)
-- [ ] Prometheus metrics endpoint
+- [x] Prometheus metrics endpoint (`/metrics` with request/token/model counters)
+- [x] 197 comprehensive unit tests
 
 ## License
 
