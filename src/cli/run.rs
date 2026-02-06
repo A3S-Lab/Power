@@ -1,5 +1,8 @@
-use std::sync::Arc;
+use std::io::{self, BufRead, Write};
 
+use futures::StreamExt;
+
+use crate::backend::types::{ChatMessage, ChatRequest};
 use crate::backend::BackendRegistry;
 use crate::error::Result;
 use crate::model::registry::ModelRegistry;
@@ -11,7 +14,6 @@ pub async fn execute(
     registry: &ModelRegistry,
     backends: &BackendRegistry,
 ) -> Result<()> {
-    // Ensure model is available locally
     let manifest = match registry.get(model) {
         Ok(m) => m,
         Err(_) => {
@@ -21,7 +23,6 @@ pub async fn execute(
         }
     };
 
-    // Find a backend that supports this model format
     let backend = backends.find_for_format(&manifest.format)?;
     tracing::info!(
         model = %manifest.name,
@@ -29,34 +30,135 @@ pub async fn execute(
         "Selected backend for model"
     );
 
-    // Load the model
     println!("Loading model '{}'...", manifest.name);
     if let Err(e) = backend.load(&manifest).await {
         println!("Failed to load model: {e}");
-        println!("Note: The llama.cpp backend is not yet fully implemented.");
         return Ok(());
     }
 
     if let Some(prompt_text) = prompt {
-        // Non-interactive: send a single prompt
-        println!("Prompt: {prompt_text}");
-        println!("(Inference not yet implemented)");
+        // Non-interactive: send a single prompt and print the streamed response
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: prompt_text.to_string(),
+        }];
+
+        let request = ChatRequest {
+            messages,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop: None,
+            stream: true,
+        };
+
+        match backend.chat(&manifest.name, request).await {
+            Ok(mut stream) => {
+                while let Some(chunk) = stream.next().await {
+                    match chunk {
+                        Ok(c) => {
+                            if !c.content.is_empty() {
+                                print!("{}", c.content);
+                                io::stdout().flush().ok();
+                            }
+                            if c.done {
+                                println!();
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("\nError during generation: {e}");
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+            }
+        }
     } else {
         // Interactive chat mode
-        println!("Interactive chat mode (type 'exit' or Ctrl+C to quit)");
-        println!("(Interactive mode not yet implemented)");
+        interactive_chat(&manifest.name, &backend).await;
     }
 
-    // Unload model
     let _ = backend.unload(&manifest.name).await;
-
     Ok(())
 }
 
-/// Ensure model is available, pulling if necessary.
-pub async fn ensure_model(model: &str, registry: &Arc<ModelRegistry>) -> Result<()> {
-    if !registry.exists(model) {
-        println!("Model '{model}' not found locally. Pull it first with `a3s-power pull`.");
+async fn interactive_chat(model_name: &str, backend: &std::sync::Arc<dyn crate::backend::Backend>) {
+    let mut messages: Vec<ChatMessage> = Vec::new();
+    let stdin = io::stdin();
+
+    println!("Interactive chat with '{model_name}' (type /exit to quit)\n");
+
+    loop {
+        print!(">>> ");
+        io::stdout().flush().ok();
+
+        let mut input = String::new();
+        if stdin.lock().read_line(&mut input).is_err() || input.is_empty() {
+            break;
+        }
+
+        let input = input.trim();
+        if input.is_empty() {
+            continue;
+        }
+        if input == "/exit" || input == "/quit" {
+            break;
+        }
+
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: input.to_string(),
+        });
+
+        let request = ChatRequest {
+            messages: messages.clone(),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop: None,
+            stream: true,
+        };
+
+        let mut assistant_response = String::new();
+
+        match backend.chat(model_name, request).await {
+            Ok(mut stream) => {
+                while let Some(chunk) = stream.next().await {
+                    match chunk {
+                        Ok(c) => {
+                            if !c.content.is_empty() {
+                                print!("{}", c.content);
+                                io::stdout().flush().ok();
+                                assistant_response.push_str(&c.content);
+                            }
+                            if c.done {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("\nError: {e}");
+                            break;
+                        }
+                    }
+                }
+                println!("\n");
+            }
+            Err(e) => {
+                eprintln!("Error: {e}\n");
+            }
+        }
+
+        if !assistant_response.is_empty() {
+            messages.push(ChatMessage {
+                role: "assistant".to_string(),
+                content: assistant_response,
+            });
+        }
     }
-    Ok(())
+
+    println!("Goodbye!");
 }

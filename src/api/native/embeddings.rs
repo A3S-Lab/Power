@@ -11,9 +11,9 @@ pub async fn handler(
     State(state): State<AppState>,
     Json(request): Json<NativeEmbeddingRequest>,
 ) -> impl IntoResponse {
-    let model_name = &request.model;
+    let model_name = request.model.clone();
 
-    let manifest = match state.registry.get(model_name) {
+    let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
         Err(_) => {
             return Json(serde_json::json!({
@@ -34,7 +34,7 @@ pub async fn handler(
         input: vec![request.prompt],
     };
 
-    match backend.embed(model_name, backend_request).await {
+    match backend.embed(&model_name, backend_request).await {
         Ok(response) => {
             let embedding = response.embeddings.into_iter().next().unwrap_or_default();
             Json(NativeEmbeddingResponse { embedding }).into_response()

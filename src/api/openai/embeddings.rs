@@ -10,9 +10,9 @@ pub async fn handler(
     State(state): State<AppState>,
     Json(request): Json<EmbeddingRequest>,
 ) -> impl IntoResponse {
-    let model_name = &request.model;
+    let model_name = request.model.clone();
 
-    let manifest = match state.registry.get(model_name) {
+    let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
         Err(_) => {
             return Json(serde_json::json!({
@@ -33,7 +33,7 @@ pub async fn handler(
                 "error": {
                     "message": e.to_string(),
                     "type": "server_error",
-                    "code": null
+                    "code": "backend_unavailable"
                 }
             }))
             .into_response();
@@ -45,7 +45,7 @@ pub async fn handler(
         input: input_texts.clone(),
     };
 
-    match backend.embed(model_name, backend_request).await {
+    match backend.embed(&model_name, backend_request).await {
         Ok(result) => {
             let data: Vec<EmbeddingData> = result
                 .embeddings
@@ -58,22 +58,22 @@ pub async fn handler(
                 })
                 .collect();
 
-            let response = EmbeddingResponse {
+            Json(EmbeddingResponse {
                 object: "list".to_string(),
                 data,
-                model: model_name.to_string(),
+                model: model_name,
                 usage: EmbeddingUsage {
                     prompt_tokens: 0,
                     total_tokens: 0,
                 },
-            };
-            Json(response).into_response()
+            })
+            .into_response()
         }
         Err(e) => Json(serde_json::json!({
             "error": {
                 "message": e.to_string(),
                 "type": "server_error",
-                "code": null
+                "code": "inference_failed"
             }
         }))
         .into_response(),

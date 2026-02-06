@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "a3s-power"
 path = "src/main.rs"
 
+[features]
+default = []
+llamacpp = ["dep:llama-cpp-2"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -66,6 +70,9 @@ dirs = "5"
 
 # SHA256 for model integrity
 sha2 = "0.10"
+
+# llama.cpp backend (optional, requires C++ toolchain)
+llama-cpp-2 = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
