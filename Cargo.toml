@@ -6,6 +6,9 @@ authors = ["A3S Lab"]
 license = "MIT"
 repository = "https://github.com/A3S-Lab/Power"
 description = "A3S Power - Local model management and serving with OpenAI-compatible API"
+readme = "README.md"
+keywords = ["llm", "inference", "ollama", "openai", "gguf"]
+categories = ["command-line-utilities", "web-programming::http-server"]
 
 [lib]
 name = "a3s_power"
@@ -47,7 +50,7 @@ clap = { version = "4", features = ["derive"] }
 # HTTP server
 axum = { version = "0.7", features = ["macros"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # HTTP client (for model downloads)
