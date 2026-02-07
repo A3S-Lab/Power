@@ -1,4 +1,5 @@
 pub mod manifest;
+pub mod modelfile;
 pub mod pull;
 pub mod registry;
 pub mod resolve;

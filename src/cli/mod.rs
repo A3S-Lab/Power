@@ -5,6 +5,8 @@ pub mod run;
 pub mod serve;
 pub mod show;
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 /// A3S Power - Local model management and serving
@@ -26,6 +28,34 @@ pub enum Commands {
         /// Optional prompt to send directly instead of interactive mode
         #[arg(long)]
         prompt: Option<String>,
+
+        /// Sampling temperature (0.0 - 2.0)
+        #[arg(long)]
+        temperature: Option<f32>,
+
+        /// Top-p (nucleus) sampling threshold
+        #[arg(long)]
+        top_p: Option<f32>,
+
+        /// Top-k sampling limit
+        #[arg(long)]
+        top_k: Option<i32>,
+
+        /// Maximum number of tokens to generate
+        #[arg(long)]
+        num_predict: Option<u32>,
+
+        /// Context window size in tokens
+        #[arg(long)]
+        num_ctx: Option<u32>,
+
+        /// Repetition penalty (1.0 = disabled)
+        #[arg(long)]
+        repeat_penalty: Option<f32>,
+
+        /// Random seed for reproducible output
+        #[arg(long)]
+        seed: Option<u32>,
     },
 
     /// Download a model
@@ -58,5 +88,15 @@ pub enum Commands {
         /// Port to listen on
         #[arg(long, default_value_t = 11435)]
         port: u16,
+    },
+
+    /// Create a model from a Modelfile
+    Create {
+        /// Name for the new model
+        name: String,
+
+        /// Path to the Modelfile
+        #[arg(short = 'f', long)]
+        file: PathBuf,
     },
 }

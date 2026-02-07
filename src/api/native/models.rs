@@ -47,9 +47,15 @@ pub async fn show_handler(
     match state.registry.get(&request.name) {
         Ok(manifest) => {
             let response = ShowResponse {
-                modelfile: String::new(),
+                modelfile: manifest
+                    .modelfile_content
+                    .clone()
+                    .unwrap_or_default(),
                 parameters: serde_json::to_string_pretty(&manifest.parameters).unwrap_or_default(),
-                template: String::new(),
+                template: manifest
+                    .template_override
+                    .clone()
+                    .unwrap_or_default(),
                 details: NativeModelDetails {
                     format: manifest.format.to_string(),
                     parameter_size: manifest

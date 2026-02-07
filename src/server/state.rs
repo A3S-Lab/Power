@@ -7,10 +7,11 @@ use crate::config::PowerConfig;
 use crate::model::registry::ModelRegistry;
 use crate::server::metrics::Metrics;
 
-/// Tracks a loaded model's last-used time for LRU eviction.
+/// Tracks a loaded model's last-used time and keep-alive duration for LRU eviction.
 #[derive(Debug, Clone)]
 struct LoadedModelEntry {
     last_used: Instant,
+    keep_alive: Duration,
 }
 
 /// Shared application state accessible to all HTTP handlers.
@@ -55,12 +56,25 @@ impl AppState {
         self.loaded_models.read().unwrap().len()
     }
 
-    /// Record that a model has been loaded.
+    /// Record that a model has been loaded with the default keep-alive duration from config.
     pub fn mark_loaded(&self, name: &str) {
+        let keep_alive = crate::config::parse_keep_alive(&self.config.keep_alive);
         self.loaded_models.write().unwrap().insert(
             name.to_string(),
             LoadedModelEntry {
                 last_used: Instant::now(),
+                keep_alive,
+            },
+        );
+    }
+
+    /// Record that a model has been loaded with a specific keep-alive duration.
+    pub fn mark_loaded_with_keep_alive(&self, name: &str, keep_alive: Duration) {
+        self.loaded_models.write().unwrap().insert(
+            name.to_string(),
+            LoadedModelEntry {
+                last_used: Instant::now(),
+                keep_alive,
             },
         );
     }
@@ -83,6 +97,20 @@ impl AppState {
             .read()
             .unwrap()
             .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(name, _)| name.clone())
+    }
+
+    /// Return the name of the least-recently-used model whose keep-alive has expired.
+    /// Models with `keep_alive == Duration::MAX` are never evicted.
+    pub fn evictable_lru_model(&self) -> Option<String> {
+        self.loaded_models
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(_, entry)| {
+                entry.keep_alive != Duration::MAX && entry.last_used.elapsed() >= entry.keep_alive
+            })
             .min_by_key(|(_, entry)| entry.last_used)
             .map(|(name, _)| name.clone())
     }

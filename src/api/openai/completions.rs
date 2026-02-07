@@ -49,6 +49,19 @@ pub async fn handler(
         max_tokens: request.max_tokens,
         stop: request.stop.clone(),
         stream: is_stream,
+        top_k: None,
+        min_p: None,
+        repeat_penalty: None,
+        frequency_penalty: request.frequency_penalty,
+        presence_penalty: request.presence_penalty,
+        seed: request.seed.map(|s| s as u32),
+        num_ctx: None,
+        mirostat: None,
+        mirostat_tau: None,
+        mirostat_eta: None,
+        tfs_z: None,
+        typical_p: None,
+        response_format: None,
     };
 
     match backend.complete(&model_name, backend_request).await {
@@ -62,6 +75,11 @@ pub async fn handler(
                     .map(move |chunk| {
                         let data = match chunk {
                             Ok(c) => {
+                                let finish_reason = if c.done {
+                                    Some(c.done_reason.unwrap_or_else(|| "stop".to_string()))
+                                } else {
+                                    None
+                                };
                                 let resp = CompletionResponse {
                                     id: id.clone(),
                                     object: "text_completion".to_string(),
@@ -70,14 +88,10 @@ pub async fn handler(
                                     choices: vec![CompletionChoice {
                                         index: 0,
                                         text: c.text,
-                                        finish_reason: if c.done {
-                                            Some("stop".to_string())
-                                        } else {
-                                            None
-                                        },
+                                        finish_reason,
                                     }],
                                     usage: Usage {
-                                        prompt_tokens: 0,
+                                        prompt_tokens: c.prompt_tokens.unwrap_or(0),
                                         completion_tokens: 0,
                                         total_tokens: 0,
                                     },
@@ -101,6 +115,8 @@ pub async fn handler(
             } else {
                 let mut full_text = String::new();
                 let mut completion_tokens: u32 = 0;
+                let mut prompt_tokens: u32 = 0;
+                let mut finish_reason = "stop".to_string();
                 let mut stream = stream;
                 while let Some(chunk) = stream.next().await {
                     match chunk {
@@ -108,6 +124,12 @@ pub async fn handler(
                             full_text.push_str(&c.text);
                             if !c.done {
                                 completion_tokens += 1;
+                            }
+                            if let Some(pt) = c.prompt_tokens {
+                                prompt_tokens = pt;
+                            }
+                            if let Some(reason) = c.done_reason {
+                                finish_reason = reason;
                             }
                         }
                         Err(e) => {
@@ -124,12 +146,12 @@ pub async fn handler(
                     choices: vec![CompletionChoice {
                         index: 0,
                         text: full_text,
-                        finish_reason: Some("stop".to_string()),
+                        finish_reason: Some(finish_reason),
                     }],
                     usage: Usage {
-                        prompt_tokens: 0,
+                        prompt_tokens,
                         completion_tokens,
-                        total_tokens: completion_tokens,
+                        total_tokens: prompt_tokens + completion_tokens,
                     },
                 })
                 .into_response()

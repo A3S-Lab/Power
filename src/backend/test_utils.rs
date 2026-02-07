@@ -67,10 +67,14 @@ impl Backend for MockBackend {
             Ok(ChatResponseChunk {
                 content: "Hello".to_string(),
                 done: false,
+                prompt_tokens: None,
+                done_reason: None,
             }),
             Ok(ChatResponseChunk {
                 content: "".to_string(),
                 done: true,
+                prompt_tokens: Some(5),
+                done_reason: Some("stop".to_string()),
             }),
         ];
         Ok(Box::pin(futures::stream::iter(chunks)))
@@ -85,10 +89,14 @@ impl Backend for MockBackend {
             Ok(CompletionResponseChunk {
                 text: "World".to_string(),
                 done: false,
+                prompt_tokens: None,
+                done_reason: None,
             }),
             Ok(CompletionResponseChunk {
                 text: "".to_string(),
                 done: true,
+                prompt_tokens: Some(5),
+                done_reason: Some("stop".to_string()),
             }),
         ];
         Ok(Box::pin(futures::stream::iter(chunks)))
@@ -130,6 +138,10 @@ pub fn sample_manifest(name: &str) -> ModelManifest {
         }),
         created_at: chrono::Utc::now(),
         path: std::path::PathBuf::from(format!("/tmp/blobs/sha256-{name}")),
+        system_prompt: None,
+        template_override: None,
+        default_parameters: None,
+        modelfile_content: None,
     }
 }
 
@@ -171,6 +183,19 @@ mod tests {
             max_tokens: None,
             stop: None,
             stream: false,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
         };
         let mut stream = mock.chat("test", request).await.unwrap();
         let first = stream.next().await.unwrap().unwrap();

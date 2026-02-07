@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,22 @@ pub struct ModelManifest {
 
     /// Path to the model blob on disk (content-addressed)
     pub path: PathBuf,
+
+    /// System prompt from Modelfile (if set)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+
+    /// Chat template override from Modelfile
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_override: Option<String>,
+
+    /// Default generation parameters from Modelfile
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_parameters: Option<HashMap<String, serde_json::Value>>,
+
+    /// Raw Modelfile content (if model was created via Modelfile)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modelfile_content: Option<String>,
 }
 
 /// Supported model file formats.
@@ -104,6 +121,10 @@ mod tests {
             }),
             created_at: chrono::Utc::now(),
             path: PathBuf::from("/tmp/blobs/sha256-abc123"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
         }
     }
 

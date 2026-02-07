@@ -39,6 +39,59 @@ pub struct PowerConfig {
     /// GPU acceleration settings
     #[serde(default)]
     pub gpu: GpuConfig,
+
+    /// Default model keep-alive duration (e.g. "5m", "1h", "0", "-1").
+    /// "0" = unload immediately after request, "-1" = never unload.
+    /// Default: "5m".
+    #[serde(default = "default_keep_alive")]
+    pub keep_alive: String,
+}
+
+fn default_keep_alive() -> String {
+    "5m".to_string()
+}
+
+/// Parse a keep-alive duration string into a `std::time::Duration`.
+///
+/// Supported formats:
+/// - `"5m"` → 5 minutes
+/// - `"1h"` → 1 hour
+/// - `"30s"` → 30 seconds
+/// - `"0"` → Duration::ZERO (unload immediately)
+/// - `"-1"` → Duration::MAX (never unload)
+pub fn parse_keep_alive(s: &str) -> std::time::Duration {
+    let s = s.trim();
+    if s == "0" {
+        return std::time::Duration::ZERO;
+    }
+    if s == "-1" {
+        return std::time::Duration::MAX;
+    }
+
+    // Try to parse as number + suffix
+    if let Some(num_str) = s.strip_suffix('s') {
+        if let Ok(n) = num_str.parse::<u64>() {
+            return std::time::Duration::from_secs(n);
+        }
+    }
+    if let Some(num_str) = s.strip_suffix('m') {
+        if let Ok(n) = num_str.parse::<u64>() {
+            return std::time::Duration::from_secs(n * 60);
+        }
+    }
+    if let Some(num_str) = s.strip_suffix('h') {
+        if let Ok(n) = num_str.parse::<u64>() {
+            return std::time::Duration::from_secs(n * 3600);
+        }
+    }
+
+    // Fallback: try to parse as raw seconds
+    if let Ok(n) = s.parse::<u64>() {
+        return std::time::Duration::from_secs(n);
+    }
+
+    // Default to 5 minutes if unparsable
+    std::time::Duration::from_secs(300)
 }
 
 fn default_host() -> String {
@@ -61,6 +114,7 @@ impl Default for PowerConfig {
             data_dir: dirs::power_home(),
             max_loaded_models: default_max_loaded_models(),
             gpu: GpuConfig::default(),
+            keep_alive: default_keep_alive(),
         }
     }
 }
@@ -152,6 +206,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             max_loaded_models: 5,
             gpu: GpuConfig::default(),
+            keep_alive: "5m".to_string(),
         };
         config.save().unwrap();
 
@@ -194,5 +249,46 @@ mod tests {
         let config: PowerConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.gpu.gpu_layers, 0);
         assert_eq!(config.gpu.main_gpu, 0);
+    }
+
+    #[test]
+    fn test_default_keep_alive() {
+        let config = PowerConfig::default();
+        assert_eq!(config.keep_alive, "5m");
+    }
+
+    #[test]
+    fn test_parse_keep_alive_minutes() {
+        assert_eq!(super::parse_keep_alive("5m"), std::time::Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_parse_keep_alive_hours() {
+        assert_eq!(super::parse_keep_alive("1h"), std::time::Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn test_parse_keep_alive_seconds() {
+        assert_eq!(super::parse_keep_alive("30s"), std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_parse_keep_alive_zero() {
+        assert_eq!(super::parse_keep_alive("0"), std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn test_parse_keep_alive_never() {
+        assert_eq!(super::parse_keep_alive("-1"), std::time::Duration::MAX);
+    }
+
+    #[test]
+    fn test_parse_keep_alive_raw_number() {
+        assert_eq!(super::parse_keep_alive("120"), std::time::Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_parse_keep_alive_invalid_defaults() {
+        assert_eq!(super::parse_keep_alive("abc"), std::time::Duration::from_secs(300));
     }
 }

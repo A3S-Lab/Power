@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod copy;
+pub mod create;
 pub mod embed;
 pub mod embeddings;
 pub mod generate;
@@ -26,5 +27,6 @@ pub fn routes() -> Router<AppState> {
         .route("/version", get(version::handler))
         .route("/ps", get(ps::handler))
         .route("/copy", post(copy::handler))
+        .route("/create", post(create::handler))
         .route("/embed", post(embed::handler))
 }

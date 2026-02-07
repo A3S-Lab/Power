@@ -166,6 +166,19 @@ impl Backend for LlamaCppBackend {
             max_tokens: request.max_tokens,
             stop: request.stop,
             stream: request.stream,
+            top_k: request.top_k,
+            min_p: request.min_p,
+            repeat_penalty: request.repeat_penalty,
+            frequency_penalty: request.frequency_penalty,
+            presence_penalty: request.presence_penalty,
+            seed: request.seed,
+            num_ctx: request.num_ctx,
+            mirostat: request.mirostat,
+            mirostat_tau: request.mirostat_tau,
+            mirostat_eta: request.mirostat_eta,
+            tfs_z: request.tfs_z,
+            typical_p: request.typical_p,
+            response_format: request.response_format,
         };
 
         let stream = self.complete(model_name, completion_req).await?;
@@ -176,6 +189,8 @@ impl Backend for LlamaCppBackend {
             chunk_result.map(|chunk| ChatResponseChunk {
                 content: chunk.text,
                 done: chunk.done,
+                prompt_tokens: chunk.prompt_tokens,
+                done_reason: chunk.done_reason,
             })
         });
 
@@ -206,13 +221,29 @@ impl Backend for LlamaCppBackend {
         let max_tokens = request.max_tokens.unwrap_or(512) as usize;
         let temperature = request.temperature.unwrap_or(0.8);
         let top_p = request.top_p.unwrap_or(0.95);
+        let top_k = request.top_k;
+        let min_p = request.min_p;
+        let repeat_penalty = request.repeat_penalty;
+        let frequency_penalty = request.frequency_penalty;
+        let presence_penalty = request.presence_penalty;
+        let seed = request.seed.unwrap_or(0);
+        let ctx_size = request.num_ctx.unwrap_or(2048);
+        let mirostat = request.mirostat;
+        let mirostat_tau = request.mirostat_tau;
+        let mirostat_eta = request.mirostat_eta;
+        let tfs_z = request.tfs_z;
+        let typical_p = request.typical_p;
+        let response_format = request.response_format.clone();
+        let stop_sequences = request.stop.clone().unwrap_or_default();
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<CompletionResponseChunk>>(32);
 
         // Run inference in a blocking task
         tokio::task::spawn_blocking(move || {
-            let ctx_params =
-                LlamaContextParams::default().with_n_ctx(std::num::NonZeroU32::new(2048).unwrap());
+            let ctx_params = LlamaContextParams::default()
+                .with_n_ctx(std::num::NonZeroU32::new(ctx_size).unwrap_or(
+                    std::num::NonZeroU32::new(2048).unwrap(),
+                ));
             let mut ctx = match LlamaContext::with_model(&model_arc, ctx_params) {
                 Ok(c) => c,
                 Err(e) => {
@@ -235,8 +266,10 @@ impl Backend for LlamaCppBackend {
                     }
                 };
 
+            let prompt_token_count = tokens.len() as u32;
+
             // Create batch and add prompt tokens
-            let mut batch = LlamaBatch::new(2048, 1);
+            let mut batch = LlamaBatch::new(ctx_size as usize, 1);
             for (i, &token) in tokens.iter().enumerate() {
                 let is_last = i == tokens.len() - 1;
                 if batch.add(token, i as i32, &[0], is_last).is_err() {
@@ -255,24 +288,105 @@ impl Backend for LlamaCppBackend {
                 return;
             }
 
-            // Set up sampler
-            let mut sampler = LlamaSampler::chain_simple([
-                LlamaSampler::temp(temperature),
-                LlamaSampler::top_p(top_p, 1),
-                LlamaSampler::dist(0),
-            ]);
+            // Build sampler chain based on request parameters
+            let mut samplers: Vec<LlamaSampler> = Vec::new();
+
+            // JSON grammar constraint
+            if response_format.as_deref() == Some("json") {
+                let json_grammar = r#"
+root   ::= object
+value  ::= object | array | string | number | ("true" | "false" | "null") ws
+
+object ::=
+  "{" ws (
+            string ":" ws value
+    ("," ws string ":" ws value)*
+  )? "}" ws
+
+array  ::=
+  "[" ws (
+            value
+    ("," ws value)*
+  )? "]" ws
+
+string ::=
+  "\"" (
+    [^\\"\x7F\x00-\x1F] |
+    "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+  )* "\"" ws
+
+number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? (("e" | "E") ("+" | "-")? [0-9]+)? ws
+
+ws ::= ([ \t\n] ws)?
+"#;
+                samplers.push(LlamaSampler::grammar(&model_arc, json_grammar, "root"));
+            }
+
+            // Repetition penalties (must come before other samplers)
+            if repeat_penalty.is_some() || frequency_penalty.is_some() || presence_penalty.is_some() {
+                samplers.push(LlamaSampler::penalties(
+                    64,
+                    repeat_penalty.unwrap_or(1.0),
+                    frequency_penalty.unwrap_or(0.0),
+                    presence_penalty.unwrap_or(0.0),
+                ));
+            }
+
+            // Mirostat replaces the standard sampling chain
+            match mirostat {
+                Some(1) => {
+                    let tau = mirostat_tau.unwrap_or(5.0);
+                    let eta = mirostat_eta.unwrap_or(0.1);
+                    samplers.push(LlamaSampler::temp(temperature));
+                    samplers.push(LlamaSampler::mirostat(model_arc.n_vocab() as i32, seed, tau, eta, 100));
+                }
+                Some(2) => {
+                    let tau = mirostat_tau.unwrap_or(5.0);
+                    let eta = mirostat_eta.unwrap_or(0.1);
+                    samplers.push(LlamaSampler::temp(temperature));
+                    samplers.push(LlamaSampler::mirostat_v2(seed, tau, eta));
+                }
+                _ => {
+                    // Standard sampling chain
+                    if let Some(k) = top_k {
+                        samplers.push(LlamaSampler::top_k(k));
+                    }
+
+                    if let Some(z) = tfs_z {
+                        samplers.push(LlamaSampler::tail_free(z, 1));
+                    }
+
+                    if let Some(p) = typical_p {
+                        samplers.push(LlamaSampler::typical(p, 1));
+                    }
+
+                    samplers.push(LlamaSampler::top_p(top_p, 1));
+
+                    if let Some(p) = min_p {
+                        samplers.push(LlamaSampler::min_p(p, 1));
+                    }
+
+                    samplers.push(LlamaSampler::temp(temperature));
+                    samplers.push(LlamaSampler::dist(seed));
+                }
+            }
+
+            let mut sampler = LlamaSampler::chain_simple(samplers);
 
             let mut n_cur = tokens.len();
             let eos_token = model_arc.token_eos();
+            let mut generated_text = String::new();
 
             // Generate tokens
-            for _ in 0..max_tokens {
+            for i in 0..max_tokens {
                 let new_token = sampler.sample(&ctx, -1);
 
                 if new_token == eos_token {
                     let _ = tx.blocking_send(Ok(CompletionResponseChunk {
                         text: String::new(),
                         done: true,
+                        prompt_tokens: Some(prompt_token_count),
+                        done_reason: Some("stop".to_string()),
                     }));
                     return;
                 }
@@ -282,11 +396,31 @@ impl Backend for LlamaCppBackend {
                     .unwrap_or_default()
                     .to_string();
 
+                generated_text.push_str(&text);
+
+                // Check stop sequences
+                let mut should_stop = false;
+                for stop in &stop_sequences {
+                    if generated_text.ends_with(stop) {
+                        should_stop = true;
+                        break;
+                    }
+                }
+
                 if tx
-                    .blocking_send(Ok(CompletionResponseChunk { text, done: false }))
+                    .blocking_send(Ok(CompletionResponseChunk {
+                        text,
+                        done: should_stop,
+                        prompt_tokens: if should_stop { Some(prompt_token_count) } else { None },
+                        done_reason: if should_stop { Some("stop".to_string()) } else { None },
+                    }))
                     .is_err()
                 {
                     return; // receiver dropped
+                }
+
+                if should_stop {
+                    return;
                 }
 
                 // Prepare next batch
@@ -308,6 +442,8 @@ impl Backend for LlamaCppBackend {
             let _ = tx.blocking_send(Ok(CompletionResponseChunk {
                 text: String::new(),
                 done: true,
+                prompt_tokens: Some(prompt_token_count),
+                done_reason: Some("length".to_string()),
             }));
         });
 
@@ -550,6 +686,10 @@ mod tests {
             parameters: None,
             created_at: chrono::Utc::now(),
             path: PathBuf::from("/tmp/test"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
         };
         let result = backend.load(&manifest).await;
         assert!(result.is_err());
@@ -567,6 +707,19 @@ mod tests {
             max_tokens: None,
             stop: None,
             stream: false,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
         };
         let result = backend.chat("test", request).await;
         assert!(result.is_err());
@@ -583,6 +736,19 @@ mod tests {
             max_tokens: None,
             stop: None,
             stream: false,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
         };
         let result = backend.complete("test", request).await;
         assert!(result.is_err());

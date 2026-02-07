@@ -21,6 +21,32 @@ pub struct ChatRequest {
     pub stop: Option<Vec<String>>,
     #[serde(default)]
     pub stream: bool,
+    #[serde(default)]
+    pub top_k: Option<i32>,
+    #[serde(default)]
+    pub min_p: Option<f32>,
+    #[serde(default)]
+    pub repeat_penalty: Option<f32>,
+    #[serde(default)]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub seed: Option<u32>,
+    #[serde(default)]
+    pub num_ctx: Option<u32>,
+    #[serde(default)]
+    pub mirostat: Option<u32>,
+    #[serde(default)]
+    pub mirostat_tau: Option<f32>,
+    #[serde(default)]
+    pub mirostat_eta: Option<f32>,
+    #[serde(default)]
+    pub tfs_z: Option<f32>,
+    #[serde(default)]
+    pub typical_p: Option<f32>,
+    #[serde(default)]
+    pub response_format: Option<String>,
 }
 
 /// A streamed chunk from a chat completion.
@@ -28,6 +54,11 @@ pub struct ChatRequest {
 pub struct ChatResponseChunk {
     pub content: String,
     pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u32>,
+    /// "stop" when EOS/stop-sequence hit, "length" when max_tokens reached
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_reason: Option<String>,
 }
 
 /// Request for text completion inference.
@@ -44,6 +75,32 @@ pub struct CompletionRequest {
     pub stop: Option<Vec<String>>,
     #[serde(default)]
     pub stream: bool,
+    #[serde(default)]
+    pub top_k: Option<i32>,
+    #[serde(default)]
+    pub min_p: Option<f32>,
+    #[serde(default)]
+    pub repeat_penalty: Option<f32>,
+    #[serde(default)]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub seed: Option<u32>,
+    #[serde(default)]
+    pub num_ctx: Option<u32>,
+    #[serde(default)]
+    pub mirostat: Option<u32>,
+    #[serde(default)]
+    pub mirostat_tau: Option<f32>,
+    #[serde(default)]
+    pub mirostat_eta: Option<f32>,
+    #[serde(default)]
+    pub tfs_z: Option<f32>,
+    #[serde(default)]
+    pub typical_p: Option<f32>,
+    #[serde(default)]
+    pub response_format: Option<String>,
 }
 
 /// A streamed chunk from a text completion.
@@ -51,6 +108,11 @@ pub struct CompletionRequest {
 pub struct CompletionResponseChunk {
     pub text: String,
     pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u32>,
+    /// "stop" when EOS/stop-sequence hit, "length" when max_tokens reached
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_reason: Option<String>,
 }
 
 /// Request for embedding generation.
@@ -88,6 +150,15 @@ mod tests {
         assert!(req.top_p.is_none());
         assert!(req.max_tokens.is_none());
         assert!(!req.stream);
+        assert!(req.top_k.is_none());
+        assert!(req.min_p.is_none());
+        assert!(req.repeat_penalty.is_none());
+        assert!(req.frequency_penalty.is_none());
+        assert!(req.presence_penalty.is_none());
+        assert!(req.seed.is_none());
+        assert!(req.num_ctx.is_none());
+        assert!(req.mirostat.is_none());
+        assert!(req.response_format.is_none());
     }
 
     #[test]
@@ -95,11 +166,16 @@ mod tests {
         let chunk = ChatResponseChunk {
             content: "hi".to_string(),
             done: false,
+            prompt_tokens: None,
+            done_reason: None,
         };
         let json = serde_json::to_string(&chunk).unwrap();
         let parsed: ChatResponseChunk = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.content, "hi");
         assert!(!parsed.done);
+        // prompt_tokens and done_reason should not appear in JSON when None
+        assert!(!json.contains("prompt_tokens"));
+        assert!(!json.contains("done_reason"));
     }
 
     #[test]
@@ -115,11 +191,15 @@ mod tests {
         let chunk = CompletionResponseChunk {
             text: "token".to_string(),
             done: true,
+            prompt_tokens: Some(10),
+            done_reason: Some("stop".to_string()),
         };
         let json = serde_json::to_string(&chunk).unwrap();
         let parsed: CompletionResponseChunk = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.text, "token");
         assert!(parsed.done);
+        assert_eq!(parsed.prompt_tokens, Some(10));
+        assert_eq!(parsed.done_reason.as_deref(), Some("stop"));
     }
 
     #[test]

@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use futures::StreamExt;
 use std::convert::Infallible;
+use std::time::Instant;
 
 use crate::api::types::{ChatCompletionMessage, NativeChatRequest, NativeChatResponse};
 use crate::backend::types::{ChatMessage, ChatRequest};
@@ -33,12 +34,20 @@ pub async fn handler(
         }
     };
 
-    if let Err(e) =
-        crate::api::autoload::ensure_loaded(&state, &model_name, &manifest, &backend).await
+    if let Err(e) = crate::api::autoload::ensure_loaded_with_keep_alive(
+        &state,
+        &model_name,
+        &manifest,
+        &backend,
+        request.keep_alive.as_deref(),
+    )
+    .await
     {
         return Json(serde_json::json!({ "error": e.to_string() })).into_response();
     }
 
+    let opts = request.options.as_ref();
+    let response_format = request.format.clone();
     let backend_request = ChatRequest {
         messages: request
             .messages
@@ -48,11 +57,24 @@ pub async fn handler(
                 content: m.content.clone(),
             })
             .collect(),
-        temperature: request.options.as_ref().and_then(|o| o.temperature),
-        top_p: request.options.as_ref().and_then(|o| o.top_p),
-        max_tokens: request.options.as_ref().and_then(|o| o.num_predict),
-        stop: request.options.as_ref().and_then(|o| o.stop.clone()),
+        temperature: opts.and_then(|o| o.temperature),
+        top_p: opts.and_then(|o| o.top_p),
+        max_tokens: opts.and_then(|o| o.num_predict),
+        stop: opts.and_then(|o| o.stop.clone()),
         stream: request.stream.unwrap_or(false),
+        top_k: opts.and_then(|o| o.top_k),
+        min_p: opts.and_then(|o| o.min_p),
+        repeat_penalty: opts.and_then(|o| o.repeat_penalty),
+        frequency_penalty: opts.and_then(|o| o.frequency_penalty),
+        presence_penalty: opts.and_then(|o| o.presence_penalty),
+        seed: opts.and_then(|o| o.seed),
+        num_ctx: opts.and_then(|o| o.num_ctx),
+        mirostat: opts.and_then(|o| o.mirostat),
+        mirostat_tau: opts.and_then(|o| o.mirostat_tau),
+        mirostat_eta: opts.and_then(|o| o.mirostat_eta),
+        tfs_z: opts.and_then(|o| o.tfs_z),
+        typical_p: opts.and_then(|o| o.typical_p),
+        response_format,
     };
 
     let is_stream = request.stream.unwrap_or(false);
@@ -61,6 +83,7 @@ pub async fn handler(
         Ok(stream) => {
             if is_stream {
                 let model_name_owned = model_name.clone();
+                let start = Instant::now();
                 let sse_stream = stream
                     .map(move |chunk| {
                         let resp = match chunk {
@@ -71,8 +94,17 @@ pub async fn handler(
                                     content: c.content,
                                 },
                                 done: c.done,
-                                total_duration: None,
+                                done_reason: c.done_reason,
+                                total_duration: if c.done {
+                                    Some(start.elapsed().as_nanos() as u64)
+                                } else {
+                                    None
+                                },
+                                load_duration: None,
+                                prompt_eval_count: c.prompt_tokens,
+                                prompt_eval_duration: None,
                                 eval_count: None,
+                                eval_duration: None,
                             },
                             Err(e) => NativeChatResponse {
                                 model: model_name_owned.clone(),
@@ -81,8 +113,13 @@ pub async fn handler(
                                     content: format!("Error: {e}"),
                                 },
                                 done: true,
+                                done_reason: None,
                                 total_duration: None,
+                                load_duration: None,
+                                prompt_eval_count: None,
+                                prompt_eval_duration: None,
                                 eval_count: None,
+                                eval_duration: None,
                             },
                         };
                         let data = serde_json::to_string(&resp).unwrap_or_default();
@@ -96,8 +133,11 @@ pub async fn handler(
                     .into_response()
             } else {
                 // Collect full response
+                let start = Instant::now();
                 let mut full_content = String::new();
                 let mut eval_count: u32 = 0;
+                let mut prompt_eval_count: Option<u32> = None;
+                let mut done_reason: Option<String> = None;
                 let mut stream = stream;
                 while let Some(chunk) = stream.next().await {
                     match chunk {
@@ -106,6 +146,12 @@ pub async fn handler(
                             if !c.done {
                                 eval_count += 1;
                             }
+                            if c.prompt_tokens.is_some() {
+                                prompt_eval_count = c.prompt_tokens;
+                            }
+                            if c.done_reason.is_some() {
+                                done_reason = c.done_reason;
+                            }
                         }
                         Err(e) => {
                             return Json(serde_json::json!({ "error": e.to_string() }))
@@ -113,6 +159,7 @@ pub async fn handler(
                         }
                     }
                 }
+                let total_duration = start.elapsed().as_nanos() as u64;
                 Json(NativeChatResponse {
                     model: model_name,
                     message: ChatCompletionMessage {
@@ -120,8 +167,13 @@ pub async fn handler(
                         content: full_content,
                     },
                     done: true,
-                    total_duration: None,
+                    done_reason,
+                    total_duration: Some(total_duration),
+                    load_duration: None,
+                    prompt_eval_count,
+                    prompt_eval_duration: None,
                     eval_count: Some(eval_count),
+                    eval_duration: Some(total_duration),
                 })
                 .into_response()
             }

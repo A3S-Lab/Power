@@ -165,6 +165,10 @@ mod tests {
             }),
             created_at: chrono::Utc::now(),
             path: PathBuf::from(format!("/tmp/blobs/sha256-{name}")),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
         }
     }
 

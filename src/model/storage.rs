@@ -138,6 +138,10 @@ mod tests {
             parameters: None,
             created_at: chrono::Utc::now(),
             path: path.clone(),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
         };
 
         delete_blob(&manifest).unwrap();

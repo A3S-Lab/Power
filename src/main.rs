@@ -32,8 +32,34 @@ async fn main() -> anyhow::Result<()> {
     let backends = backend::default_backends(config.clone());
 
     match cli.command {
-        Commands::Run { model, prompt } => {
-            a3s_power::cli::run::execute(&model, prompt.as_deref(), &registry, &backends).await?;
+        Commands::Run {
+            model,
+            prompt,
+            temperature,
+            top_p,
+            top_k,
+            num_predict,
+            num_ctx,
+            repeat_penalty,
+            seed,
+        } => {
+            let options = a3s_power::cli::run::RunOptions {
+                temperature,
+                top_p,
+                top_k,
+                num_predict,
+                num_ctx,
+                repeat_penalty,
+                seed,
+            };
+            a3s_power::cli::run::execute_with_options(
+                &model,
+                prompt.as_deref(),
+                &registry,
+                &backends,
+                options,
+            )
+            .await?;
         }
         Commands::Pull { model } => {
             a3s_power::cli::pull::execute(&model, &registry).await?;
@@ -49,6 +75,37 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Serve { host, port } => {
             a3s_power::cli::serve::execute(&host, port).await?;
+        }
+        Commands::Create { name, file } => {
+            let content = std::fs::read_to_string(&file).map_err(|e| {
+                anyhow::anyhow!("Failed to read Modelfile '{}': {e}", file.display())
+            })?;
+            let mf = a3s_power::model::modelfile::parse(&content)
+                .map_err(|e| anyhow::anyhow!("Failed to parse Modelfile: {e}"))?;
+            let base = registry.get(&mf.from).map_err(|_| {
+                anyhow::anyhow!("Base model '{}' not found; pull it first", mf.from)
+            })?;
+            let default_params = a3s_power::model::modelfile::parameters_to_json(&mf);
+            let modelfile_content = a3s_power::model::modelfile::to_string(&mf);
+            let manifest = a3s_power::model::manifest::ModelManifest {
+                name: name.clone(),
+                format: base.format.clone(),
+                size: base.size,
+                sha256: base.sha256.clone(),
+                parameters: base.parameters.clone(),
+                created_at: chrono::Utc::now(),
+                path: base.path.clone(),
+                system_prompt: mf.system.clone(),
+                template_override: mf.template.clone(),
+                default_parameters: if default_params.is_empty() {
+                    None
+                } else {
+                    Some(default_params)
+                },
+                modelfile_content: Some(modelfile_content),
+            };
+            registry.register(manifest)?;
+            println!("Created model '{name}' from '{}'", mf.from);
         }
     }
 

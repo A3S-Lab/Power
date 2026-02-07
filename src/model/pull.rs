@@ -49,6 +49,10 @@ pub async fn pull_model(
         parameters: None,
         created_at: chrono::Utc::now(),
         path: blob_path,
+        system_prompt: None,
+        template_override: None,
+        default_parameters: None,
+        modelfile_content: None,
     };
 
     Ok(manifest)

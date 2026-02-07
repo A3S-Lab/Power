@@ -19,6 +19,21 @@ pub struct ChatCompletionRequest {
     pub stop: Option<Vec<String>>,
     #[serde(default)]
     pub stream: Option<bool>,
+    #[serde(default)]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub seed: Option<i64>,
+    #[serde(default)]
+    pub response_format: Option<ResponseFormat>,
+}
+
+/// Structured output format specifier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseFormat {
+    #[serde(rename = "type")]
+    pub r#type: String,
 }
 
 /// A single message in the chat format.
@@ -93,6 +108,12 @@ pub struct CompletionRequest {
     pub stop: Option<Vec<String>>,
     #[serde(default)]
     pub stream: Option<bool>,
+    #[serde(default)]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub seed: Option<i64>,
 }
 
 /// OpenAI-compatible text completion response.
@@ -226,6 +247,10 @@ pub struct GenerateRequest {
     pub stream: Option<bool>,
     #[serde(default)]
     pub options: Option<GenerateOptions>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub keep_alive: Option<String>,
 }
 
 /// Generation options for the native API.
@@ -235,6 +260,18 @@ pub struct GenerateOptions {
     pub top_p: Option<f32>,
     pub num_predict: Option<u32>,
     pub stop: Option<Vec<String>>,
+    pub top_k: Option<i32>,
+    pub min_p: Option<f32>,
+    pub repeat_penalty: Option<f32>,
+    pub frequency_penalty: Option<f32>,
+    pub presence_penalty: Option<f32>,
+    pub seed: Option<u32>,
+    pub num_ctx: Option<u32>,
+    pub mirostat: Option<u32>,
+    pub mirostat_tau: Option<f32>,
+    pub mirostat_eta: Option<f32>,
+    pub tfs_z: Option<f32>,
+    pub typical_p: Option<f32>,
 }
 
 /// Ollama-compatible generate response.
@@ -244,9 +281,15 @@ pub struct GenerateResponse {
     pub response: String,
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub total_duration: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_duration: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_eval_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_eval_duration: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eval_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -262,6 +305,10 @@ pub struct NativeChatRequest {
     pub stream: Option<bool>,
     #[serde(default)]
     pub options: Option<GenerateOptions>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub keep_alive: Option<String>,
 }
 
 /// Ollama-compatible chat response.
@@ -271,9 +318,19 @@ pub struct NativeChatResponse {
     pub message: ChatCompletionMessage,
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub total_duration: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_duration: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_eval_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_eval_duration: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub eval_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eval_duration: Option<u64>,
 }
 
 /// Ollama-compatible model listing entry.
@@ -495,12 +552,14 @@ mod tests {
         let json = r#"{
             "model": "llama3",
             "prompt": "test",
-            "options": {"temperature": 0.5, "num_predict": 100}
+            "options": {"temperature": 0.5, "num_predict": 100, "top_k": 40, "seed": 42}
         }"#;
         let req: GenerateRequest = serde_json::from_str(json).unwrap();
         let opts = req.options.unwrap();
         assert_eq!(opts.temperature, Some(0.5));
         assert_eq!(opts.num_predict, Some(100));
+        assert_eq!(opts.top_k, Some(40));
+        assert_eq!(opts.seed, Some(42));
     }
 
     #[test]
@@ -509,14 +568,19 @@ mod tests {
             model: "llama3".to_string(),
             response: "hi".to_string(),
             done: false,
+            done_reason: None,
             total_duration: None,
             load_duration: None,
+            prompt_eval_count: None,
+            prompt_eval_duration: None,
             eval_count: None,
             eval_duration: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(!json.contains("total_duration"));
         assert!(!json.contains("eval_count"));
+        assert!(!json.contains("prompt_eval_count"));
+        assert!(!json.contains("done_reason"));
     }
 
     #[test]
@@ -579,6 +643,50 @@ mod tests {
         let req: NativeChatRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.model, "llama3");
         assert_eq!(req.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_chat_completion_request_with_response_format() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_object"},
+            "frequency_penalty": 0.5,
+            "presence_penalty": 0.3,
+            "seed": 42
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let fmt = req.response_format.unwrap();
+        assert_eq!(fmt.r#type, "json_object");
+        assert_eq!(req.frequency_penalty, Some(0.5));
+        assert_eq!(req.presence_penalty, Some(0.3));
+        assert_eq!(req.seed, Some(42));
+    }
+
+    #[test]
+    fn test_generate_request_with_format_and_keep_alive() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "test",
+            "format": "json",
+            "keep_alive": "5m"
+        }"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.format.as_deref(), Some("json"));
+        assert_eq!(req.keep_alive.as_deref(), Some("5m"));
+    }
+
+    #[test]
+    fn test_native_chat_request_with_format_and_keep_alive() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "format": "json",
+            "keep_alive": "-1"
+        }"#;
+        let req: NativeChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.format.as_deref(), Some("json"));
+        assert_eq!(req.keep_alive.as_deref(), Some("-1"));
     }
 
     #[test]

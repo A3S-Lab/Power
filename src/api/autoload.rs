@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::backend::Backend;
+use crate::config::parse_keep_alive;
 use crate::error::Result;
 use crate::model::manifest::ModelManifest;
 use crate::server::state::AppState;
@@ -9,20 +11,36 @@ use crate::server::state::AppState;
 ///
 /// If the model is already loaded, updates its last-used time.
 /// If not loaded, evicts the LRU model when at capacity, then loads.
+/// An optional `keep_alive` string from the request overrides the config default.
 pub async fn ensure_loaded(
     state: &AppState,
     model_name: &str,
     manifest: &ModelManifest,
     backend: &Arc<dyn Backend>,
 ) -> Result<()> {
+    ensure_loaded_with_keep_alive(state, model_name, manifest, backend, None).await
+}
+
+/// Ensure a model is loaded with an optional per-request keep-alive override.
+pub async fn ensure_loaded_with_keep_alive(
+    state: &AppState,
+    model_name: &str,
+    manifest: &ModelManifest,
+    backend: &Arc<dyn Backend>,
+    keep_alive: Option<&str>,
+) -> Result<()> {
     if state.is_model_loaded(model_name) {
         state.touch_model(model_name);
         return Ok(());
     }
 
-    // Evict LRU models until we have room
+    // Evict models: prefer evicting those whose keep_alive has expired first,
+    // then fall back to LRU eviction
     while state.needs_eviction() {
-        if let Some(lru_name) = state.lru_model() {
+        if let Some(evictable) = state.evictable_lru_model() {
+            backend.unload(&evictable).await?;
+            state.mark_unloaded(&evictable);
+        } else if let Some(lru_name) = state.lru_model() {
             backend.unload(&lru_name).await?;
             state.mark_unloaded(&lru_name);
         } else {
@@ -31,7 +49,23 @@ pub async fn ensure_loaded(
     }
 
     backend.load(manifest).await?;
-    state.mark_loaded(model_name);
+
+    match keep_alive {
+        Some(ka) => {
+            let duration = parse_keep_alive(ka);
+            state.mark_loaded_with_keep_alive(model_name, duration);
+
+            // If keep_alive is "0", immediately schedule unload after request
+            if duration == Duration::ZERO {
+                backend.unload(model_name).await?;
+                state.mark_unloaded(model_name);
+            }
+        }
+        None => {
+            state.mark_loaded(model_name);
+        }
+    }
+
     Ok(())
 }
 
@@ -61,6 +95,10 @@ mod tests {
             parameters: None,
             created_at: chrono::Utc::now(),
             path: std::path::PathBuf::from("/tmp/fake.gguf"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
         }
     }
 

@@ -7,12 +7,35 @@ use crate::backend::BackendRegistry;
 use crate::error::Result;
 use crate::model::registry::ModelRegistry;
 
+/// Generation parameters passed from CLI flags.
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub top_k: Option<i32>,
+    pub num_predict: Option<u32>,
+    pub num_ctx: Option<u32>,
+    pub repeat_penalty: Option<f32>,
+    pub seed: Option<u32>,
+}
+
 /// Execute the `run` command: load a model and start interactive chat.
 pub async fn execute(
     model: &str,
     prompt: Option<&str>,
     registry: &ModelRegistry,
     backends: &BackendRegistry,
+) -> Result<()> {
+    execute_with_options(model, prompt, registry, backends, RunOptions::default()).await
+}
+
+/// Execute the `run` command with generation options.
+pub async fn execute_with_options(
+    model: &str,
+    prompt: Option<&str>,
+    registry: &ModelRegistry,
+    backends: &BackendRegistry,
+    options: RunOptions,
 ) -> Result<()> {
     let manifest = match registry.get(model) {
         Ok(m) => m,
@@ -45,11 +68,24 @@ pub async fn execute(
 
         let request = ChatRequest {
             messages,
-            temperature: None,
-            top_p: None,
-            max_tokens: None,
+            temperature: options.temperature,
+            top_p: options.top_p,
+            max_tokens: options.num_predict,
             stop: None,
             stream: true,
+            top_k: options.top_k,
+            min_p: None,
+            repeat_penalty: options.repeat_penalty,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: options.seed,
+            num_ctx: options.num_ctx,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
         };
 
         match backend.chat(&manifest.name, request).await {
@@ -79,14 +115,14 @@ pub async fn execute(
         }
     } else {
         // Interactive chat mode
-        interactive_chat(&manifest.name, &backend).await;
+        interactive_chat(&manifest.name, &backend, &options).await;
     }
 
     let _ = backend.unload(&manifest.name).await;
     Ok(())
 }
 
-async fn interactive_chat(model_name: &str, backend: &std::sync::Arc<dyn crate::backend::Backend>) {
+async fn interactive_chat(model_name: &str, backend: &std::sync::Arc<dyn crate::backend::Backend>, options: &RunOptions) {
     let mut messages: Vec<ChatMessage> = Vec::new();
     let stdin = io::stdin();
 
@@ -116,11 +152,24 @@ async fn interactive_chat(model_name: &str, backend: &std::sync::Arc<dyn crate::
 
         let request = ChatRequest {
             messages: messages.clone(),
-            temperature: None,
-            top_p: None,
-            max_tokens: None,
+            temperature: options.temperature,
+            top_p: options.top_p,
+            max_tokens: options.num_predict,
             stop: None,
             stream: true,
+            top_k: options.top_k,
+            min_p: None,
+            repeat_penalty: options.repeat_penalty,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: options.seed,
+            num_ctx: options.num_ctx,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
         };
 
         let mut assistant_response = String::new();
