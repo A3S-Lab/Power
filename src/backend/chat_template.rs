@@ -196,4 +196,68 @@ mod tests {
         let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Generic);
         assert_eq!(prompt, "assistant: ");
     }
+
+    #[test]
+    fn test_format_multimodal_message_extracts_text() {
+        let msgs = vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Parts(vec![
+                crate::backend::types::ContentPart::Text {
+                    text: "Describe this image".to_string(),
+                },
+                crate::backend::types::ContentPart::ImageUrl {
+                    image_url: crate::backend::types::ImageUrl {
+                        url: "https://example.com/img.jpg".to_string(),
+                        detail: None,
+                    },
+                },
+            ]),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl);
+        assert!(prompt.contains("Describe this image"));
+        assert!(!prompt.contains("example.com"));
+    }
+
+    #[test]
+    fn test_format_tool_message_extracts_text() {
+        let msgs = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("weather?".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: MessageContent::Text("72F sunny".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: Some("call_1".to_string()),
+            },
+        ];
+
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl);
+        assert!(prompt.contains("weather?"));
+        assert!(prompt.contains("72F sunny"));
+    }
+
+    #[test]
+    fn test_format_message_with_name_field() {
+        let msgs = vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text("hello".to_string()),
+            name: Some("Alice".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+
+        // Name field doesn't affect template formatting, just content
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Phi);
+        assert!(prompt.contains("hello"));
+    }
 }

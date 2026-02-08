@@ -87,6 +87,7 @@ pub async fn push_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::test_utils::sample_manifest;
 
     #[test]
     fn test_progress_callback_type() {
@@ -94,5 +95,47 @@ mod tests {
         let _cb: ProgressCallback = Box::new(|completed, total| {
             assert!(completed <= total);
         });
+    }
+
+    #[test]
+    fn test_progress_callback_invocation() {
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        let cb: ProgressCallback = Box::new(move |completed, total| {
+            called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(completed, 100);
+            assert_eq!(total, 100);
+        });
+        cb(100, 100);
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_push_model_connection_refused() {
+        let manifest = sample_manifest("test-push");
+        let result = push_model(&manifest, "http://localhost:1", None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Failed to check blob") || err.contains("Upload failed"));
+    }
+
+    #[tokio::test]
+    async fn test_push_model_invalid_destination() {
+        let manifest = sample_manifest("test-push");
+        let result = push_model(&manifest, "not-a-url", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_push_model_with_progress_callback() {
+        let manifest = sample_manifest("test-push");
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        let progress: ProgressCallback = Box::new(move |_completed, _total| {
+            called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        // Will fail due to connection, but progress callback type is valid
+        let _result = push_model(&manifest, "http://localhost:1", Some(progress)).await;
+        // Connection fails before progress is called, so we just verify it compiles
     }
 }

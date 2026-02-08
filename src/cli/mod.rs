@@ -120,3 +120,165 @@ pub enum Commands {
         destination: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_parse_run_command() {
+        let cli = Cli::parse_from(["a3s-power", "run", "llama3"]);
+        match cli.command {
+            Commands::Run { model, .. } => assert_eq!(model, "llama3"),
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_with_options() {
+        let cli = Cli::parse_from([
+            "a3s-power",
+            "run",
+            "llama3",
+            "--prompt",
+            "hello",
+            "--temperature",
+            "0.7",
+            "--top-k",
+            "40",
+            "--seed",
+            "42",
+        ]);
+        match cli.command {
+            Commands::Run {
+                model,
+                prompt,
+                temperature,
+                top_k,
+                seed,
+                ..
+            } => {
+                assert_eq!(model, "llama3");
+                assert_eq!(prompt.as_deref(), Some("hello"));
+                assert_eq!(temperature, Some(0.7));
+                assert_eq!(top_k, Some(40));
+                assert_eq!(seed, Some(42));
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_pull_command() {
+        let cli = Cli::parse_from(["a3s-power", "pull", "llama3:3b"]);
+        match cli.command {
+            Commands::Pull { model } => assert_eq!(model, "llama3:3b"),
+            _ => panic!("Expected Pull command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_push_command() {
+        let cli = Cli::parse_from([
+            "a3s-power",
+            "push",
+            "llama3",
+            "--destination",
+            "https://registry.example.com",
+        ]);
+        match cli.command {
+            Commands::Push {
+                model,
+                destination,
+            } => {
+                assert_eq!(model, "llama3");
+                assert_eq!(destination, "https://registry.example.com");
+            }
+            _ => panic!("Expected Push command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_cp_command() {
+        let cli = Cli::parse_from(["a3s-power", "cp", "llama3", "my-llama"]);
+        match cli.command {
+            Commands::Cp {
+                source,
+                destination,
+            } => {
+                assert_eq!(source, "llama3");
+                assert_eq!(destination, "my-llama");
+            }
+            _ => panic!("Expected Cp command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_list_command() {
+        let cli = Cli::parse_from(["a3s-power", "list"]);
+        assert!(matches!(cli.command, Commands::List));
+    }
+
+    #[test]
+    fn test_parse_show_command() {
+        let cli = Cli::parse_from(["a3s-power", "show", "llama3"]);
+        match cli.command {
+            Commands::Show { model } => assert_eq!(model, "llama3"),
+            _ => panic!("Expected Show command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_delete_command() {
+        let cli = Cli::parse_from(["a3s-power", "delete", "llama3"]);
+        match cli.command {
+            Commands::Delete { model } => assert_eq!(model, "llama3"),
+            _ => panic!("Expected Delete command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_serve_defaults() {
+        let cli = Cli::parse_from(["a3s-power", "serve"]);
+        match cli.command {
+            Commands::Serve { host, port } => {
+                assert_eq!(host, "127.0.0.1");
+                assert_eq!(port, 11435);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_serve_custom() {
+        let cli = Cli::parse_from([
+            "a3s-power", "serve", "--host", "0.0.0.0", "--port", "8080",
+        ]);
+        match cli.command {
+            Commands::Serve { host, port } => {
+                assert_eq!(host, "0.0.0.0");
+                assert_eq!(port, 8080);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_command() {
+        let cli = Cli::parse_from([
+            "a3s-power",
+            "create",
+            "my-model",
+            "-f",
+            "Modelfile",
+        ]);
+        match cli.command {
+            Commands::Create { name, file } => {
+                assert_eq!(name, "my-model");
+                assert_eq!(file, PathBuf::from("Modelfile"));
+            }
+            _ => panic!("Expected Create command"),
+        }
+    }
+}
