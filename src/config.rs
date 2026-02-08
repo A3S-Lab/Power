@@ -159,6 +159,7 @@ impl PowerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_default_config() {
@@ -196,6 +197,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());

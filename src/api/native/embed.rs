@@ -55,6 +55,7 @@ mod tests {
     use crate::api::types::NativeEmbedInput;
     use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
     use crate::model::manifest::ModelFormat;
+    use serial_test::serial;
 
     #[tokio::test]
     async fn test_embed_model_not_found() {
@@ -74,6 +75,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_embed_backend_not_found() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());

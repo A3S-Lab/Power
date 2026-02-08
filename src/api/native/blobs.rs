@@ -109,9 +109,11 @@ mod tests {
     use crate::server::router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use serial_test::serial;
     use tower::util::ServiceExt;
 
     #[tokio::test]
+    #[serial]
     async fn test_check_blob_not_found() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -130,6 +132,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_upload_and_check_blob() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -163,6 +166,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_upload_blob_digest_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -182,6 +186,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_download_blob_not_found() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -201,6 +206,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_upload_and_download_blob() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -238,6 +244,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_delete_blob_not_found() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -257,6 +264,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_upload_and_delete_blob() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());

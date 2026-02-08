@@ -73,22 +73,23 @@ a3s-power serve
 
 ### Test Coverage
 
-**258 unit tests** covering all core functionality:
+**291 unit tests** covering all core functionality:
 
 | Module | Tests |
 |--------|-------|
 | Backend types (vision, tools, chat) | 18 |
 | API types (OpenAI + Ollama) | 24 |
-| Chat templates | 9 |
+| Chat templates | 12 |
 | Blob management API | 7 |
 | Push API | 3 |
-| Native chat/generate/embed handlers | 18 |
-| OpenAI chat/completions/embeddings | 10 |
+| Native chat/generate/embed handlers | 29 |
+| OpenAI chat/completions/embeddings | 14 |
 | Model management (registry, storage, pull) | 20 |
 | Server (router, state, metrics, health) | 22 |
 | Error handling | 14 |
 | Configuration & directories | 16 |
 | Backend (llama.cpp, mock) | 14 |
+| CLI command parsing | 11 |
 | Other (autoload, SSE, copy, create, etc.) | 77 |
 
 Run tests:
@@ -599,7 +600,7 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [x] Chat template auto-detection from GGUF metadata (ChatML, Llama, Phi, Generic)
 - [x] Health check endpoint (`/health`)
 - [x] Prometheus metrics endpoint (`/metrics` with request/token/model counters)
-- [x] 258 comprehensive unit tests
+- [x] 291 comprehensive unit tests
 
 ### Phase 5: Full Ollama Parity ✅
 
@@ -612,6 +613,30 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [x] CLI `cp` command for model aliasing
 - [x] New error variants (`UploadFailed`, `InvalidDigest`, `BlobNotFound`)
 - [x] 258 comprehensive unit tests
+
+### Phase 6: Observability & Cost Tracking 📋
+
+End-to-end observability for LLM inference:
+
+- [ ] **OpenTelemetry Spans**: Instrument inference pipeline
+  - Span: `a3s.llm.completion` with attributes: model, provider, stream, temperature
+  - Span: `a3s.llm.embedding` with attributes: model, dimension, input_count
+  - Child spans: tokenization, sampling, detokenization
+- [ ] **Token & Cost Metrics**: Per-call recording exported via OTLP
+  - `a3s_power_tokens_total{model, direction=input|output}` counter
+  - `a3s_power_cost_dollars{model}` counter
+  - `a3s_power_inference_duration_seconds{model}` histogram
+  - `a3s_power_ttft_seconds{model}` histogram (time to first token)
+- [ ] **Cost Dashboard Data**: Aggregate cost by model / agent / session / day
+  - JSON export endpoint: `GET /v1/usage` with date range filter
+  - Integration with OS Platform Cost Dashboard page
+- [ ] **Model Lifecycle Metrics**: Load time, memory usage, eviction count
+  - `a3s_power_model_load_seconds{model}` histogram
+  - `a3s_power_model_memory_bytes{model}` gauge
+  - `a3s_power_model_evictions_total` counter
+- [ ] **GPU Utilization Metrics**: GPU memory, compute utilization per model
+  - `a3s_power_gpu_memory_bytes{device}` gauge
+  - `a3s_power_gpu_utilization{device}` gauge
 
 ## License
 

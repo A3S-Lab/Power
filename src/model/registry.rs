@@ -149,6 +149,7 @@ impl Default for ModelRegistry {
 mod tests {
     use super::*;
     use crate::model::manifest::{ModelFormat, ModelParameters};
+    use serial_test::serial;
     use std::path::PathBuf;
 
     fn sample_manifest(name: &str) -> ModelManifest {
@@ -173,6 +174,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_register_and_list() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -190,6 +192,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_model() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -211,6 +214,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_remove_model() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -226,6 +230,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_exists() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -239,6 +244,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_count() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -254,6 +260,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_scan_from_disk() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());

@@ -42,8 +42,10 @@ pub async fn handler(
 mod tests {
     use super::*;
     use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
+    use serial_test::serial;
 
     #[tokio::test]
+    #[serial]
     async fn test_copy_success() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());

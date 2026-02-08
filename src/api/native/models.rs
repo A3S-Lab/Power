@@ -91,9 +91,11 @@ mod tests {
     use crate::server::router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use serial_test::serial;
     use tower::util::ServiceExt;
 
     #[tokio::test]
+    #[serial]
     async fn test_list_handler_with_models() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -120,6 +122,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_show_handler_success() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -167,6 +170,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_delete_handler_success() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());

@@ -39,6 +39,7 @@ pub fn ensure_dirs() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_power_home_default() {
@@ -49,6 +50,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_power_home_from_env() {
         std::env::set_var("A3S_POWER_HOME", "/tmp/test-power");
         let home = power_home();
@@ -57,6 +59,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_manifests_dir() {
         std::env::set_var("A3S_POWER_HOME", "/tmp/test-power");
         assert_eq!(
@@ -67,6 +70,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_blobs_dir() {
         std::env::set_var("A3S_POWER_HOME", "/tmp/test-power");
         assert_eq!(blobs_dir(), PathBuf::from("/tmp/test-power/models/blobs"));
@@ -74,6 +78,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_path() {
         std::env::set_var("A3S_POWER_HOME", "/tmp/test-power");
         assert_eq!(config_path(), PathBuf::from("/tmp/test-power/config.toml"));

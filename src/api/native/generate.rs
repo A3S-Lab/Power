@@ -251,6 +251,7 @@ mod tests {
     use crate::server::router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use serial_test::serial;
     use tower::util::ServiceExt;
 
     #[tokio::test]
@@ -272,6 +273,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_generate_backend_not_found() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -299,6 +301,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_generate_non_streaming_success() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -330,6 +333,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_generate_streaming_returns_sse() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -362,6 +366,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_generate_load_failure() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -390,6 +395,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_generate_with_system_prompt() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -419,6 +425,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_generate_with_raw_mode() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -448,6 +455,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_generate_with_images_accepted() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -477,6 +485,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_generate_with_context_field() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -506,6 +515,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_generate_with_suffix() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -530,6 +540,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_generate_system_with_raw_skips_prepend() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());

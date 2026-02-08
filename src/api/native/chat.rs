@@ -272,6 +272,7 @@ mod tests {
     use crate::server::router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use serial_test::serial;
     use tower::util::ServiceExt;
 
     #[tokio::test]
@@ -296,6 +297,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_chat_backend_not_found() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -325,6 +327,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_chat_non_streaming_success() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -359,6 +362,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_chat_streaming_returns_sse() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -391,6 +395,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_chat_load_failure() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -421,6 +426,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_chat_with_tools() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -461,6 +467,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_chat_with_multimodal_content() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -498,6 +505,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_chat_with_images_field() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -533,6 +541,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_chat_with_tool_result_message() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -568,6 +577,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_chat_response_has_no_images_field() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());

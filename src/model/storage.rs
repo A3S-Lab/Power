@@ -65,6 +65,7 @@ pub fn compute_sha256(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_compute_sha256() {
@@ -76,6 +77,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_store_blob() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -93,6 +95,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_store_blob_deduplication() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -108,6 +111,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_verify_blob() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -122,6 +126,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_delete_blob() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());

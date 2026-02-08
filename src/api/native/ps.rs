@@ -44,6 +44,7 @@ mod tests {
     use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
+    use serial_test::serial;
 
     #[tokio::test]
     async fn test_ps_empty_state() {
@@ -58,6 +59,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_ps_one_loaded_model() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
