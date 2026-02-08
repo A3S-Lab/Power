@@ -121,10 +121,7 @@ pub fn parameters_to_json(mf: &Modelfile) -> HashMap<String, serde_json::Value> 
         }
     }
     if !mf.stop.is_empty() {
-        map.insert(
-            "stop".to_string(),
-            serde_json::Value::from(mf.stop.clone()),
-        );
+        map.insert("stop".to_string(), serde_json::Value::from(mf.stop.clone()));
     }
     map
 }
@@ -188,10 +185,7 @@ FROM llama3.2:3b
 TEMPLATE "{{ .System }} {{ .Prompt }}"
 "#;
         let mf = parse(content).unwrap();
-        assert_eq!(
-            mf.template.as_deref(),
-            Some("{{ .System }} {{ .Prompt }}")
-        );
+        assert_eq!(mf.template.as_deref(), Some("{{ .System }} {{ .Prompt }}"));
     }
 
     #[test]

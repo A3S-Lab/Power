@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+use crate::backend::types::{MessageContent, Tool, ToolCall, ToolChoice};
+
+// Re-import FunctionCall for use in tests
+#[cfg(test)]
+use crate::backend::types::FunctionCall;
+
 // ============================================================================
 // OpenAI-compatible types
 // ============================================================================
@@ -27,6 +33,10 @@ pub struct ChatCompletionRequest {
     pub seed: Option<i64>,
     #[serde(default)]
     pub response_format: Option<ResponseFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
 }
 
 /// Structured output format specifier.
@@ -40,7 +50,14 @@ pub struct ResponseFormat {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionMessage {
     pub role: String,
-    pub content: String,
+    #[serde(default)]
+    pub content: MessageContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 /// OpenAI-compatible chat completion response.
@@ -87,6 +104,8 @@ pub struct ChatDelta {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 // ============================================================================
@@ -309,6 +328,8 @@ pub struct NativeChatRequest {
     pub format: Option<String>,
     #[serde(default)]
     pub keep_alive: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
 }
 
 /// Ollama-compatible chat response.
@@ -362,6 +383,29 @@ pub struct PullRequest {
 /// Ollama-compatible pull progress response (streamed).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed: Option<u64>,
+}
+
+/// Push model request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushRequest {
+    pub name: String,
+    pub destination: String,
+    #[serde(default)]
+    pub stream: Option<bool>,
+    #[serde(default)]
+    pub insecure: Option<bool>,
+}
+
+/// Push model progress response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushResponse {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
@@ -458,6 +502,7 @@ mod tests {
         assert_eq!(req.messages.len(), 1);
         assert!(req.stream.is_none());
         assert!(req.temperature.is_none());
+        assert!(req.tools.is_none());
     }
 
     #[test]
@@ -478,6 +523,46 @@ mod tests {
     }
 
     #[test]
+    fn test_chat_completion_request_with_tools() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object"}
+                }
+            }],
+            "tool_choice": "auto"
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert!(req.tools.is_some());
+        assert_eq!(req.tools.unwrap()[0].function.name, "get_weather");
+    }
+
+    #[test]
+    fn test_chat_completion_request_with_vision() {
+        let json = r#"{
+            "model": "llava",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}}
+                ]
+            }]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.messages.len(), 1);
+        match &req.messages[0].content {
+            MessageContent::Parts(parts) => assert_eq!(parts.len(), 2),
+            _ => panic!("Expected Parts variant"),
+        }
+    }
+
+    #[test]
     fn test_chat_completion_response_serialize() {
         let resp = ChatCompletionResponse {
             id: "chatcmpl-123".to_string(),
@@ -488,7 +573,10 @@ mod tests {
                 index: 0,
                 message: ChatCompletionMessage {
                     role: "assistant".to_string(),
-                    content: "Hello!".to_string(),
+                    content: MessageContent::Text("Hello!".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -508,10 +596,31 @@ mod tests {
         let delta = ChatDelta {
             role: None,
             content: Some("hi".to_string()),
+            tool_calls: None,
         };
         let json = serde_json::to_string(&delta).unwrap();
         assert!(!json.contains("role"));
+        assert!(!json.contains("tool_calls"));
         assert!(json.contains("hi"));
+    }
+
+    #[test]
+    fn test_chat_delta_with_tool_calls() {
+        let delta = ChatDelta {
+            role: Some("assistant".to_string()),
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".to_string(),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: "test".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            }]),
+        };
+        let json = serde_json::to_string(&delta).unwrap();
+        assert!(json.contains("tool_calls"));
+        assert!(json.contains("call_1"));
     }
 
     #[test]
@@ -605,6 +714,28 @@ mod tests {
     }
 
     #[test]
+    fn test_push_request_deserialize() {
+        let json = r#"{"name": "llama3", "destination": "https://registry.example.com"}"#;
+        let req: PushRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "llama3");
+        assert_eq!(req.destination, "https://registry.example.com");
+        assert!(req.stream.is_none());
+    }
+
+    #[test]
+    fn test_push_response_serialize() {
+        let resp = PushResponse {
+            status: "success".to_string(),
+            digest: Some("sha256:abc123".to_string()),
+            total: None,
+            completed: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("success"));
+        assert!(json.contains("sha256:abc123"));
+    }
+
+    #[test]
     fn test_model_list_serialize() {
         let list = ModelList {
             object: "list".to_string(),
@@ -643,6 +774,25 @@ mod tests {
         let req: NativeChatRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.model, "llama3");
         assert_eq!(req.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_native_chat_request_with_tools() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search the web",
+                    "parameters": {"type": "object"}
+                }
+            }]
+        }"#;
+        let req: NativeChatRequest = serde_json::from_str(json).unwrap();
+        assert!(req.tools.is_some());
+        assert_eq!(req.tools.unwrap()[0].function.name, "search");
     }
 
     #[test]

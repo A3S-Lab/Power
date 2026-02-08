@@ -259,17 +259,26 @@ mod tests {
 
     #[test]
     fn test_parse_keep_alive_minutes() {
-        assert_eq!(super::parse_keep_alive("5m"), std::time::Duration::from_secs(300));
+        assert_eq!(
+            super::parse_keep_alive("5m"),
+            std::time::Duration::from_secs(300)
+        );
     }
 
     #[test]
     fn test_parse_keep_alive_hours() {
-        assert_eq!(super::parse_keep_alive("1h"), std::time::Duration::from_secs(3600));
+        assert_eq!(
+            super::parse_keep_alive("1h"),
+            std::time::Duration::from_secs(3600)
+        );
     }
 
     #[test]
     fn test_parse_keep_alive_seconds() {
-        assert_eq!(super::parse_keep_alive("30s"), std::time::Duration::from_secs(30));
+        assert_eq!(
+            super::parse_keep_alive("30s"),
+            std::time::Duration::from_secs(30)
+        );
     }
 
     #[test]
@@ -284,11 +293,17 @@ mod tests {
 
     #[test]
     fn test_parse_keep_alive_raw_number() {
-        assert_eq!(super::parse_keep_alive("120"), std::time::Duration::from_secs(120));
+        assert_eq!(
+            super::parse_keep_alive("120"),
+            std::time::Duration::from_secs(120)
+        );
     }
 
     #[test]
     fn test_parse_keep_alive_invalid_defaults() {
-        assert_eq!(super::parse_keep_alive("abc"), std::time::Duration::from_secs(300));
+        assert_eq!(
+            super::parse_keep_alive("abc"),
+            std::time::Duration::from_secs(300)
+        );
     }
 }

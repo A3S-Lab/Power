@@ -41,7 +41,8 @@ fn format_chatml(messages: &[ChatMessage]) -> String {
     for msg in messages {
         prompt.push_str(&format!(
             "<|im_start|>{}\n{}<|im_end|>\n",
-            msg.role, msg.content
+            msg.role,
+            msg.content.text()
         ));
     }
     prompt.push_str("<|im_start|>assistant\n");
@@ -55,7 +56,7 @@ fn format_llama(messages: &[ChatMessage]) -> String {
     for msg in messages {
         match msg.role.as_str() {
             "system" => {
-                system_text = msg.content.clone();
+                system_text = msg.content.text();
             }
             "user" => {
                 prompt.push_str("<s>[INST] ");
@@ -63,13 +64,13 @@ fn format_llama(messages: &[ChatMessage]) -> String {
                     prompt.push_str(&format!("<<SYS>>\n{}\n<</SYS>>\n\n", system_text));
                     system_text.clear();
                 }
-                prompt.push_str(&format!("{} [/INST]", msg.content));
+                prompt.push_str(&format!("{} [/INST]", msg.content.text()));
             }
             "assistant" => {
-                prompt.push_str(&format!(" {} </s>", msg.content));
+                prompt.push_str(&format!(" {} </s>", msg.content.text()));
             }
             _ => {
-                prompt.push_str(&format!("{}: {}\n", msg.role, msg.content));
+                prompt.push_str(&format!("{}: {}\n", msg.role, msg.content.text()));
             }
         }
     }
@@ -79,7 +80,11 @@ fn format_llama(messages: &[ChatMessage]) -> String {
 fn format_phi(messages: &[ChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
-        prompt.push_str(&format!("<|{}|>\n{}<|end|>\n", msg.role, msg.content));
+        prompt.push_str(&format!(
+            "<|{}|>\n{}<|end|>\n",
+            msg.role,
+            msg.content.text()
+        ));
     }
     prompt.push_str("<|assistant|>\n");
     prompt
@@ -88,7 +93,7 @@ fn format_phi(messages: &[ChatMessage]) -> String {
 fn format_generic(messages: &[ChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
-        prompt.push_str(&format!("{}: {}\n", msg.role, msg.content));
+        prompt.push_str(&format!("{}: {}\n", msg.role, msg.content.text()));
     }
     prompt.push_str("assistant: ");
     prompt
@@ -97,16 +102,23 @@ fn format_generic(messages: &[ChatMessage]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::types::MessageContent;
 
     fn sample_messages() -> Vec<ChatMessage> {
         vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "You are helpful.".to_string(),
+                content: MessageContent::Text("You are helpful.".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: "Hello".to_string(),
+                content: MessageContent::Text("Hello".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
             },
         ]
     }

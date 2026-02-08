@@ -35,6 +35,15 @@ pub enum PowerError {
 
     #[error("TOML serialization error: {0}")]
     TomlSer(#[from] toml::ser::Error),
+
+    #[error("Upload failed: {0}")]
+    UploadFailed(String),
+
+    #[error("Invalid digest: {0}")]
+    InvalidDigest(String),
+
+    #[error("Blob not found: {0}")]
+    BlobNotFound(String),
 }
 
 pub type Result<T> = std::result::Result<T, PowerError>;
@@ -50,6 +59,9 @@ impl From<PowerError> for axum::response::Response {
                 (StatusCode::SERVICE_UNAVAILABLE, err.to_string())
             }
             PowerError::InvalidFormat(_) => (StatusCode::BAD_REQUEST, err.to_string()),
+            PowerError::InvalidDigest(_) => (StatusCode::BAD_REQUEST, err.to_string()),
+            PowerError::BlobNotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+            PowerError::UploadFailed(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         };
 
@@ -148,6 +160,54 @@ mod tests {
         use axum::response::Response;
 
         let err = PowerError::Server("crash".to_string());
+        let resp: Response = err.into();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_upload_failed_display() {
+        let err = PowerError::UploadFailed("connection refused".to_string());
+        assert_eq!(err.to_string(), "Upload failed: connection refused");
+    }
+
+    #[test]
+    fn test_invalid_digest_display() {
+        let err = PowerError::InvalidDigest("bad hash".to_string());
+        assert_eq!(err.to_string(), "Invalid digest: bad hash");
+    }
+
+    #[test]
+    fn test_blob_not_found_display() {
+        let err = PowerError::BlobNotFound("sha256:abc".to_string());
+        assert_eq!(err.to_string(), "Blob not found: sha256:abc");
+    }
+
+    #[test]
+    fn test_error_to_response_invalid_digest() {
+        use axum::http::StatusCode;
+        use axum::response::Response;
+
+        let err = PowerError::InvalidDigest("bad".to_string());
+        let resp: Response = err.into();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_error_to_response_blob_not_found() {
+        use axum::http::StatusCode;
+        use axum::response::Response;
+
+        let err = PowerError::BlobNotFound("sha256:abc".to_string());
+        let resp: Response = err.into();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_error_to_response_upload_failed() {
+        use axum::http::StatusCode;
+        use axum::response::Response;
+
+        let err = PowerError::UploadFailed("timeout".to_string());
         let resp: Response = err.into();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }

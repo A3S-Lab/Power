@@ -10,7 +10,7 @@ use crate::api::types::{
     ChatChoice, ChatChunkChoice, ChatCompletionChunk, ChatCompletionMessage, ChatCompletionRequest,
     ChatCompletionResponse, ChatDelta, Usage,
 };
-use crate::backend::types::{ChatMessage, ChatRequest};
+use crate::backend::types::{ChatMessage, ChatRequest, MessageContent};
 use crate::server::state::AppState;
 
 /// POST /v1/chat/completions - OpenAI-compatible chat completion.
@@ -59,6 +59,9 @@ pub async fn handler(
             .map(|m| ChatMessage {
                 role: m.role.clone(),
                 content: m.content.clone(),
+                name: m.name.clone(),
+                tool_calls: m.tool_calls.clone(),
+                tool_call_id: m.tool_call_id.clone(),
             })
             .collect(),
         temperature: request.temperature,
@@ -79,6 +82,8 @@ pub async fn handler(
         tfs_z: None,
         typical_p: None,
         response_format,
+        tools: request.tools.clone(),
+        tool_choice: request.tool_choice.clone(),
     };
 
     let is_stream = request.stream.unwrap_or(false);
@@ -101,6 +106,7 @@ pub async fn handler(
                         delta: ChatDelta {
                             role: Some("assistant".to_string()),
                             content: None,
+                            tool_calls: None,
                         },
                         finish_reason: None,
                     }],
@@ -115,7 +121,11 @@ pub async fn handler(
                     let event_data = match chunk {
                         Ok(c) => {
                             let finish_reason = if c.done {
-                                Some(c.done_reason.unwrap_or_else(|| "stop".to_string()))
+                                Some(
+                                    c.done_reason
+                                        .clone()
+                                        .unwrap_or_else(|| "stop".to_string()),
+                                )
                             } else {
                                 None
                             };
@@ -128,7 +138,14 @@ pub async fn handler(
                                     index: 0,
                                     delta: ChatDelta {
                                         role: None,
-                                        content: if c.done { None } else { Some(c.content) },
+                                        content: if c.done && c.tool_calls.is_some() {
+                                            None
+                                        } else if c.done {
+                                            None
+                                        } else {
+                                            Some(c.content)
+                                        },
+                                        tool_calls: c.tool_calls,
                                     },
                                     finish_reason,
                                 }],
@@ -188,7 +205,10 @@ pub async fn handler(
                         index: 0,
                         message: ChatCompletionMessage {
                             role: "assistant".to_string(),
-                            content: full_content,
+                            content: MessageContent::Text(full_content),
+                            name: None,
+                            tool_calls: None,
+                            tool_call_id: None,
                         },
                         finish_reason: Some(finish_reason),
                     }],

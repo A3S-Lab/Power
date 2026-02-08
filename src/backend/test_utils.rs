@@ -69,12 +69,16 @@ impl Backend for MockBackend {
                 done: false,
                 prompt_tokens: None,
                 done_reason: None,
+                prompt_eval_duration_ns: None,
+                tool_calls: None,
             }),
             Ok(ChatResponseChunk {
                 content: "".to_string(),
                 done: true,
                 prompt_tokens: Some(5),
                 done_reason: Some("stop".to_string()),
+                prompt_eval_duration_ns: Some(1_000_000),
+                tool_calls: None,
             }),
         ];
         Ok(Box::pin(futures::stream::iter(chunks)))
@@ -91,12 +95,14 @@ impl Backend for MockBackend {
                 done: false,
                 prompt_tokens: None,
                 done_reason: None,
+                prompt_eval_duration_ns: None,
             }),
             Ok(CompletionResponseChunk {
                 text: "".to_string(),
                 done: true,
                 prompt_tokens: Some(5),
                 done_reason: Some("stop".to_string()),
+                prompt_eval_duration_ns: Some(1_000_000),
             }),
         ];
         Ok(Box::pin(futures::stream::iter(chunks)))
@@ -196,6 +202,8 @@ mod tests {
             tfs_z: None,
             typical_p: None,
             response_format: None,
+            tools: None,
+            tool_choice: None,
         };
         let mut stream = mock.chat("test", request).await.unwrap();
         let first = stream.next().await.unwrap().unwrap();

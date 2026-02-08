@@ -191,6 +191,8 @@ impl Backend for LlamaCppBackend {
                 done: chunk.done,
                 prompt_tokens: chunk.prompt_tokens,
                 done_reason: chunk.done_reason,
+                prompt_eval_duration_ns: chunk.prompt_eval_duration_ns,
+                tool_calls: None,
             })
         });
 
@@ -240,10 +242,10 @@ impl Backend for LlamaCppBackend {
 
         // Run inference in a blocking task
         tokio::task::spawn_blocking(move || {
-            let ctx_params = LlamaContextParams::default()
-                .with_n_ctx(std::num::NonZeroU32::new(ctx_size).unwrap_or(
-                    std::num::NonZeroU32::new(2048).unwrap(),
-                ));
+            let ctx_params = LlamaContextParams::default().with_n_ctx(
+                std::num::NonZeroU32::new(ctx_size)
+                    .unwrap_or(std::num::NonZeroU32::new(2048).unwrap()),
+            );
             let mut ctx = match LlamaContext::with_model(&model_arc, ctx_params) {
                 Ok(c) => c,
                 Err(e) => {
@@ -280,13 +282,15 @@ impl Backend for LlamaCppBackend {
                 }
             }
 
-            // Decode prompt
+            // Decode prompt (timed)
+            let prompt_eval_start = std::time::Instant::now();
             if let Err(e) = ctx.decode(&mut batch) {
                 let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
                     "Decode failed: {e}"
                 ))));
                 return;
             }
+            let prompt_eval_duration_ns = prompt_eval_start.elapsed().as_nanos() as u64;
 
             // Build sampler chain based on request parameters
             let mut samplers: Vec<LlamaSampler> = Vec::new();
@@ -323,7 +327,8 @@ ws ::= ([ \t\n] ws)?
             }
 
             // Repetition penalties (must come before other samplers)
-            if repeat_penalty.is_some() || frequency_penalty.is_some() || presence_penalty.is_some() {
+            if repeat_penalty.is_some() || frequency_penalty.is_some() || presence_penalty.is_some()
+            {
                 samplers.push(LlamaSampler::penalties(
                     64,
                     repeat_penalty.unwrap_or(1.0),
@@ -338,7 +343,13 @@ ws ::= ([ \t\n] ws)?
                     let tau = mirostat_tau.unwrap_or(5.0);
                     let eta = mirostat_eta.unwrap_or(0.1);
                     samplers.push(LlamaSampler::temp(temperature));
-                    samplers.push(LlamaSampler::mirostat(model_arc.n_vocab() as i32, seed, tau, eta, 100));
+                    samplers.push(LlamaSampler::mirostat(
+                        model_arc.n_vocab() as i32,
+                        seed,
+                        tau,
+                        eta,
+                        100,
+                    ));
                 }
                 Some(2) => {
                     let tau = mirostat_tau.unwrap_or(5.0);
@@ -387,6 +398,7 @@ ws ::= ([ \t\n] ws)?
                         done: true,
                         prompt_tokens: Some(prompt_token_count),
                         done_reason: Some("stop".to_string()),
+                        prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
                     }));
                     return;
                 }
@@ -411,8 +423,21 @@ ws ::= ([ \t\n] ws)?
                     .blocking_send(Ok(CompletionResponseChunk {
                         text,
                         done: should_stop,
-                        prompt_tokens: if should_stop { Some(prompt_token_count) } else { None },
-                        done_reason: if should_stop { Some("stop".to_string()) } else { None },
+                        prompt_tokens: if should_stop {
+                            Some(prompt_token_count)
+                        } else {
+                            None
+                        },
+                        done_reason: if should_stop {
+                            Some("stop".to_string())
+                        } else {
+                            None
+                        },
+                        prompt_eval_duration_ns: if should_stop {
+                            Some(prompt_eval_duration_ns)
+                        } else {
+                            None
+                        },
                     }))
                     .is_err()
                 {
@@ -444,6 +469,7 @@ ws ::= ([ \t\n] ws)?
                 done: true,
                 prompt_tokens: Some(prompt_token_count),
                 done_reason: Some("length".to_string()),
+                prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
             }));
         });
 
@@ -720,6 +746,8 @@ mod tests {
             tfs_z: None,
             typical_p: None,
             response_format: None,
+            tools: None,
+            tool_choice: None,
         };
         let result = backend.chat("test", request).await;
         assert!(result.is_err());

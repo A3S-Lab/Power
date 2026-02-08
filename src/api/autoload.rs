@@ -1,11 +1,17 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::backend::Backend;
 use crate::config::parse_keep_alive;
 use crate::error::Result;
 use crate::model::manifest::ModelManifest;
 use crate::server::state::AppState;
+
+/// Result of an ensure_loaded call, including load timing.
+pub struct LoadResult {
+    /// Time spent loading the model. Zero if the model was already loaded (cache hit).
+    pub load_duration: Duration,
+}
 
 /// Ensure a model is loaded before inference.
 ///
@@ -17,7 +23,7 @@ pub async fn ensure_loaded(
     model_name: &str,
     manifest: &ModelManifest,
     backend: &Arc<dyn Backend>,
-) -> Result<()> {
+) -> Result<LoadResult> {
     ensure_loaded_with_keep_alive(state, model_name, manifest, backend, None).await
 }
 
@@ -28,10 +34,12 @@ pub async fn ensure_loaded_with_keep_alive(
     manifest: &ModelManifest,
     backend: &Arc<dyn Backend>,
     keep_alive: Option<&str>,
-) -> Result<()> {
+) -> Result<LoadResult> {
     if state.is_model_loaded(model_name) {
         state.touch_model(model_name);
-        return Ok(());
+        return Ok(LoadResult {
+            load_duration: Duration::ZERO,
+        });
     }
 
     // Evict models: prefer evicting those whose keep_alive has expired first,
@@ -48,7 +56,9 @@ pub async fn ensure_loaded_with_keep_alive(
         }
     }
 
+    let load_start = Instant::now();
     backend.load(manifest).await?;
+    let load_duration = load_start.elapsed();
 
     match keep_alive {
         Some(ka) => {
@@ -66,7 +76,7 @@ pub async fn ensure_loaded_with_keep_alive(
         }
     }
 
-    Ok(())
+    Ok(LoadResult { load_duration })
 }
 
 #[cfg(test)]

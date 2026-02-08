@@ -2,7 +2,7 @@ use std::io::{self, BufRead, Write};
 
 use futures::StreamExt;
 
-use crate::backend::types::{ChatMessage, ChatRequest};
+use crate::backend::types::{ChatMessage, ChatRequest, MessageContent};
 use crate::backend::BackendRegistry;
 use crate::error::Result;
 use crate::model::registry::ModelRegistry;
@@ -63,7 +63,10 @@ pub async fn execute_with_options(
         // Non-interactive: send a single prompt and print the streamed response
         let messages = vec![ChatMessage {
             role: "user".to_string(),
-            content: prompt_text.to_string(),
+            content: MessageContent::Text(prompt_text.to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
         }];
 
         let request = ChatRequest {
@@ -86,6 +89,8 @@ pub async fn execute_with_options(
             tfs_z: None,
             typical_p: None,
             response_format: None,
+            tools: None,
+            tool_choice: None,
         };
 
         match backend.chat(&manifest.name, request).await {
@@ -122,7 +127,11 @@ pub async fn execute_with_options(
     Ok(())
 }
 
-async fn interactive_chat(model_name: &str, backend: &std::sync::Arc<dyn crate::backend::Backend>, options: &RunOptions) {
+async fn interactive_chat(
+    model_name: &str,
+    backend: &std::sync::Arc<dyn crate::backend::Backend>,
+    options: &RunOptions,
+) {
     let mut messages: Vec<ChatMessage> = Vec::new();
     let stdin = io::stdin();
 
@@ -147,7 +156,10 @@ async fn interactive_chat(model_name: &str, backend: &std::sync::Arc<dyn crate::
 
         messages.push(ChatMessage {
             role: "user".to_string(),
-            content: input.to_string(),
+            content: MessageContent::Text(input.to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
         });
 
         let request = ChatRequest {
@@ -170,6 +182,8 @@ async fn interactive_chat(model_name: &str, backend: &std::sync::Arc<dyn crate::
             tfs_z: None,
             typical_p: None,
             response_format: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let mut assistant_response = String::new();
@@ -204,7 +218,10 @@ async fn interactive_chat(model_name: &str, backend: &std::sync::Arc<dyn crate::
         if !assistant_response.is_empty() {
             messages.push(ChatMessage {
                 role: "assistant".to_string(),
-                content: assistant_response,
+                content: MessageContent::Text(assistant_response),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
             });
         }
     }

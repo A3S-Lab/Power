@@ -1,6 +1,7 @@
 pub mod delete;
 pub mod list;
 pub mod pull;
+pub mod push;
 pub mod run;
 pub mod serve;
 pub mod show;
@@ -98,5 +99,15 @@ pub enum Commands {
         /// Path to the Modelfile
         #[arg(short = 'f', long)]
         file: PathBuf,
+    },
+
+    /// Push a model to a remote registry
+    Push {
+        /// Model name to push (e.g. "llama3.2:3b")
+        model: String,
+
+        /// Destination registry URL
+        #[arg(long)]
+        destination: String,
     },
 }
