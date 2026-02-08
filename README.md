@@ -37,22 +37,29 @@ a3s-power run llama3.2:3b
 # Single prompt
 a3s-power run llama3.2:3b --prompt "Explain quicksort in one paragraph"
 
+# Push a model to a remote registry
+a3s-power push llama3.2:3b --destination https://registry.example.com
+
 # Start HTTP server
 a3s-power serve
 ```
 
 ## Features
 
-- **CLI Model Management**: Pull, list, show, and delete models from the command line
+- **CLI Model Management**: Pull, list, show, delete, and push models from the command line
 - **Model Name Resolution**: Pull models by name (`llama3.2:3b`) with built-in registry and HuggingFace fallback
 - **Interactive Chat**: Multi-turn conversation with streaming token output
+- **Vision/Multimodal Support**: Accept image URLs in chat messages (OpenAI-compatible `content` array format)
+- **Tool/Function Calling**: Structured tool definitions, tool choice, and tool call responses (OpenAI-compatible)
 - **Chat Template Auto-Detection**: Detects ChatML, Llama, Phi, and Generic templates from GGUF metadata
 - **Multiple Concurrent Models**: Load multiple models with LRU eviction at configurable capacity
 - **GPU Acceleration**: Configurable GPU layer offloading via `[gpu]` config section
 - **Embedding Support**: Real embedding generation with automatic model reload in embedding mode
 - **HTTP Server**: Axum-based server with CORS, tracing, and metrics middleware
-- **Ollama-Compatible API**: `/api/generate`, `/api/chat`, `/api/tags`, `/api/pull`, `/api/show`, `/api/delete`, `/api/embeddings`, `/api/embed`, `/api/ps`, `/api/copy`, `/api/version`
+- **Ollama-Compatible API**: `/api/generate`, `/api/chat`, `/api/tags`, `/api/pull`, `/api/push`, `/api/show`, `/api/delete`, `/api/embeddings`, `/api/embed`, `/api/ps`, `/api/copy`, `/api/version`, `/api/blobs/:digest`
 - **OpenAI-Compatible API**: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`
+- **Blob Management API**: Check, upload, and download content-addressed blobs via REST
+- **Push API**: Upload models to remote registries with progress reporting
 - **SSE Streaming**: All inference and pull endpoints support server-sent events
 - **Prometheus Metrics**: `GET /metrics` endpoint with request counts, durations, token counters, and model gauges
 - **Content-Addressed Storage**: Model blobs stored by SHA-256 hash with automatic deduplication
@@ -66,42 +73,27 @@ a3s-power serve
 
 ### Test Coverage
 
-**197 unit tests** with **54.2% line coverage** / **70.8% function coverage** (via `cargo llvm-cov`):
+**249 unit tests** covering all core functionality:
 
-| File | Line Coverage | Function Coverage |
-|------|--------------|-------------------|
-| `api/autoload.rs` | 96.4% | 100.0% |
-| `api/health.rs` | 100.0% | 100.0% |
-| `api/types.rs` | 100.0% | 100.0% |
-| `api/openai/mod.rs` | 100.0% | 100.0% |
-| `api/native/mod.rs` | 100.0% | 100.0% |
-| `api/sse.rs` | 72.0% | 66.7% |
-| `api/openai/models.rs` | 51.9% | 66.7% |
-| `api/native/models.rs` | 14.9% | 18.2% |
-| `backend/llamacpp.rs` | 100.0% | 100.0% |
-| `backend/types.rs` | 100.0% | 100.0% |
-| `backend/mod.rs` | 83.7% | 83.3% |
-| `model/manifest.rs` | 100.0% | 100.0% |
-| `model/registry.rs` | 77.5% | 70.0% |
-| `model/storage.rs` | 78.4% | 75.0% |
-| `model/pull.rs` | 51.4% | 64.7% |
-| `config.rs` | 88.6% | 92.3% |
-| `dirs.rs` | 88.5% | 81.8% |
-| `error.rs` | 100.0% | 100.0% |
-| `server/router.rs` | 100.0% | 100.0% |
-| `server/state.rs` | 100.0% | 100.0% |
-| **TOTAL** | **54.2%** | **70.8%** |
-
-> CLI handlers (`cli/*`), HTTP handlers (`api/native/{chat,generate,pull,embeddings}.rs`, `api/openai/{chat,completions,embeddings}.rs`), and `server/mod.rs` have 0% coverage — these require integration tests with live backends and are excluded from the unit-test library target.
+| Module | Tests |
+|--------|-------|
+| Backend types (vision, tools, chat) | 18 |
+| API types (OpenAI + Ollama) | 24 |
+| Chat templates | 9 |
+| Blob management API | 5 |
+| Push API | 2 |
+| Native chat/generate/embed handlers | 18 |
+| OpenAI chat/completions/embeddings | 10 |
+| Model management (registry, storage, pull) | 20 |
+| Server (router, state, metrics, health) | 22 |
+| Error handling | 14 |
+| Configuration & directories | 16 |
+| Backend (llama.cpp, mock) | 14 |
+| Other (autoload, SSE, copy, create, etc.) | 77 |
 
 Run tests:
 ```bash
 cargo test -p a3s-power --lib -- --test-threads=1
-```
-
-Run coverage:
-```bash
-cargo llvm-cov -p a3s-power --lib --summary-only -- --test-threads=1
 ```
 
 ## Architecture
@@ -114,7 +106,7 @@ cargo llvm-cov -p a3s-power --lib --summary-only -- --test-threads=1
 │                                                  │
 │  CLI Layer                                       │
 │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ │
-│  │ run  │ │ pull │ │ list │ │ show │ │serve │ │
+│  │ run  │ │ pull │ │ list │ │ push │ │serve │ │
 │  └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘ │
 │     │        │        │        │        │      │
 │  Model Layer          │                  │      │
@@ -194,6 +186,9 @@ a3s-power show my-model
 
 # Delete a model
 a3s-power delete my-model
+
+# Push a model to a remote registry
+a3s-power push my-model --destination https://registry.example.com
 ```
 
 ### Interactive Chat
@@ -230,8 +225,9 @@ a3s-power serve --host 0.0.0.0 --port 8080
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/generate` | Text generation (streaming/non-streaming) |
-| `POST` | `/api/chat` | Chat completion (streaming/non-streaming) |
+| `POST` | `/api/chat` | Chat completion with vision & tool support (streaming/non-streaming) |
 | `POST` | `/api/pull` | Download a model by name or URL (streaming progress) |
+| `POST` | `/api/push` | Push a model to a remote registry |
 | `GET` | `/api/tags` | List local models |
 | `POST` | `/api/show` | Show model details |
 | `DELETE` | `/api/delete` | Delete a model |
@@ -240,6 +236,9 @@ a3s-power serve --host 0.0.0.0 --port 8080
 | `GET` | `/api/ps` | List running/loaded models |
 | `POST` | `/api/copy` | Copy/alias a model |
 | `GET` | `/api/version` | Server version |
+| `HEAD` | `/api/blobs/:digest` | Check if a blob exists |
+| `POST` | `/api/blobs/:digest` | Upload a blob with SHA-256 verification |
+| `GET` | `/api/blobs/:digest` | Download a blob |
 
 ### OpenAI-Compatible API
 
@@ -307,15 +306,79 @@ curl http://localhost:11435/v1/completions \
   }'
 ```
 
+#### Vision/Multimodal (OpenAI)
+
+```bash
+curl http://localhost:11435/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llava:7b",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+      ]
+    }]
+  }'
+```
+
+#### Tool/Function Calling (OpenAI)
+
+```bash
+curl http://localhost:11435/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama3.2:3b",
+    "messages": [{"role": "user", "content": "What is the weather in SF?"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather",
+        "parameters": {
+          "type": "object",
+          "properties": {"location": {"type": "string"}},
+          "required": ["location"]
+        }
+      }
+    }]
+  }'
+```
+
+#### Push Model
+
+```bash
+curl -X POST http://localhost:11435/api/push \
+  -H "Content-Type: application/json" \
+  -d '{"name": "llama3.2:3b", "destination": "https://registry.example.com"}'
+```
+
+#### Blob Management
+
+```bash
+# Check if blob exists
+curl -I http://localhost:11435/api/blobs/sha256:abc123...
+
+# Upload blob
+curl -X POST http://localhost:11435/api/blobs/sha256:abc123... \
+  --data-binary @model.gguf
+
+# Download blob
+curl http://localhost:11435/api/blobs/sha256:abc123... -o downloaded.gguf
+```
+
 ### CLI Commands
 
 | Command | Description |
 |---------|-------------|
 | `a3s-power run <model> [--prompt <text>]` | Load model and start interactive chat, or send a single prompt |
 | `a3s-power pull <name_or_url>` | Download a model by name (`llama3.2:3b`) or direct URL |
+| `a3s-power push <model> --destination <url>` | Push a model to a remote registry |
 | `a3s-power list` | List all locally available models |
 | `a3s-power show <model>` | Show model details (format, size, parameters) |
 | `a3s-power delete <model>` | Delete a model from local storage |
+| `a3s-power create <name> -f <modelfile>` | Create a custom model from a Modelfile |
 | `a3s-power serve [--host <addr>] [--port <port>]` | Start HTTP server (default: `127.0.0.1:11435`) |
 
 ## Model Storage
@@ -385,7 +448,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 197 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 249 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -414,6 +477,7 @@ power/
     │   ├── mod.rs           # Cli struct + Commands enum (clap)
     │   ├── run.rs           # Interactive chat + single prompt
     │   ├── pull.rs          # Download with progress bar
+    │   ├── push.rs          # Push model to remote registry
     │   ├── list.rs          # Tabular model listing
     │   ├── show.rs          # Model detail display
     │   ├── delete.rs        # Model + blob deletion
@@ -423,11 +487,12 @@ power/
     │   ├── registry.rs      # In-memory index backed by disk manifests
     │   ├── storage.rs       # Content-addressed blob store (SHA-256)
     │   ├── pull.rs          # HTTP download with progress callback
+    │   ├── push.rs          # Push model to remote registry
     │   ├── resolve.rs       # Name-based model resolution (built-in + HuggingFace)
     │   └── known_models.json# Built-in registry of popular GGUF models
     ├── backend/
     │   ├── mod.rs           # Backend trait + BackendRegistry
-    │   ├── types.rs         # Inference request/response types
+    │   ├── types.rs         # Inference types (vision, tools, chat, completion, embedding)
     │   ├── llamacpp.rs      # llama.cpp backend (feature-gated, multi-model)
     │   ├── chat_template.rs # Chat template detection and formatting
     │   └── test_utils.rs    # MockBackend for testing
@@ -444,13 +509,16 @@ power/
         ├── native/
         │   ├── mod.rs       # Ollama-compatible route group
         │   ├── generate.rs  # POST /api/generate
-        │   ├── chat.rs      # POST /api/chat
+        │   ├── chat.rs      # POST /api/chat (vision + tools)
         │   ├── models.rs    # GET /api/tags, POST /api/show, DELETE /api/delete
         │   ├── pull.rs      # POST /api/pull (streaming progress)
+        │   ├── push.rs      # POST /api/push (push to registry)
+        │   ├── blobs.rs     # HEAD/POST/GET /api/blobs/:digest
         │   ├── embeddings.rs# POST /api/embeddings
         │   ├── embed.rs     # POST /api/embed (batch embeddings)
         │   ├── ps.rs        # GET /api/ps (running models)
         │   ├── copy.rs      # POST /api/copy (model aliasing)
+        │   ├── create.rs    # POST /api/create (from Modelfile)
         │   └── version.rs   # GET /api/version
         └── openai/
             ├── mod.rs       # OpenAI-compatible route group + shared helpers
@@ -501,7 +569,7 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [x] Model manifest system with JSON persistence
 - [x] TOML configuration
 - [x] Platform-specific directory resolution
-- [x] 108 comprehensive unit tests
+- [x] Comprehensive unit test foundation
 
 ### Phase 2: Backend & Inference ✅
 
@@ -514,7 +582,7 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 ### Phase 3: HTTP Server ✅
 
 - [x] Axum-based HTTP server with CORS + tracing
-- [x] Ollama-compatible native API (7 endpoints)
+- [x] Ollama-compatible native API (12 endpoints + blob management)
 - [x] OpenAI-compatible API (4 endpoints)
 - [x] SSE streaming for all inference endpoints
 - [x] Non-streaming response collection
@@ -529,7 +597,16 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [x] Chat template auto-detection from GGUF metadata (ChatML, Llama, Phi, Generic)
 - [x] Health check endpoint (`/health`)
 - [x] Prometheus metrics endpoint (`/metrics` with request/token/model counters)
-- [x] 197 comprehensive unit tests
+- [x] 249 comprehensive unit tests
+
+### Phase 5: Full Ollama Parity ✅
+
+- [x] Vision/Multimodal support (`MessageContent` enum with text + image URL parts)
+- [x] Tool/Function calling (tool definitions, tool choice, tool call responses)
+- [x] Push API + CLI (`POST /api/push`, `a3s-power push`)
+- [x] Blob management API (`HEAD/POST/GET /api/blobs/:digest`)
+- [x] New error variants (`UploadFailed`, `InvalidDigest`, `BlobNotFound`)
+- [x] 249 comprehensive unit tests
 
 ## License
 
