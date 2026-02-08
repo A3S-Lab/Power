@@ -110,6 +110,19 @@ async fn main() -> anyhow::Result<()> {
         Commands::Push { model, destination } => {
             a3s_power::cli::push::execute(&model, &destination, &registry).await?;
         }
+        Commands::Cp {
+            source,
+            destination,
+        } => {
+            let manifest = registry.get(&source).map_err(|_| {
+                anyhow::anyhow!("Source model '{}' not found", source)
+            })?;
+            let mut new_manifest = manifest.clone();
+            new_manifest.name = destination.clone();
+            new_manifest.created_at = chrono::Utc::now();
+            registry.register(new_manifest)?;
+            println!("Copied '{}' to '{}'", source, destination);
+        }
     }
 
     Ok(())

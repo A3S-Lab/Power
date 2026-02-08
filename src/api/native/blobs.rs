@@ -236,4 +236,66 @@ mod tests {
 
         std::env::remove_var("A3S_POWER_HOME");
     }
+
+    #[tokio::test]
+    async fn test_delete_blob_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/blobs/sha256:0000000000000000000000000000000000000000000000000000000000000000")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    async fn test_upload_and_delete_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let data = b"delete me later";
+        let hash = storage::compute_sha256(data);
+
+        let state = test_state_with_mock(MockBackend::success());
+
+        // Upload
+        let app = router::build(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/blobs/sha256:{}", hash))
+            .body(Body::from(data.to_vec()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Delete
+        let app = router::build(state.clone());
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/blobs/sha256:{}", hash))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify gone
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("HEAD")
+            .uri(format!("/api/blobs/sha256:{}", hash))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
 }

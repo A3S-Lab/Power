@@ -68,8 +68,31 @@ pub async fn handler(
     let opts = request.options.as_ref();
     let defaults = &manifest.default_parameters;
     let response_format = request.format.clone();
+
+    // Warn about unsupported images
+    if request.images.is_some() {
+        tracing::warn!("images field in /api/generate not yet supported; images will be ignored");
+    }
+
+    // Build the prompt: if system is provided and raw is not set, prepend it
+    let prompt = if let Some(ref system) = request.system {
+        if request.raw.unwrap_or(false) {
+            request.prompt.clone()
+        } else {
+            format!("{}\n\n{}", system, request.prompt)
+        }
+    } else if let Some(ref sys) = manifest.system_prompt {
+        if request.raw.unwrap_or(false) {
+            request.prompt.clone()
+        } else {
+            format!("{}\n\n{}", sys, request.prompt)
+        }
+    } else {
+        request.prompt.clone()
+    };
+
     let backend_request = CompletionRequest {
-        prompt: request.prompt,
+        prompt,
         temperature: apply_defaults(opts.and_then(|o| o.temperature), defaults, "temperature"),
         top_p: apply_defaults(opts.and_then(|o| o.top_p), defaults, "top_p"),
         max_tokens: apply_defaults(opts.and_then(|o| o.num_predict), defaults, "num_predict"),
@@ -142,6 +165,7 @@ pub async fn handler(
                                     } else {
                                         None
                                     },
+                                    context: None,
                                 }
                             }
                             Err(e) => GenerateResponse {
@@ -155,6 +179,7 @@ pub async fn handler(
                                 prompt_eval_duration: None,
                                 eval_count: None,
                                 eval_duration: None,
+                                context: None,
                             },
                         };
                         let data = serde_json::to_string(&resp).unwrap_or_default();
@@ -210,6 +235,7 @@ pub async fn handler(
                     prompt_eval_duration,
                     eval_count: Some(eval_count),
                     eval_duration: Some(total_duration),
+                    context: None,
                 })
                 .into_response()
             }

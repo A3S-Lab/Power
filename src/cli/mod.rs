@@ -110,4 +110,13 @@ pub enum Commands {
         #[arg(long)]
         destination: String,
     },
+
+    /// Copy/alias a model to a new name
+    Cp {
+        /// Source model name
+        source: String,
+
+        /// Destination model name
+        destination: String,
+    },
 }

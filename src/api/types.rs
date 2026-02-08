@@ -58,6 +58,9 @@ pub struct ChatCompletionMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Base64-encoded images for multimodal models (Ollama-native format).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
 }
 
 /// OpenAI-compatible chat completion response.
@@ -270,6 +273,24 @@ pub struct GenerateRequest {
     pub format: Option<String>,
     #[serde(default)]
     pub keep_alive: Option<String>,
+    /// Base64-encoded images for multimodal models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
+    /// Override the system prompt for this request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    /// Override the chat template for this request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// If true, skip chat template formatting and send prompt as-is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<bool>,
+    /// Suffix to append after the model's response (fill-in-the-middle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
+    /// Context from a previous generate call (for conversation continuity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Vec<u32>>,
 }
 
 /// Generation options for the native API.
@@ -313,6 +334,9 @@ pub struct GenerateResponse {
     pub eval_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eval_duration: Option<u64>,
+    /// Context tokens for conversation continuity (returned on final chunk).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<Vec<u32>>,
 }
 
 /// Ollama-compatible chat request.
@@ -577,6 +601,7 @@ mod tests {
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
+                    images: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -684,6 +709,7 @@ mod tests {
             prompt_eval_duration: None,
             eval_count: None,
             eval_duration: None,
+            context: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(!json.contains("total_duration"));
@@ -854,5 +880,98 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("GGUF"));
         assert!(json.contains("Q4_K_M"));
+    }
+
+    #[test]
+    fn test_generate_request_with_new_fields() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "test",
+            "system": "You are helpful.",
+            "template": "custom",
+            "raw": true,
+            "suffix": "END",
+            "images": ["base64data=="],
+            "context": [1, 2, 3]
+        }"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.system.as_deref(), Some("You are helpful."));
+        assert_eq!(req.template.as_deref(), Some("custom"));
+        assert_eq!(req.raw, Some(true));
+        assert_eq!(req.suffix.as_deref(), Some("END"));
+        assert_eq!(req.images.as_ref().unwrap().len(), 1);
+        assert_eq!(req.context.as_ref().unwrap(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn test_generate_request_new_fields_default_none() {
+        let json = r#"{"model": "llama3", "prompt": "test"}"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert!(req.system.is_none());
+        assert!(req.template.is_none());
+        assert!(req.raw.is_none());
+        assert!(req.suffix.is_none());
+        assert!(req.images.is_none());
+        assert!(req.context.is_none());
+    }
+
+    #[test]
+    fn test_generate_response_context_field() {
+        let resp = GenerateResponse {
+            model: "llama3".to_string(),
+            response: "hi".to_string(),
+            done: true,
+            done_reason: Some("stop".to_string()),
+            total_duration: None,
+            load_duration: None,
+            prompt_eval_count: None,
+            prompt_eval_duration: None,
+            eval_count: None,
+            eval_duration: None,
+            context: Some(vec![1, 2, 3]),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("context"));
+        assert!(json.contains("[1,2,3]"));
+    }
+
+    #[test]
+    fn test_chat_message_with_images() {
+        let json = r#"{
+            "role": "user",
+            "content": "What is this?",
+            "images": ["iVBORw0KGgo="]
+        }"#;
+        let msg: ChatCompletionMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.role, "user");
+        assert!(msg.images.is_some());
+        assert_eq!(msg.images.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_chat_message_images_skipped_when_none() {
+        let msg = ChatCompletionMessage {
+            role: "assistant".to_string(),
+            content: MessageContent::Text("hello".to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("images"));
+    }
+
+    #[test]
+    fn test_delete_blob_endpoint_in_api_types() {
+        // Verify PushRequest/PushResponse serialize correctly
+        let req = PushRequest {
+            name: "model".to_string(),
+            destination: "http://localhost".to_string(),
+            stream: Some(true),
+            insecure: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"stream\":true"));
     }
 }

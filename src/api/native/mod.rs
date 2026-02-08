@@ -36,6 +36,7 @@ pub fn routes() -> Router<AppState> {
             "/blobs/:digest",
             head(blobs::check_handler)
                 .post(blobs::upload_handler)
-                .get(blobs::download_handler),
+                .get(blobs::download_handler)
+                .delete(blobs::delete_handler),
         )
 }

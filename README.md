@@ -73,15 +73,15 @@ a3s-power serve
 
 ### Test Coverage
 
-**249 unit tests** covering all core functionality:
+**258 unit tests** covering all core functionality:
 
 | Module | Tests |
 |--------|-------|
 | Backend types (vision, tools, chat) | 18 |
 | API types (OpenAI + Ollama) | 24 |
 | Chat templates | 9 |
-| Blob management API | 5 |
-| Push API | 2 |
+| Blob management API | 7 |
+| Push API | 3 |
 | Native chat/generate/embed handlers | 18 |
 | OpenAI chat/completions/embeddings | 10 |
 | Model management (registry, storage, pull) | 20 |
@@ -239,6 +239,7 @@ a3s-power serve --host 0.0.0.0 --port 8080
 | `HEAD` | `/api/blobs/:digest` | Check if a blob exists |
 | `POST` | `/api/blobs/:digest` | Upload a blob with SHA-256 verification |
 | `GET` | `/api/blobs/:digest` | Download a blob |
+| `DELETE` | `/api/blobs/:digest` | Delete a blob |
 
 ### OpenAI-Compatible API
 
@@ -379,6 +380,7 @@ curl http://localhost:11435/api/blobs/sha256:abc123... -o downloaded.gguf
 | `a3s-power show <model>` | Show model details (format, size, parameters) |
 | `a3s-power delete <model>` | Delete a model from local storage |
 | `a3s-power create <name> -f <modelfile>` | Create a custom model from a Modelfile |
+| `a3s-power cp <source> <destination>` | Copy/alias a model to a new name |
 | `a3s-power serve [--host <addr>] [--port <port>]` | Start HTTP server (default: `127.0.0.1:11435`) |
 
 ## Model Storage
@@ -448,7 +450,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 249 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 258 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -597,16 +599,19 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [x] Chat template auto-detection from GGUF metadata (ChatML, Llama, Phi, Generic)
 - [x] Health check endpoint (`/health`)
 - [x] Prometheus metrics endpoint (`/metrics` with request/token/model counters)
-- [x] 249 comprehensive unit tests
+- [x] 258 comprehensive unit tests
 
 ### Phase 5: Full Ollama Parity ✅
 
 - [x] Vision/Multimodal support (`MessageContent` enum with text + image URL parts)
 - [x] Tool/Function calling (tool definitions, tool choice, tool call responses)
-- [x] Push API + CLI (`POST /api/push`, `a3s-power push`)
-- [x] Blob management API (`HEAD/POST/GET /api/blobs/:digest`)
+- [x] Push API + CLI with streaming SSE progress (`POST /api/push`, `a3s-power push`)
+- [x] Blob management API (`HEAD/POST/GET/DELETE /api/blobs/:digest`)
+- [x] Generate API: `system`, `template`, `raw`, `suffix`, `context`, `images` fields
+- [x] Native chat `images` field (Ollama base64 format)
+- [x] CLI `cp` command for model aliasing
 - [x] New error variants (`UploadFailed`, `InvalidDigest`, `BlobNotFound`)
-- [x] 249 comprehensive unit tests
+- [x] 258 comprehensive unit tests
 
 ## License
 

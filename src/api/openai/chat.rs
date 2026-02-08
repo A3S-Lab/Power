@@ -205,6 +205,7 @@ pub async fn handler(
                             name: None,
                             tool_calls: None,
                             tool_call_id: None,
+                            images: None,
                         },
                         finish_reason: Some(finish_reason),
                     }],
