@@ -79,6 +79,28 @@ pub async fn download_handler(
     }
 }
 
+/// DELETE /api/blobs/:digest - Delete a blob.
+pub async fn delete_handler(
+    State(_state): State<AppState>,
+    Path(digest): Path<String>,
+) -> impl IntoResponse {
+    let hash = digest.strip_prefix("sha256:").unwrap_or(&digest);
+    let blob_path = dirs::blobs_dir().join(format!("sha256-{}", hash));
+
+    if !blob_path.exists() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    match tokio::fs::remove_file(&blob_path).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to delete blob: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::backend::test_utils::test_state_with_mock;

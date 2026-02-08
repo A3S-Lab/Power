@@ -21,9 +21,10 @@ pub async fn push_model(
 
     // 1. Check if blob already exists on remote
     let check_url = format!("{}/api/blobs/{}", destination.trim_end_matches('/'), digest);
-    let check_resp = client.head(&check_url).send().await.map_err(|e| {
-        PowerError::UploadFailed(format!("Failed to check blob on remote: {e}"))
-    })?;
+    let check_resp =
+        client.head(&check_url).send().await.map_err(|e| {
+            PowerError::UploadFailed(format!("Failed to check blob on remote: {e}"))
+        })?;
 
     if check_resp.status() == reqwest::StatusCode::NOT_FOUND {
         // 2. Read blob from disk and upload

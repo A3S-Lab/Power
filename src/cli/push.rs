@@ -14,8 +14,7 @@ pub async fn execute(model: &str, destination: &str, registry: &ModelRegistry) -
         }
     });
 
-    let digest =
-        crate::model::push::push_model(&manifest, destination, Some(progress)).await?;
+    let digest = crate::model::push::push_model(&manifest, destination, Some(progress)).await?;
 
     println!("Push complete: {}", digest);
     Ok(())

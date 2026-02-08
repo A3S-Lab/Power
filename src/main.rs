@@ -107,10 +107,7 @@ async fn main() -> anyhow::Result<()> {
             registry.register(manifest)?;
             println!("Created model '{name}' from '{}'", mf.from);
         }
-        Commands::Push {
-            model,
-            destination,
-        } => {
+        Commands::Push { model, destination } => {
             a3s_power::cli::push::execute(&model, &destination, &registry).await?;
         }
     }

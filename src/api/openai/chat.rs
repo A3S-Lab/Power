@@ -121,11 +121,7 @@ pub async fn handler(
                     let event_data = match chunk {
                         Ok(c) => {
                             let finish_reason = if c.done {
-                                Some(
-                                    c.done_reason
-                                        .clone()
-                                        .unwrap_or_else(|| "stop".to_string()),
-                                )
+                                Some(c.done_reason.clone().unwrap_or_else(|| "stop".to_string()))
                             } else {
                                 None
                             };
