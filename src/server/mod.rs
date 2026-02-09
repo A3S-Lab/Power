@@ -32,6 +32,9 @@ pub async fn start(config: PowerConfig) -> Result<()> {
 
     let app_state = state::AppState::new(registry, backends, config);
 
+    // Spawn background keep_alive reaper task
+    spawn_keep_alive_reaper(app_state.clone());
+
     let app = router::build(app_state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
@@ -45,4 +48,40 @@ pub async fn start(config: PowerConfig) -> Result<()> {
         .map_err(|e| PowerError::Server(format!("Server error: {e}")))?;
 
     Ok(())
+}
+
+/// Spawn a background task that periodically checks for models whose keep_alive
+/// has expired and unloads them to free memory.
+fn spawn_keep_alive_reaper(state: state::AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+
+            let expired = state.expired_models();
+            for model_name in expired {
+                if let Ok(backend) = state
+                    .backends
+                    .find_for_format(&crate::model::manifest::ModelFormat::Gguf)
+                {
+                    if let Err(e) = backend.unload(&model_name).await {
+                        tracing::warn!(
+                            model = %model_name,
+                            "Failed to unload expired model: {e}"
+                        );
+                        continue;
+                    }
+                }
+                state.mark_unloaded(&model_name);
+                state.metrics.increment_evictions();
+                state.metrics.remove_model_memory(&model_name);
+                tracing::info!(
+                    model = %model_name,
+                    "Unloaded model (keep_alive expired)"
+                );
+            }
+        }
+    });
 }

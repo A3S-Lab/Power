@@ -96,6 +96,7 @@ impl Backend for MockBackend {
                 prompt_tokens: None,
                 done_reason: None,
                 prompt_eval_duration_ns: None,
+                token_id: Some(42),
             }),
             Ok(CompletionResponseChunk {
                 text: "".to_string(),
@@ -103,6 +104,7 @@ impl Backend for MockBackend {
                 prompt_tokens: Some(5),
                 done_reason: Some("stop".to_string()),
                 prompt_eval_duration_ns: Some(1_000_000),
+                token_id: None,
             }),
         ];
         Ok(Box::pin(futures::stream::iter(chunks)))

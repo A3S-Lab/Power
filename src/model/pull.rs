@@ -18,7 +18,11 @@ pub async fn pull_model(
     progress: Option<ProgressCallback>,
 ) -> Result<ModelManifest> {
     let (name, url, source) = if let Some(url) = url_override {
-        (name_or_url.to_string(), url.to_string(), ModelSource::Direct)
+        (
+            name_or_url.to_string(),
+            url.to_string(),
+            ModelSource::Direct,
+        )
     } else if resolve::is_url(name_or_url) {
         let name = extract_name_from_url(name_or_url);
         (name, name_or_url.to_string(), ModelSource::Direct)

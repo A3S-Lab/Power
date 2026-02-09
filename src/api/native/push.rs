@@ -1,10 +1,6 @@
-use std::convert::Infallible;
-
 use axum::extract::State;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::Json;
-use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -80,14 +76,9 @@ pub async fn handler(
             }
         });
 
-        let event_stream = ReceiverStream::new(rx).map(|resp| {
-            let data = serde_json::to_string(&resp).unwrap_or_default();
-            Ok::<_, Infallible>(Event::default().data(data))
-        });
+        let event_stream = ReceiverStream::new(rx);
 
-        Sse::new(event_stream)
-            .keep_alive(KeepAlive::default())
-            .into_response()
+        crate::api::sse::ndjson_response(event_stream)
     } else {
         // Non-streaming: push and return final status
         match crate::model::push::push_model(&manifest, &request.destination, None).await {
@@ -173,7 +164,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_push_streaming_returns_sse() {
+    async fn test_push_streaming_returns_ndjson() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
 
@@ -201,7 +192,10 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        assert!(content_type.contains("text/event-stream"));
+        assert!(
+            content_type.contains("application/x-ndjson"),
+            "expected NDJSON content-type, got: {content_type}"
+        );
 
         std::env::remove_var("A3S_POWER_HOME");
     }

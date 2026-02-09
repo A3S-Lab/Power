@@ -1,9 +1,7 @@
 use axum::extract::State;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::Json;
 use futures::StreamExt;
-use std::convert::Infallible;
 use std::time::Instant;
 
 use crate::api::types::{ChatCompletionMessage, NativeChatRequest, NativeChatResponse};
@@ -149,9 +147,9 @@ pub async fn handler(
                 let metrics_done = state.metrics.clone();
                 let model_for_metrics = model_name.clone();
                 let model_for_done = model_name.clone();
-                let sse_stream = stream
+                let ndjson_stream = stream
                     .map(move |chunk| {
-                        let resp = match chunk {
+                        match chunk {
                             Ok(c) => {
                                 if !c.done {
                                     counter_clone
@@ -218,9 +216,7 @@ pub async fn handler(
                                 eval_count: None,
                                 eval_duration: None,
                             },
-                        };
-                        let data = serde_json::to_string(&resp).unwrap_or_default();
-                        Ok::<_, Infallible>(Event::default().data(data))
+                        }
                     })
                     .chain(futures::stream::once(async move {
                         // Record final metrics when stream completes
@@ -240,11 +236,36 @@ pub async fn handler(
                             duration_secs: duration,
                             cost_dollars: 0.0,
                         });
-                        Ok(Event::default().data("[DONE]"))
-                    }));
-                Sse::new(sse_stream)
-                    .keep_alive(KeepAlive::default())
-                    .into_response()
+                        // Sentinel for metrics flush
+                        NativeChatResponse {
+                            model: model_for_done,
+                            message: ChatCompletionMessage {
+                                role: "assistant".to_string(),
+                                content: MessageContent::Text(String::new()),
+                                name: None,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                images: None,
+                            },
+                            done: true,
+                            done_reason: None,
+                            total_duration: None,
+                            load_duration: None,
+                            prompt_eval_count: None,
+                            prompt_eval_duration: None,
+                            eval_count: None,
+                            eval_duration: None,
+                        }
+                    }))
+                    // Skip the sentinel metrics-only chunk
+                    .filter(|resp| {
+                        let is_sentinel = resp.message.content.text().is_empty()
+                            && resp.done
+                            && resp.total_duration.is_none()
+                            && resp.eval_count.is_none();
+                        futures::future::ready(!is_sentinel)
+                    });
+                crate::api::sse::ndjson_response(ndjson_stream)
             } else {
                 // Collect full response
                 let start = Instant::now();
@@ -432,7 +453,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_chat_streaming_returns_sse() {
+    async fn test_chat_streaming_returns_ndjson() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
 
@@ -458,7 +479,10 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        assert!(content_type.contains("text/event-stream"));
+        assert!(
+            content_type.contains("application/x-ndjson"),
+            "expected NDJSON content-type, got: {content_type}"
+        );
 
         std::env::remove_var("A3S_POWER_HOME");
     }

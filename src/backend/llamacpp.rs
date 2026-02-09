@@ -399,6 +399,7 @@ ws ::= ([ \t\n] ws)?
                         prompt_tokens: Some(prompt_token_count),
                         done_reason: Some("stop".to_string()),
                         prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
+                        token_id: None,
                     }));
                     return;
                 }
@@ -438,6 +439,7 @@ ws ::= ([ \t\n] ws)?
                         } else {
                             None
                         },
+                        token_id: Some(new_token.0 as u32),
                     }))
                     .is_err()
                 {
@@ -470,6 +472,7 @@ ws ::= ([ \t\n] ws)?
                 prompt_tokens: Some(prompt_token_count),
                 done_reason: Some("length".to_string()),
                 prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
+                token_id: None,
             }));
         });
 

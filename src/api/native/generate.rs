@@ -1,9 +1,7 @@
 use axum::extract::State;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::Json;
 use futures::StreamExt;
-use std::convert::Infallible;
 use std::time::Instant;
 
 use crate::api::types::{GenerateRequest, GenerateResponse};
@@ -130,7 +128,7 @@ pub async fn handler(
     match backend.complete(&model_name, backend_request).await {
         Ok(stream) => {
             if is_stream {
-                // Streaming: return newline-delimited JSON
+                // Streaming: return newline-delimited JSON (Ollama wire format)
                 let model_name_owned = model_name.clone();
                 let start = Instant::now();
                 let load_dur = load_duration_ns;
@@ -139,15 +137,17 @@ pub async fn handler(
                 let prompt_tokens_shared =
                     std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
                 let prompt_tokens_clone = prompt_tokens_shared.clone();
+                let context_tokens = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+                let context_clone = context_tokens.clone();
                 let ttft_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let ttft_clone = ttft_recorded.clone();
                 let metrics = state.metrics.clone();
                 let metrics_done = state.metrics.clone();
                 let model_for_metrics = model_name.clone();
                 let model_for_done = model_name.clone();
-                let sse_stream = stream
+                let ndjson_stream = stream
                     .map(move |chunk| {
-                        let resp = match chunk {
+                        match chunk {
                             Ok(c) => {
                                 if !c.done {
                                     counter_clone
@@ -159,6 +159,10 @@ pub async fn handler(
                                             &model_for_metrics,
                                             start.elapsed().as_secs_f64(),
                                         );
+                                    }
+                                    // Collect token IDs for context return
+                                    if let Some(tid) = c.token_id {
+                                        context_clone.lock().unwrap().push(tid);
                                     }
                                 }
                                 if let Some(pt) = c.prompt_tokens {
@@ -186,7 +190,16 @@ pub async fn handler(
                                     } else {
                                         None
                                     },
-                                    context: None,
+                                    context: if c.done {
+                                        let ctx = context_clone.lock().unwrap();
+                                        if ctx.is_empty() {
+                                            None
+                                        } else {
+                                            Some(ctx.clone())
+                                        }
+                                    } else {
+                                        None
+                                    },
                                 }
                             }
                             Err(e) => GenerateResponse {
@@ -202,9 +215,7 @@ pub async fn handler(
                                 eval_duration: None,
                                 context: None,
                             },
-                        };
-                        let data = serde_json::to_string(&resp).unwrap_or_default();
-                        Ok::<_, Infallible>(Event::default().data(data))
+                        }
                     })
                     .chain(futures::stream::once(async move {
                         // Record final metrics when stream completes
@@ -224,11 +235,30 @@ pub async fn handler(
                             duration_secs: duration,
                             cost_dollars: 0.0,
                         });
-                        Ok(Event::default().data("[DONE]"))
-                    }));
-                Sse::new(sse_stream)
-                    .keep_alive(KeepAlive::default())
-                    .into_response()
+                        // Sentinel: empty response to flush metrics (not sent to client)
+                        GenerateResponse {
+                            model: model_for_done,
+                            response: String::new(),
+                            done: true,
+                            done_reason: None,
+                            total_duration: None,
+                            load_duration: None,
+                            prompt_eval_count: None,
+                            prompt_eval_duration: None,
+                            eval_count: None,
+                            eval_duration: None,
+                            context: None,
+                        }
+                    }))
+                    // Skip the sentinel metrics-only chunk
+                    .filter(|resp| {
+                        let dominated = resp.response.is_empty()
+                            && resp.done
+                            && resp.total_duration.is_none()
+                            && resp.eval_count.is_none();
+                        futures::future::ready(!dominated)
+                    });
+                crate::api::sse::ndjson_response(ndjson_stream)
             } else {
                 // Non-streaming: collect all chunks into one response
                 let start = Instant::now();
@@ -238,6 +268,7 @@ pub async fn handler(
                 let mut prompt_eval_duration: Option<u64> = None;
                 let mut done_reason: Option<String> = None;
                 let mut ttft_recorded = false;
+                let mut context_tokens = Vec::<u32>::new();
                 let mut stream = stream;
                 while let Some(chunk) = stream.next().await {
                     match chunk {
@@ -250,6 +281,9 @@ pub async fn handler(
                                         .metrics
                                         .record_ttft(&model_name, start.elapsed().as_secs_f64());
                                     ttft_recorded = true;
+                                }
+                                if let Some(tid) = c.token_id {
+                                    context_tokens.push(tid);
                                 }
                             }
                             if c.prompt_tokens.is_some() {
@@ -303,7 +337,11 @@ pub async fn handler(
                     prompt_eval_duration,
                     eval_count: Some(eval_count),
                     eval_duration: Some(total_duration),
-                    context: None,
+                    context: if context_tokens.is_empty() {
+                        None
+                    } else {
+                        Some(context_tokens)
+                    },
                 })
                 .into_response()
             }
@@ -402,7 +440,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_generate_streaming_returns_sse() {
+    async fn test_generate_streaming_returns_ndjson() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
 
@@ -428,7 +466,10 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        assert!(content_type.contains("text/event-stream"));
+        assert!(
+            content_type.contains("application/x-ndjson"),
+            "expected NDJSON content-type, got: {content_type}"
+        );
 
         std::env::remove_var("A3S_POWER_HOME");
     }

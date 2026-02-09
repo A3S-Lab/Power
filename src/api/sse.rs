@@ -17,6 +17,32 @@ where
     Sse::new(event_stream).keep_alive(KeepAlive::default())
 }
 
+/// Create a newline-delimited JSON (NDJSON) response from a stream of serializable values.
+///
+/// Ollama's native API uses NDJSON (`{...}\n`) for streaming, not SSE.
+/// Each item is serialized to JSON and followed by a newline character.
+pub fn ndjson_response<S, T>(stream: S) -> axum::response::Response
+where
+    S: Stream<Item = T> + Send + 'static,
+    T: serde::Serialize + Send + 'static,
+{
+    use axum::body::Body;
+    use axum::http::header;
+    use futures::StreamExt;
+
+    let body_stream = stream.map(|item| {
+        let mut json = serde_json::to_string(&item).unwrap_or_default();
+        json.push('\n');
+        Ok::<_, Infallible>(json)
+    });
+
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .header(header::TRANSFER_ENCODING, "chunked")
+        .body(Body::from_stream(body_stream))
+        .unwrap()
+}
+
 /// Format a single SSE data line from a serializable value.
 pub fn format_sse_data<T: serde::Serialize>(value: &T) -> Option<String> {
     serde_json::to_string(value).ok()
@@ -66,5 +92,17 @@ mod tests {
         let result = format_sse_data(&data);
         assert!(result.is_some());
         assert!(result.unwrap().contains("nested"));
+    }
+
+    #[test]
+    fn test_ndjson_serialization() {
+        let data = serde_json::json!({"model": "test", "done": false});
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(!json.ends_with('\n'));
+        let ndjson = format!("{}\n", json);
+        assert!(ndjson.ends_with('\n'));
+        // Verify it's valid JSON when trimmed
+        let parsed: serde_json::Value = serde_json::from_str(ndjson.trim()).unwrap();
+        assert_eq!(parsed["model"], "test");
     }
 }

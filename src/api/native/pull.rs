@@ -1,10 +1,6 @@
-use std::convert::Infallible;
-
 use axum::extract::State;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::Json;
-use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -97,14 +93,9 @@ pub async fn handler(
             }
         });
 
-        let event_stream = ReceiverStream::new(rx).map(|resp| {
-            let data = serde_json::to_string(&resp).unwrap_or_default();
-            Ok::<_, Infallible>(Event::default().data(data))
-        });
+        let event_stream = ReceiverStream::new(rx);
 
-        Sse::new(event_stream)
-            .keep_alive(KeepAlive::default())
-            .into_response()
+        crate::api::sse::ndjson_response(event_stream)
     } else {
         // Non-streaming: download and return final status
         match crate::model::pull::pull_model(&model_name, None, None).await {

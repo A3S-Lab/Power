@@ -124,6 +124,21 @@ impl AppState {
     pub fn loaded_model_names(&self) -> Vec<String> {
         self.loaded_models.read().unwrap().keys().cloned().collect()
     }
+    /// Return all models whose keep-alive has expired (eligible for background unloading).
+    /// Models with `keep_alive == Duration::MAX` are never expired.
+    pub fn expired_models(&self) -> Vec<String> {
+        self.loaded_models
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(_, entry)| {
+                entry.keep_alive != Duration::MAX
+                    && entry.keep_alive != Duration::ZERO
+                    && entry.last_used.elapsed() >= entry.keep_alive
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -278,5 +293,85 @@ mod tests {
             Arc::new(PowerConfig::default()),
         );
         assert_eq!(state.lru_model(), None);
+    }
+
+    #[test]
+    fn test_expired_models_empty_when_no_models() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        assert!(state.expired_models().is_empty());
+    }
+
+    #[test]
+    fn test_expired_models_not_expired_yet() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        // Default keep_alive is "5m" — model was just loaded, not expired
+        state.mark_loaded("model-a");
+        assert!(state.expired_models().is_empty());
+    }
+
+    #[test]
+    fn test_expired_models_with_tiny_keep_alive() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        // Set a 1ms keep_alive so it expires immediately
+        state.mark_loaded_with_keep_alive("model-a", Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(5));
+        let expired = state.expired_models();
+        assert_eq!(expired, vec!["model-a"]);
+    }
+
+    #[test]
+    fn test_expired_models_never_expires_with_max_duration() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        // Duration::MAX means never unload
+        state.mark_loaded_with_keep_alive("model-a", Duration::MAX);
+        assert!(state.expired_models().is_empty());
+    }
+
+    #[test]
+    fn test_expired_models_zero_duration_not_reaped() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        // Duration::ZERO means "unload immediately after request" — handled in autoload,
+        // not by the background reaper.
+        state.mark_loaded_with_keep_alive("model-a", Duration::ZERO);
+        assert!(state.expired_models().is_empty());
+    }
+
+    #[test]
+    fn test_touch_resets_expiry() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        state.mark_loaded_with_keep_alive("model-a", Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(30));
+        // Touch resets the timer
+        state.touch_model("model-a");
+        std::thread::sleep(Duration::from_millis(30));
+        // 30ms after touch, 50ms keep_alive — should NOT be expired
+        assert!(state.expired_models().is_empty());
+        // Wait for full expiry
+        std::thread::sleep(Duration::from_millis(25));
+        assert_eq!(state.expired_models(), vec!["model-a"]);
     }
 }

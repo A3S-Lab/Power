@@ -130,9 +130,8 @@ pub async fn fetch_registry_model(name: &str, tag: &str) -> Result<OllamaRegistr
         fetch_license_blobs(&client, &namespace, &license_layers),
     )?;
 
-    let params_map: Option<HashMap<String, serde_json::Value>> = params
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok());
+    let params_map: Option<HashMap<String, serde_json::Value>> =
+        params.as_deref().and_then(|s| serde_json::from_str(s).ok());
 
     Ok(OllamaRegistryModel {
         model_digest: model_layer.digest.clone(),
@@ -179,8 +178,14 @@ fn find_layer<'a>(layers: &'a [LayerDescriptor], media_type: &str) -> Option<&'a
 }
 
 /// Find all layers matching a given media type.
-fn find_all_layers<'a>(layers: &'a [LayerDescriptor], media_type: &str) -> Vec<&'a LayerDescriptor> {
-    layers.iter().filter(|l| l.media_type == media_type).collect()
+fn find_all_layers<'a>(
+    layers: &'a [LayerDescriptor],
+    media_type: &str,
+) -> Vec<&'a LayerDescriptor> {
+    layers
+        .iter()
+        .filter(|l| l.media_type == media_type)
+        .collect()
 }
 
 /// Fetch and parse the config blob (JSON with model metadata).
@@ -190,9 +195,11 @@ async fn fetch_config_blob(
     descriptor: &LayerDescriptor,
 ) -> Result<OllamaModelConfig> {
     let url = format!("{REGISTRY_BASE}/v2/{namespace}/blobs/{}", descriptor.digest);
-    let resp = client.get(&url).send().await.map_err(|e| {
-        PowerError::Config(format!("Failed to fetch config blob: {e}"))
-    })?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| PowerError::Config(format!("Failed to fetch config blob: {e}")))?;
 
     if !resp.status().is_success() {
         return Ok(OllamaModelConfig::default());
@@ -248,10 +255,7 @@ async fn fetch_license_blobs(
 
         if resp.status().is_success() {
             let text = resp.text().await.map_err(|e| {
-                PowerError::Config(format!(
-                    "Failed to read license blob {}: {e}",
-                    desc.digest
-                ))
+                PowerError::Config(format!("Failed to read license blob {}: {e}", desc.digest))
             })?;
             parts.push(text);
         }

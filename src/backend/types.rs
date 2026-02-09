@@ -254,6 +254,9 @@ pub struct CompletionResponseChunk {
     /// Time spent evaluating the prompt, in nanoseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_eval_duration_ns: Option<u64>,
+    /// Token ID for this chunk (used to build context for conversation continuity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_id: Option<u32>,
 }
 
 // ============================================================================
@@ -460,6 +463,7 @@ mod tests {
             prompt_tokens: Some(10),
             done_reason: Some("stop".to_string()),
             prompt_eval_duration_ns: Some(5_000_000),
+            token_id: Some(123),
         };
         let json = serde_json::to_string(&chunk).unwrap();
         let parsed: CompletionResponseChunk = serde_json::from_str(&json).unwrap();
@@ -468,6 +472,7 @@ mod tests {
         assert_eq!(parsed.prompt_tokens, Some(10));
         assert_eq!(parsed.done_reason.as_deref(), Some("stop"));
         assert_eq!(parsed.prompt_eval_duration_ns, Some(5_000_000));
+        assert_eq!(parsed.token_id, Some(123));
     }
 
     #[test]
