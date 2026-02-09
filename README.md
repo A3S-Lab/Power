@@ -25,7 +25,7 @@
 ### Basic Usage
 
 ```bash
-# Pull a model by name (resolves from built-in registry or HuggingFace)
+# Pull a model by name (resolves from Ollama registry, built-in registry, or HuggingFace)
 a3s-power pull llama3.2:3b
 
 # Pull from a direct URL
@@ -47,12 +47,13 @@ a3s-power serve
 ## Features
 
 - **CLI Model Management**: Pull, list, show, delete, and push models from the command line
-- **Model Name Resolution**: Pull models by name (`llama3.2:3b`) with built-in registry and HuggingFace fallback
+- **Ollama Registry Integration**: Pull any model from `registry.ollama.ai` by name (`llama3.2:3b`) — primary resolution source with built-in registry and HuggingFace fallback
 - **Interactive Chat**: Multi-turn conversation with streaming token output
 - **Vision/Multimodal Support**: Accept image URLs in chat messages (OpenAI-compatible `content` array format)
 - **Tool/Function Calling**: Structured tool definitions, tool choice, and tool call responses (OpenAI-compatible)
 - **Chat Template Auto-Detection**: Detects ChatML, Llama, Phi, and Generic templates from GGUF metadata
 - **Multiple Concurrent Models**: Load multiple models with LRU eviction at configurable capacity
+- **Automatic Model Unloading**: Background keep_alive reaper unloads idle models after configurable timeout (default 5m)
 - **GPU Acceleration**: Configurable GPU layer offloading via `[gpu]` config section
 - **Embedding Support**: Real embedding generation with automatic model reload in embedding mode
 - **HTTP Server**: Axum-based server with CORS, tracing, and metrics middleware
@@ -60,21 +61,22 @@ a3s-power serve
 - **OpenAI-Compatible API**: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`
 - **Blob Management API**: Check, upload, and download content-addressed blobs via REST
 - **Push API**: Upload models to remote registries with progress reporting
-- **SSE Streaming**: All inference and pull endpoints support server-sent events
+- **NDJSON Streaming**: Native API endpoints stream as `application/x-ndjson` (Ollama wire format); OpenAI endpoints use SSE
+- **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
 - **Prometheus Metrics**: `GET /metrics` endpoint with request counts, durations, tokens, model gauges, inference duration, TTFT, cost, evictions, model memory, and GPU metrics
 - **Usage Dashboard**: `GET /v1/usage` endpoint with date range and model filtering for cost tracking
 - **Content-Addressed Storage**: Model blobs stored by SHA-256 hash with automatic deduplication
 - **llama.cpp Backend**: GGUF inference via `llama-cpp-2` Rust bindings (optional feature flag)
 - **Health Check**: `GET /health` endpoint with uptime, version, and loaded model count
 - **Model Auto-Loading**: Models are automatically loaded on first inference request with LRU eviction
-- **TOML Configuration**: User-configurable host, port, GPU settings, and storage settings
+- **TOML Configuration**: User-configurable host, port, GPU settings, keep_alive, and storage settings
 - **Async-First**: Built on Tokio for high-performance async operations
 
 ## Quality Metrics
 
 ### Test Coverage
 
-**332 unit tests** with comprehensive coverage across 50 source files:
+**356 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -212,7 +214,7 @@ cargo build -p a3s-power --features llamacpp
 ### Model Management
 
 ```bash
-# Pull a model by name (built-in registry + HuggingFace fallback)
+# Pull a model by name (Ollama registry → built-in registry → HuggingFace fallback)
 a3s-power pull llama3.2:3b
 
 # Pull from a direct URL
@@ -455,6 +457,7 @@ Configuration is read from `~/.a3s/power/config.toml`:
 host = "127.0.0.1"
 port = 11435
 max_loaded_models = 1
+keep_alive = "5m"    # auto-unload idle models ("0"=immediate, "-1"=never, "5m", "1h")
 
 [gpu]
 gpu_layers = -1   # offload all layers to GPU (-1=all, 0=CPU only)
@@ -467,6 +470,7 @@ main_gpu = 0      # primary GPU index
 | `port` | `11435` | HTTP server port |
 | `data_dir` | `~/.a3s/power` | Base directory for model storage |
 | `max_loaded_models` | `1` | Maximum models loaded in memory concurrently |
+| `keep_alive` | `"5m"` | Auto-unload idle models after this duration (`"0"`=immediate, `"-1"`=never, `"5m"`, `"1h"`, `"30s"`) |
 | `gpu.gpu_layers` | `0` | Number of layers to offload to GPU (0=CPU, -1=all) |
 | `gpu.main_gpu` | `0` | Index of the primary GPU to use |
 
@@ -491,7 +495,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 332 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 356 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -531,8 +535,10 @@ power/
     │   ├── storage.rs       # Content-addressed blob store (SHA-256)
     │   ├── pull.rs          # HTTP download with progress callback
     │   ├── push.rs          # Push model to remote registry
-    │   ├── resolve.rs       # Name-based model resolution (built-in + HuggingFace)
-    │   └── known_models.json# Built-in registry of popular GGUF models
+    │   ├── resolve.rs       # Name-based model resolution (Ollama registry → built-in → HuggingFace)
+    │   ├── ollama_registry.rs # Ollama registry client (fetch manifests, metadata, blob URLs)
+    │   ├── modelfile.rs     # Modelfile parser (FROM, PARAMETER, SYSTEM, TEMPLATE, etc.)
+    │   └── known_models.json# Built-in registry of popular GGUF models (offline fallback)
     ├── backend/
     │   ├── mod.rs           # Backend trait + BackendRegistry
     │   ├── types.rs         # Inference types (vision, tools, chat, completion, embedding)
@@ -548,7 +554,7 @@ power/
         ├── autoload.rs      # Model auto-loading on first inference
         ├── health.rs        # GET /health endpoint
         ├── types.rs         # OpenAI + Ollama request/response types
-        ├── sse.rs           # SSE streaming utilities
+        ├── sse.rs           # Streaming utilities (NDJSON for native API, SSE for OpenAI API)
         ├── native/
         │   ├── mod.rs       # Ollama-compatible route group
         │   ├── generate.rs  # POST /api/generate
@@ -599,7 +605,8 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 | **context** | `a3s-context` | Independent utility (no direct relationship) |
 
 **Standalone Usage**: `a3s-power` works independently as a local model server for any application:
-- Drop-in Ollama replacement with identical API
+- Drop-in Ollama replacement with identical API and NDJSON wire format
+- Pull any model from Ollama registry by name (`llama3.2:3b`, `qwen2.5:7b`, etc.)
 - OpenAI SDK compatible for seamless integration
 - Local-first inference with no cloud dependency
 
@@ -640,19 +647,17 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [x] Chat template auto-detection from GGUF metadata (ChatML, Llama, Phi, Generic)
 - [x] Health check endpoint (`/health`)
 - [x] Prometheus metrics endpoint (`/metrics` with request/token/model counters)
-- [x] 332 comprehensive unit tests
 
 ### Phase 5: Full Ollama Parity ✅
 
 - [x] Vision/Multimodal support (`MessageContent` enum with text + image URL parts)
 - [x] Tool/Function calling (tool definitions, tool choice, tool call responses)
-- [x] Push API + CLI with streaming SSE progress (`POST /api/push`, `a3s-power push`)
+- [x] Push API + CLI with streaming progress (`POST /api/push`, `a3s-power push`)
 - [x] Blob management API (`HEAD/POST/GET/DELETE /api/blobs/:digest`)
 - [x] Generate API: `system`, `template`, `raw`, `suffix`, `context`, `images` fields
 - [x] Native chat `images` field (Ollama base64 format)
 - [x] CLI `cp` command for model aliasing
 - [x] New error variants (`UploadFailed`, `InvalidDigest`, `BlobNotFound`)
-- [x] 332 comprehensive unit tests
 
 ### Phase 6: Observability & Cost Tracking ✅
 
@@ -676,6 +681,26 @@ End-to-end observability for LLM inference:
 - [x] **GPU Utilization Metrics**: GPU memory, compute utilization per device
   - `power_gpu_memory_bytes{device}` gauge
   - `power_gpu_utilization{device}` gauge
+
+### Phase 7: Ollama Drop-in Compatibility ✅
+
+Wire-format and runtime compatibility for seamless Ollama replacement:
+
+- [x] **Ollama Registry Integration**: Pull any model from `registry.ollama.ai` by name — primary resolution source with template, system prompt, params, and license metadata
+- [x] **NDJSON Streaming**: Native API endpoints (`/api/generate`, `/api/chat`, `/api/pull`, `/api/push`) stream as `application/x-ndjson` (Ollama wire format); OpenAI endpoints keep SSE
+- [x] **Automatic Model Unloading**: Background keep_alive reaper checks every 5s and unloads idle models (configurable: `"5m"`, `"1h"`, `"0"`, `"-1"`)
+- [x] **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
+- [x] 356 comprehensive unit tests
+
+### Phase 8: Advanced Compatibility 🚧
+
+- [ ] **Jinja2/Go Template Engine**: Replace hardcoded chat templates with `minijinja` for arbitrary template rendering
+- [ ] **KV Cache Reuse**: Persist `LlamaContext` across requests for multi-turn conversation performance
+- [ ] **Tool Call Parsing**: Parse model output into structured `tool_calls` in inference responses
+- [ ] **JSON Schema Structured Output**: Support `format: {"type":"object","properties":{...}}` via GBNF grammar generation
+- [ ] **Vision Inference**: Actual multimodal inference with llava/clip projector support
+- [ ] **ADAPTER Support**: Load LoRA/QLoRA adapters via Modelfile `ADAPTER` directive
+- [ ] **MESSAGE Directive**: Pre-seeded conversation history in Modelfile
 
 ## License
 
