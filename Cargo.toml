@@ -44,6 +44,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 futures = "0.3"
 
+# Self-update
+a3s-updater = { version = "0.1", path = "../updater" }
+
 # CLI
 clap = { version = "4", features = ["derive"] }
 

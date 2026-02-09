@@ -119,6 +119,9 @@ pub enum Commands {
         /// Destination model name
         destination: String,
     },
+
+    /// Update a3s-power to the latest version
+    Update,
 }
 
 #[cfg(test)]
@@ -188,10 +191,7 @@ mod tests {
             "https://registry.example.com",
         ]);
         match cli.command {
-            Commands::Push {
-                model,
-                destination,
-            } => {
+            Commands::Push { model, destination } => {
                 assert_eq!(model, "llama3");
                 assert_eq!(destination, "https://registry.example.com");
             }
@@ -252,9 +252,7 @@ mod tests {
 
     #[test]
     fn test_parse_serve_custom() {
-        let cli = Cli::parse_from([
-            "a3s-power", "serve", "--host", "0.0.0.0", "--port", "8080",
-        ]);
+        let cli = Cli::parse_from(["a3s-power", "serve", "--host", "0.0.0.0", "--port", "8080"]);
         match cli.command {
             Commands::Serve { host, port } => {
                 assert_eq!(host, "0.0.0.0");
@@ -266,13 +264,7 @@ mod tests {
 
     #[test]
     fn test_parse_create_command() {
-        let cli = Cli::parse_from([
-            "a3s-power",
-            "create",
-            "my-model",
-            "-f",
-            "Modelfile",
-        ]);
+        let cli = Cli::parse_from(["a3s-power", "create", "my-model", "-f", "Modelfile"]);
         match cli.command {
             Commands::Create { name, file } => {
                 assert_eq!(name, "my-model");

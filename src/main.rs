@@ -21,6 +21,18 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    // Early exit for update command (no need to init registry/backends)
+    if matches!(cli.command, Commands::Update) {
+        return a3s_updater::run_update(&a3s_updater::UpdateConfig {
+            binary_name: "a3s-power",
+            crate_name: "a3s-power",
+            current_version: env!("CARGO_PKG_VERSION"),
+            github_owner: "A3S-Lab",
+            github_repo: "Power",
+        })
+        .await;
+    }
+
     // Load configuration
     let config = std::sync::Arc::new(PowerConfig::load()?);
 
@@ -114,15 +126,16 @@ async fn main() -> anyhow::Result<()> {
             source,
             destination,
         } => {
-            let manifest = registry.get(&source).map_err(|_| {
-                anyhow::anyhow!("Source model '{}' not found", source)
-            })?;
+            let manifest = registry
+                .get(&source)
+                .map_err(|_| anyhow::anyhow!("Source model '{}' not found", source))?;
             let mut new_manifest = manifest.clone();
             new_manifest.name = destination.clone();
             new_manifest.created_at = chrono::Utc::now();
             registry.register(new_manifest)?;
             println!("Copied '{}' to '{}'", source, destination);
         }
+        Commands::Update => unreachable!(),
     }
 
     Ok(())
