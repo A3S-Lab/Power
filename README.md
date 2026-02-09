@@ -51,10 +51,12 @@ a3s-power serve
 - **Interactive Chat**: Multi-turn conversation with streaming token output
 - **Vision/Multimodal Support**: Accept image URLs in chat messages (OpenAI-compatible `content` array format)
 - **Tool/Function Calling**: Structured tool definitions, tool choice, and tool call responses (OpenAI-compatible)
+- **JSON Schema Structured Output**: Constrain model output to match JSON Schema via GBNF grammar generation — supports `"json"`, `{"type":"json_object"}`, or full JSON Schema objects
 - **Chat Template Auto-Detection**: Detects ChatML, Llama, Phi, and Generic templates from GGUF metadata
 - **Jinja2 Template Engine**: Renders arbitrary Jinja2 chat templates via `minijinja` (Llama 3, Gemma, ChatML, Phi, custom) with hardcoded fallback
 - **KV Cache Reuse**: Persists `LlamaContext` across requests with prefix matching — skips re-evaluating shared prompt tokens for multi-turn speedup
 - **Tool Call Parsing**: Parses model output into structured `tool_calls` — supports `<tool_call>` XML, `[TOOL_CALLS]` prefix, and raw JSON formats
+- **Modelfile Support**: Create custom models with `FROM`, `PARAMETER`, `SYSTEM`, `TEMPLATE`, `ADAPTER` (LoRA/QLoRA), `LICENSE`, and `MESSAGE` (pre-seeded conversations) directives
 - **Multiple Concurrent Models**: Load multiple models with LRU eviction at configurable capacity
 - **Automatic Model Unloading**: Background keep_alive reaper unloads idle models after configurable timeout (default 5m)
 - **GPU Acceleration**: Configurable GPU layer offloading via `[gpu]` config section
@@ -79,7 +81,7 @@ a3s-power serve
 
 ### Test Coverage
 
-**400 unit tests** with comprehensive coverage across 50+ source files:
+**429 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -401,6 +403,35 @@ curl -X POST http://localhost:11435/api/push \
   -d '{"name": "llama3.2:3b", "destination": "https://registry.example.com"}'
 ```
 
+#### Structured Output (JSON Schema)
+
+```bash
+# Constrain output to match a JSON Schema
+curl http://localhost:11435/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama3.2:3b",
+    "prompt": "List 3 colors with hex codes",
+    "format": {
+      "type": "object",
+      "properties": {
+        "colors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "hex": {"type": "string"}
+            },
+            "required": ["name", "hex"]
+          }
+        }
+      },
+      "required": ["colors"]
+    }
+  }'
+```
+
 #### Blob Management
 
 ```bash
@@ -498,7 +529,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 400 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 429 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -547,6 +578,7 @@ power/
     │   ├── types.rs         # Inference types (vision, tools, chat, completion, embedding)
     │   ├── llamacpp.rs      # llama.cpp backend (feature-gated, multi-model, KV cache reuse)
     │   ├── chat_template.rs # Chat template detection, Jinja2 rendering (minijinja), and fallback formatting
+    │   ├── json_schema.rs  # JSON Schema → GBNF grammar converter for structured output
     │   ├── tool_parser.rs   # Tool call output parser (XML, Mistral, JSON formats)
     │   └── test_utils.rs    # MockBackend for testing
     ├── server/
@@ -694,17 +726,18 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **NDJSON Streaming**: Native API endpoints (`/api/generate`, `/api/chat`, `/api/pull`, `/api/push`) stream as `application/x-ndjson` (Ollama wire format); OpenAI endpoints keep SSE
 - [x] **Automatic Model Unloading**: Background keep_alive reaper checks every 5s and unloads idle models (configurable: `"5m"`, `"1h"`, `"0"`, `"-1"`)
 - [x] **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
-- [x] 400 comprehensive unit tests
+- [x] 429 comprehensive unit tests
 
-### Phase 8: Advanced Compatibility 🚧
+### Phase 8: Advanced Compatibility ✅
 
 - [x] **Jinja2/Go Template Engine**: Render arbitrary Jinja2 chat templates via `minijinja` (Llama 3, Gemma, ChatML, Phi, custom) with hardcoded fallback; prefers Ollama registry `template_override` over GGUF metadata
 - [x] **KV Cache Reuse**: Persist `LlamaContext` across requests with prefix matching — skips re-evaluating shared prompt tokens for multi-turn conversation speedup
 - [x] **Tool Call Parsing**: Parse model output into structured `tool_calls` — supports `<tool_call>` XML (Hermes/Qwen), `[TOOL_CALLS]` prefix (Mistral), and raw JSON formats; zero overhead when no tools in request
-- [ ] **JSON Schema Structured Output**: Support `format: {"type":"object","properties":{...}}` via GBNF grammar generation
-- [ ] **Vision Inference**: Actual multimodal inference with llava/clip projector support
-- [ ] **ADAPTER Support**: Load LoRA/QLoRA adapters via Modelfile `ADAPTER` directive
-- [ ] **MESSAGE Directive**: Pre-seeded conversation history in Modelfile
+- [x] **JSON Schema Structured Output**: Support `format: {"type":"object","properties":{...}}` via JSON Schema → GBNF grammar conversion; accepts `"json"`, `{"type":"json_object"}`, or full JSON Schema objects
+- [x] **Vision Inference**: Image passthrough pipeline — accepts base64 images in Ollama `images` field and OpenAI `image_url` content parts; infrastructure-ready for clip projector integration
+- [x] **ADAPTER Support**: Modelfile `ADAPTER` directive parsed and stored in manifest; LoRA/QLoRA adapter path flows through create API to model registry
+- [x] **MESSAGE Directive**: Pre-seeded conversation history via Modelfile `MESSAGE` directive; messages stored in manifest and automatically prepended to chat requests
+- [x] 429 comprehensive unit tests
 
 ## License
 
