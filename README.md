@@ -77,20 +77,45 @@ a3s-power serve
 
 | Module | Tests |
 |--------|-------|
-| Backend types (vision, tools, chat) | 18 |
-| API types (OpenAI + Ollama) | 24 |
+| API types (OpenAI + Ollama) | 31 |
+| Error handling | 18 |
+| Backend types (vision, tools, chat) | 17 |
+| Configuration | 16 |
 | Chat templates | 12 |
-| Blob management API | 7 |
-| Push API | 3 |
-| Native chat/generate/embed handlers | 29 |
-| OpenAI chat/completions/embeddings | 14 |
-| Model management (registry, storage, pull) | 20 |
-| Server (router, state, metrics, health) | 22 |
-| Error handling | 14 |
-| Configuration & directories | 16 |
-| Backend (llama.cpp, mock) | 14 |
+| Server state (AppState, LRU) | 11 |
 | CLI command parsing | 11 |
-| Other (autoload, SSE, copy, create, etc.) | 77 |
+| Native generate handler | 11 |
+| Native chat handler | 10 |
+| Model pull | 9 |
+| Backend llama.cpp | 9 |
+| OpenAI chat handler | 9 |
+| Model resolve | 8 |
+| Model Modelfile | 8 |
+| Model manifest | 8 |
+| Server router | 7 |
+| Server metrics | 7 |
+| Model registry | 7 |
+| Native blobs API | 7 |
+| Model storage | 5 |
+| Model push | 5 |
+| Directories | 5 |
+| Backend registry | 5 |
+| OpenAI embeddings | 5 |
+| OpenAI completions | 5 |
+| Native models handler | 5 |
+| Native embeddings | 4 |
+| Native embed (batch) | 4 |
+| Health endpoint | 4 |
+| Autoload | 4 |
+| Backend test utils | 3 |
+| SSE streaming | 3 |
+| Native push | 3 |
+| Native ps | 3 |
+| Native create | 3 |
+| Native copy | 3 |
+| OpenAI models | 2 |
+| OpenAI helpers | 2 |
+| Native version | 2 |
 
 Run tests:
 ```bash
