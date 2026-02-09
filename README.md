@@ -52,6 +52,9 @@ a3s-power serve
 - **Vision/Multimodal Support**: Accept image URLs in chat messages (OpenAI-compatible `content` array format)
 - **Tool/Function Calling**: Structured tool definitions, tool choice, and tool call responses (OpenAI-compatible)
 - **Chat Template Auto-Detection**: Detects ChatML, Llama, Phi, and Generic templates from GGUF metadata
+- **Jinja2 Template Engine**: Renders arbitrary Jinja2 chat templates via `minijinja` (Llama 3, Gemma, ChatML, Phi, custom) with hardcoded fallback
+- **KV Cache Reuse**: Persists `LlamaContext` across requests with prefix matching — skips re-evaluating shared prompt tokens for multi-turn speedup
+- **Tool Call Parsing**: Parses model output into structured `tool_calls` — supports `<tool_call>` XML, `[TOOL_CALLS]` prefix, and raw JSON formats
 - **Multiple Concurrent Models**: Load multiple models with LRU eviction at configurable capacity
 - **Automatic Model Unloading**: Background keep_alive reaper unloads idle models after configurable timeout (default 5m)
 - **GPU Acceleration**: Configurable GPU layer offloading via `[gpu]` config section
@@ -76,7 +79,7 @@ a3s-power serve
 
 ### Test Coverage
 
-**356 unit tests** with comprehensive coverage across 50+ source files:
+**400 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -495,7 +498,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 356 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 400 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -542,8 +545,9 @@ power/
     ├── backend/
     │   ├── mod.rs           # Backend trait + BackendRegistry
     │   ├── types.rs         # Inference types (vision, tools, chat, completion, embedding)
-    │   ├── llamacpp.rs      # llama.cpp backend (feature-gated, multi-model)
-    │   ├── chat_template.rs # Chat template detection and formatting
+    │   ├── llamacpp.rs      # llama.cpp backend (feature-gated, multi-model, KV cache reuse)
+    │   ├── chat_template.rs # Chat template detection, Jinja2 rendering (minijinja), and fallback formatting
+    │   ├── tool_parser.rs   # Tool call output parser (XML, Mistral, JSON formats)
     │   └── test_utils.rs    # MockBackend for testing
     ├── server/
     │   ├── mod.rs           # Server startup (bind, listen)
@@ -690,13 +694,13 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **NDJSON Streaming**: Native API endpoints (`/api/generate`, `/api/chat`, `/api/pull`, `/api/push`) stream as `application/x-ndjson` (Ollama wire format); OpenAI endpoints keep SSE
 - [x] **Automatic Model Unloading**: Background keep_alive reaper checks every 5s and unloads idle models (configurable: `"5m"`, `"1h"`, `"0"`, `"-1"`)
 - [x] **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
-- [x] 356 comprehensive unit tests
+- [x] 400 comprehensive unit tests
 
 ### Phase 8: Advanced Compatibility 🚧
 
-- [ ] **Jinja2/Go Template Engine**: Replace hardcoded chat templates with `minijinja` for arbitrary template rendering
-- [ ] **KV Cache Reuse**: Persist `LlamaContext` across requests for multi-turn conversation performance
-- [ ] **Tool Call Parsing**: Parse model output into structured `tool_calls` in inference responses
+- [x] **Jinja2/Go Template Engine**: Render arbitrary Jinja2 chat templates via `minijinja` (Llama 3, Gemma, ChatML, Phi, custom) with hardcoded fallback; prefers Ollama registry `template_override` over GGUF metadata
+- [x] **KV Cache Reuse**: Persist `LlamaContext` across requests with prefix matching — skips re-evaluating shared prompt tokens for multi-turn conversation speedup
+- [x] **Tool Call Parsing**: Parse model output into structured `tool_calls` — supports `<tool_call>` XML (Hermes/Qwen), `[TOOL_CALLS]` prefix (Mistral), and raw JSON formats; zero overhead when no tools in request
 - [ ] **JSON Schema Structured Output**: Support `format: {"type":"object","properties":{...}}` via GBNF grammar generation
 - [ ] **Vision Inference**: Actual multimodal inference with llava/clip projector support
 - [ ] **ADAPTER Support**: Load LoRA/QLoRA adapters via Modelfile `ADAPTER` directive
