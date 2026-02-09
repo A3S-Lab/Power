@@ -273,4 +273,10 @@ mod tests {
             _ => panic!("Expected Create command"),
         }
     }
+
+    #[test]
+    fn test_parse_update_command() {
+        let cli = Cli::parse_from(["a3s-power", "update"]);
+        assert!(matches!(cli.command, Commands::Update));
+    }
 }
