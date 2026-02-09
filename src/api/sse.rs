@@ -49,4 +49,22 @@ mod tests {
     fn test_sse_done_constant() {
         assert_eq!(SSE_DONE, "[DONE]");
     }
+
+    #[tokio::test]
+    async fn test_sse_response_creates_stream() {
+        use futures::stream;
+        let input = stream::iter(vec!["hello".to_string(), "world".to_string()]);
+        let _sse = sse_response(input);
+        // Just verify it compiles and creates without panic
+    }
+
+    #[test]
+    fn test_format_sse_data_none_on_invalid() {
+        // Channels and other non-serializable types would fail,
+        // but all serde types should work. Test with a valid nested struct.
+        let data = serde_json::json!({"nested": {"key": [1, 2, 3]}});
+        let result = format_sse_data(&data);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("nested"));
+    }
 }

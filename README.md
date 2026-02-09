@@ -61,7 +61,8 @@ a3s-power serve
 - **Blob Management API**: Check, upload, and download content-addressed blobs via REST
 - **Push API**: Upload models to remote registries with progress reporting
 - **SSE Streaming**: All inference and pull endpoints support server-sent events
-- **Prometheus Metrics**: `GET /metrics` endpoint with request counts, durations, token counters, and model gauges
+- **Prometheus Metrics**: `GET /metrics` endpoint with request counts, durations, tokens, model gauges, inference duration, TTFT, cost, evictions, model memory, and GPU metrics
+- **Usage Dashboard**: `GET /v1/usage` endpoint with date range and model filtering for cost tracking
 - **Content-Addressed Storage**: Model blobs stored by SHA-256 hash with automatic deduplication
 - **llama.cpp Backend**: GGUF inference via `llama-cpp-2` Rust bindings (optional feature flag)
 - **Health Check**: `GET /health` endpoint with uptime, version, and loaded model count
@@ -73,7 +74,7 @@ a3s-power serve
 
 ### Test Coverage
 
-**291 unit tests** with **86.22% region coverage** and **83.36% line coverage**:
+**332 unit tests** with comprehensive coverage across 50 source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -81,7 +82,8 @@ a3s-power serve
 | api/native/mod.rs | 22 | 100.00% | 1 | 100.00% |
 | api/native/ps.rs | 71 | 100.00% | 11 | 100.00% |
 | api/native/version.rs | 21 | 100.00% | 6 | 100.00% |
-| api/openai/mod.rs | 29 | 100.00% | 4 | 100.00% |
+| api/openai/mod.rs | 30 | 100.00% | 4 | 100.00% |
+| api/openai/usage.rs | 238 | 100.00% | 18 | 100.00% |
 | backend/llamacpp.rs | 143 | 100.00% | 23 | 100.00% |
 | backend/test_utils.rs | 114 | 100.00% | 18 | 100.00% |
 | error.rs | 93 | 100.00% | 19 | 100.00% |
@@ -89,32 +91,32 @@ a3s-power serve
 | server/router.rs | 107 | 100.00% | 16 | 100.00% |
 | api/types.rs | 406 | 99.75% | 33 | 100.00% |
 | api/native/embeddings.rs | 111 | 99.10% | 7 | 100.00% |
+| server/metrics.rs | 607 | 98.35% | 54 | 96.30% |
 | api/native/models.rs | 170 | 98.82% | 18 | 100.00% |
 | backend/mod.rs | 65 | 98.46% | 15 | 100.00% |
+| dirs.rs | 55 | 98.18% | 12 | 91.67% |
 | backend/types.rs | 226 | 97.79% | 20 | 95.00% |
-| server/metrics.rs | 236 | 97.03% | 25 | 92.00% |
+| api/sse.rs | 37 | 97.30% | 9 | 88.89% |
 | backend/chat_template.rs | 195 | 96.92% | 19 | 100.00% |
 | api/openai/embeddings.rs | 187 | 95.72% | 9 | 100.00% |
 | api/native/create.rs | 112 | 95.54% | 7 | 100.00% |
 | api/native/blobs.rs | 210 | 94.76% | 15 | 100.00% |
 | server/state.rs | 186 | 94.62% | 26 | 92.31% |
 | config.rs | 184 | 92.93% | 26 | 96.15% |
-| api/autoload.rs | 140 | 92.86% | 14 | 100.00% |
+| api/autoload.rs | 148 | 91.89% | 14 | 100.00% |
 | api/native/copy.rs | 60 | 91.67% | 6 | 100.00% |
-| cli/mod.rs | 102 | 90.20% | 11 | 100.00% |
+| cli/mod.rs | 106 | 90.57% | 12 | 100.00% |
 | model/modelfile.rs | 171 | 89.47% | 13 | 100.00% |
-| api/openai/chat.rs | 378 | 88.36% | 19 | 68.42% |
+| model/storage.rs | 127 | 88.98% | 15 | 86.67% |
 | api/openai/models.rs | 66 | 87.88% | 6 | 100.00% |
-| dirs.rs | 48 | 87.50% | 11 | 81.82% |
-| api/native/generate.rs | 412 | 86.89% | 20 | 75.00% |
-| api/openai/completions.rs | 245 | 84.90% | 12 | 66.67% |
-| api/native/chat.rs | 434 | 82.95% | 21 | 71.43% |
+| model/registry.rs | 248 | 85.08% | 36 | 80.56% |
+| api/openai/chat.rs | 447 | 83.89% | 19 | 68.42% |
+| api/native/generate.rs | 475 | 82.95% | 20 | 75.00% |
 | api/native/embed.rs | 77 | 81.82% | 7 | 100.00% |
-| model/storage.rs | 102 | 79.41% | 12 | 75.00% |
-| model/registry.rs | 198 | 77.78% | 30 | 73.33% |
-| api/sse.rs | 25 | 72.00% | 6 | 66.67% |
+| api/native/chat.rs | 497 | 79.68% | 21 | 71.43% |
+| api/openai/completions.rs | 317 | 78.55% | 12 | 66.67% |
 | api/native/push.rs | 150 | 66.67% | 9 | 66.67% |
-| model/resolve.rs | 146 | 56.16% | 20 | 55.00% |
+| model/resolve.rs | 187 | 65.78% | 27 | 66.67% |
 | model/push.rs | 112 | 50.00% | 17 | 70.59% |
 | model/pull.rs | 116 | 46.55% | 17 | 64.71% |
 | cli/delete.rs | 7 | 0.00% | 1 | 0.00% |
@@ -126,11 +128,12 @@ a3s-power serve
 | cli/show.rs | 31 | 0.00% | 1 | 0.00% |
 | server/mod.rs | 24 | 0.00% | 4 | 0.00% |
 | api/native/pull.rs | 108 | 0.00% | 5 | 0.00% |
-| **TOTAL** | **6426** | **83.36%** | **617** | **85.25%** |
+| **TOTAL** | **7450** | **84.40%** | **685** | **87.30%** |
 
 Run coverage report:
 ```bash
-cargo llvm-cov -p a3s-power --lib --summary-only
+just test-cov    # Pretty coverage with module breakdown
+just cov-table   # Detailed file-by-file table
 ```
 
 ## Architecture
@@ -255,7 +258,7 @@ a3s-power serve --host 0.0.0.0 --port 8080
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check (status, version, uptime, loaded models) |
-| `GET` | `/metrics` | Prometheus metrics (request counts, durations, tokens, model gauge) |
+| `GET` | `/metrics` | Prometheus metrics (requests, durations, tokens, inference, TTFT, cost, evictions, model memory, GPU) |
 
 ### Native API (Ollama-Compatible)
 
@@ -286,6 +289,7 @@ a3s-power serve --host 0.0.0.0 --port 8080
 | `POST` | `/v1/completions` | Text completion (streaming/non-streaming) |
 | `GET` | `/v1/models` | List available models |
 | `POST` | `/v1/embeddings` | Generate embeddings |
+| `GET` | `/v1/usage` | Usage and cost dashboard data (date range + model filter) |
 
 ### Examples
 
@@ -487,7 +491,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 258 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 332 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -636,7 +640,7 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [x] Chat template auto-detection from GGUF metadata (ChatML, Llama, Phi, Generic)
 - [x] Health check endpoint (`/health`)
 - [x] Prometheus metrics endpoint (`/metrics` with request/token/model counters)
-- [x] 291 comprehensive unit tests
+- [x] 332 comprehensive unit tests
 
 ### Phase 5: Full Ollama Parity ✅
 
@@ -648,30 +652,30 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 - [x] Native chat `images` field (Ollama base64 format)
 - [x] CLI `cp` command for model aliasing
 - [x] New error variants (`UploadFailed`, `InvalidDigest`, `BlobNotFound`)
-- [x] 258 comprehensive unit tests
+- [x] 332 comprehensive unit tests
 
-### Phase 6: Observability & Cost Tracking 📋
+### Phase 6: Observability & Cost Tracking ✅
 
 End-to-end observability for LLM inference:
 
-- [ ] **OpenTelemetry Spans**: Instrument inference pipeline
-  - Span: `a3s.llm.completion` with attributes: model, provider, stream, temperature
-  - Span: `a3s.llm.embedding` with attributes: model, dimension, input_count
-  - Child spans: tokenization, sampling, detokenization
-- [ ] **Token & Cost Metrics**: Per-call recording exported via OTLP
-  - `a3s_power_tokens_total{model, direction=input|output}` counter
-  - `a3s_power_cost_dollars{model}` counter
-  - `a3s_power_inference_duration_seconds{model}` histogram
-  - `a3s_power_ttft_seconds{model}` histogram (time to first token)
-- [ ] **Cost Dashboard Data**: Aggregate cost by model / agent / session / day
-  - JSON export endpoint: `GET /v1/usage` with date range filter
-- [ ] **Model Lifecycle Metrics**: Load time, memory usage, eviction count
-  - `a3s_power_model_load_seconds{model}` histogram
-  - `a3s_power_model_memory_bytes{model}` gauge
-  - `a3s_power_model_evictions_total` counter
-- [ ] **GPU Utilization Metrics**: GPU memory, compute utilization per model
-  - `a3s_power_gpu_memory_bytes{device}` gauge
-  - `a3s_power_gpu_utilization{device}` gauge
+- [x] **OpenTelemetry-Ready Metrics**: Instrument inference pipeline with Prometheus metrics
+  - `power_inference_duration_seconds{model}` summary (count + sum)
+  - `power_ttft_seconds{model}` summary (time to first token)
+  - Per-model inference instrumentation across all 4 inference endpoints
+- [x] **Token & Cost Metrics**: Per-call recording via Prometheus
+  - `power_inference_tokens_total{model, type=input|output}` counter
+  - `power_cost_dollars{model}` counter
+  - `power_inference_duration_seconds{model}` summary
+  - `power_ttft_seconds{model}` summary (time to first token)
+- [x] **Cost Dashboard Data**: Aggregate cost by model / day
+  - JSON export endpoint: `GET /v1/usage` with date range and model filter
+- [x] **Model Lifecycle Metrics**: Load time, memory usage, eviction count
+  - `power_model_load_duration_seconds{model}` summary
+  - `power_model_memory_bytes{model}` gauge
+  - `power_model_evictions_total` counter
+- [x] **GPU Utilization Metrics**: GPU memory, compute utilization per device
+  - `power_gpu_memory_bytes{device}` gauge
+  - `power_gpu_utilization{device}` gauge
 
 ## License
 

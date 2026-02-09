@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use futures::StreamExt;
 use std::convert::Infallible;
+use std::time::Instant;
 
 use super::openai_error;
 use crate::api::types::{CompletionChoice, CompletionRequest, CompletionResponse, Usage};
@@ -70,11 +71,39 @@ pub async fn handler(
                 let id = request_id.clone();
                 let model = model_name.clone();
                 let created = chrono::Utc::now().timestamp();
+                let start = Instant::now();
+
+                let eval_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let counter_clone = eval_counter.clone();
+                let prompt_tokens_shared =
+                    std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let prompt_tokens_clone = prompt_tokens_shared.clone();
+                let ttft_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let ttft_clone = ttft_recorded.clone();
+                let metrics = state.metrics.clone();
+                let metrics_done = state.metrics.clone();
+                let model_for_metrics = model_name.clone();
+                let model_for_done = model_name.clone();
 
                 let sse_stream = stream
                     .map(move |chunk| {
                         let data = match chunk {
                             Ok(c) => {
+                                if !c.done {
+                                    counter_clone
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    if !ttft_clone.swap(true, std::sync::atomic::Ordering::Relaxed)
+                                    {
+                                        metrics.record_ttft(
+                                            &model_for_metrics,
+                                            start.elapsed().as_secs_f64(),
+                                        );
+                                    }
+                                }
+                                if let Some(pt) = c.prompt_tokens {
+                                    prompt_tokens_clone
+                                        .store(pt, std::sync::atomic::Ordering::Relaxed);
+                                }
                                 let finish_reason = if c.done {
                                     Some(c.done_reason.unwrap_or_else(|| "stop".to_string()))
                                 } else {
@@ -105,7 +134,24 @@ pub async fn handler(
                         };
                         Ok::<_, Infallible>(Event::default().data(data))
                     })
-                    .chain(futures::stream::once(async {
+                    .chain(futures::stream::once(async move {
+                        // Record final metrics when stream completes
+                        let duration = start.elapsed().as_secs_f64();
+                        let eval_count = eval_counter.load(std::sync::atomic::Ordering::Relaxed);
+                        let prompt_tokens =
+                            prompt_tokens_shared.load(std::sync::atomic::Ordering::Relaxed);
+                        metrics_done.record_inference_duration(&model_for_done, duration);
+                        metrics_done.record_tokens(&model_for_done, "input", prompt_tokens as u64);
+                        metrics_done.record_tokens(&model_for_done, "output", eval_count as u64);
+                        metrics_done.record_usage(crate::server::metrics::UsageRecord {
+                            timestamp: chrono::Utc::now(),
+                            model: model_for_done.clone(),
+                            prompt_tokens,
+                            completion_tokens: eval_count,
+                            total_tokens: prompt_tokens + eval_count,
+                            duration_secs: duration,
+                            cost_dollars: 0.0,
+                        });
                         Ok(Event::default().data("[DONE]"))
                     }));
 
@@ -113,10 +159,12 @@ pub async fn handler(
                     .keep_alive(KeepAlive::default())
                     .into_response()
             } else {
+                let start = Instant::now();
                 let mut full_text = String::new();
                 let mut completion_tokens: u32 = 0;
                 let mut prompt_tokens: u32 = 0;
                 let mut finish_reason = "stop".to_string();
+                let mut ttft_recorded = false;
                 let mut stream = stream;
                 while let Some(chunk) = stream.next().await {
                     match chunk {
@@ -124,6 +172,12 @@ pub async fn handler(
                             full_text.push_str(&c.text);
                             if !c.done {
                                 completion_tokens += 1;
+                                if !ttft_recorded {
+                                    state
+                                        .metrics
+                                        .record_ttft(&model_name, start.elapsed().as_secs_f64());
+                                    ttft_recorded = true;
+                                }
                             }
                             if let Some(pt) = c.prompt_tokens {
                                 prompt_tokens = pt;
@@ -137,6 +191,30 @@ pub async fn handler(
                         }
                     }
                 }
+
+                let total_duration_secs = start.elapsed().as_secs_f64();
+
+                // Record Phase 6 metrics
+                state
+                    .metrics
+                    .record_inference_duration(&model_name, total_duration_secs);
+                state
+                    .metrics
+                    .record_tokens(&model_name, "input", prompt_tokens as u64);
+                state
+                    .metrics
+                    .record_tokens(&model_name, "output", completion_tokens as u64);
+                state
+                    .metrics
+                    .record_usage(crate::server::metrics::UsageRecord {
+                        timestamp: chrono::Utc::now(),
+                        model: model_name.clone(),
+                        prompt_tokens,
+                        completion_tokens,
+                        total_tokens: prompt_tokens + completion_tokens,
+                        duration_secs: total_duration_secs,
+                        cost_dollars: 0.0,
+                    });
 
                 Json(CompletionResponse {
                     id: request_id,

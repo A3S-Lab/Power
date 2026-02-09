@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use serde::{Deserialize, Serialize};
 
 use crate::server::state::AppState;
 
@@ -40,8 +41,35 @@ struct TokenKey {
     token_type: String,
 }
 
-/// Prometheus metrics collector.
+/// A single recorded inference duration entry.
+#[derive(Debug, Clone)]
+struct InferenceDuration {
+    model: String,
+    duration_secs: f64,
+}
+
+/// A single recorded time-to-first-token entry.
+#[derive(Debug, Clone)]
+struct TtftEntry {
+    model: String,
+    ttft_secs: f64,
+}
+
+/// A single inference usage record for cost tracking and the /v1/usage endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageRecord {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub model: String,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    pub duration_secs: f64,
+    pub cost_dollars: f64,
+}
+
+/// Prometheus metrics collector with Phase 6 observability support.
 pub struct Metrics {
+    // --- Existing metrics ---
     /// HTTP request counts by (method, path, status).
     http_requests: RwLock<Vec<(RequestKey, u64)>>,
     /// HTTP request durations.
@@ -52,6 +80,30 @@ pub struct Metrics {
     pub models_loaded: AtomicU64,
     /// Inference token counts by (model, type).
     inference_tokens: RwLock<Vec<(TokenKey, u64)>>,
+
+    // --- Phase 6: Inference duration & TTFT ---
+    /// Per-model inference duration samples.
+    inference_durations: RwLock<Vec<InferenceDuration>>,
+    /// Per-model time-to-first-token samples.
+    ttft_entries: RwLock<Vec<TtftEntry>>,
+
+    // --- Phase 6: Cost tracking ---
+    /// Per-call usage records for the /v1/usage endpoint.
+    usage_records: RwLock<Vec<UsageRecord>>,
+    /// Cumulative cost by model (for Prometheus counter).
+    cost_dollars: RwLock<Vec<(String, f64)>>,
+
+    // --- Phase 6: Model lifecycle ---
+    /// Total number of model evictions.
+    model_evictions: AtomicU64,
+    /// Per-model estimated memory usage in bytes.
+    model_memory_bytes: RwLock<Vec<(String, u64)>>,
+
+    // --- Phase 6: GPU metrics ---
+    /// Per-device GPU memory usage in bytes.
+    gpu_memory_bytes: RwLock<Vec<(String, u64)>>,
+    /// Per-device GPU utilization (0.0 - 1.0).
+    gpu_utilization: RwLock<Vec<(String, f64)>>,
 }
 
 impl Default for Metrics {
@@ -68,6 +120,14 @@ impl Metrics {
             model_load_durations: RwLock::new(Vec::new()),
             models_loaded: AtomicU64::new(0),
             inference_tokens: RwLock::new(Vec::new()),
+            inference_durations: RwLock::new(Vec::new()),
+            ttft_entries: RwLock::new(Vec::new()),
+            usage_records: RwLock::new(Vec::new()),
+            cost_dollars: RwLock::new(Vec::new()),
+            model_evictions: AtomicU64::new(0),
+            model_memory_bytes: RwLock::new(Vec::new()),
+            gpu_memory_bytes: RwLock::new(Vec::new()),
+            gpu_utilization: RwLock::new(Vec::new()),
         }
     }
 
@@ -121,6 +181,115 @@ impl Metrics {
         } else {
             tokens.push((key, count));
         }
+    }
+
+    /// Record an inference duration for a model.
+    pub fn record_inference_duration(&self, model: &str, duration_secs: f64) {
+        let mut durations = self.inference_durations.write().unwrap();
+        durations.push(InferenceDuration {
+            model: model.to_string(),
+            duration_secs,
+        });
+    }
+
+    /// Record time-to-first-token for a model.
+    pub fn record_ttft(&self, model: &str, ttft_secs: f64) {
+        let mut entries = self.ttft_entries.write().unwrap();
+        entries.push(TtftEntry {
+            model: model.to_string(),
+            ttft_secs,
+        });
+    }
+
+    /// Record a complete inference usage record for the /v1/usage endpoint.
+    pub fn record_usage(&self, record: UsageRecord) {
+        // Accumulate cost by model
+        {
+            let mut costs = self.cost_dollars.write().unwrap();
+            if let Some(entry) = costs.iter_mut().find(|(m, _)| *m == record.model) {
+                entry.1 += record.cost_dollars;
+            } else {
+                costs.push((record.model.clone(), record.cost_dollars));
+            }
+        }
+        // Store the full record
+        {
+            let mut records = self.usage_records.write().unwrap();
+            records.push(record);
+        }
+    }
+
+    /// Increment the model eviction counter.
+    pub fn increment_evictions(&self) {
+        self.model_evictions.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Set the estimated memory usage for a model.
+    pub fn set_model_memory(&self, model: &str, bytes: u64) {
+        let mut mem = self.model_memory_bytes.write().unwrap();
+        if let Some(entry) = mem.iter_mut().find(|(m, _)| m == model) {
+            entry.1 = bytes;
+        } else {
+            mem.push((model.to_string(), bytes));
+        }
+    }
+
+    /// Remove memory tracking for an unloaded model.
+    pub fn remove_model_memory(&self, model: &str) {
+        let mut mem = self.model_memory_bytes.write().unwrap();
+        mem.retain(|(m, _)| m != model);
+    }
+
+    /// Set GPU memory usage for a device.
+    pub fn set_gpu_memory(&self, device: &str, bytes: u64) {
+        let mut mem = self.gpu_memory_bytes.write().unwrap();
+        if let Some(entry) = mem.iter_mut().find(|(d, _)| d == device) {
+            entry.1 = bytes;
+        } else {
+            mem.push((device.to_string(), bytes));
+        }
+    }
+
+    /// Set GPU utilization for a device (0.0 - 1.0).
+    pub fn set_gpu_utilization(&self, device: &str, utilization: f64) {
+        let mut util = self.gpu_utilization.write().unwrap();
+        if let Some(entry) = util.iter_mut().find(|(d, _)| d == device) {
+            entry.1 = utilization;
+        } else {
+            util.push((device.to_string(), utilization));
+        }
+    }
+
+    /// Return a snapshot of all usage records, optionally filtered by date range and model.
+    pub fn query_usage(
+        &self,
+        start: Option<chrono::DateTime<chrono::Utc>>,
+        end: Option<chrono::DateTime<chrono::Utc>>,
+        model: Option<&str>,
+    ) -> Vec<UsageRecord> {
+        let records = self.usage_records.read().unwrap();
+        records
+            .iter()
+            .filter(|r| {
+                if let Some(s) = start {
+                    if r.timestamp < s {
+                        return false;
+                    }
+                }
+                if let Some(e) = end {
+                    if r.timestamp > e {
+                        return false;
+                    }
+                }
+                if let Some(m) = model {
+                    if r.model != m {
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect()
     }
 
     /// Render all metrics in Prometheus text exposition format.
@@ -220,6 +389,121 @@ impl Metrics {
             }
         }
 
+        // power_inference_duration_seconds
+        output.push_str("# HELP power_inference_duration_seconds Inference duration in seconds.\n");
+        output.push_str("# TYPE power_inference_duration_seconds summary\n");
+        {
+            let durations = self.inference_durations.read().unwrap();
+            let mut aggregated: Vec<(String, u64, f64)> = Vec::new();
+            for d in durations.iter() {
+                if let Some(entry) = aggregated.iter_mut().find(|(m, _, _)| *m == d.model) {
+                    entry.1 += 1;
+                    entry.2 += d.duration_secs;
+                } else {
+                    aggregated.push((d.model.clone(), 1, d.duration_secs));
+                }
+            }
+            for (model, count, sum) in &aggregated {
+                output.push_str(&format!(
+                    "power_inference_duration_seconds_count{{model=\"{}\"}} {}\n",
+                    model, count
+                ));
+                output.push_str(&format!(
+                    "power_inference_duration_seconds_sum{{model=\"{}\"}} {:.6}\n",
+                    model, sum
+                ));
+            }
+        }
+
+        // power_ttft_seconds
+        output.push_str("# HELP power_ttft_seconds Time to first token in seconds.\n");
+        output.push_str("# TYPE power_ttft_seconds summary\n");
+        {
+            let entries = self.ttft_entries.read().unwrap();
+            let mut aggregated: Vec<(String, u64, f64)> = Vec::new();
+            for e in entries.iter() {
+                if let Some(entry) = aggregated.iter_mut().find(|(m, _, _)| *m == e.model) {
+                    entry.1 += 1;
+                    entry.2 += e.ttft_secs;
+                } else {
+                    aggregated.push((e.model.clone(), 1, e.ttft_secs));
+                }
+            }
+            for (model, count, sum) in &aggregated {
+                output.push_str(&format!(
+                    "power_ttft_seconds_count{{model=\"{}\"}} {}\n",
+                    model, count
+                ));
+                output.push_str(&format!(
+                    "power_ttft_seconds_sum{{model=\"{}\"}} {:.6}\n",
+                    model, sum
+                ));
+            }
+        }
+
+        // power_cost_dollars
+        output.push_str(
+            "# HELP power_cost_dollars Estimated cumulative inference cost in dollars.\n",
+        );
+        output.push_str("# TYPE power_cost_dollars counter\n");
+        {
+            let costs = self.cost_dollars.read().unwrap();
+            for (model, total) in costs.iter() {
+                output.push_str(&format!(
+                    "power_cost_dollars{{model=\"{}\"}} {:.6}\n",
+                    model, total
+                ));
+            }
+        }
+
+        // power_model_evictions_total
+        output.push_str("# HELP power_model_evictions_total Total number of model evictions.\n");
+        output.push_str("# TYPE power_model_evictions_total counter\n");
+        output.push_str(&format!(
+            "power_model_evictions_total {}\n",
+            self.model_evictions.load(Ordering::Relaxed)
+        ));
+
+        // power_model_memory_bytes
+        output
+            .push_str("# HELP power_model_memory_bytes Estimated memory usage per loaded model.\n");
+        output.push_str("# TYPE power_model_memory_bytes gauge\n");
+        {
+            let mem = self.model_memory_bytes.read().unwrap();
+            for (model, bytes) in mem.iter() {
+                output.push_str(&format!(
+                    "power_model_memory_bytes{{model=\"{}\"}} {}\n",
+                    model, bytes
+                ));
+            }
+        }
+
+        // power_gpu_memory_bytes
+        output.push_str("# HELP power_gpu_memory_bytes GPU memory usage in bytes.\n");
+        output.push_str("# TYPE power_gpu_memory_bytes gauge\n");
+        {
+            let mem = self.gpu_memory_bytes.read().unwrap();
+            for (device, bytes) in mem.iter() {
+                output.push_str(&format!(
+                    "power_gpu_memory_bytes{{device=\"{}\"}} {}\n",
+                    device, bytes
+                ));
+            }
+        }
+
+        // power_gpu_utilization
+        output.push_str("# HELP power_gpu_utilization GPU compute utilization (0.0-1.0).\n");
+        output.push_str("# TYPE power_gpu_utilization gauge\n");
+        {
+            let util = self.gpu_utilization.read().unwrap();
+            for (device, pct) in util.iter() {
+                output.push_str(&format!(
+                    "power_gpu_utilization{{device=\"{}\"}} {:.6}\n",
+                    device, pct
+                ));
+            }
+        }
+
         output
     }
 }
@@ -275,6 +559,7 @@ mod tests {
     fn test_metrics_new() {
         let metrics = Metrics::new();
         assert_eq!(metrics.models_loaded.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.model_evictions.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -343,6 +628,7 @@ mod tests {
 
         assert!(output.contains("# HELP power_http_requests_total"));
         assert!(output.contains("power_models_loaded 0"));
+        assert!(output.contains("power_model_evictions_total 0"));
     }
 
     #[test]
@@ -360,5 +646,235 @@ mod tests {
     fn test_normalize_path_strips_query() {
         assert_eq!(normalize_path("/api/chat?stream=true"), "/api/chat");
         assert_eq!(normalize_path("/health"), "/health");
+    }
+
+    // --- Phase 6 tests ---
+
+    #[test]
+    fn test_record_inference_duration() {
+        let metrics = Metrics::new();
+        metrics.record_inference_duration("llama3", 1.5);
+        metrics.record_inference_duration("llama3", 2.0);
+        metrics.record_inference_duration("qwen", 0.5);
+
+        let output = metrics.render();
+        assert!(output.contains("power_inference_duration_seconds_count{model=\"llama3\"} 2"));
+        assert!(output.contains("power_inference_duration_seconds_sum{model=\"llama3\"} 3.5"));
+        assert!(output.contains("power_inference_duration_seconds_count{model=\"qwen\"} 1"));
+    }
+
+    #[test]
+    fn test_record_ttft() {
+        let metrics = Metrics::new();
+        metrics.record_ttft("llama3", 0.05);
+        metrics.record_ttft("llama3", 0.08);
+
+        let output = metrics.render();
+        assert!(output.contains("power_ttft_seconds_count{model=\"llama3\"} 2"));
+        assert!(output.contains("power_ttft_seconds_sum{model=\"llama3\"} 0.13"));
+    }
+
+    #[test]
+    fn test_record_usage_and_cost() {
+        let metrics = Metrics::new();
+        let record = UsageRecord {
+            timestamp: chrono::Utc::now(),
+            model: "llama3".to_string(),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            duration_secs: 1.5,
+            cost_dollars: 0.0,
+        };
+        metrics.record_usage(record);
+
+        let output = metrics.render();
+        assert!(output.contains("power_cost_dollars{model=\"llama3\"} 0.000000"));
+
+        let records = metrics.query_usage(None, None, None);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].model, "llama3");
+        assert_eq!(records[0].total_tokens, 150);
+    }
+
+    #[test]
+    fn test_query_usage_with_model_filter() {
+        let metrics = Metrics::new();
+        let now = chrono::Utc::now();
+        metrics.record_usage(UsageRecord {
+            timestamp: now,
+            model: "llama3".to_string(),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            duration_secs: 1.0,
+            cost_dollars: 0.0,
+        });
+        metrics.record_usage(UsageRecord {
+            timestamp: now,
+            model: "qwen".to_string(),
+            prompt_tokens: 200,
+            completion_tokens: 100,
+            total_tokens: 300,
+            duration_secs: 2.0,
+            cost_dollars: 0.0,
+        });
+
+        let llama_records = metrics.query_usage(None, None, Some("llama3"));
+        assert_eq!(llama_records.len(), 1);
+        assert_eq!(llama_records[0].model, "llama3");
+
+        let all_records = metrics.query_usage(None, None, None);
+        assert_eq!(all_records.len(), 2);
+    }
+
+    #[test]
+    fn test_query_usage_with_date_filter() {
+        let metrics = Metrics::new();
+        let early = chrono::Utc::now() - chrono::Duration::hours(2);
+        let mid = chrono::Utc::now() - chrono::Duration::hours(1);
+        let late = chrono::Utc::now();
+
+        metrics.record_usage(UsageRecord {
+            timestamp: early,
+            model: "llama3".to_string(),
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            duration_secs: 0.5,
+            cost_dollars: 0.0,
+        });
+        metrics.record_usage(UsageRecord {
+            timestamp: late,
+            model: "llama3".to_string(),
+            prompt_tokens: 20,
+            completion_tokens: 10,
+            total_tokens: 30,
+            duration_secs: 1.0,
+            cost_dollars: 0.0,
+        });
+
+        // Filter: only records after mid
+        let recent = metrics.query_usage(Some(mid), None, None);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].total_tokens, 30);
+    }
+
+    #[test]
+    fn test_increment_evictions() {
+        let metrics = Metrics::new();
+        assert_eq!(metrics.model_evictions.load(Ordering::Relaxed), 0);
+
+        metrics.increment_evictions();
+        metrics.increment_evictions();
+        assert_eq!(metrics.model_evictions.load(Ordering::Relaxed), 2);
+
+        let output = metrics.render();
+        assert!(output.contains("power_model_evictions_total 2"));
+    }
+
+    #[test]
+    fn test_set_model_memory() {
+        let metrics = Metrics::new();
+        metrics.set_model_memory("llama3", 4_000_000_000);
+        metrics.set_model_memory("qwen", 2_000_000_000);
+
+        let output = metrics.render();
+        assert!(output.contains("power_model_memory_bytes{model=\"llama3\"} 4000000000"));
+        assert!(output.contains("power_model_memory_bytes{model=\"qwen\"} 2000000000"));
+
+        // Update existing
+        metrics.set_model_memory("llama3", 5_000_000_000);
+        let output = metrics.render();
+        assert!(output.contains("power_model_memory_bytes{model=\"llama3\"} 5000000000"));
+    }
+
+    #[test]
+    fn test_remove_model_memory() {
+        let metrics = Metrics::new();
+        metrics.set_model_memory("llama3", 4_000_000_000);
+        metrics.set_model_memory("qwen", 2_000_000_000);
+
+        metrics.remove_model_memory("llama3");
+        let output = metrics.render();
+        assert!(!output.contains("model=\"llama3\"} 4000000000"));
+        assert!(output.contains("power_model_memory_bytes{model=\"qwen\"} 2000000000"));
+    }
+
+    #[test]
+    fn test_set_gpu_memory() {
+        let metrics = Metrics::new();
+        metrics.set_gpu_memory("gpu0", 8_000_000_000);
+
+        let output = metrics.render();
+        assert!(output.contains("power_gpu_memory_bytes{device=\"gpu0\"} 8000000000"));
+
+        // Update
+        metrics.set_gpu_memory("gpu0", 6_000_000_000);
+        let output = metrics.render();
+        assert!(output.contains("power_gpu_memory_bytes{device=\"gpu0\"} 6000000000"));
+    }
+
+    #[test]
+    fn test_set_gpu_utilization() {
+        let metrics = Metrics::new();
+        metrics.set_gpu_utilization("gpu0", 0.75);
+
+        let output = metrics.render();
+        assert!(output.contains("power_gpu_utilization{device=\"gpu0\"} 0.750000"));
+
+        // Update
+        metrics.set_gpu_utilization("gpu0", 0.5);
+        let output = metrics.render();
+        assert!(output.contains("power_gpu_utilization{device=\"gpu0\"} 0.500000"));
+    }
+
+    #[test]
+    fn test_cost_accumulates_across_records() {
+        let metrics = Metrics::new();
+        let now = chrono::Utc::now();
+        metrics.record_usage(UsageRecord {
+            timestamp: now,
+            model: "llama3".to_string(),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            duration_secs: 1.0,
+            cost_dollars: 0.01,
+        });
+        metrics.record_usage(UsageRecord {
+            timestamp: now,
+            model: "llama3".to_string(),
+            prompt_tokens: 200,
+            completion_tokens: 100,
+            total_tokens: 300,
+            duration_secs: 2.0,
+            cost_dollars: 0.02,
+        });
+
+        let output = metrics.render();
+        assert!(output.contains("power_cost_dollars{model=\"llama3\"} 0.030000"));
+    }
+
+    #[test]
+    fn test_render_includes_all_phase6_sections() {
+        let metrics = Metrics::new();
+        let output = metrics.render();
+
+        // All new metric sections should have HELP/TYPE headers even when empty
+        assert!(output.contains("# HELP power_inference_duration_seconds"));
+        assert!(output.contains("# TYPE power_inference_duration_seconds summary"));
+        assert!(output.contains("# HELP power_ttft_seconds"));
+        assert!(output.contains("# TYPE power_ttft_seconds summary"));
+        assert!(output.contains("# HELP power_cost_dollars"));
+        assert!(output.contains("# TYPE power_cost_dollars counter"));
+        assert!(output.contains("# HELP power_model_evictions_total"));
+        assert!(output.contains("# TYPE power_model_evictions_total counter"));
+        assert!(output.contains("# HELP power_model_memory_bytes"));
+        assert!(output.contains("# TYPE power_model_memory_bytes gauge"));
+        assert!(output.contains("# HELP power_gpu_memory_bytes"));
+        assert!(output.contains("# TYPE power_gpu_memory_bytes gauge"));
+        assert!(output.contains("# HELP power_gpu_utilization"));
+        assert!(output.contains("# TYPE power_gpu_utilization gauge"));
     }
 }

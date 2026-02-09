@@ -139,6 +139,16 @@ pub async fn handler(
                 // Use shared counter for streaming eval_count
                 let eval_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
                 let counter_clone = eval_counter.clone();
+                let prompt_tokens_shared =
+                    std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let prompt_tokens_clone = prompt_tokens_shared.clone();
+                // Track time-to-first-token
+                let ttft_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let ttft_clone = ttft_recorded.clone();
+                let metrics = state.metrics.clone();
+                let metrics_done = state.metrics.clone();
+                let model_for_metrics = model_name.clone();
+                let model_for_done = model_name.clone();
                 let sse_stream = stream
                     .map(move |chunk| {
                         let resp = match chunk {
@@ -146,6 +156,18 @@ pub async fn handler(
                                 if !c.done {
                                     counter_clone
                                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    // Record TTFT on first content chunk
+                                    if !ttft_clone.swap(true, std::sync::atomic::Ordering::Relaxed)
+                                    {
+                                        metrics.record_ttft(
+                                            &model_for_metrics,
+                                            start.elapsed().as_secs_f64(),
+                                        );
+                                    }
+                                }
+                                if let Some(pt) = c.prompt_tokens {
+                                    prompt_tokens_clone
+                                        .store(pt, std::sync::atomic::Ordering::Relaxed);
                                 }
                                 let eval_count_val =
                                     counter_clone.load(std::sync::atomic::Ordering::Relaxed);
@@ -200,7 +222,24 @@ pub async fn handler(
                         let data = serde_json::to_string(&resp).unwrap_or_default();
                         Ok::<_, Infallible>(Event::default().data(data))
                     })
-                    .chain(futures::stream::once(async {
+                    .chain(futures::stream::once(async move {
+                        // Record final metrics when stream completes
+                        let duration = start.elapsed().as_secs_f64();
+                        let eval_count = eval_counter.load(std::sync::atomic::Ordering::Relaxed);
+                        let prompt_tokens =
+                            prompt_tokens_shared.load(std::sync::atomic::Ordering::Relaxed);
+                        metrics_done.record_inference_duration(&model_for_done, duration);
+                        metrics_done.record_tokens(&model_for_done, "input", prompt_tokens as u64);
+                        metrics_done.record_tokens(&model_for_done, "output", eval_count as u64);
+                        metrics_done.record_usage(crate::server::metrics::UsageRecord {
+                            timestamp: chrono::Utc::now(),
+                            model: model_for_done.clone(),
+                            prompt_tokens,
+                            completion_tokens: eval_count,
+                            total_tokens: prompt_tokens + eval_count,
+                            duration_secs: duration,
+                            cost_dollars: 0.0,
+                        });
                         Ok(Event::default().data("[DONE]"))
                     }));
                 Sse::new(sse_stream)
@@ -214,6 +253,7 @@ pub async fn handler(
                 let mut prompt_eval_count: Option<u32> = None;
                 let mut prompt_eval_duration: Option<u64> = None;
                 let mut done_reason: Option<String> = None;
+                let mut ttft_recorded = false;
                 let mut stream = stream;
                 while let Some(chunk) = stream.next().await {
                     match chunk {
@@ -221,6 +261,12 @@ pub async fn handler(
                             full_content.push_str(&c.content);
                             if !c.done {
                                 eval_count += 1;
+                                if !ttft_recorded {
+                                    state
+                                        .metrics
+                                        .record_ttft(&model_name, start.elapsed().as_secs_f64());
+                                    ttft_recorded = true;
+                                }
                             }
                             if c.prompt_tokens.is_some() {
                                 prompt_eval_count = c.prompt_tokens;
@@ -239,6 +285,29 @@ pub async fn handler(
                     }
                 }
                 let total_duration = start.elapsed().as_nanos() as u64;
+                let total_duration_secs = start.elapsed().as_secs_f64();
+                let pt = prompt_eval_count.unwrap_or(0);
+
+                // Record Phase 6 metrics
+                state
+                    .metrics
+                    .record_inference_duration(&model_name, total_duration_secs);
+                state.metrics.record_tokens(&model_name, "input", pt as u64);
+                state
+                    .metrics
+                    .record_tokens(&model_name, "output", eval_count as u64);
+                state
+                    .metrics
+                    .record_usage(crate::server::metrics::UsageRecord {
+                        timestamp: chrono::Utc::now(),
+                        model: model_name.clone(),
+                        prompt_tokens: pt,
+                        completion_tokens: eval_count,
+                        total_tokens: pt + eval_count,
+                        duration_secs: total_duration_secs,
+                        cost_dollars: 0.0,
+                    });
+
                 Json(NativeChatResponse {
                     model: model_name,
                     message: ChatCompletionMessage {
@@ -440,7 +509,8 @@ mod tests {
             .method("POST")
             .uri("/api/chat")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{
+            .body(Body::from(
+                r#"{
                 "model":"test",
                 "messages":[{"role":"user","content":"weather in SF?"}],
                 "tools":[{
@@ -452,7 +522,8 @@ mod tests {
                     }
                 }],
                 "stream":false
-            }"#))
+            }"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -481,7 +552,8 @@ mod tests {
             .method("POST")
             .uri("/api/chat")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{
+            .body(Body::from(
+                r#"{
                 "model":"test",
                 "messages":[{
                     "role":"user",
@@ -491,7 +563,8 @@ mod tests {
                     ]
                 }],
                 "stream":false
-            }"#))
+            }"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -519,7 +592,8 @@ mod tests {
             .method("POST")
             .uri("/api/chat")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{
+            .body(Body::from(
+                r#"{
                 "model":"test",
                 "messages":[{
                     "role":"user",
@@ -527,7 +601,8 @@ mod tests {
                     "images":["iVBORw0KGgo="]
                 }],
                 "stream":false
-            }"#))
+            }"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);

@@ -2,6 +2,7 @@ pub mod chat;
 pub mod completions;
 pub mod embeddings;
 pub mod models;
+pub mod usage;
 
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -15,6 +16,7 @@ pub fn routes() -> Router<AppState> {
         .route("/completions", post(completions::handler))
         .route("/models", get(models::handler))
         .route("/embeddings", post(embeddings::handler))
+        .route("/usage", get(usage::handler))
 }
 
 /// Return a standard OpenAI-compatible error JSON response.

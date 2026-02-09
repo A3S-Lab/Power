@@ -84,4 +84,17 @@ mod tests {
         assert_eq!(config_path(), PathBuf::from("/tmp/test-power/config.toml"));
         std::env::remove_var("A3S_POWER_HOME");
     }
+
+    #[test]
+    #[serial]
+    fn test_ensure_dirs_creates_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        ensure_dirs().unwrap();
+        assert!(manifests_dir().exists());
+        assert!(blobs_dir().exists());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
 }
