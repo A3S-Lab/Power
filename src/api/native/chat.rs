@@ -704,4 +704,90 @@ mod tests {
 
         std::env::remove_var("A3S_POWER_HOME");
     }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_chat_streaming_body_is_valid_ndjson() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+
+        // Each non-empty line should be valid JSON
+        let lines: Vec<&str> = text.trim().split('\n').filter(|l| !l.is_empty()).collect();
+        assert!(!lines.is_empty(), "should have at least one NDJSON line");
+        for line in &lines {
+            let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
+            assert!(
+                parsed.is_ok(),
+                "each line should be valid JSON, got: {line}"
+            );
+            let json = parsed.unwrap();
+            assert!(json.get("model").is_some(), "each line should have 'model'");
+            assert!(
+                json.get("message").is_some(),
+                "each line should have 'message'"
+            );
+        }
+
+        // Last line should have done=true
+        let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        assert_eq!(last["done"], true);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_chat_non_streaming_has_timing_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":false}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["done"], true);
+        // Timing fields should be present on final response
+        assert!(json["total_duration"].is_number());
+        assert!(json["load_duration"].is_number());
+        assert!(json["eval_count"].is_number());
+        assert!(json["eval_duration"].is_number());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
 }

@@ -218,4 +218,97 @@ mod tests {
         // rsplit('/') on empty string returns [""], not None
         assert_eq!(extract_name_from_url(""), "");
     }
+
+    #[test]
+    fn test_model_source_direct_creates_basic_manifest() {
+        // Verify that ModelSource::Direct produces a manifest with no enrichment
+        let manifest = ModelManifest {
+            name: "test:latest".to_string(),
+            format: ModelFormat::Gguf,
+            size: 1024,
+            sha256: "abc123".to_string(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: PathBuf::from("/tmp/test"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+        };
+        assert!(manifest.parameters.is_none());
+        assert!(manifest.system_prompt.is_none());
+        assert!(manifest.template_override.is_none());
+        assert!(manifest.default_parameters.is_none());
+        assert!(manifest.license.is_none());
+    }
+
+    #[test]
+    fn test_model_source_ollama_enriches_manifest() {
+        use crate::model::ollama_registry::{OllamaModelConfig, OllamaRegistryModel};
+        use std::collections::HashMap;
+
+        let reg = OllamaRegistryModel {
+            model_digest: "sha256:abc".to_string(),
+            model_size: 4_000_000_000,
+            template: Some("{{ .System }}{{ .Prompt }}".to_string()),
+            system_prompt: Some("You are a helpful assistant.".to_string()),
+            params: Some(HashMap::from([(
+                "temperature".to_string(),
+                serde_json::Value::from(0.7),
+            )])),
+            license: Some("MIT".to_string()),
+            config: OllamaModelConfig {
+                model_format: Some("gguf".to_string()),
+                model_family: Some("llama".to_string()),
+                model_type: Some("3.2B".to_string()),
+                file_type: Some("Q4_K_M".to_string()),
+            },
+        };
+
+        let parameter_count = reg
+            .config
+            .model_type
+            .as_deref()
+            .and_then(crate::model::ollama_registry::parse_parameter_count);
+
+        let manifest = ModelManifest {
+            name: "llama3.2:3b".to_string(),
+            format: ModelFormat::Gguf,
+            size: 2_000_000_000,
+            sha256: "abc123".to_string(),
+            parameters: Some(ModelParameters {
+                context_length: None,
+                embedding_length: None,
+                parameter_count,
+                quantization: reg.config.file_type.clone(),
+            }),
+            created_at: chrono::Utc::now(),
+            path: PathBuf::from("/tmp/test"),
+            system_prompt: reg.system_prompt.clone(),
+            template_override: reg.template.clone(),
+            default_parameters: reg.params.clone(),
+            modelfile_content: None,
+            license: reg.license.clone(),
+        };
+
+        // Verify enrichment from registry metadata
+        assert_eq!(
+            manifest.system_prompt.as_deref(),
+            Some("You are a helpful assistant.")
+        );
+        assert_eq!(
+            manifest.template_override.as_deref(),
+            Some("{{ .System }}{{ .Prompt }}")
+        );
+        assert_eq!(manifest.license.as_deref(), Some("MIT"));
+        assert!(manifest.default_parameters.is_some());
+        let params = manifest.default_parameters.unwrap();
+        assert_eq!(params["temperature"], 0.7);
+
+        // Verify parameter extraction
+        let mp = manifest.parameters.unwrap();
+        assert_eq!(mp.parameter_count, Some(3_200_000_000));
+        assert_eq!(mp.quantization.as_deref(), Some("Q4_K_M"));
+    }
 }

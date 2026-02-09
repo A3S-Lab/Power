@@ -105,4 +105,45 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(ndjson.trim()).unwrap();
         assert_eq!(parsed["model"], "test");
     }
+
+    #[tokio::test]
+    async fn test_ndjson_response_content_type() {
+        use futures::stream;
+
+        let items = vec![
+            serde_json::json!({"text": "hello", "done": false}),
+            serde_json::json!({"text": "", "done": true}),
+        ];
+        let resp = ndjson_response(stream::iter(items));
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(content_type, "application/x-ndjson");
+    }
+
+    #[tokio::test]
+    async fn test_ndjson_response_body_format() {
+        use futures::stream;
+
+        let items = vec![
+            serde_json::json!({"model": "test", "done": false}),
+            serde_json::json!({"model": "test", "done": true}),
+        ];
+        let resp = ndjson_response(stream::iter(items));
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+
+        // Each line should be valid JSON terminated by newline
+        let lines: Vec<&str> = text.trim().split('\n').collect();
+        assert_eq!(lines.len(), 2);
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["done"], false);
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(second["done"], true);
+    }
 }

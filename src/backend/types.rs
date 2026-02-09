@@ -476,6 +476,49 @@ mod tests {
     }
 
     #[test]
+    fn test_completion_response_chunk_token_id_skipped_when_none() {
+        let chunk = CompletionResponseChunk {
+            text: "hi".to_string(),
+            done: false,
+            prompt_tokens: None,
+            done_reason: None,
+            prompt_eval_duration_ns: None,
+            token_id: None,
+        };
+        let json = serde_json::to_string(&chunk).unwrap();
+        assert!(
+            !json.contains("token_id"),
+            "token_id should be skipped when None"
+        );
+    }
+
+    #[test]
+    fn test_completion_response_chunk_token_id_present_when_set() {
+        let chunk = CompletionResponseChunk {
+            text: "hi".to_string(),
+            done: false,
+            prompt_tokens: None,
+            done_reason: None,
+            prompt_eval_duration_ns: None,
+            token_id: Some(99),
+        };
+        let json = serde_json::to_string(&chunk).unwrap();
+        assert!(
+            json.contains("\"token_id\":99"),
+            "token_id should be present when set"
+        );
+    }
+
+    #[test]
+    fn test_completion_response_chunk_deserialize_without_token_id() {
+        // Backward compatibility: old JSON without token_id should still deserialize
+        let json = r#"{"text":"hi","done":false}"#;
+        let chunk: CompletionResponseChunk = serde_json::from_str(json).unwrap();
+        assert_eq!(chunk.text, "hi");
+        assert_eq!(chunk.token_id, None);
+    }
+
+    #[test]
     fn test_embedding_request() {
         let req = EmbeddingRequest {
             input: vec!["hello".to_string(), "world".to_string()],

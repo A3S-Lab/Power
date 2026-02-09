@@ -129,3 +129,85 @@ pub async fn handler(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
+    use crate::server::router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use serial_test::serial;
+    use tower::util::ServiceExt;
+
+    #[tokio::test]
+    #[serial]
+    async fn test_pull_already_exists_returns_success() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state
+            .registry
+            .register(sample_manifest("existing-model"))
+            .unwrap();
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/pull")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"existing-model"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "success");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_pull_streaming_returns_ndjson() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/pull")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"nonexistent-model","stream":true}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            content_type.contains("application/x-ndjson"),
+            "expected NDJSON content-type, got: {content_type}"
+        );
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_pull_request_deserializes_stream_default() {
+        // When stream is not specified, it defaults to false
+        let json = r#"{"name":"test-model"}"#;
+        let req: crate::api::types::PullRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "test-model");
+        assert_eq!(req.stream, None);
+    }
+}
