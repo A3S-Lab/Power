@@ -2,6 +2,7 @@ pub mod chat_template;
 pub mod llamacpp;
 #[cfg(test)]
 pub mod test_utils;
+pub mod tool_parser;
 pub mod types;
 
 use std::pin::Pin;

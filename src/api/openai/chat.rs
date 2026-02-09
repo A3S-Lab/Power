@@ -161,9 +161,7 @@ pub async fn handler(
                                     index: 0,
                                     delta: ChatDelta {
                                         role: None,
-                                        content: if c.done && c.tool_calls.is_some() {
-                                            None
-                                        } else if c.done {
+                                        content: if c.done {
                                             None
                                         } else {
                                             Some(c.content)

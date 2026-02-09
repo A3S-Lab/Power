@@ -42,8 +42,29 @@ struct LoadedModel {
     path: std::path::PathBuf,
     model: Arc<llama_cpp_2::model::LlamaModel>,
     chat_template: ChatTemplateKind,
+    /// Raw Jinja2 template string from GGUF metadata (for minijinja rendering).
+    raw_template: Option<String>,
     load_mode: LoadMode,
+    /// Cached context for KV cache reuse across requests.
+    /// Holds (context, evaluated_tokens) — taken for each request and returned after.
+    cached_ctx: Arc<std::sync::Mutex<Option<CachedContext>>>,
 }
+
+/// A cached llama.cpp context with the tokens already evaluated in its KV cache.
+#[cfg(feature = "llamacpp")]
+struct CachedContext {
+    ctx: llama_cpp_2::context::LlamaContext<'static>,
+    /// Tokens that have been evaluated and are in the KV cache.
+    evaluated_tokens: Vec<llama_cpp_2::token::LlamaToken>,
+    /// Context size this was created with.
+    ctx_size: u32,
+}
+
+/// Safety: LlamaContext wraps a C pointer that is safe to send between threads
+/// when accessed sequentially (protected by Mutex). The llama.cpp library is
+/// thread-safe for sequential access to a single context.
+#[cfg(feature = "llamacpp")]
+unsafe impl Send for CachedContext {}
 
 /// llama.cpp backend for GGUF model inference.
 pub struct LlamaCppBackend {
@@ -113,11 +134,18 @@ impl Backend for LlamaCppBackend {
 
         let model_arc = Arc::new(model);
 
-        // Detect chat template from GGUF metadata
-        let chat_template = model_arc
+        // Detect chat template: prefer manifest.template_override (from Ollama registry),
+        // then GGUF metadata, then fallback to Phi.
+        let gguf_template = model_arc
             .metadata()
             .and_then(|meta| meta.get("tokenizer.chat_template"))
             .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let raw_template_str = manifest.template_override.clone().or(gguf_template);
+
+        let chat_template = raw_template_str
+            .as_deref()
             .map(chat_template::detect)
             .unwrap_or(ChatTemplateKind::Phi);
 
@@ -128,7 +156,9 @@ impl Backend for LlamaCppBackend {
                 path: manifest.path.clone(),
                 model: model_arc,
                 chat_template,
+                raw_template: raw_template_str,
                 load_mode: LoadMode::Inference,
+                cached_ctx: Arc::new(std::sync::Mutex::new(None)),
             },
         );
 
@@ -149,15 +179,19 @@ impl Backend for LlamaCppBackend {
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
         // Look up the chat template for this model
-        let template = {
+        let (template, raw_template) = {
             let models = self.models.read().await;
             models
                 .get(model_name)
-                .map(|m| m.chat_template.clone())
-                .unwrap_or(ChatTemplateKind::Phi)
+                .map(|m| (m.chat_template.clone(), m.raw_template.clone()))
+                .unwrap_or((ChatTemplateKind::Phi, None))
         };
 
-        let prompt = chat_template::format_chat_prompt(&request.messages, &template);
+        let prompt = chat_template::format_chat_prompt(
+            &request.messages,
+            &template,
+            raw_template.as_deref(),
+        );
 
         let completion_req = CompletionRequest {
             prompt,
@@ -183,16 +217,38 @@ impl Backend for LlamaCppBackend {
 
         let stream = self.complete(model_name, completion_req).await?;
 
-        // Map CompletionResponseChunk -> ChatResponseChunk
+        // Map CompletionResponseChunk -> ChatResponseChunk with tool call detection
         use futures::StreamExt;
-        let chat_stream = stream.map(|chunk_result| {
-            chunk_result.map(|chunk| ChatResponseChunk {
-                content: chunk.text,
-                done: chunk.done,
-                prompt_tokens: chunk.prompt_tokens,
-                done_reason: chunk.done_reason,
-                prompt_eval_duration_ns: chunk.prompt_eval_duration_ns,
-                tool_calls: None,
+        let collected_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let text_clone = collected_text.clone();
+        let has_tools = request.tools.is_some();
+        let chat_stream = stream.map(move |chunk_result| {
+            chunk_result.map(|chunk| {
+                // Accumulate text for tool call detection
+                if has_tools && !chunk.text.is_empty() {
+                    text_clone.lock().unwrap().push_str(&chunk.text);
+                }
+
+                // On the final chunk, try to parse tool calls from accumulated text
+                let tool_calls = if chunk.done && has_tools {
+                    let full_text = text_clone.lock().unwrap();
+                    super::tool_parser::parse_tool_calls(&full_text)
+                } else {
+                    None
+                };
+
+                ChatResponseChunk {
+                    content: chunk.text,
+                    done: chunk.done,
+                    prompt_tokens: chunk.prompt_tokens,
+                    done_reason: if tool_calls.is_some() && chunk.done {
+                        Some("tool_calls".to_string())
+                    } else {
+                        chunk.done_reason
+                    },
+                    prompt_eval_duration_ns: chunk.prompt_eval_duration_ns,
+                    tool_calls,
+                }
             })
         });
 
@@ -210,11 +266,11 @@ impl Backend for LlamaCppBackend {
         use llama_cpp_2::sampling::LlamaSampler;
         use llama_cpp_2::token::LlamaToken;
 
-        let model_arc = {
+        let (model_arc, cached_ctx_mutex) = {
             let models = self.models.read().await;
             models
                 .get(model_name)
-                .map(|m| m.model.clone())
+                .map(|m| (m.model.clone(), m.cached_ctx.clone()))
                 .ok_or_else(|| {
                     PowerError::InferenceFailed(format!("Model '{model_name}' not loaded"))
                 })?
@@ -241,21 +297,8 @@ impl Backend for LlamaCppBackend {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<CompletionResponseChunk>>(32);
 
         // Run inference in a blocking task
+        let cached_ctx_for_return = cached_ctx_mutex.clone();
         tokio::task::spawn_blocking(move || {
-            let ctx_params = LlamaContextParams::default().with_n_ctx(
-                std::num::NonZeroU32::new(ctx_size)
-                    .unwrap_or(std::num::NonZeroU32::new(2048).unwrap()),
-            );
-            let mut ctx = match LlamaContext::with_model(&model_arc, ctx_params) {
-                Ok(c) => c,
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                        "Failed to create context: {e}"
-                    ))));
-                    return;
-                }
-            };
-
             // Tokenize the prompt
             let tokens =
                 match model_arc.str_to_token(&request.prompt, llama_cpp_2::model::AddBos::Always) {
@@ -270,25 +313,78 @@ impl Backend for LlamaCppBackend {
 
             let prompt_token_count = tokens.len() as u32;
 
-            // Create batch and add prompt tokens
-            let mut batch = LlamaBatch::new(ctx_size as usize, 1);
-            for (i, &token) in tokens.iter().enumerate() {
-                let is_last = i == tokens.len() - 1;
-                if batch.add(token, i as i32, &[0], is_last).is_err() {
-                    let _ = tx.blocking_send(Err(PowerError::InferenceFailed(
-                        "Failed to add token to batch".to_string(),
-                    )));
+            // Try to reuse cached context with KV cache prefix matching
+            let cached = cached_ctx_mutex.lock().unwrap().take();
+            let (mut ctx, skip_tokens) = match cached {
+                Some(cached) if cached.ctx_size == ctx_size => {
+                    // Find common prefix between cached tokens and new tokens
+                    let common_len = cached
+                        .evaluated_tokens
+                        .iter()
+                        .zip(tokens.iter())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+
+                    if common_len > 0 && common_len <= tokens.len() {
+                        // Remove KV cache entries after the common prefix
+                        if common_len < cached.evaluated_tokens.len() {
+                            cached
+                                .ctx
+                                .clear_kv_cache_seq(Some(0), Some(common_len as u32), None);
+                        }
+                        tracing::debug!(
+                            common = common_len,
+                            total = tokens.len(),
+                            "Reusing KV cache prefix"
+                        );
+                        (cached.ctx, common_len)
+                    } else {
+                        // No useful prefix — clear and reuse the context
+                        cached.ctx.clear_kv_cache();
+                        (cached.ctx, 0)
+                    }
+                }
+                _ => {
+                    // No cached context or size mismatch — create new
+                    let ctx_params = LlamaContextParams::default().with_n_ctx(
+                        std::num::NonZeroU32::new(ctx_size)
+                            .unwrap_or(std::num::NonZeroU32::new(2048).unwrap()),
+                    );
+                    match LlamaContext::with_model(&model_arc, ctx_params) {
+                        Ok(c) => (c, 0),
+                        Err(e) => {
+                            let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
+                                "Failed to create context: {e}"
+                            ))));
+                            return;
+                        }
+                    }
+                }
+            };
+
+            // Only evaluate tokens not already in the KV cache
+            let tokens_to_eval = &tokens[skip_tokens..];
+            let prompt_eval_start = std::time::Instant::now();
+
+            if !tokens_to_eval.is_empty() {
+                let mut batch = LlamaBatch::new(ctx_size as usize, 1);
+                for (i, &token) in tokens_to_eval.iter().enumerate() {
+                    let pos = (skip_tokens + i) as i32;
+                    let is_last = i == tokens_to_eval.len() - 1;
+                    if batch.add(token, pos, &[0], is_last).is_err() {
+                        let _ = tx.blocking_send(Err(PowerError::InferenceFailed(
+                            "Failed to add token to batch".to_string(),
+                        )));
+                        return;
+                    }
+                }
+
+                if let Err(e) = ctx.decode(&mut batch) {
+                    let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
+                        "Decode failed: {e}"
+                    ))));
                     return;
                 }
-            }
-
-            // Decode prompt (timed)
-            let prompt_eval_start = std::time::Instant::now();
-            if let Err(e) = ctx.decode(&mut batch) {
-                let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                    "Decode failed: {e}"
-                ))));
-                return;
             }
             let prompt_eval_duration_ns = prompt_eval_start.elapsed().as_nanos() as u64;
 
@@ -387,9 +483,10 @@ ws ::= ([ \t\n] ws)?
             let mut n_cur = tokens.len();
             let eos_token = model_arc.token_eos();
             let mut generated_text = String::new();
+            let mut all_tokens = tokens.clone(); // Track all tokens for cache
 
             // Generate tokens
-            for i in 0..max_tokens {
+            for _i in 0..max_tokens {
                 let new_token = sampler.sample(&ctx, -1);
 
                 if new_token == eos_token {
@@ -401,8 +498,17 @@ ws ::= ([ \t\n] ws)?
                         prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
                         token_id: None,
                     }));
+                    // Return context to cache (with prompt + generated tokens)
+                    all_tokens.push(new_token);
+                    *cached_ctx_for_return.lock().unwrap() = Some(CachedContext {
+                        ctx,
+                        evaluated_tokens: all_tokens,
+                        ctx_size,
+                    });
                     return;
                 }
+
+                all_tokens.push(new_token);
 
                 let text = model_arc
                     .token_to_str(new_token, llama_cpp_2::token::data::LlamaTokenAttr::all())
@@ -443,15 +549,27 @@ ws ::= ([ \t\n] ws)?
                     }))
                     .is_err()
                 {
-                    return; // receiver dropped
+                    // Receiver dropped — still cache the context
+                    *cached_ctx_for_return.lock().unwrap() = Some(CachedContext {
+                        ctx,
+                        evaluated_tokens: all_tokens,
+                        ctx_size,
+                    });
+                    return;
                 }
 
                 if should_stop {
+                    // Return context to cache
+                    *cached_ctx_for_return.lock().unwrap() = Some(CachedContext {
+                        ctx,
+                        evaluated_tokens: all_tokens,
+                        ctx_size,
+                    });
                     return;
                 }
 
                 // Prepare next batch
-                batch.clear();
+                let mut batch = LlamaBatch::new(1, 1);
                 if batch.add(new_token, n_cur as i32, &[0], true).is_err() {
                     return;
                 }
@@ -465,7 +583,7 @@ ws ::= ([ \t\n] ws)?
                 }
             }
 
-            // Max tokens reached
+            // Max tokens reached — return context to cache
             let _ = tx.blocking_send(Ok(CompletionResponseChunk {
                 text: String::new(),
                 done: true,
@@ -474,6 +592,11 @@ ws ::= ([ \t\n] ws)?
                 prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
                 token_id: None,
             }));
+            *cached_ctx_for_return.lock().unwrap() = Some(CachedContext {
+                ctx,
+                evaluated_tokens: all_tokens,
+                ctx_size,
+            });
         });
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -505,10 +628,14 @@ ws ::= ([ \t\n] ws)?
         };
 
         if needs_reload {
-            let (path, chat_template) = {
+            let (path, chat_template, raw_template) = {
                 let models = self.models.read().await;
                 let m = models.get(model_name).unwrap();
-                (m.path.clone(), m.chat_template.clone())
+                (
+                    m.path.clone(),
+                    m.chat_template.clone(),
+                    m.raw_template.clone(),
+                )
             };
 
             tracing::info!(model = model_name, "Reloading model with embedding mode");
@@ -546,7 +673,9 @@ ws ::= ([ \t\n] ws)?
                     path,
                     model: model_arc,
                     chat_template,
+                    raw_template,
                     load_mode: LoadMode::Embedding,
+                    cached_ctx: Arc::new(std::sync::Mutex::new(None)),
                 },
             );
         }

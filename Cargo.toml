@@ -77,6 +77,9 @@ dirs = "5"
 # SHA256 for model integrity
 sha2 = "0.10"
 
+# Chat template rendering (Jinja2-compatible)
+minijinja = "2"
+
 # llama.cpp backend (optional, requires C++ toolchain)
 llama-cpp-2 = { version = "0.1", optional = true }
 
