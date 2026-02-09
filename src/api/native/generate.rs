@@ -65,7 +65,7 @@ pub async fn handler(
 
     let opts = request.options.as_ref();
     let defaults = &manifest.default_parameters;
-    let response_format = request.format.clone();
+    let response_format = request.format.clone().map(serde_json::Value::String);
 
     // Warn about unsupported images
     if request.images.is_some() {

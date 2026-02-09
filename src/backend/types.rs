@@ -130,6 +130,9 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Base64-encoded images for multimodal models (Ollama-native format).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
 }
 
 /// Request for chat-based inference.
@@ -170,8 +173,9 @@ pub struct ChatRequest {
     pub tfs_z: Option<f32>,
     #[serde(default)]
     pub typical_p: Option<f32>,
+    /// Response format constraint: `"json"` for generic JSON, or a JSON Schema object.
     #[serde(default)]
-    pub response_format: Option<String>,
+    pub response_format: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -237,8 +241,9 @@ pub struct CompletionRequest {
     pub tfs_z: Option<f32>,
     #[serde(default)]
     pub typical_p: Option<f32>,
+    /// Response format constraint: `"json"` for generic JSON, or a JSON Schema object.
     #[serde(default)]
-    pub response_format: Option<String>,
+    pub response_format: Option<serde_json::Value>,
 }
 
 /// A streamed chunk from a text completion.
@@ -287,6 +292,7 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            images: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("user"));

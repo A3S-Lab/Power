@@ -148,6 +148,8 @@ mod tests {
             default_parameters: None,
             modelfile_content: None,
             license: None,
+            adapter_path: None,
+            messages: vec![],
         };
 
         delete_blob(&manifest).unwrap();
@@ -176,6 +178,8 @@ mod tests {
             default_parameters: None,
             modelfile_content: None,
             license: None,
+            adapter_path: None,
+            messages: vec![],
         };
 
         // Should not error — file doesn't exist, so nothing to delete

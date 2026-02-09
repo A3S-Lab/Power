@@ -67,6 +67,7 @@ pub async fn execute_with_options(
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            images: None,
         }];
 
         let request = ChatRequest {
@@ -160,6 +161,7 @@ async fn interactive_chat(
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            images: None,
         });
 
         let request = ChatRequest {
@@ -222,6 +224,7 @@ async fn interactive_chat(
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                images: None,
             });
         }
     }

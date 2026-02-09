@@ -177,6 +177,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                images: None,
             },
             ChatMessage {
                 role: "user".to_string(),
@@ -184,6 +185,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                images: None,
             },
         ]
     }
@@ -280,6 +282,7 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            images: None,
         }];
 
         let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, None);
@@ -296,6 +299,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                images: None,
             },
             ChatMessage {
                 role: "tool".to_string(),
@@ -303,6 +307,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: Some("call_1".to_string()),
+                images: None,
             },
         ];
 
@@ -319,6 +324,7 @@ mod tests {
             name: Some("Alice".to_string()),
             tool_calls: None,
             tool_call_id: None,
+            images: None,
         }];
 
         // Name field doesn't affect template formatting, just content
@@ -461,6 +467,7 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            images: None,
         }];
         let result = render_jinja(template, &msgs, false);
         assert!(result.is_some());

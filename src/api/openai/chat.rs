@@ -46,13 +46,10 @@ pub async fn handler(
         return openai_error("server_error", &e.to_string()).into_response();
     }
 
-    let response_format = request.response_format.as_ref().and_then(|f| {
-        if f.r#type == "json_object" {
-            Some("json".to_string())
-        } else {
-            None
-        }
-    });
+    let response_format = request
+        .response_format
+        .as_ref()
+        .map(|f| serde_json::json!({"type": f.r#type}));
     let backend_request = ChatRequest {
         messages: request
             .messages
@@ -63,6 +60,7 @@ pub async fn handler(
                 name: m.name.clone(),
                 tool_calls: m.tool_calls.clone(),
                 tool_call_id: m.tool_call_id.clone(),
+                images: None,
             })
             .collect(),
         temperature: request.temperature,
@@ -161,11 +159,7 @@ pub async fn handler(
                                     index: 0,
                                     delta: ChatDelta {
                                         role: None,
-                                        content: if c.done {
-                                            None
-                                        } else {
-                                            Some(c.content)
-                                        },
+                                        content: if c.done { None } else { Some(c.content) },
                                         tool_calls: c.tool_calls,
                                     },
                                     finish_reason,

@@ -116,6 +116,15 @@ async fn main() -> anyhow::Result<()> {
                 },
                 modelfile_content: Some(modelfile_content),
                 license: None,
+                adapter_path: mf.adapter.clone(),
+                messages: mf
+                    .messages
+                    .iter()
+                    .map(|m| a3s_power::model::manifest::ManifestMessage {
+                        role: m.role.clone(),
+                        content: m.content.clone(),
+                    })
+                    .collect(),
             };
             registry.register(manifest)?;
             println!("Created model '{name}' from '{}'", mf.from);

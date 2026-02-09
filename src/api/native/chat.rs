@@ -65,7 +65,7 @@ pub async fn handler(
 
     let opts = request.options.as_ref();
     let defaults = &manifest.default_parameters;
-    let response_format = request.format.clone();
+    let response_format = request.format.clone().map(serde_json::Value::String);
 
     // Build messages, prepending system_prompt from manifest if set
     let mut messages: Vec<ChatMessage> = Vec::new();
@@ -79,8 +79,20 @@ pub async fn handler(
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                images: None,
             });
         }
+    }
+    // Prepend pre-seeded messages from Modelfile MESSAGE directives
+    for msg in &manifest.messages {
+        messages.push(ChatMessage {
+            role: msg.role.clone(),
+            content: MessageContent::Text(msg.content.clone()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images: None,
+        });
     }
     messages.extend(request.messages.iter().map(|m| ChatMessage {
         role: m.role.clone(),
@@ -88,6 +100,7 @@ pub async fn handler(
         name: m.name.clone(),
         tool_calls: m.tool_calls.clone(),
         tool_call_id: m.tool_call_id.clone(),
+        images: m.images.clone(),
     }));
 
     let backend_request = ChatRequest {

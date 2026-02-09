@@ -67,7 +67,16 @@ pub async fn handler(
             Some(default_params)
         },
         modelfile_content: Some(modelfile_content),
-        license: None,
+        license: mf.license.clone(),
+        adapter_path: mf.adapter.clone(),
+        messages: mf
+            .messages
+            .iter()
+            .map(|m| crate::model::manifest::ManifestMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+            })
+            .collect(),
     };
 
     // Register the new model

@@ -46,6 +46,21 @@ pub struct ModelManifest {
     /// License text from Ollama registry (if available)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
+
+    /// LoRA/QLoRA adapter path (from Modelfile ADAPTER directive)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter_path: Option<String>,
+
+    /// Pre-seeded conversation messages (from Modelfile MESSAGE directive)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<ManifestMessage>,
+}
+
+/// A pre-seeded message stored in the manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestMessage {
+    pub role: String,
+    pub content: String,
 }
 
 /// Supported model file formats.
@@ -130,6 +145,8 @@ mod tests {
             default_parameters: None,
             modelfile_content: None,
             license: None,
+            adapter_path: None,
+            messages: vec![],
         }
     }
 

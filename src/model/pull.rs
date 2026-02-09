@@ -73,6 +73,8 @@ pub async fn pull_model(
                 default_parameters: reg.params,
                 modelfile_content: None,
                 license: reg.license,
+                adapter_path: None,
+                messages: vec![],
             }
         }
         ModelSource::Direct => ModelManifest {
@@ -88,6 +90,8 @@ pub async fn pull_model(
             default_parameters: None,
             modelfile_content: None,
             license: None,
+            adapter_path: None,
+            messages: vec![],
         },
     };
 
@@ -235,6 +239,8 @@ mod tests {
             default_parameters: None,
             modelfile_content: None,
             license: None,
+            adapter_path: None,
+            messages: vec![],
         };
         assert!(manifest.parameters.is_none());
         assert!(manifest.system_prompt.is_none());
@@ -290,6 +296,8 @@ mod tests {
             default_parameters: reg.params.clone(),
             modelfile_content: None,
             license: reg.license.clone(),
+            adapter_path: None,
+            messages: vec![],
         };
 
         // Verify enrichment from registry metadata

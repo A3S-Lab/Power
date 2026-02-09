@@ -5,8 +5,18 @@
 // PARAMETER <key> <value>
 // SYSTEM "<prompt>"
 // TEMPLATE "<template>"
+// ADAPTER <path>
+// LICENSE <text>
+// MESSAGE <role> <content>
 
 use std::collections::HashMap;
+
+/// A pre-seeded message in a Modelfile (MESSAGE directive).
+#[derive(Debug, Clone)]
+pub struct ModelfileMessage {
+    pub role: String,
+    pub content: String,
+}
 
 /// Parsed representation of a Modelfile.
 #[derive(Debug, Clone)]
@@ -21,6 +31,12 @@ pub struct Modelfile {
     pub template: Option<String>,
     /// Stop sequences extracted from PARAMETER stop directives
     pub stop: Vec<String>,
+    /// LoRA/QLoRA adapter path
+    pub adapter: Option<String>,
+    /// License text
+    pub license: Option<String>,
+    /// Pre-seeded conversation messages
+    pub messages: Vec<ModelfileMessage>,
 }
 
 /// Parse a Modelfile from its text content.
@@ -30,6 +46,9 @@ pub fn parse(content: &str) -> Result<Modelfile, String> {
     let mut system: Option<String> = None;
     let mut template: Option<String> = None;
     let mut stop = Vec::new();
+    let mut adapter: Option<String> = None;
+    let mut license: Option<String> = None;
+    let mut messages = Vec::new();
 
     for (line_num, line) in content.lines().enumerate() {
         let line = line.trim();
@@ -77,6 +96,25 @@ pub fn parse(content: &str) -> Result<Modelfile, String> {
             "TEMPLATE" => {
                 template = Some(unquote(&value));
             }
+            "ADAPTER" => {
+                adapter = Some(unquote(&value));
+            }
+            "LICENSE" => {
+                license = Some(unquote(&value));
+            }
+            "MESSAGE" => {
+                // MESSAGE role content
+                let (role, content) = match value.split_once(char::is_whitespace) {
+                    Some((r, c)) => (r.trim().to_string(), unquote(c.trim())),
+                    None => {
+                        return Err(format!(
+                            "line {}: MESSAGE requires role and content",
+                            line_num + 1
+                        ));
+                    }
+                };
+                messages.push(ModelfileMessage { role, content });
+            }
             _ => {
                 // Ignore unknown directives for forward compatibility
                 tracing::debug!("Ignoring unknown Modelfile directive: {directive}");
@@ -92,6 +130,9 @@ pub fn parse(content: &str) -> Result<Modelfile, String> {
         system,
         template,
         stop,
+        adapter,
+        license,
+        messages,
     })
 }
 
@@ -141,6 +182,15 @@ pub fn to_string(mf: &Modelfile) -> String {
     }
     if let Some(ref tmpl) = mf.template {
         lines.push(format!("TEMPLATE \"{tmpl}\""));
+    }
+    if let Some(ref adapter) = mf.adapter {
+        lines.push(format!("ADAPTER {adapter}"));
+    }
+    if let Some(ref lic) = mf.license {
+        lines.push(format!("LICENSE \"{lic}\""));
+    }
+    for msg in &mf.messages {
+        lines.push(format!("MESSAGE {} \"{}\"", msg.role, msg.content));
     }
     lines.join("\n")
 }
@@ -244,5 +294,124 @@ SYSTEM "You are helpful."
         assert!(output.contains("FROM llama3.2:3b"));
         assert!(output.contains("PARAMETER temperature 0.7"));
         assert!(output.contains("SYSTEM"));
+    }
+
+    #[test]
+    fn test_parse_adapter() {
+        let content = r#"
+FROM llama3.2:3b
+ADAPTER /path/to/lora.gguf
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.adapter.as_deref(), Some("/path/to/lora.gguf"));
+    }
+
+    #[test]
+    fn test_parse_adapter_quoted() {
+        let content = r#"
+FROM llama3.2:3b
+ADAPTER "/path/with spaces/lora.gguf"
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.adapter.as_deref(), Some("/path/with spaces/lora.gguf"));
+    }
+
+    #[test]
+    fn test_parse_license() {
+        let content = r#"
+FROM llama3.2:3b
+LICENSE "MIT License"
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.license.as_deref(), Some("MIT License"));
+    }
+
+    #[test]
+    fn test_parse_message_single() {
+        let content = r#"
+FROM llama3.2:3b
+MESSAGE user "Hello, how are you?"
+MESSAGE assistant "I'm doing well, thank you!"
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.messages.len(), 2);
+        assert_eq!(mf.messages[0].role, "user");
+        assert_eq!(mf.messages[0].content, "Hello, how are you?");
+        assert_eq!(mf.messages[1].role, "assistant");
+        assert_eq!(mf.messages[1].content, "I'm doing well, thank you!");
+    }
+
+    #[test]
+    fn test_parse_message_system() {
+        let content = r#"
+FROM llama3.2:3b
+MESSAGE system "You are a pirate."
+MESSAGE user "Tell me a joke."
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.messages.len(), 2);
+        assert_eq!(mf.messages[0].role, "system");
+        assert_eq!(mf.messages[0].content, "You are a pirate.");
+    }
+
+    #[test]
+    fn test_parse_message_missing_content() {
+        let content = r#"
+FROM llama3.2:3b
+MESSAGE user
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("MESSAGE requires role and content"));
+    }
+
+    #[test]
+    fn test_parse_full_modelfile() {
+        let content = r#"
+# Full Modelfile example
+FROM llama3.2:3b
+PARAMETER temperature 0.7
+PARAMETER top_p 0.9
+PARAMETER stop "<|end|>"
+SYSTEM "You are a helpful coding assistant."
+TEMPLATE "{{ .System }} {{ .Prompt }}"
+ADAPTER /models/code-lora.gguf
+LICENSE "Apache-2.0"
+MESSAGE user "What languages do you know?"
+MESSAGE assistant "I'm proficient in Python, Rust, JavaScript, and many more!"
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.from, "llama3.2:3b");
+        assert_eq!(mf.parameters.get("temperature").unwrap(), "0.7");
+        assert_eq!(mf.parameters.get("top_p").unwrap(), "0.9");
+        assert_eq!(mf.stop, vec!["<|end|>"]);
+        assert_eq!(
+            mf.system.as_deref(),
+            Some("You are a helpful coding assistant.")
+        );
+        assert!(mf.template.is_some());
+        assert_eq!(mf.adapter.as_deref(), Some("/models/code-lora.gguf"));
+        assert_eq!(mf.license.as_deref(), Some("Apache-2.0"));
+        assert_eq!(mf.messages.len(), 2);
+    }
+
+    #[test]
+    fn test_to_string_with_adapter_and_messages() {
+        let content = r#"
+FROM llama3.2:3b
+ADAPTER /path/to/lora.gguf
+LICENSE "MIT"
+MESSAGE user "Hi"
+MESSAGE assistant "Hello!"
+"#;
+        let mf = parse(content).unwrap();
+        let output = to_string(&mf);
+        assert!(output.contains("FROM llama3.2:3b"));
+        assert!(output.contains("ADAPTER /path/to/lora.gguf"));
+        assert!(output.contains("LICENSE"));
+        assert!(output.contains("MESSAGE user"));
+        assert!(output.contains("MESSAGE assistant"));
     }
 }

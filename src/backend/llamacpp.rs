@@ -193,6 +193,19 @@ impl Backend for LlamaCppBackend {
             raw_template.as_deref(),
         );
 
+        // Warn if images are present (vision inference requires clip projector, not yet supported)
+        let has_images = request.messages.iter().any(|m| {
+            m.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
+                || matches!(&m.content, super::types::MessageContent::Parts(parts)
+                    if parts.iter().any(|p| matches!(p, super::types::ContentPart::ImageUrl { .. })))
+        });
+        if has_images {
+            tracing::warn!(
+                "Vision/multimodal images detected but clip projector not yet supported; \
+                 images will be ignored and only text content will be processed"
+            );
+        }
+
         let completion_req = CompletionRequest {
             prompt,
             temperature: request.temperature,
@@ -391,35 +404,11 @@ impl Backend for LlamaCppBackend {
             // Build sampler chain based on request parameters
             let mut samplers: Vec<LlamaSampler> = Vec::new();
 
-            // JSON grammar constraint
-            if response_format.as_deref() == Some("json") {
-                let json_grammar = r#"
-root   ::= object
-value  ::= object | array | string | number | ("true" | "false" | "null") ws
-
-object ::=
-  "{" ws (
-            string ":" ws value
-    ("," ws string ":" ws value)*
-  )? "}" ws
-
-array  ::=
-  "[" ws (
-            value
-    ("," ws value)*
-  )? "]" ws
-
-string ::=
-  "\"" (
-    [^\\"\x7F\x00-\x1F] |
-    "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
-  )* "\"" ws
-
-number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? (("e" | "E") ("+" | "-")? [0-9]+)? ws
-
-ws ::= ([ \t\n] ws)?
-"#;
-                samplers.push(LlamaSampler::grammar(&model_arc, json_grammar, "root"));
+            // JSON grammar constraint (supports "json" string or JSON Schema object)
+            if let Some(ref fmt) = response_format {
+                if let Some(grammar) = super::json_schema::format_to_gbnf(fmt) {
+                    samplers.push(LlamaSampler::grammar(&model_arc, &grammar, "root"));
+                }
             }
 
             // Repetition penalties (must come before other samplers)
@@ -849,6 +838,8 @@ mod tests {
             default_parameters: None,
             modelfile_content: None,
             license: None,
+            adapter_path: None,
+            messages: vec![],
         };
         let result = backend.load(&manifest).await;
         assert!(result.is_err());

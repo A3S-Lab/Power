@@ -151,6 +151,8 @@ pub fn sample_manifest(name: &str) -> ModelManifest {
         default_parameters: None,
         modelfile_content: None,
         license: None,
+        adapter_path: None,
+        messages: vec![],
     }
 }
 
