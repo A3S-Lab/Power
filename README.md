@@ -73,53 +73,64 @@ a3s-power serve
 
 ### Test Coverage
 
-**291 unit tests** covering all core functionality:
+**291 unit tests** with **86.22% region coverage** and **83.36% line coverage**:
 
-| Module | Tests |
-|--------|-------|
-| API types (OpenAI + Ollama) | 31 |
-| Error handling | 18 |
-| Backend types (vision, tools, chat) | 17 |
-| Configuration | 16 |
-| Chat templates | 12 |
-| Server state (AppState, LRU) | 11 |
-| CLI command parsing | 11 |
-| Native generate handler | 11 |
-| Native chat handler | 10 |
-| Model pull | 9 |
-| Backend llama.cpp | 9 |
-| OpenAI chat handler | 9 |
-| Model resolve | 8 |
-| Model Modelfile | 8 |
-| Model manifest | 8 |
-| Server router | 7 |
-| Server metrics | 7 |
-| Model registry | 7 |
-| Native blobs API | 7 |
-| Model storage | 5 |
-| Model push | 5 |
-| Directories | 5 |
-| Backend registry | 5 |
-| OpenAI embeddings | 5 |
-| OpenAI completions | 5 |
-| Native models handler | 5 |
-| Native embeddings | 4 |
-| Native embed (batch) | 4 |
-| Health endpoint | 4 |
-| Autoload | 4 |
-| Backend test utils | 3 |
-| SSE streaming | 3 |
-| Native push | 3 |
-| Native ps | 3 |
-| Native create | 3 |
-| Native copy | 3 |
-| OpenAI models | 2 |
-| OpenAI helpers | 2 |
-| Native version | 2 |
+| Module | Lines | Coverage | Functions | Coverage |
+|--------|-------|----------|-----------|----------|
+| api/health.rs | 62 | 100.00% | 10 | 100.00% |
+| api/native/mod.rs | 22 | 100.00% | 1 | 100.00% |
+| api/native/ps.rs | 71 | 100.00% | 11 | 100.00% |
+| api/native/version.rs | 21 | 100.00% | 6 | 100.00% |
+| api/openai/mod.rs | 29 | 100.00% | 4 | 100.00% |
+| backend/llamacpp.rs | 143 | 100.00% | 23 | 100.00% |
+| backend/test_utils.rs | 114 | 100.00% | 18 | 100.00% |
+| error.rs | 93 | 100.00% | 19 | 100.00% |
+| model/manifest.rs | 79 | 100.00% | 12 | 100.00% |
+| server/router.rs | 107 | 100.00% | 16 | 100.00% |
+| api/types.rs | 406 | 99.75% | 33 | 100.00% |
+| api/native/embeddings.rs | 111 | 99.10% | 7 | 100.00% |
+| api/native/models.rs | 170 | 98.82% | 18 | 100.00% |
+| backend/mod.rs | 65 | 98.46% | 15 | 100.00% |
+| backend/types.rs | 226 | 97.79% | 20 | 95.00% |
+| server/metrics.rs | 236 | 97.03% | 25 | 92.00% |
+| backend/chat_template.rs | 195 | 96.92% | 19 | 100.00% |
+| api/openai/embeddings.rs | 187 | 95.72% | 9 | 100.00% |
+| api/native/create.rs | 112 | 95.54% | 7 | 100.00% |
+| api/native/blobs.rs | 210 | 94.76% | 15 | 100.00% |
+| server/state.rs | 186 | 94.62% | 26 | 92.31% |
+| config.rs | 184 | 92.93% | 26 | 96.15% |
+| api/autoload.rs | 140 | 92.86% | 14 | 100.00% |
+| api/native/copy.rs | 60 | 91.67% | 6 | 100.00% |
+| cli/mod.rs | 102 | 90.20% | 11 | 100.00% |
+| model/modelfile.rs | 171 | 89.47% | 13 | 100.00% |
+| api/openai/chat.rs | 378 | 88.36% | 19 | 68.42% |
+| api/openai/models.rs | 66 | 87.88% | 6 | 100.00% |
+| dirs.rs | 48 | 87.50% | 11 | 81.82% |
+| api/native/generate.rs | 412 | 86.89% | 20 | 75.00% |
+| api/openai/completions.rs | 245 | 84.90% | 12 | 66.67% |
+| api/native/chat.rs | 434 | 82.95% | 21 | 71.43% |
+| api/native/embed.rs | 77 | 81.82% | 7 | 100.00% |
+| model/storage.rs | 102 | 79.41% | 12 | 75.00% |
+| model/registry.rs | 198 | 77.78% | 30 | 73.33% |
+| api/sse.rs | 25 | 72.00% | 6 | 66.67% |
+| api/native/push.rs | 150 | 66.67% | 9 | 66.67% |
+| model/resolve.rs | 146 | 56.16% | 20 | 55.00% |
+| model/push.rs | 112 | 50.00% | 17 | 70.59% |
+| model/pull.rs | 116 | 46.55% | 17 | 64.71% |
+| cli/delete.rs | 7 | 0.00% | 1 | 0.00% |
+| cli/list.rs | 21 | 0.00% | 1 | 0.00% |
+| cli/pull.rs | 31 | 0.00% | 3 | 0.00% |
+| cli/push.rs | 15 | 0.00% | 3 | 0.00% |
+| cli/run.rs | 168 | 0.00% | 6 | 0.00% |
+| cli/serve.rs | 10 | 0.00% | 2 | 0.00% |
+| cli/show.rs | 31 | 0.00% | 1 | 0.00% |
+| server/mod.rs | 24 | 0.00% | 4 | 0.00% |
+| api/native/pull.rs | 108 | 0.00% | 5 | 0.00% |
+| **TOTAL** | **6426** | **83.36%** | **617** | **85.25%** |
 
-Run tests:
+Run coverage report:
 ```bash
-cargo test -p a3s-power --lib -- --test-threads=1
+cargo llvm-cov -p a3s-power --lib --summary-only
 ```
 
 ## Architecture
