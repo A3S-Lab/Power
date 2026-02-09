@@ -170,6 +170,7 @@ mod tests {
             template_override: None,
             default_parameters: None,
             modelfile_content: None,
+            license: None,
         }
     }
 
@@ -273,6 +274,93 @@ mod tests {
         let registry2 = ModelRegistry::new();
         registry2.scan().unwrap();
         assert!(registry2.exists("persisted"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    fn test_registry_default() {
+        let registry = ModelRegistry::default();
+        assert_eq!(registry.count(), 0);
+    }
+
+    #[test]
+    fn test_remove_nonexistent_model() {
+        let registry = ModelRegistry::new();
+        let result = registry.remove("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_scan_empty_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // Create the manifests directory but leave it empty
+        std::fs::create_dir_all(dirs::manifests_dir()).unwrap();
+
+        let registry = ModelRegistry::new();
+        registry.scan().unwrap();
+        assert_eq!(registry.count(), 0);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_scan_skips_invalid_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let manifest_dir = dirs::manifests_dir();
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+
+        // Write an invalid JSON file
+        std::fs::write(manifest_dir.join("invalid.json"), "not valid json").unwrap();
+        // Write a non-JSON file (should be ignored)
+        std::fs::write(manifest_dir.join("readme.txt"), "hello").unwrap();
+
+        let registry = ModelRegistry::new();
+        registry.scan().unwrap();
+        assert_eq!(registry.count(), 0);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_scan_nonexistent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent = dir.path().join("does-not-exist");
+        std::env::set_var("A3S_POWER_HOME", &nonexistent);
+
+        let registry = ModelRegistry::new();
+        // Should succeed (returns Ok if directory doesn't exist)
+        registry.scan().unwrap();
+        assert_eq!(registry.count(), 0);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_register_overwrites_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let registry = ModelRegistry::new();
+        let mut m1 = sample_manifest("model-a");
+        m1.size = 100;
+        registry.register(m1).unwrap();
+
+        let mut m2 = sample_manifest("model-a");
+        m2.size = 200;
+        registry.register(m2).unwrap();
+
+        assert_eq!(registry.count(), 1);
+        let model = registry.get("model-a").unwrap();
+        assert_eq!(model.size, 200);
 
         std::env::remove_var("A3S_POWER_HOME");
     }

@@ -67,6 +67,7 @@ pub async fn handler(
             Some(default_params)
         },
         modelfile_content: Some(modelfile_content),
+        license: None,
     };
 
     // Register the new model

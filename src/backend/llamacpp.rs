@@ -716,6 +716,7 @@ mod tests {
             template_override: None,
             default_parameters: None,
             modelfile_content: None,
+            license: None,
         };
         let result = backend.load(&manifest).await;
         assert!(result.is_err());

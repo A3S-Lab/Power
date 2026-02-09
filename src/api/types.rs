@@ -452,6 +452,10 @@ pub struct ShowResponse {
     pub parameters: String,
     pub template: String,
     pub details: NativeModelDetails,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
 }
 
 /// Delete model request.
@@ -876,10 +880,15 @@ mod tests {
                 parameter_size: None,
                 quantization_level: Some("Q4_K_M".to_string()),
             },
+            system: None,
+            license: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("GGUF"));
         assert!(json.contains("Q4_K_M"));
+        // Optional fields should be omitted when None
+        assert!(!json.contains("system"));
+        assert!(!json.contains("license"));
     }
 
     #[test]

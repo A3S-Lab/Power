@@ -147,11 +147,56 @@ mod tests {
             template_override: None,
             default_parameters: None,
             modelfile_content: None,
+            license: None,
         };
 
         delete_blob(&manifest).unwrap();
         assert!(!path.exists());
 
         std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_delete_blob_nonexistent_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // Manifest pointing to a nonexistent file — should succeed (no-op)
+        let manifest = crate::model::manifest::ModelManifest {
+            name: "ghost".to_string(),
+            format: crate::model::manifest::ModelFormat::Gguf,
+            size: 0,
+            sha256: "none".to_string(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: std::path::PathBuf::from("/tmp/nonexistent-blob-file"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+        };
+
+        // Should not error — file doesn't exist, so nothing to delete
+        delete_blob(&manifest).unwrap();
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    fn test_compute_sha256_empty() {
+        let hash = compute_sha256(b"");
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_verify_blob_nonexistent_file() {
+        let result = verify_blob(std::path::Path::new("/tmp/nonexistent-verify-test"), "abc");
+        assert!(result.is_err());
     }
 }

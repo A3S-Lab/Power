@@ -148,6 +148,7 @@ pub fn sample_manifest(name: &str) -> ModelManifest {
         template_override: None,
         default_parameters: None,
         modelfile_content: None,
+        license: None,
     }
 }
 

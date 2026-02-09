@@ -42,6 +42,10 @@ pub struct ModelManifest {
     /// Raw Modelfile content (if model was created via Modelfile)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modelfile_content: Option<String>,
+
+    /// License text from Ollama registry (if available)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
 }
 
 /// Supported model file formats.
@@ -125,6 +129,7 @@ mod tests {
             template_override: None,
             default_parameters: None,
             modelfile_content: None,
+            license: None,
         }
     }
 

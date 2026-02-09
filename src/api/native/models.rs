@@ -62,6 +62,8 @@ pub async fn show_handler(
                         .as_ref()
                         .and_then(|p| p.quantization.clone()),
                 },
+                system: manifest.system_prompt.clone(),
+                license: manifest.license.clone(),
             };
             Json(response).into_response()
         }

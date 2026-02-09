@@ -48,9 +48,13 @@ pub async fn ensure_loaded_with_keep_alive(
         if let Some(evictable) = state.evictable_lru_model() {
             backend.unload(&evictable).await?;
             state.mark_unloaded(&evictable);
+            state.metrics.increment_evictions();
+            state.metrics.remove_model_memory(&evictable);
         } else if let Some(lru_name) = state.lru_model() {
             backend.unload(&lru_name).await?;
             state.mark_unloaded(&lru_name);
+            state.metrics.increment_evictions();
+            state.metrics.remove_model_memory(&lru_name);
         } else {
             break;
         }
@@ -59,6 +63,12 @@ pub async fn ensure_loaded_with_keep_alive(
     let load_start = Instant::now();
     backend.load(manifest).await?;
     let load_duration = load_start.elapsed();
+
+    // Record model load duration and estimated memory (file size as proxy)
+    state
+        .metrics
+        .record_model_load(model_name, load_duration.as_secs_f64());
+    state.metrics.set_model_memory(model_name, manifest.size);
 
     match keep_alive {
         Some(ka) => {
@@ -109,6 +119,7 @@ mod tests {
             template_override: None,
             default_parameters: None,
             modelfile_content: None,
+            license: None,
         }
     }
 

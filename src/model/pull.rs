@@ -1,6 +1,7 @@
 use crate::error::{PowerError, Result};
-use crate::model::manifest::{ModelFormat, ModelManifest};
-use crate::model::resolve;
+use crate::model::manifest::{ModelFormat, ModelManifest, ModelParameters};
+use crate::model::ollama_registry;
+use crate::model::resolve::{self, ModelSource};
 use crate::model::storage;
 
 /// Progress callback type for download reporting.
@@ -16,14 +17,14 @@ pub async fn pull_model(
     url_override: Option<&str>,
     progress: Option<ProgressCallback>,
 ) -> Result<ModelManifest> {
-    let (name, url) = if let Some(url) = url_override {
-        (name_or_url.to_string(), url.to_string())
+    let (name, url, source) = if let Some(url) = url_override {
+        (name_or_url.to_string(), url.to_string(), ModelSource::Direct)
     } else if resolve::is_url(name_or_url) {
         let name = extract_name_from_url(name_or_url);
-        (name, name_or_url.to_string())
+        (name, name_or_url.to_string(), ModelSource::Direct)
     } else {
         let resolved = resolve::resolve(name_or_url).await?;
-        (resolved.name, resolved.url)
+        (resolved.name, resolved.url, resolved.source)
     };
 
     tracing::info!(name = %name, url = %url, "Pulling model");
@@ -41,18 +42,49 @@ pub async fn pull_model(
     let (blob_path, sha256) = storage::store_blob(&bytes)?;
     let format = detect_format(&name, &blob_path);
 
-    let manifest = ModelManifest {
-        name,
-        format,
-        size: bytes.len() as u64,
-        sha256,
-        parameters: None,
-        created_at: chrono::Utc::now(),
-        path: blob_path,
-        system_prompt: None,
-        template_override: None,
-        default_parameters: None,
-        modelfile_content: None,
+    let manifest = match source {
+        ModelSource::OllamaRegistry(reg) => {
+            let reg = *reg; // Unbox to move fields out
+            let parameter_count = reg
+                .config
+                .model_type
+                .as_deref()
+                .and_then(ollama_registry::parse_parameter_count);
+
+            ModelManifest {
+                name,
+                format,
+                size: bytes.len() as u64,
+                sha256,
+                parameters: Some(ModelParameters {
+                    context_length: None,
+                    embedding_length: None,
+                    parameter_count,
+                    quantization: reg.config.file_type,
+                }),
+                created_at: chrono::Utc::now(),
+                path: blob_path,
+                system_prompt: reg.system_prompt,
+                template_override: reg.template,
+                default_parameters: reg.params,
+                modelfile_content: None,
+                license: reg.license,
+            }
+        }
+        ModelSource::Direct => ModelManifest {
+            name,
+            format,
+            size: bytes.len() as u64,
+            sha256,
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: blob_path,
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+        },
     };
 
     Ok(manifest)

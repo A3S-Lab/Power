@@ -115,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
                     Some(default_params)
                 },
                 modelfile_content: Some(modelfile_content),
+                license: None,
             };
             registry.register(manifest)?;
             println!("Created model '{name}' from '{}'", mf.from);

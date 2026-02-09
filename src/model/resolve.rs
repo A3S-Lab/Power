@@ -1,5 +1,6 @@
 use crate::error::{PowerError, Result};
 use crate::model::manifest::ModelFormat;
+use crate::model::ollama_registry::{self, OllamaRegistryModel};
 
 /// A parsed model reference in `name:tag` format.
 #[derive(Debug, Clone, PartialEq)]
@@ -25,12 +26,22 @@ impl ModelRef {
     }
 }
 
-/// A resolved model with its download URL.
+/// Where a resolved model came from, carrying source-specific metadata.
+#[derive(Debug, Clone)]
+pub enum ModelSource {
+    /// Direct URL or built-in registry — no extra metadata.
+    Direct,
+    /// Resolved from Ollama registry — carries template, system prompt, params, etc.
+    OllamaRegistry(Box<OllamaRegistryModel>),
+}
+
+/// A resolved model with its download URL and source metadata.
 #[derive(Debug, Clone)]
 pub struct ResolvedModel {
     pub name: String,
     pub url: String,
     pub format: ModelFormat,
+    pub source: ModelSource,
 }
 
 /// Check if the input looks like a direct URL.
@@ -41,18 +52,24 @@ pub fn is_url(input: &str) -> bool {
 /// Resolve a model name (or name:tag) to a download URL.
 ///
 /// Resolution strategy:
-/// 1. Check built-in known_models.json registry
-/// 2. Query HuggingFace API for GGUF models matching the name
-/// 3. Error if not found
+/// 1. Query Ollama registry (`registry.ollama.ai`) — primary source
+/// 2. Check built-in known_models.json registry — offline fallback
+/// 3. Query HuggingFace API for GGUF models — last resort
+/// 4. Error if not found
 pub async fn resolve(model_ref: &str) -> Result<ResolvedModel> {
     let parsed = ModelRef::parse(model_ref);
 
-    // 1. Check built-in registry
+    // 1. Query Ollama registry (primary)
+    if let Some(resolved) = resolve_from_ollama(&parsed).await {
+        return Ok(resolved);
+    }
+
+    // 2. Check built-in registry (offline fallback)
     if let Some(resolved) = resolve_from_builtin(&parsed) {
         return Ok(resolved);
     }
 
-    // 2. Query HuggingFace API
+    // 3. Query HuggingFace API (last resort)
     if let Some(resolved) = resolve_from_huggingface(&parsed).await? {
         return Ok(resolved);
     }
@@ -61,6 +78,24 @@ pub async fn resolve(model_ref: &str) -> Result<ResolvedModel> {
         "Could not resolve model '{}'. Try providing a direct URL instead.",
         model_ref
     )))
+}
+
+/// Attempt to resolve a model from the Ollama registry.
+///
+/// Returns `None` on any network or registry error (non-fatal fallthrough).
+async fn resolve_from_ollama(model_ref: &ModelRef) -> Option<ResolvedModel> {
+    let registry_model = ollama_registry::fetch_registry_model(&model_ref.name, &model_ref.tag)
+        .await
+        .ok()?;
+
+    let url = ollama_registry::blob_url(&model_ref.name, &registry_model.model_digest);
+
+    Some(ResolvedModel {
+        name: format!("{}:{}", model_ref.name, model_ref.tag),
+        url,
+        format: ModelFormat::Gguf,
+        source: ModelSource::OllamaRegistry(Box::new(registry_model)),
+    })
 }
 
 /// Built-in model registry embedded at compile time.
@@ -88,6 +123,7 @@ fn resolve_from_builtin(model_ref: &ModelRef) -> Option<ResolvedModel> {
                 name: format!("{}:{}", name, tag),
                 url: url.to_string(),
                 format,
+                source: ModelSource::Direct,
             });
         }
     }
@@ -151,6 +187,7 @@ async fn resolve_from_huggingface(model_ref: &ModelRef) -> Result<Option<Resolve
                     name: format!("{}:{}", model_ref.name, model_ref.tag),
                     url,
                     format: ModelFormat::Gguf,
+                    source: ModelSource::Direct,
                 }));
             }
         }
@@ -225,5 +262,62 @@ mod tests {
             tag: "3b".to_string(),
         };
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_parse_name_with_multiple_colons() {
+        let r = ModelRef::parse("model:tag:extra");
+        assert_eq!(r.name, "model");
+        assert_eq!(r.tag, "tag:extra");
+    }
+
+    #[test]
+    fn test_parse_empty_string() {
+        let r = ModelRef::parse("");
+        assert_eq!(r.name, "");
+        assert_eq!(r.tag, "latest");
+    }
+
+    #[test]
+    fn test_is_url_edge_cases() {
+        assert!(!is_url(""));
+        assert!(!is_url("ftp://example.com"));
+        assert!(!is_url("https"));
+        assert!(is_url("https://x"));
+    }
+
+    #[test]
+    fn test_resolved_model_fields() {
+        let resolved = ResolvedModel {
+            name: "test:latest".to_string(),
+            url: "https://example.com/model.gguf".to_string(),
+            format: ModelFormat::Gguf,
+            source: ModelSource::Direct,
+        };
+        assert_eq!(resolved.name, "test:latest");
+        assert_eq!(resolved.format, ModelFormat::Gguf);
+    }
+
+    #[test]
+    fn test_resolve_builtin_with_specific_tag() {
+        // Test that a specific tag that doesn't exist returns None
+        let parsed = ModelRef::parse("llama3.2:nonexistent-tag");
+        let resolved = resolve_from_builtin(&parsed);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_model_ref_debug() {
+        let r = ModelRef::parse("test:v1");
+        let debug = format!("{:?}", r);
+        assert!(debug.contains("test"));
+        assert!(debug.contains("v1"));
+    }
+
+    #[test]
+    fn test_model_ref_clone() {
+        let r = ModelRef::parse("test:v1");
+        let cloned = r.clone();
+        assert_eq!(r, cloned);
     }
 }
