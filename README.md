@@ -629,7 +629,6 @@ End-to-end observability for LLM inference:
   - `a3s_power_ttft_seconds{model}` histogram (time to first token)
 - [ ] **Cost Dashboard Data**: Aggregate cost by model / agent / session / day
   - JSON export endpoint: `GET /v1/usage` with date range filter
-  - Integration with OS Platform Cost Dashboard page
 - [ ] **Model Lifecycle Metrics**: Load time, memory usage, eviction count
   - `a3s_power_model_load_seconds{model}` histogram
   - `a3s_power_model_memory_bytes{model}` gauge
