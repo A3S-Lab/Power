@@ -840,6 +840,8 @@ mod tests {
             license: None,
             adapter_path: None,
             messages: vec![],
+            family: None,
+            families: None,
         };
         let result = backend.load(&manifest).await;
         assert!(result.is_err());

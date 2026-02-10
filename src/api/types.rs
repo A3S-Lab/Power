@@ -318,6 +318,7 @@ pub struct GenerateOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateResponse {
     pub model: String,
+    pub created_at: String,
     pub response: String,
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -360,6 +361,7 @@ pub struct NativeChatRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeChatResponse {
     pub model: String,
+    pub created_at: String,
     pub message: ChatCompletionMessage,
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -394,6 +396,12 @@ pub struct NativeModelDetails {
     pub format: String,
     pub parameter_size: Option<String>,
     pub quantization_level: Option<String>,
+    /// Model family (e.g. "llama", "phi", "gemma").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    /// Model families for multimodal models (e.g. ["llama", "clip"]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub families: Option<Vec<String>>,
 }
 
 /// Ollama-compatible pull request.
@@ -456,6 +464,11 @@ pub struct ShowResponse {
     pub system: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
+    /// Model architecture metadata (e.g. {"general.architecture": "llama"}).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_info: Option<serde_json::Value>,
+    /// ISO 8601 timestamp of when the model was last modified locally.
+    pub modified_at: String,
 }
 
 /// Delete model request.
@@ -489,6 +502,12 @@ pub struct CopyRequest {
 pub struct NativeEmbedRequest {
     pub model: String,
     pub input: NativeEmbedInput,
+    /// Truncate input to the model's max context length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncate: Option<bool>,
+    /// Keep model loaded for this duration (e.g. "5m", "-1" for forever).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_alive: Option<String>,
 }
 
 /// Input for the native embed endpoint — single string or array of strings.
@@ -513,6 +532,12 @@ impl NativeEmbedInput {
 pub struct NativeEmbedResponse {
     pub model: String,
     pub embeddings: Vec<Vec<f32>>,
+    /// Total processing time in nanoseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_duration: Option<u64>,
+    /// Model load time in nanoseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_duration: Option<u64>,
 }
 
 #[cfg(test)]
@@ -704,6 +729,7 @@ mod tests {
     fn test_generate_response_skip_none() {
         let resp = GenerateResponse {
             model: "llama3".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
             response: "hi".to_string(),
             done: false,
             done_reason: None,
@@ -716,6 +742,7 @@ mod tests {
             context: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("created_at"));
         assert!(!json.contains("total_duration"));
         assert!(!json.contains("eval_count"));
         assert!(!json.contains("prompt_eval_count"));
@@ -879,16 +906,24 @@ mod tests {
                 format: "GGUF".to_string(),
                 parameter_size: None,
                 quantization_level: Some("Q4_K_M".to_string()),
+                family: Some("llama".to_string()),
+                families: None,
             },
             system: None,
             license: None,
+            model_info: None,
+            modified_at: chrono::Utc::now().to_rfc3339(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("GGUF"));
         assert!(json.contains("Q4_K_M"));
+        assert!(json.contains("modified_at"));
+        assert!(json.contains("\"family\":\"llama\""));
         // Optional fields should be omitted when None
         assert!(!json.contains("system"));
         assert!(!json.contains("license"));
+        assert!(!json.contains("model_info"));
+        assert!(!json.contains("families"));
     }
 
     #[test]
@@ -928,6 +963,7 @@ mod tests {
     fn test_generate_response_context_field() {
         let resp = GenerateResponse {
             model: "llama3".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
             response: "hi".to_string(),
             done: true,
             done_reason: Some("stop".to_string()),

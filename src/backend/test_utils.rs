@@ -153,6 +153,8 @@ pub fn sample_manifest(name: &str) -> ModelManifest {
         license: None,
         adapter_path: None,
         messages: vec![],
+        family: None,
+        families: None,
     }
 }
 

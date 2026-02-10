@@ -75,6 +75,8 @@ pub async fn pull_model(
                 license: reg.license,
                 adapter_path: None,
                 messages: vec![],
+                family: reg.config.model_family.clone(),
+                families: None,
             }
         }
         ModelSource::Direct => ModelManifest {
@@ -92,6 +94,8 @@ pub async fn pull_model(
             license: None,
             adapter_path: None,
             messages: vec![],
+            family: None,
+            families: None,
         },
     };
 
@@ -241,6 +245,8 @@ mod tests {
             license: None,
             adapter_path: None,
             messages: vec![],
+            family: None,
+            families: None,
         };
         assert!(manifest.parameters.is_none());
         assert!(manifest.system_prompt.is_none());
@@ -298,6 +304,8 @@ mod tests {
             license: reg.license.clone(),
             adapter_path: None,
             messages: vec![],
+            family: reg.config.model_family.clone(),
+            families: None,
         };
 
         // Verify enrichment from registry metadata

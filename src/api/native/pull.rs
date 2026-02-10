@@ -36,7 +36,7 @@ pub async fn handler(
         tokio::spawn(async move {
             let _ = tx
                 .send(PullResponse {
-                    status: "pulling".to_string(),
+                    status: "pulling manifest".to_string(),
                     digest: None,
                     total: None,
                     completed: None,
@@ -57,6 +57,25 @@ pub async fn handler(
                 Ok(manifest) => {
                     let digest = format!("sha256:{}", &manifest.sha256);
                     let size = manifest.size;
+
+                    let _ = tx
+                        .send(PullResponse {
+                            status: format!("verifying {}", &digest),
+                            digest: Some(digest.clone()),
+                            total: Some(size),
+                            completed: Some(size),
+                        })
+                        .await;
+
+                    let _ = tx
+                        .send(PullResponse {
+                            status: "writing manifest".to_string(),
+                            digest: Some(digest.clone()),
+                            total: Some(size),
+                            completed: Some(size),
+                        })
+                        .await;
+
                     match registry.register(manifest) {
                         Ok(()) => {
                             let _ = tx

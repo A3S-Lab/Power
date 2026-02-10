@@ -1,6 +1,7 @@
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::Json;
+use std::time::Instant;
 
 use crate::api::types::{NativeEmbedRequest, NativeEmbedResponse};
 use crate::backend::types::EmbeddingRequest;
@@ -30,21 +31,37 @@ pub async fn handler(
         }
     };
 
-    if let Err(e) =
-        crate::api::autoload::ensure_loaded(&state, &model_name, &manifest, &backend).await
+    let load_result = match crate::api::autoload::ensure_loaded_with_keep_alive(
+        &state,
+        &model_name,
+        &manifest,
+        &backend,
+        request.keep_alive.as_deref(),
+    )
+    .await
     {
-        return Json(serde_json::json!({ "error": e.to_string() })).into_response();
-    }
+        Ok(r) => r,
+        Err(e) => {
+            return Json(serde_json::json!({ "error": e.to_string() })).into_response();
+        }
+    };
+    let load_duration_ns = load_result.load_duration.as_nanos() as u64;
 
     let input_texts = request.input.into_vec();
     let backend_request = EmbeddingRequest { input: input_texts };
 
+    let start = Instant::now();
     match backend.embed(&model_name, backend_request).await {
-        Ok(response) => Json(NativeEmbedResponse {
-            model: model_name,
-            embeddings: response.embeddings,
-        })
-        .into_response(),
+        Ok(response) => {
+            let total_duration_ns = start.elapsed().as_nanos() as u64 + load_duration_ns;
+            Json(NativeEmbedResponse {
+                model: model_name,
+                embeddings: response.embeddings,
+                total_duration: Some(total_duration_ns),
+                load_duration: Some(load_duration_ns),
+            })
+            .into_response()
+        }
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })).into_response(),
     }
 }
@@ -63,6 +80,8 @@ mod tests {
         let request = NativeEmbedRequest {
             model: "nonexistent".to_string(),
             input: NativeEmbedInput::Single("hello".to_string()),
+            truncate: None,
+            keep_alive: None,
         };
         let resp = handler(axum::extract::State(state), Json(request))
             .await
@@ -88,6 +107,8 @@ mod tests {
         let request = NativeEmbedRequest {
             model: "embed-model".to_string(),
             input: NativeEmbedInput::Single("hello".to_string()),
+            truncate: None,
+            keep_alive: None,
         };
         let resp = handler(axum::extract::State(state), Json(request))
             .await

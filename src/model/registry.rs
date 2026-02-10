@@ -173,6 +173,8 @@ mod tests {
             license: None,
             adapter_path: None,
             messages: vec![],
+            family: None,
+            families: None,
         }
     }
 

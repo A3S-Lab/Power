@@ -54,6 +54,14 @@ pub struct ModelManifest {
     /// Pre-seeded conversation messages (from Modelfile MESSAGE directive)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<ManifestMessage>,
+
+    /// Model family (e.g. "llama", "phi", "gemma") from Ollama registry config
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+
+    /// Model families for multimodal models (e.g. ["llama", "clip"])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub families: Option<Vec<String>>,
 }
 
 /// A pre-seeded message stored in the manifest.
@@ -147,6 +155,8 @@ mod tests {
             license: None,
             adapter_path: None,
             messages: vec![],
+            family: None,
+            families: None,
         }
     }
 

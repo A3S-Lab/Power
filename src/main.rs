@@ -125,6 +125,8 @@ async fn main() -> anyhow::Result<()> {
                         content: m.content.clone(),
                     })
                     .collect(),
+                family: None,
+                families: None,
             };
             registry.register(manifest)?;
             println!("Created model '{name}' from '{}'", mf.from);

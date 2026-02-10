@@ -29,6 +29,8 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
                             .parameters
                             .as_ref()
                             .and_then(|p| p.quantization.clone()),
+                        family: manifest.family.clone(),
+                        families: manifest.families.clone(),
                     },
                 })
             })

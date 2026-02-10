@@ -173,6 +173,7 @@ pub async fn handler(
                                     counter_clone.load(std::sync::atomic::Ordering::Relaxed);
                                 GenerateResponse {
                                     model: model_name_owned.clone(),
+                                    created_at: chrono::Utc::now().to_rfc3339(),
                                     response: c.text,
                                     done: c.done,
                                     done_reason: c.done_reason,
@@ -204,6 +205,7 @@ pub async fn handler(
                             }
                             Err(e) => GenerateResponse {
                                 model: model_name_owned.clone(),
+                                created_at: chrono::Utc::now().to_rfc3339(),
                                 response: format!("Error: {e}"),
                                 done: true,
                                 done_reason: None,
@@ -238,6 +240,7 @@ pub async fn handler(
                         // Sentinel: empty response to flush metrics (not sent to client)
                         GenerateResponse {
                             model: model_for_done,
+                            created_at: chrono::Utc::now().to_rfc3339(),
                             response: String::new(),
                             done: true,
                             done_reason: None,
@@ -328,6 +331,7 @@ pub async fn handler(
 
                 Json(GenerateResponse {
                     model: model_name,
+                    created_at: chrono::Utc::now().to_rfc3339(),
                     response: full_text,
                     done: true,
                     done_reason,

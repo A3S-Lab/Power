@@ -77,6 +77,8 @@ pub async fn handler(
                 content: m.content.clone(),
             })
             .collect(),
+        family: None,
+        families: None,
     };
 
     // Register the new model

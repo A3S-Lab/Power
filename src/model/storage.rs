@@ -150,6 +150,8 @@ mod tests {
             license: None,
             adapter_path: None,
             messages: vec![],
+            family: None,
+            families: None,
         };
 
         delete_blob(&manifest).unwrap();
@@ -180,6 +182,8 @@ mod tests {
             license: None,
             adapter_path: None,
             messages: vec![],
+            family: None,
+            families: None,
         };
 
         // Should not error — file doesn't exist, so nothing to delete
