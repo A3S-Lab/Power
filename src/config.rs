@@ -69,6 +69,15 @@ pub struct PowerConfig {
     /// Custom temporary directory for downloads and scratch files.
     #[serde(default)]
     pub tmpdir: Option<PathBuf>,
+
+    /// Disable automatic pruning of unused blobs (default: false).
+    #[serde(default)]
+    pub noprune: bool,
+
+    /// Spread model layers across all available GPUs (default: false).
+    /// When true, distributes layers evenly instead of filling one GPU first.
+    #[serde(default)]
+    pub sched_spread: bool,
 }
 
 fn default_keep_alive() -> String {
@@ -149,6 +158,8 @@ impl Default for PowerConfig {
             num_parallel: default_num_parallel(),
             origins: Vec::new(),
             tmpdir: None,
+            noprune: false,
+            sched_spread: false,
         }
     }
 }
@@ -192,6 +203,8 @@ impl PowerConfig {
     /// - `OLLAMA_ORIGINS` — comma-separated CORS origins
     /// - `OLLAMA_FLASH_ATTENTION` — enable flash attention (`"1"` or `"true"`)
     /// - `OLLAMA_TMPDIR` — custom temporary directory
+    /// - `OLLAMA_NOPRUNE` — disable automatic blob pruning (`"1"` or `"true"`)
+    /// - `OLLAMA_SCHED_SPREAD` — spread layers across GPUs (`"1"` or `"true"`)
     fn apply_env_overrides(&mut self) {
         if let Ok(host_str) = std::env::var("OLLAMA_HOST") {
             // OLLAMA_HOST can be "host:port" or just "host"
@@ -273,6 +286,18 @@ impl PowerConfig {
         if let Ok(tmpdir) = std::env::var("OLLAMA_TMPDIR") {
             self.tmpdir = Some(std::path::PathBuf::from(tmpdir));
         }
+
+        if let Ok(noprune_str) = std::env::var("OLLAMA_NOPRUNE") {
+            if noprune_str == "1" || noprune_str.eq_ignore_ascii_case("true") {
+                self.noprune = true;
+            }
+        }
+
+        if let Ok(spread_str) = std::env::var("OLLAMA_SCHED_SPREAD") {
+            if spread_str == "1" || spread_str.eq_ignore_ascii_case("true") {
+                self.sched_spread = true;
+            }
+        }
     }
 
     /// Save the current configuration to the default config file path.
@@ -351,6 +376,8 @@ mod tests {
             num_parallel: 4,
             origins: vec!["http://localhost:3000".to_string()],
             tmpdir: None,
+            noprune: false,
+            sched_spread: false,
         };
         config.save().unwrap();
 
@@ -563,6 +590,8 @@ mod tests {
         assert_eq!(config.num_parallel, 1);
         assert!(config.origins.is_empty());
         assert!(config.tmpdir.is_none());
+        assert!(!config.noprune);
+        assert!(!config.sched_spread);
     }
 
     #[test]
@@ -694,5 +723,65 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/ollama-scratch"))
         );
         std::env::remove_var("OLLAMA_TMPDIR");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_noprune() {
+        std::env::set_var("OLLAMA_NOPRUNE", "1");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.noprune);
+        std::env::remove_var("OLLAMA_NOPRUNE");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_noprune_true_string() {
+        std::env::set_var("OLLAMA_NOPRUNE", "true");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.noprune);
+        std::env::remove_var("OLLAMA_NOPRUNE");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_noprune_false_ignored() {
+        std::env::set_var("OLLAMA_NOPRUNE", "0");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(!config.noprune); // unchanged
+        std::env::remove_var("OLLAMA_NOPRUNE");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_sched_spread() {
+        std::env::set_var("OLLAMA_SCHED_SPREAD", "1");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.sched_spread);
+        std::env::remove_var("OLLAMA_SCHED_SPREAD");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_sched_spread_true_string() {
+        std::env::set_var("OLLAMA_SCHED_SPREAD", "true");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.sched_spread);
+        std::env::remove_var("OLLAMA_SCHED_SPREAD");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_sched_spread_false_ignored() {
+        std::env::set_var("OLLAMA_SCHED_SPREAD", "0");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(!config.sched_spread); // unchanged
+        std::env::remove_var("OLLAMA_SCHED_SPREAD");
     }
 }

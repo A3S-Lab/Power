@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
@@ -60,6 +61,72 @@ pub fn compute_sha256(data: &[u8]) -> String {
     hasher.update(data);
     let result = hasher.finalize();
     format!("{result:x}")
+}
+
+/// Remove blob files that are not referenced by any model manifest.
+///
+/// Scans the blobs directory and compares against the set of blob paths
+/// referenced by registered manifests. Any blob file not referenced is deleted.
+///
+/// Returns the number of blobs removed and total bytes freed.
+pub fn prune_unused_blobs(manifests: &[ModelManifest]) -> Result<(usize, u64)> {
+    let blob_dir = dirs::blobs_dir();
+    if !blob_dir.exists() {
+        return Ok((0, 0));
+    }
+
+    // Collect all referenced blob paths (model file + adapter + projector)
+    let mut referenced: HashSet<PathBuf> = HashSet::new();
+    for m in manifests {
+        referenced.insert(m.path.clone());
+        if let Some(ref adapter) = m.adapter_path {
+            referenced.insert(PathBuf::from(adapter));
+        }
+        if let Some(ref projector) = m.projector_path {
+            referenced.insert(PathBuf::from(projector));
+        }
+    }
+
+    let mut removed = 0usize;
+    let mut freed = 0u64;
+
+    let entries = std::fs::read_dir(&blob_dir).map_err(|e| {
+        PowerError::Io(std::io::Error::other(format!(
+            "Failed to read blobs directory {}: {e}",
+            blob_dir.display()
+        )))
+    })?;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if !referenced.contains(&path) {
+            let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    tracing::info!(
+                        path = %path.display(),
+                        size,
+                        "Pruned unused blob"
+                    );
+                    removed += 1;
+                    freed += size;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to prune blob"
+                    );
+                }
+            }
+        }
+    }
+
+    Ok((removed, freed))
 }
 
 #[cfg(test)]
@@ -208,5 +275,106 @@ mod tests {
     fn test_verify_blob_nonexistent_file() {
         let result = verify_blob(std::path::Path::new("/tmp/nonexistent-verify-test"), "abc");
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_prune_unused_blobs_removes_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // Store two blobs
+        let (path_a, _) = store_blob(b"model-a-data").unwrap();
+        let (_, _) = store_blob(b"orphan-data").unwrap();
+
+        // Only reference path_a in manifests
+        let manifest = crate::model::manifest::ModelManifest {
+            name: "model-a".to_string(),
+            format: crate::model::manifest::ModelFormat::Gguf,
+            size: 12,
+            sha256: "test".to_string(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: path_a.clone(),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: vec![],
+            family: None,
+            families: None,
+        };
+
+        let (removed, freed) = prune_unused_blobs(&[manifest]).unwrap();
+        assert_eq!(removed, 1);
+        assert!(freed > 0);
+        // Referenced blob should still exist
+        assert!(path_a.exists());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_prune_unused_blobs_no_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let (path_a, _) = store_blob(b"data-a").unwrap();
+
+        let manifest = crate::model::manifest::ModelManifest {
+            name: "a".to_string(),
+            format: crate::model::manifest::ModelFormat::Gguf,
+            size: 6,
+            sha256: "test".to_string(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: path_a,
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: vec![],
+            family: None,
+            families: None,
+        };
+
+        let (removed, freed) = prune_unused_blobs(&[manifest]).unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(freed, 0);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_prune_unused_blobs_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // Create blobs dir but leave it empty
+        std::fs::create_dir_all(dirs::blobs_dir()).unwrap();
+
+        let (removed, freed) = prune_unused_blobs(&[]).unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(freed, 0);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    fn test_prune_unused_blobs_nonexistent_dir() {
+        // When blobs dir doesn't exist, should return (0, 0)
+        let _dir = tempfile::tempdir().unwrap();
+        // prune_unused_blobs checks dirs::blobs_dir() which may or may not exist;
+        // the function handles missing dirs gracefully by returning (0, 0).
+        let result = prune_unused_blobs(&[]);
+        assert!(result.is_ok());
     }
 }

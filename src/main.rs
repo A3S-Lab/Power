@@ -23,6 +23,27 @@ async fn main() -> anyhow::Result<()> {
 
     // Early exit for commands that don't need registry/backends
     match &cli.command {
+        Commands::Help { command } => {
+            use clap::CommandFactory;
+            let mut cmd = Cli::command();
+            if let Some(sub) = command {
+                // Print help for a specific subcommand
+                match cmd.find_subcommand_mut(sub) {
+                    Some(subcmd) => {
+                        subcmd.print_help().ok();
+                        println!();
+                    }
+                    None => {
+                        eprintln!("Unknown command: '{sub}'");
+                        eprintln!("Run 'a3s-power help' for a list of commands.");
+                    }
+                }
+            } else {
+                cmd.print_help().ok();
+                println!();
+            }
+            return Ok(());
+        }
         Commands::Update => {
             return a3s_updater::run_update(&a3s_updater::UpdateConfig {
                 binary_name: "a3s-power",
@@ -182,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Update => unreachable!(),
         Commands::Ps => unreachable!(),
         Commands::Stop { .. } => unreachable!(),
+        Commands::Help { .. } => unreachable!(),
     }
 
     Ok(())

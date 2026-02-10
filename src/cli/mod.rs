@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand};
 
 /// A3S Power - Local model management and serving
 #[derive(Debug, Parser)]
-#[command(name = "a3s-power", version, about)]
+#[command(name = "a3s-power", version, about, disable_help_subcommand = true)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -169,6 +169,12 @@ pub enum Commands {
 
     /// Update a3s-power to the latest version
     Update,
+
+    /// Show help for a command
+    Help {
+        /// Command name to get help for (e.g. "run", "pull")
+        command: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -561,6 +567,28 @@ mod tests {
                 assert!(verbose);
             }
             _ => panic!("Expected Show command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_help_command_no_args() {
+        let cli = Cli::parse_from(["a3s-power", "help"]);
+        match cli.command {
+            Commands::Help { command } => {
+                assert!(command.is_none());
+            }
+            _ => panic!("Expected Help command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_help_command_with_subcommand() {
+        let cli = Cli::parse_from(["a3s-power", "help", "run"]);
+        match cli.command {
+            Commands::Help { command } => {
+                assert_eq!(command.as_deref(), Some("run"));
+            }
+            _ => panic!("Expected Help command"),
         }
     }
 }

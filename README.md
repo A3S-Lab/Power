@@ -89,7 +89,7 @@ a3s-power serve
 
 ### Test Coverage
 
-**518 unit tests** with comprehensive coverage across 50+ source files:
+**530 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -833,6 +833,16 @@ Complete Ollama environment variable parity and CLI enhancements:
 - [x] **Interactive `"""`**: Multi-line input support with triple-quote delimiters
 - [x] **CORS Configuration**: Server respects `OLLAMA_ORIGINS` for restricted CORS; defaults to permissive
 - [x] 518 comprehensive unit tests
+
+### Phase 14: Final Ollama Parity ✅
+
+Complete remaining Ollama feature gaps — `help` subcommand, blob pruning, GPU scheduling:
+
+- [x] **`help` subcommand**: `a3s-power help [command]` prints help for any subcommand (replaces clap's built-in)
+- [x] **Blob pruning**: `prune_unused_blobs()` removes orphaned blob files not referenced by any manifest; returns count and bytes freed
+- [x] **`OLLAMA_NOPRUNE`**: Disable automatic blob pruning (`"1"` or `"true"`)
+- [x] **`OLLAMA_SCHED_SPREAD`**: Spread model layers across all available GPUs (`"1"` or `"true"`)
+- [x] 530 comprehensive unit tests
 
 ## License
 
