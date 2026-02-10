@@ -59,7 +59,9 @@ a3s-power serve
 - **Modelfile Support**: Create custom models with `FROM`, `PARAMETER`, `SYSTEM`, `TEMPLATE`, `ADAPTER` (LoRA/QLoRA), `LICENSE`, and `MESSAGE` (pre-seeded conversations) directives
 - **Multiple Concurrent Models**: Load multiple models with LRU eviction at configurable capacity
 - **Automatic Model Unloading**: Background keep_alive reaper unloads idle models after configurable timeout (default 5m)
-- **GPU Acceleration**: Configurable GPU layer offloading via `[gpu]` config section
+- **GPU Acceleration**: Configurable GPU layer offloading via `[gpu]` config section with automatic GPU detection (Metal/CUDA)
+- **GPU Auto-Detection**: Automatically detects Apple Metal and NVIDIA CUDA GPUs at server startup, sets optimal `gpu_layers` when not explicitly configured
+- **Memory Estimation**: Estimates VRAM requirements before loading a model (model weights + KV cache + compute overhead) and logs warnings
 - **Embedding Support**: Real embedding generation with automatic model reload in embedding mode
 - **HTTP Server**: Axum-based server with CORS, tracing, and metrics middleware
 - **Ollama-Compatible API**: `/api/generate`, `/api/chat`, `/api/tags`, `/api/pull`, `/api/push`, `/api/show`, `/api/delete`, `/api/embeddings`, `/api/embed`, `/api/ps`, `/api/copy`, `/api/version`, `/api/blobs/:digest`
@@ -70,6 +72,9 @@ a3s-power serve
 - **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
 - **Prometheus Metrics**: `GET /metrics` endpoint with request counts, durations, tokens, model gauges, inference duration, TTFT, cost, evictions, model memory, and GPU metrics
 - **Usage Dashboard**: `GET /v1/usage` endpoint with date range and model filtering for cost tracking
+- **GGUF Metadata Reader**: Lightweight binary parser for GGUF file headers — extracts architecture metadata and tensor descriptors without loading weights
+- **Verbose Show**: `/api/show` with `verbose: true` returns full GGUF metadata and tensor information
+- **Per-Layer Pull Progress**: Pull progress shows per-layer digest identifiers (`pulling sha256:abc...`) matching Ollama's output format
 - **Content-Addressed Storage**: Model blobs stored by SHA-256 hash with automatic deduplication
 - **llama.cpp Backend**: GGUF inference via `llama-cpp-2` Rust bindings (optional feature flag)
 - **Health Check**: `GET /health` endpoint with uptime, version, and loaded model count
@@ -83,7 +88,7 @@ a3s-power serve
 
 ### Test Coverage
 
-**454 unit tests** with comprehensive coverage across 50+ source files:
+**484 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -758,7 +763,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **Vision Inference**: Multimodal vision pipeline — accepts base64 images in Ollama `images` field and OpenAI `image_url` content parts; projector auto-downloaded from Ollama registry; uses llama.cpp `mtmd` API for image encoding when projector available
 - [x] **ADAPTER Support**: LoRA/QLoRA adapter loading at inference time — Modelfile `ADAPTER` directive parsed, adapter file loaded via `llama_lora_adapter_init`, applied to context with `lora_adapter_set` at scale 1.0
 - [x] **MESSAGE Directive**: Pre-seeded conversation history via Modelfile `MESSAGE` directive; messages stored in manifest and automatically prepended to chat requests
-- [x] 454 comprehensive unit tests
+- [x] 484 comprehensive unit tests
 
 ### Phase 9: Operational Parity ✅
 
@@ -769,7 +774,18 @@ Runtime and CLI parity for production Ollama replacement:
 - [x] **`stop` CLI Command**: Unload a running model via `a3s-power stop <model>` (sends `keep_alive: 0`)
 - [x] **Ollama Environment Variables**: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_GPU` — override config file for container/script compatibility
 - [x] **Download Resumption**: Interrupted model downloads resume automatically via HTTP Range requests with partial file tracking
-- [x] 454 comprehensive unit tests
+- [x] 484 comprehensive unit tests
+
+### Phase 10: Intelligence & Observability ✅
+
+GPU auto-detection, memory estimation, verbose model inspection, and per-layer pull progress:
+
+- [x] **GPU Auto-Detection**: Detect Apple Metal (via `system_profiler`) and NVIDIA CUDA (via `nvidia-smi`) GPUs at server startup; auto-set `gpu_layers = -1` when GPU available and user hasn't explicitly configured
+- [x] **Memory Estimation**: Estimate VRAM requirements before loading (model weights + KV cache + compute overhead); log estimates to help users right-size their hardware
+- [x] **GGUF Metadata Reader**: Lightweight binary parser for GGUF v2/v3 file headers — extracts all key-value metadata and tensor descriptors without loading weights into memory
+- [x] **Verbose Show**: `/api/show` with `verbose: true` returns full GGUF metadata (architecture, context length, embedding dimensions, etc.) and tensor information (name, shape, type, element count)
+- [x] **Per-Layer Pull Progress**: Streaming pull progress shows per-layer digest identifiers (`pulling sha256:abc123...`) matching Ollama's output format; resolves model before download to extract layer digests
+- [x] 484 comprehensive unit tests
 
 ## License
 

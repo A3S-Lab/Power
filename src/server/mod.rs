@@ -11,9 +11,12 @@ use crate::error::{PowerError, Result};
 use crate::model::registry::ModelRegistry;
 
 /// Start the HTTP server with the given configuration.
-pub async fn start(config: PowerConfig) -> Result<()> {
+pub async fn start(mut config: PowerConfig) -> Result<()> {
     // Ensure storage directories exist
     dirs::ensure_dirs()?;
+
+    // Auto-detect GPU and configure layers if not explicitly set
+    backend::gpu::auto_configure(&mut config.gpu);
 
     // Initialize model registry and scan for existing models
     let registry = Arc::new(ModelRegistry::new());

@@ -61,6 +61,30 @@ pub async fn ensure_loaded_with_keep_alive(
     }
 
     let load_start = Instant::now();
+
+    // Log memory estimate before loading (GGUF models only)
+    if manifest.format == crate::model::manifest::ModelFormat::Gguf && manifest.path.exists() {
+        match crate::model::gguf::estimate_memory(&manifest.path, 2048) {
+            Ok(estimate) => {
+                tracing::info!(
+                    model = %model_name,
+                    model_size = %format_bytes(estimate.model_size),
+                    kv_cache = %format_bytes(estimate.kv_cache_size),
+                    total_estimate = %estimate.total_display(),
+                    ctx_size = estimate.context_size,
+                    "Memory estimate before loading"
+                );
+            }
+            Err(e) => {
+                tracing::debug!(
+                    model = %model_name,
+                    error = %e,
+                    "Could not estimate memory requirements"
+                );
+            }
+        }
+    }
+
     backend.load(manifest).await?;
     let load_duration = load_start.elapsed();
 
@@ -87,6 +111,20 @@ pub async fn ensure_loaded_with_keep_alive(
     }
 
     Ok(LoadResult { load_duration })
+}
+
+/// Format bytes as a human-readable string for log messages.
+fn format_bytes(bytes: u64) -> String {
+    const GB: u64 = 1_073_741_824;
+    const MB: u64 = 1_048_576;
+
+    if bytes >= GB {
+        format!("{:.1} GiB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.0} MiB", bytes as f64 / MB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 #[cfg(test)]

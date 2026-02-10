@@ -1,3 +1,4 @@
+pub mod gguf;
 pub mod manifest;
 pub mod modelfile;
 pub mod ollama_registry;

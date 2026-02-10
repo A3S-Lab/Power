@@ -48,6 +48,45 @@ fn build_model_info(manifest: &ModelManifest) -> Option<serde_json::Value> {
     }
 }
 
+/// Build a verbose `model_info` JSON object by reading GGUF file metadata.
+///
+/// Includes all GGUF key-value metadata and tensor descriptors.
+/// Falls back to basic `build_model_info` if the file cannot be read.
+fn build_verbose_model_info(manifest: &ModelManifest) -> Option<serde_json::Value> {
+    use crate::model::gguf;
+
+    // Try to read GGUF metadata from the model file
+    match gguf::read_metadata(&manifest.path) {
+        Ok(meta) => {
+            let mut info = match meta.metadata_to_json() {
+                serde_json::Value::Object(map) => map,
+                _ => serde_json::Map::new(),
+            };
+
+            // Add tensor information
+            info.insert("_tensors".to_string(), meta.tensors_to_json());
+            info.insert(
+                "_tensor_count".to_string(),
+                serde_json::Value::Number(meta.tensor_count.into()),
+            );
+            info.insert(
+                "_gguf_version".to_string(),
+                serde_json::Value::Number(meta.version.into()),
+            );
+
+            Some(serde_json::Value::Object(info))
+        }
+        Err(e) => {
+            tracing::debug!(
+                model = %manifest.name,
+                error = %e,
+                "Could not read GGUF metadata for verbose show, falling back to basic info"
+            );
+            build_model_info(manifest)
+        }
+    }
+}
+
 /// Format default_parameters as Ollama-style key-value text.
 ///
 /// Ollama returns parameters as `"temperature 0.7\ntop_p 0.9"`, not JSON.
@@ -106,6 +145,9 @@ pub async fn list_handler(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// POST /api/show - Show model details (Ollama-compatible).
+///
+/// When `verbose: true`, reads GGUF metadata from the model file and includes
+/// detailed tensor information in the `model_info` field.
 pub async fn show_handler(
     State(state): State<AppState>,
     Json(request): Json<ShowRequest>,
@@ -118,6 +160,13 @@ pub async fn show_handler(
                     .find(|l| l.trim().starts_with("FROM "))
                     .map(|l| l.trim().strip_prefix("FROM ").unwrap_or("").trim().to_string())
             });
+
+            // Build model_info: basic metadata always, GGUF details when verbose
+            let model_info = if request.verbose.unwrap_or(false) {
+                build_verbose_model_info(&manifest)
+            } else {
+                build_model_info(&manifest)
+            };
 
             let response = ShowResponse {
                 modelfile: manifest.modelfile_content.clone().unwrap_or_default(),
@@ -139,7 +188,7 @@ pub async fn show_handler(
                 },
                 system: manifest.system_prompt.clone(),
                 license: manifest.license.clone(),
-                model_info: build_model_info(&manifest),
+                model_info,
                 modified_at: crate::api::format_ollama_timestamp(&manifest.created_at),
                 parent_model,
             };
@@ -232,6 +281,38 @@ mod tests {
             .uri("/api/show")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"name":"test-model"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["details"]["format"], "GGUF");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_show_handler_verbose_fallback() {
+        // When verbose=true but model file doesn't exist (sample_manifest uses /tmp/test),
+        // it should fall back to basic model_info without error.
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state
+            .registry
+            .register(sample_manifest("test-model"))
+            .unwrap();
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/show")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"test-model","verbose":true}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);

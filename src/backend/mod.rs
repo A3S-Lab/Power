@@ -1,4 +1,5 @@
 pub mod chat_template;
+pub mod gpu;
 pub mod json_schema;
 pub mod llamacpp;
 #[cfg(test)]

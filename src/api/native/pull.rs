@@ -5,11 +5,19 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::api::types::{PullRequest, PullResponse};
+use crate::model::resolve;
 use crate::server::state::AppState;
 
 /// POST /api/pull - Pull/download a model (Ollama-compatible).
 ///
-/// Supports streaming progress updates via SSE.
+/// Supports streaming progress updates via NDJSON.
+/// Shows per-layer progress with digest identifiers, matching Ollama's output:
+///   pulling manifest
+///   pulling sha256:abc123... (model weights)
+///   pulling sha256:def456... (projector, if present)
+///   verifying sha256:...
+///   writing manifest
+///   success
 pub async fn handler(
     State(state): State<AppState>,
     Json(request): Json<PullRequest>,
@@ -28,12 +36,13 @@ pub async fn handler(
     }
 
     if is_stream {
-        // Streaming progress via SSE
+        // Streaming progress via NDJSON
         let registry = state.registry.clone();
         let (tx, rx) = mpsc::channel::<PullResponse>(32);
         let name_or_url = model_name.clone();
 
         tokio::spawn(async move {
+            // Step 1: Pulling manifest
             let _ = tx
                 .send(PullResponse {
                     status: "pulling manifest".to_string(),
@@ -43,30 +52,87 @@ pub async fn handler(
                 })
                 .await;
 
+            // Resolve the model to get layer digests for per-layer progress
+            let resolved = if !resolve::is_url(&name_or_url) {
+                match resolve::resolve(&name_or_url).await {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        let _ = tx
+                            .send(PullResponse {
+                                status: format!("error: {e}"),
+                                digest: None,
+                                total: None,
+                                completed: None,
+                            })
+                            .await;
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Extract layer digest for per-layer progress display
+            let layer_digest = resolved.as_ref().and_then(|r| match &r.source {
+                resolve::ModelSource::OllamaRegistry(reg) => {
+                    Some(reg.model_digest.clone())
+                }
+                _ => None,
+            });
+
+            // Step 2: Show per-layer pulling status
+            if let Some(ref digest) = layer_digest {
+                let short = truncate_digest(digest);
+                let _ = tx
+                    .send(PullResponse {
+                        status: format!("pulling {short}"),
+                        digest: Some(digest.clone()),
+                        total: None,
+                        completed: None,
+                    })
+                    .await;
+            }
+
+            // Step 3: Download with progress
             let progress_tx = tx.clone();
+            let progress_digest = layer_digest.clone();
             let progress = Box::new(move |downloaded: u64, total: u64| {
                 let _ = progress_tx.try_send(PullResponse {
                     status: "downloading".to_string(),
-                    digest: None,
+                    digest: progress_digest.clone(),
                     total: Some(total),
                     completed: Some(downloaded),
                 });
             });
 
-            match crate::model::pull::pull_model(&name_or_url, None, Some(progress)).await {
+            let pull_result = if let Some(resolved) = resolved {
+                // Use the already-resolved URL
+                crate::model::pull::pull_model(
+                    &name_or_url,
+                    Some(&resolved.url),
+                    Some(progress),
+                )
+                .await
+            } else {
+                crate::model::pull::pull_model(&name_or_url, None, Some(progress)).await
+            };
+
+            match pull_result {
                 Ok(manifest) => {
                     let digest = format!("sha256:{}", &manifest.sha256);
                     let size = manifest.size;
 
+                    // Step 4: Verifying
                     let _ = tx
                         .send(PullResponse {
-                            status: format!("verifying {}", &digest),
+                            status: format!("verifying {}", truncate_digest(&digest)),
                             digest: Some(digest.clone()),
                             total: Some(size),
                             completed: Some(size),
                         })
                         .await;
 
+                    // Step 5: Writing manifest
                     let _ = tx
                         .send(PullResponse {
                             status: "writing manifest".to_string(),
@@ -149,8 +215,18 @@ pub async fn handler(
     }
 }
 
+/// Truncate a digest for display (e.g. "sha256:abc123def456..." → "sha256:abc123def4...").
+fn truncate_digest(digest: &str) -> String {
+    if digest.len() > 19 {
+        format!("{}...", &digest[..19])
+    } else {
+        digest.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
     use crate::server::router;
     use axum::body::Body;
@@ -228,5 +304,19 @@ mod tests {
         let req: crate::api::types::PullRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.name, "test-model");
         assert_eq!(req.stream, None);
+    }
+
+    #[test]
+    fn test_truncate_digest_long() {
+        let digest = "sha256:abc123def456789012345";
+        let truncated = truncate_digest(digest);
+        assert_eq!(truncated, "sha256:abc123def456...");
+    }
+
+    #[test]
+    fn test_truncate_digest_short() {
+        let digest = "sha256:abc";
+        let truncated = truncate_digest(digest);
+        assert_eq!(truncated, "sha256:abc");
     }
 }

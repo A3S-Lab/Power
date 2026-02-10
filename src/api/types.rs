@@ -454,6 +454,9 @@ pub struct PushResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShowRequest {
     pub name: String,
+    /// When true, return detailed tensor information in `model_info`.
+    #[serde(default)]
+    pub verbose: Option<bool>,
 }
 
 /// Show model response.
@@ -966,6 +969,29 @@ mod tests {
         assert!(!json.contains("license"));
         assert!(!json.contains("model_info"));
         assert!(!json.contains("families"));
+    }
+
+    #[test]
+    fn test_show_request_deserialize_basic() {
+        let json = r#"{"name": "llama3"}"#;
+        let req: ShowRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "llama3");
+        assert!(req.verbose.is_none());
+    }
+
+    #[test]
+    fn test_show_request_deserialize_verbose() {
+        let json = r#"{"name": "llama3", "verbose": true}"#;
+        let req: ShowRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "llama3");
+        assert_eq!(req.verbose, Some(true));
+    }
+
+    #[test]
+    fn test_show_request_verbose_defaults_to_none() {
+        let json = r#"{"name": "llama3", "verbose": false}"#;
+        let req: ShowRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.verbose, Some(false));
     }
 
     #[test]
