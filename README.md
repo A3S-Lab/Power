@@ -81,7 +81,7 @@ a3s-power serve
 
 ### Test Coverage
 
-**429 unit tests** with comprehensive coverage across 50+ source files:
+**435 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -529,7 +529,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 429 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 435 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -675,7 +675,7 @@ A3S Power is an **infrastructure component** of the A3S ecosystem — a standalo
 
 ### Phase 4: Polish & Production ✅
 
-- [x] Model registry resolution (name-based pulls with built-in registry + HuggingFace fallback)
+- [x] Model registry resolution (name-based pulls with Ollama registry → built-in registry → HuggingFace fallback)
 - [x] Embedding generation support (automatic reload with embedding mode)
 - [x] Multiple concurrent model loading (HashMap storage with LRU eviction)
 - [x] Model auto-loading on first API request
@@ -726,7 +726,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **NDJSON Streaming**: Native API endpoints (`/api/generate`, `/api/chat`, `/api/pull`, `/api/push`) stream as `application/x-ndjson` (Ollama wire format); OpenAI endpoints keep SSE
 - [x] **Automatic Model Unloading**: Background keep_alive reaper checks every 5s and unloads idle models (configurable: `"5m"`, `"1h"`, `"0"`, `"-1"`)
 - [x] **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
-- [x] 429 comprehensive unit tests
+- [x] 435 comprehensive unit tests
 
 ### Phase 8: Advanced Compatibility ✅
 
@@ -737,7 +737,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **Vision Inference**: Image passthrough pipeline — accepts base64 images in Ollama `images` field and OpenAI `image_url` content parts; infrastructure-ready for clip projector integration
 - [x] **ADAPTER Support**: Modelfile `ADAPTER` directive parsed and stored in manifest; LoRA/QLoRA adapter path flows through create API to model registry
 - [x] **MESSAGE Directive**: Pre-seeded conversation history via Modelfile `MESSAGE` directive; messages stored in manifest and automatically prepended to chat requests
-- [x] 429 comprehensive unit tests
+- [x] 435 comprehensive unit tests
 
 ## License
 
