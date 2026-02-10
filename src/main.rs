@@ -21,16 +21,25 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Early exit for update command (no need to init registry/backends)
-    if matches!(cli.command, Commands::Update) {
-        return a3s_updater::run_update(&a3s_updater::UpdateConfig {
-            binary_name: "a3s-power",
-            crate_name: "a3s-power",
-            current_version: env!("CARGO_PKG_VERSION"),
-            github_owner: "A3S-Lab",
-            github_repo: "Power",
-        })
-        .await;
+    // Early exit for commands that don't need registry/backends
+    match &cli.command {
+        Commands::Update => {
+            return a3s_updater::run_update(&a3s_updater::UpdateConfig {
+                binary_name: "a3s-power",
+                crate_name: "a3s-power",
+                current_version: env!("CARGO_PKG_VERSION"),
+                github_owner: "A3S-Lab",
+                github_repo: "Power",
+            })
+            .await;
+        }
+        Commands::Ps => {
+            return a3s_power::cli::ps::execute().await.map_err(Into::into);
+        }
+        Commands::Stop { model } => {
+            return a3s_power::cli::stop::execute(model).await.map_err(Into::into);
+        }
+        _ => {}
     }
 
     // Load configuration
@@ -148,6 +157,8 @@ async fn main() -> anyhow::Result<()> {
             println!("Copied '{}' to '{}'", source, destination);
         }
         Commands::Update => unreachable!(),
+        Commands::Ps => unreachable!(),
+        Commands::Stop { .. } => unreachable!(),
     }
 
     Ok(())

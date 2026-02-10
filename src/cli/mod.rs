@@ -1,10 +1,12 @@
 pub mod delete;
 pub mod list;
+pub mod ps;
 pub mod pull;
 pub mod push;
 pub mod run;
 pub mod serve;
 pub mod show;
+pub mod stop;
 
 use std::path::PathBuf;
 
@@ -87,7 +89,7 @@ pub enum Commands {
         host: String,
 
         /// Port to listen on
-        #[arg(long, default_value_t = 11435)]
+        #[arg(long, default_value_t = 11434)]
         port: u16,
     },
 
@@ -118,6 +120,15 @@ pub enum Commands {
 
         /// Destination model name
         destination: String,
+    },
+
+    /// List running (loaded) models on the server
+    Ps,
+
+    /// Stop (unload) a running model from the server
+    Stop {
+        /// Model name to stop/unload
+        model: String,
     },
 
     /// Update a3s-power to the latest version
@@ -244,7 +255,7 @@ mod tests {
         match cli.command {
             Commands::Serve { host, port } => {
                 assert_eq!(host, "127.0.0.1");
-                assert_eq!(port, 11435);
+                assert_eq!(port, 11434);
             }
             _ => panic!("Expected Serve command"),
         }
@@ -278,5 +289,20 @@ mod tests {
     fn test_parse_update_command() {
         let cli = Cli::parse_from(["a3s-power", "update"]);
         assert!(matches!(cli.command, Commands::Update));
+    }
+
+    #[test]
+    fn test_parse_ps_command() {
+        let cli = Cli::parse_from(["a3s-power", "ps"]);
+        assert!(matches!(cli.command, Commands::Ps));
+    }
+
+    #[test]
+    fn test_parse_stop_command() {
+        let cli = Cli::parse_from(["a3s-power", "stop", "llama3"]);
+        match cli.command {
+            Commands::Stop { model } => assert_eq!(model, "llama3"),
+            _ => panic!("Expected Stop command"),
+        }
     }
 }

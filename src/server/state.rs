@@ -168,7 +168,7 @@ mod tests {
 
         let state = AppState::new(registry.clone(), backends, config);
         assert_eq!(state.registry.count(), 0);
-        assert_eq!(state.config.port, 11435);
+        assert_eq!(state.config.port, 11434);
     }
 
     #[test]

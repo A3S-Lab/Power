@@ -3,6 +3,7 @@ use crate::model::manifest::{ModelFormat, ModelManifest, ModelParameters};
 use crate::model::ollama_registry;
 use crate::model::resolve::{self, ModelSource};
 use crate::model::storage;
+use crate::{dirs, model};
 
 /// Progress callback type for download reporting.
 pub type ProgressCallback = Box<dyn Fn(u64, u64) + Send + Sync>;
@@ -11,6 +12,7 @@ pub type ProgressCallback = Box<dyn Fn(u64, u64) + Send + Sync>;
 ///
 /// If `name_or_url` is a URL, downloads directly.
 /// Otherwise, resolves the name via the model registry, then downloads.
+/// Supports resuming interrupted downloads via HTTP Range requests.
 /// Returns the resulting `ModelManifest` after download and storage.
 pub async fn pull_model(
     name_or_url: &str,
@@ -33,15 +35,7 @@ pub async fn pull_model(
 
     tracing::info!(name = %name, url = %url, "Pulling model");
 
-    let response = reqwest::get(&url)
-        .await
-        .map_err(|e| PowerError::DownloadFailed {
-            model: name.to_string(),
-            source: e,
-        })?;
-
-    let total_size = response.content_length().unwrap_or(0);
-    let bytes = download_with_progress(response, total_size, progress).await?;
+    let bytes = download_with_resume(&name, &url, progress).await?;
 
     let (blob_path, sha256) = storage::store_blob(&bytes)?;
     let format = detect_format(&name, &blob_path);
@@ -102,31 +96,136 @@ pub async fn pull_model(
     Ok(manifest)
 }
 
-async fn download_with_progress(
-    response: reqwest::Response,
-    total_size: u64,
+/// Download with HTTP Range-based resume support.
+///
+/// Uses a `.partial` temp file in the blobs directory to track incomplete downloads.
+/// If a partial file exists, sends a `Range: bytes={existing_size}-` header to resume.
+/// On completion, reads the full data and cleans up the partial file.
+async fn download_with_resume(
+    name: &str,
+    url: &str,
     progress: Option<ProgressCallback>,
 ) -> Result<Vec<u8>> {
-    use futures::StreamExt;
+    use std::io::Write;
 
-    let mut stream = response.bytes_stream();
-    let mut downloaded: u64 = 0;
-    let mut data = Vec::with_capacity(total_size as usize);
+    let blob_dir = dirs::blobs_dir();
+    std::fs::create_dir_all(&blob_dir)?;
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| PowerError::DownloadFailed {
-            model: "unknown".to_string(),
-            source: e,
+    // Use a deterministic partial filename based on URL hash
+    let url_hash = model::storage::compute_sha256(url.as_bytes());
+    let partial_path = blob_dir.join(format!("partial-{}", &url_hash[..16]));
+
+    // Check for existing partial download
+    let existing_size = if partial_path.exists() {
+        std::fs::metadata(&partial_path)
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let client = reqwest::Client::new();
+    let mut request = client.get(url);
+
+    if existing_size > 0 {
+        tracing::info!(
+            name = %name,
+            existing_bytes = existing_size,
+            "Resuming download from partial file"
+        );
+        request = request.header("Range", format!("bytes={existing_size}-"));
+    }
+
+    let response = request.send().await.map_err(|e| PowerError::DownloadFailed {
+        model: name.to_string(),
+        source: e,
+    })?;
+
+    let status = response.status();
+
+    // 206 Partial Content = server supports range, resuming
+    // 200 OK = server doesn't support range or fresh download
+    // If server returns 200 when we asked for a range, discard partial and start over
+    let resume = status == reqwest::StatusCode::PARTIAL_CONTENT && existing_size > 0;
+
+    if !resume && existing_size > 0 {
+        tracing::info!("Server does not support range requests, restarting download");
+        let _ = std::fs::remove_file(&partial_path);
+    }
+
+    if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
+        return Err(PowerError::DownloadFailed {
+            model: name.to_string(),
+            source: response.error_for_status().unwrap_err(),
+        });
+    }
+
+    // Determine total size for progress reporting
+    let content_length = response.content_length().unwrap_or(0);
+    let total_size = if resume {
+        existing_size + content_length
+    } else {
+        content_length
+    };
+
+    let starting_offset = if resume { existing_size } else { 0 };
+
+    // Stream to partial file
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(resume)
+        .write(true)
+        .truncate(!resume)
+        .open(&partial_path)
+        .map_err(|e| {
+            PowerError::Io(std::io::Error::other(format!(
+                "Failed to open partial file {}: {e}",
+                partial_path.display()
+            )))
         })?;
-        data.extend_from_slice(&chunk);
-        downloaded += chunk.len() as u64;
 
-        if let Some(ref cb) = progress {
-            cb(downloaded, total_size);
+    {
+        use futures::StreamExt;
+        let mut stream = response.bytes_stream();
+        let mut downloaded = starting_offset;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| PowerError::DownloadFailed {
+                model: name.to_string(),
+                source: e,
+            })?;
+            file.write_all(&chunk).map_err(|e| {
+                PowerError::Io(std::io::Error::other(format!(
+                    "Failed to write to partial file: {e}"
+                )))
+            })?;
+            downloaded += chunk.len() as u64;
+
+            if let Some(ref cb) = progress {
+                cb(downloaded, total_size);
+            }
         }
     }
 
-    Ok(data)
+    // Flush and close the file
+    file.flush().map_err(|e| {
+        PowerError::Io(std::io::Error::other(format!(
+            "Failed to flush partial file: {e}"
+        )))
+    })?;
+    drop(file);
+
+    // Read the complete file into memory
+    let bytes = std::fs::read(&partial_path).map_err(|e| {
+        PowerError::Io(std::io::Error::other(format!(
+            "Failed to read completed download: {e}"
+        )))
+    })?;
+
+    // Clean up partial file
+    let _ = std::fs::remove_file(&partial_path);
+
+    Ok(bytes)
 }
 
 /// Extract a reasonable model name from a URL.
@@ -326,5 +425,23 @@ mod tests {
         let mp = manifest.parameters.unwrap();
         assert_eq!(mp.parameter_count, Some(3_200_000_000));
         assert_eq!(mp.quantization.as_deref(), Some("Q4_K_M"));
+    }
+
+    #[test]
+    fn test_partial_filename_deterministic() {
+        let hash1 = crate::model::storage::compute_sha256(b"https://example.com/model.gguf");
+        let hash2 = crate::model::storage::compute_sha256(b"https://example.com/model.gguf");
+        assert_eq!(hash1, hash2);
+        // Partial filename uses first 16 chars of URL hash
+        let partial1 = format!("partial-{}", &hash1[..16]);
+        let partial2 = format!("partial-{}", &hash2[..16]);
+        assert_eq!(partial1, partial2);
+    }
+
+    #[test]
+    fn test_partial_filename_differs_for_different_urls() {
+        let hash1 = crate::model::storage::compute_sha256(b"https://example.com/model-a.gguf");
+        let hash2 = crate::model::storage::compute_sha256(b"https://example.com/model-b.gguf");
+        assert_ne!(&hash1[..16], &hash2[..16]);
     }
 }

@@ -75,13 +75,15 @@ a3s-power serve
 - **Health Check**: `GET /health` endpoint with uptime, version, and loaded model count
 - **Model Auto-Loading**: Models are automatically loaded on first inference request with LRU eviction
 - **TOML Configuration**: User-configurable host, port, GPU settings, keep_alive, and storage settings
+- **Ollama Environment Variables**: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_GPU` for drop-in compatibility
+- **Download Resumption**: Interrupted model downloads resume automatically via HTTP Range requests
 - **Async-First**: Built on Tokio for high-performance async operations
 
 ## Quality Metrics
 
 ### Test Coverage
 
-**435 unit tests** with comprehensive coverage across 50+ source files:
+**452 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -251,7 +253,7 @@ a3s-power run my-model --prompt "What is Rust?"
 ### HTTP Server
 
 ```bash
-# Start server on default port (127.0.0.1:11435)
+# Start server on default port (127.0.0.1:11434)
 a3s-power serve
 
 # Custom host and port
@@ -304,16 +306,16 @@ a3s-power serve --host 0.0.0.0 --port 8080
 
 ```bash
 # OpenAI-compatible
-curl http://localhost:11435/v1/models
+curl http://localhost:11434/v1/models
 
 # Ollama-compatible
-curl http://localhost:11435/api/tags
+curl http://localhost:11434/api/tags
 ```
 
 #### Chat Completion (OpenAI)
 
 ```bash
-curl http://localhost:11435/v1/chat/completions \
+curl http://localhost:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "my-model",
@@ -324,7 +326,7 @@ curl http://localhost:11435/v1/chat/completions \
 #### Chat Completion with Streaming
 
 ```bash
-curl http://localhost:11435/v1/chat/completions \
+curl http://localhost:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "my-model",
@@ -336,7 +338,7 @@ curl http://localhost:11435/v1/chat/completions \
 #### Text Generation (Ollama)
 
 ```bash
-curl http://localhost:11435/api/generate \
+curl http://localhost:11434/api/generate \
   -H "Content-Type: application/json" \
   -d '{
     "model": "my-model",
@@ -347,7 +349,7 @@ curl http://localhost:11435/api/generate \
 #### Text Completion (OpenAI)
 
 ```bash
-curl http://localhost:11435/v1/completions \
+curl http://localhost:11434/v1/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "my-model",
@@ -358,7 +360,7 @@ curl http://localhost:11435/v1/completions \
 #### Vision/Multimodal (OpenAI)
 
 ```bash
-curl http://localhost:11435/v1/chat/completions \
+curl http://localhost:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "llava:7b",
@@ -375,7 +377,7 @@ curl http://localhost:11435/v1/chat/completions \
 #### Tool/Function Calling (OpenAI)
 
 ```bash
-curl http://localhost:11435/v1/chat/completions \
+curl http://localhost:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "llama3.2:3b",
@@ -398,7 +400,7 @@ curl http://localhost:11435/v1/chat/completions \
 #### Push Model
 
 ```bash
-curl -X POST http://localhost:11435/api/push \
+curl -X POST http://localhost:11434/api/push \
   -H "Content-Type: application/json" \
   -d '{"name": "llama3.2:3b", "destination": "https://registry.example.com"}'
 ```
@@ -407,7 +409,7 @@ curl -X POST http://localhost:11435/api/push \
 
 ```bash
 # Constrain output to match a JSON Schema
-curl http://localhost:11435/api/generate \
+curl http://localhost:11434/api/generate \
   -H "Content-Type: application/json" \
   -d '{
     "model": "llama3.2:3b",
@@ -436,14 +438,14 @@ curl http://localhost:11435/api/generate \
 
 ```bash
 # Check if blob exists
-curl -I http://localhost:11435/api/blobs/sha256:abc123...
+curl -I http://localhost:11434/api/blobs/sha256:abc123...
 
 # Upload blob
-curl -X POST http://localhost:11435/api/blobs/sha256:abc123... \
+curl -X POST http://localhost:11434/api/blobs/sha256:abc123... \
   --data-binary @model.gguf
 
 # Download blob
-curl http://localhost:11435/api/blobs/sha256:abc123... -o downloaded.gguf
+curl http://localhost:11434/api/blobs/sha256:abc123... -o downloaded.gguf
 ```
 
 ### CLI Commands
@@ -458,7 +460,9 @@ curl http://localhost:11435/api/blobs/sha256:abc123... -o downloaded.gguf
 | `a3s-power delete <model>` | Delete a model from local storage |
 | `a3s-power create <name> -f <modelfile>` | Create a custom model from a Modelfile |
 | `a3s-power cp <source> <destination>` | Copy/alias a model to a new name |
-| `a3s-power serve [--host <addr>] [--port <port>]` | Start HTTP server (default: `127.0.0.1:11435`) |
+| `a3s-power ps` | List running (loaded) models on the server |
+| `a3s-power stop <model>` | Stop (unload) a running model from the server |
+| `a3s-power serve [--host <addr>] [--port <port>]` | Start HTTP server (default: `127.0.0.1:11434`) |
 
 ## Model Storage
 
@@ -489,7 +493,7 @@ Configuration is read from `~/.a3s/power/config.toml`:
 
 ```toml
 host = "127.0.0.1"
-port = 11435
+port = 11434
 max_loaded_models = 1
 keep_alive = "5m"    # auto-unload idle models ("0"=immediate, "-1"=never, "5m", "1h")
 
@@ -501,7 +505,7 @@ main_gpu = 0      # primary GPU index
 | Field | Default | Description |
 |-------|---------|-------------|
 | `host` | `127.0.0.1` | HTTP server bind address |
-| `port` | `11435` | HTTP server port |
+| `port` | `11434` | HTTP server port |
 | `data_dir` | `~/.a3s/power` | Base directory for model storage |
 | `max_loaded_models` | `1` | Maximum models loaded in memory concurrently |
 | `keep_alive` | `"5m"` | Auto-unload idle models after this duration (`"0"`=immediate, `"-1"`=never, `"5m"`, `"1h"`, `"30s"`) |
@@ -509,6 +513,21 @@ main_gpu = 0      # primary GPU index
 | `gpu.main_gpu` | `0` | Index of the primary GPU to use |
 
 All fields are optional and have sensible defaults.
+
+### Environment Variables (Ollama-Compatible)
+
+Environment variables override config file values for drop-in Ollama compatibility:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `OLLAMA_HOST` | Server bind address (`host:port` or `host`) | `0.0.0.0:11434` |
+| `OLLAMA_MODELS` | Model storage directory | `/data/models` |
+| `OLLAMA_KEEP_ALIVE` | Default keep-alive duration | `10m`, `-1`, `0` |
+| `OLLAMA_MAX_LOADED_MODELS` | Max concurrent loaded models | `3` |
+| `OLLAMA_NUM_GPU` | GPU layers to offload (-1 = all) | `-1` |
+| `A3S_POWER_HOME` | Base directory for all Power data | `~/.a3s/power` |
+
+`OLLAMA_HOST` supports scheme prefixes (e.g. `http://0.0.0.0:8080`).
 
 ## Feature Flags
 
@@ -529,7 +548,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 435 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 452 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -562,6 +581,8 @@ power/
     │   ├── list.rs          # Tabular model listing
     │   ├── show.rs          # Model detail display
     │   ├── delete.rs        # Model + blob deletion
+    │   ├── ps.rs            # List running models (queries server)
+    │   ├── stop.rs          # Stop/unload a running model
     │   └── serve.rs         # HTTP server startup
     ├── model/
     │   ├── manifest.rs      # ModelManifest, ModelFormat, ModelParameters
@@ -726,7 +747,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **NDJSON Streaming**: Native API endpoints (`/api/generate`, `/api/chat`, `/api/pull`, `/api/push`) stream as `application/x-ndjson` (Ollama wire format); OpenAI endpoints keep SSE
 - [x] **Automatic Model Unloading**: Background keep_alive reaper checks every 5s and unloads idle models (configurable: `"5m"`, `"1h"`, `"0"`, `"-1"`)
 - [x] **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
-- [x] 435 comprehensive unit tests
+- [x] 452 comprehensive unit tests
 
 ### Phase 8: Advanced Compatibility ✅
 
@@ -737,7 +758,18 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **Vision Inference**: Image passthrough pipeline — accepts base64 images in Ollama `images` field and OpenAI `image_url` content parts; infrastructure-ready for clip projector integration
 - [x] **ADAPTER Support**: Modelfile `ADAPTER` directive parsed and stored in manifest; LoRA/QLoRA adapter path flows through create API to model registry
 - [x] **MESSAGE Directive**: Pre-seeded conversation history via Modelfile `MESSAGE` directive; messages stored in manifest and automatically prepended to chat requests
-- [x] 435 comprehensive unit tests
+- [x] 452 comprehensive unit tests
+
+### Phase 9: Operational Parity ✅
+
+Runtime and CLI parity for production Ollama replacement:
+
+- [x] **Default Port 11434**: Matches Ollama's default port for zero-config drop-in replacement
+- [x] **`ps` CLI Command**: List running (loaded) models via `a3s-power ps` (queries server `GET /api/ps`)
+- [x] **`stop` CLI Command**: Unload a running model via `a3s-power stop <model>` (sends `keep_alive: 0`)
+- [x] **Ollama Environment Variables**: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_GPU` — override config file for container/script compatibility
+- [x] **Download Resumption**: Interrupted model downloads resume automatically via HTTP Range requests with partial file tracking
+- [x] 452 comprehensive unit tests
 
 ## License
 
