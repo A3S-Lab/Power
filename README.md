@@ -89,7 +89,7 @@ a3s-power serve
 
 ### Test Coverage
 
-**490 unit tests** with comprehensive coverage across 50+ source files:
+**505 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -802,6 +802,18 @@ Complete Ollama generation options support and multi-GPU wiring:
 - [x] **Repeat Penalty Window**: `repeat_last_n` wired to `LlamaSampler::penalties()` first argument (was hardcoded to 64)
 - [x] **Config Extensions**: Added `use_mlock`, `num_thread`, `flash_attention` to `PowerConfig` with TOML support
 - [x] 490 comprehensive unit tests
+
+### Phase 12: CLI Run Options Parity ✅
+
+Complete Ollama CLI `run` command options — all 14/14 options now implemented:
+
+- [x] **`--format`**: JSON output format constraint (accepts `"json"` or JSON schema object)
+- [x] **`--system`**: Override system prompt per session (prepended as system message)
+- [x] **`--template`**: Override chat template (reserved for template engine integration)
+- [x] **`--keep-alive`**: Model keep-alive duration (e.g. `"5m"`, `"1h"`, `"-1"` for never unload)
+- [x] **`--verbose`**: Show timing and token statistics after each generation (prompt eval count/rate, eval count, total duration, tokens/s)
+- [x] **`--insecure`**: Skip TLS verification flag for registry operations
+- [x] 505 comprehensive unit tests
 
 ## License
 

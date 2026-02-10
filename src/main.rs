@@ -63,6 +63,12 @@ async fn main() -> anyhow::Result<()> {
             num_ctx,
             repeat_penalty,
             seed,
+            format,
+            system,
+            template,
+            keep_alive,
+            verbose,
+            insecure,
         } => {
             let options = a3s_power::cli::run::RunOptions {
                 temperature,
@@ -72,6 +78,12 @@ async fn main() -> anyhow::Result<()> {
                 num_ctx,
                 repeat_penalty,
                 seed,
+                format,
+                system,
+                template,
+                keep_alive,
+                verbose,
+                insecure,
             };
             a3s_power::cli::run::execute_with_options(
                 &model,

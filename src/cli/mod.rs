@@ -59,6 +59,30 @@ pub enum Commands {
         /// Random seed for reproducible output
         #[arg(long)]
         seed: Option<i64>,
+
+        /// Response format: "json" for JSON output
+        #[arg(long)]
+        format: Option<String>,
+
+        /// Override the system prompt
+        #[arg(long)]
+        system: Option<String>,
+
+        /// Override the chat template
+        #[arg(long)]
+        template: Option<String>,
+
+        /// How long to keep the model loaded (e.g. "5m", "1h", "0", "-1")
+        #[arg(long, allow_hyphen_values = true)]
+        keep_alive: Option<String>,
+
+        /// Show timing and token statistics after generation
+        #[arg(long)]
+        verbose: bool,
+
+        /// Skip TLS verification for registry operations
+        #[arg(long)]
+        insecure: bool,
     },
 
     /// Download a model
@@ -303,6 +327,169 @@ mod tests {
         match cli.command {
             Commands::Stop { model } => assert_eq!(model, "llama3"),
             _ => panic!("Expected Stop command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_with_format() {
+        let cli = Cli::parse_from(["a3s-power", "run", "llama3", "--format", "json"]);
+        match cli.command {
+            Commands::Run { model, format, .. } => {
+                assert_eq!(model, "llama3");
+                assert_eq!(format.as_deref(), Some("json"));
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_with_system() {
+        let cli = Cli::parse_from([
+            "a3s-power",
+            "run",
+            "llama3",
+            "--system",
+            "You are a helpful assistant.",
+        ]);
+        match cli.command {
+            Commands::Run { model, system, .. } => {
+                assert_eq!(model, "llama3");
+                assert_eq!(system.as_deref(), Some("You are a helpful assistant."));
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_with_template() {
+        let cli = Cli::parse_from([
+            "a3s-power",
+            "run",
+            "llama3",
+            "--template",
+            "{{ .System }}\n{{ .Prompt }}",
+        ]);
+        match cli.command {
+            Commands::Run {
+                model, template, ..
+            } => {
+                assert_eq!(model, "llama3");
+                assert_eq!(
+                    template.as_deref(),
+                    Some("{{ .System }}\n{{ .Prompt }}")
+                );
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_with_keep_alive() {
+        let cli = Cli::parse_from(["a3s-power", "run", "llama3", "--keep-alive", "10m"]);
+        match cli.command {
+            Commands::Run {
+                model, keep_alive, ..
+            } => {
+                assert_eq!(model, "llama3");
+                assert_eq!(keep_alive.as_deref(), Some("10m"));
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_with_verbose() {
+        let cli = Cli::parse_from(["a3s-power", "run", "llama3", "--verbose"]);
+        match cli.command {
+            Commands::Run { model, verbose, .. } => {
+                assert_eq!(model, "llama3");
+                assert!(verbose);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_verbose_default_false() {
+        let cli = Cli::parse_from(["a3s-power", "run", "llama3"]);
+        match cli.command {
+            Commands::Run { verbose, .. } => {
+                assert!(!verbose);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_with_insecure() {
+        let cli = Cli::parse_from(["a3s-power", "run", "llama3", "--insecure"]);
+        match cli.command {
+            Commands::Run {
+                model, insecure, ..
+            } => {
+                assert_eq!(model, "llama3");
+                assert!(insecure);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_insecure_default_false() {
+        let cli = Cli::parse_from(["a3s-power", "run", "llama3"]);
+        match cli.command {
+            Commands::Run { insecure, .. } => {
+                assert!(!insecure);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_all_new_options() {
+        let cli = Cli::parse_from([
+            "a3s-power",
+            "run",
+            "llama3",
+            "--prompt",
+            "hello",
+            "--format",
+            "json",
+            "--system",
+            "Be concise.",
+            "--template",
+            "custom",
+            "--keep-alive",
+            "-1",
+            "--verbose",
+            "--insecure",
+            "--temperature",
+            "0.5",
+        ]);
+        match cli.command {
+            Commands::Run {
+                model,
+                prompt,
+                format,
+                system,
+                template,
+                keep_alive,
+                verbose,
+                insecure,
+                temperature,
+                ..
+            } => {
+                assert_eq!(model, "llama3");
+                assert_eq!(prompt.as_deref(), Some("hello"));
+                assert_eq!(format.as_deref(), Some("json"));
+                assert_eq!(system.as_deref(), Some("Be concise."));
+                assert_eq!(template.as_deref(), Some("custom"));
+                assert_eq!(keep_alive.as_deref(), Some("-1"));
+                assert!(verbose);
+                assert!(insecure);
+                assert_eq!(temperature, Some(0.5));
+            }
+            _ => panic!("Expected Run command"),
         }
     }
 }
