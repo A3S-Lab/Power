@@ -310,6 +310,12 @@ pub struct CompletionRequest {
     /// Whether to lock model in memory.
     #[serde(default)]
     pub use_mlock: Option<bool>,
+    /// Suffix for fill-in-the-middle completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
+    /// Context tokens from a previous generate call (for conversation continuity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Vec<u32>>,
 }
 
 /// A streamed chunk from a text completion.

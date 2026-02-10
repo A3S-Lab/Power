@@ -1,10 +1,47 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::backend::types::{MessageContent, Tool, ToolCall, ToolChoice};
 
 // Re-import FunctionCall for use in tests
 #[cfg(test)]
 use crate::backend::types::FunctionCall;
+
+/// Custom deserializer for `keep_alive` that accepts both string and number.
+///
+/// Ollama clients may send `"keep_alive": "5m"` (string) or `"keep_alive": 300` (seconds as integer).
+/// This deserializer normalizes both to `Option<String>`.
+fn deserialize_keep_alive<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s)),
+        Some(serde_json::Value::Number(n)) => {
+            // Numeric value: treat as seconds, convert to string with "s" suffix
+            // Special cases: 0 and -1 are passed as-is (they have special meaning)
+            if let Some(i) = n.as_i64() {
+                if i <= 0 {
+                    Ok(Some(i.to_string()))
+                } else {
+                    Ok(Some(format!("{i}s")))
+                }
+            } else if let Some(f) = n.as_f64() {
+                if f <= 0.0 {
+                    Ok(Some(format!("{}", f as i64)))
+                } else {
+                    Ok(Some(format!("{}s", f as u64)))
+                }
+            } else {
+                Ok(Some(n.to_string()))
+            }
+        }
+        Some(other) => Err(serde::de::Error::custom(format!(
+            "keep_alive must be a string or number, got: {other}"
+        ))),
+    }
+}
 
 // ============================================================================
 // OpenAI-compatible types
@@ -271,7 +308,7 @@ pub struct GenerateRequest {
     pub options: Option<GenerateOptions>,
     #[serde(default)]
     pub format: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_keep_alive")]
     pub keep_alive: Option<String>,
     /// Base64-encoded images for multimodal models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -376,7 +413,7 @@ pub struct NativeChatRequest {
     pub options: Option<GenerateOptions>,
     #[serde(default)]
     pub format: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_keep_alive")]
     pub keep_alive: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
@@ -541,7 +578,7 @@ pub struct NativeEmbedRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncate: Option<bool>,
     /// Keep model loaded for this duration (e.g. "5m", "-1" for forever).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_keep_alive")]
     pub keep_alive: Option<String>,
 }
 
@@ -1199,5 +1236,69 @@ mod tests {
         assert_eq!(req.flash_attention, Some(true));
         assert_eq!(req.num_thread, Some(8));
         assert!(req.penalize_newline.is_none());
+    }
+
+    #[test]
+    fn test_keep_alive_as_string() {
+        let json = r#"{"model": "llama3", "prompt": "test", "keep_alive": "5m"}"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.keep_alive.as_deref(), Some("5m"));
+    }
+
+    #[test]
+    fn test_keep_alive_as_positive_integer() {
+        let json = r#"{"model": "llama3", "prompt": "test", "keep_alive": 300}"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.keep_alive.as_deref(), Some("300s"));
+    }
+
+    #[test]
+    fn test_keep_alive_as_zero() {
+        let json = r#"{"model": "llama3", "prompt": "test", "keep_alive": 0}"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.keep_alive.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn test_keep_alive_as_negative_one() {
+        let json = r#"{"model": "llama3", "prompt": "test", "keep_alive": -1}"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.keep_alive.as_deref(), Some("-1"));
+    }
+
+    #[test]
+    fn test_keep_alive_missing() {
+        let json = r#"{"model": "llama3", "prompt": "test"}"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert!(req.keep_alive.is_none());
+    }
+
+    #[test]
+    fn test_keep_alive_string_forever() {
+        let json = r#"{"model": "llama3", "prompt": "test", "keep_alive": "-1"}"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.keep_alive.as_deref(), Some("-1"));
+    }
+
+    #[test]
+    fn test_keep_alive_numeric_in_chat_request() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "keep_alive": 600
+        }"#;
+        let req: NativeChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.keep_alive.as_deref(), Some("600s"));
+    }
+
+    #[test]
+    fn test_keep_alive_string_in_chat_request() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "keep_alive": "10m"
+        }"#;
+        let req: NativeChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.keep_alive.as_deref(), Some("10m"));
     }
 }

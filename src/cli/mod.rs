@@ -28,9 +28,15 @@ pub enum Commands {
         /// Model name to run (e.g. "llama3.2:3b")
         model: String,
 
-        /// Optional prompt to send directly instead of interactive mode
-        #[arg(long)]
+        /// Optional prompt to send directly instead of interactive mode.
+        /// Can also be provided as trailing arguments: `run llama3 "why is the sky blue"`
+        #[arg(long, alias = "prompt")]
         prompt: Option<String>,
+
+        /// Trailing arguments are joined as the prompt (Ollama-compatible).
+        /// e.g. `run llama3 why is the sky blue`
+        #[arg(trailing_var_arg = true, hide = true)]
+        prompt_args: Vec<String>,
 
         /// Sampling temperature (0.0 - 2.0)
         #[arg(long)]
@@ -589,6 +595,58 @@ mod tests {
                 assert_eq!(command.as_deref(), Some("run"));
             }
             _ => panic!("Expected Help command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_trailing_args_as_prompt() {
+        let cli = Cli::parse_from(["a3s-power", "run", "llama3", "why", "is", "the", "sky", "blue"]);
+        match cli.command {
+            Commands::Run {
+                model,
+                prompt,
+                prompt_args,
+                ..
+            } => {
+                assert_eq!(model, "llama3");
+                assert!(prompt.is_none());
+                assert_eq!(prompt_args, vec!["why", "is", "the", "sky", "blue"]);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_prompt_flag_overrides_trailing() {
+        let cli = Cli::parse_from([
+            "a3s-power", "run", "llama3", "--prompt", "hello", "extra", "args",
+        ]);
+        match cli.command {
+            Commands::Run {
+                prompt,
+                prompt_args,
+                ..
+            } => {
+                assert_eq!(prompt.as_deref(), Some("hello"));
+                assert_eq!(prompt_args, vec!["extra", "args"]);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_no_trailing_args() {
+        let cli = Cli::parse_from(["a3s-power", "run", "llama3"]);
+        match cli.command {
+            Commands::Run {
+                prompt,
+                prompt_args,
+                ..
+            } => {
+                assert!(prompt.is_none());
+                assert!(prompt_args.is_empty());
+            }
+            _ => panic!("Expected Run command"),
         }
     }
 }

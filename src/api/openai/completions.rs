@@ -75,6 +75,8 @@ pub async fn handler(
         main_gpu: None,
         use_mmap: None,
         use_mlock: None,
+        suffix: None,
+        context: None,
     };
 
     match backend.complete(&model_name, backend_request).await {

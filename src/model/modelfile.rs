@@ -40,6 +40,14 @@ pub struct Modelfile {
 }
 
 /// Parse a Modelfile from its text content.
+///
+/// Supports multi-line values using heredoc syntax with triple quotes:
+/// ```text
+/// SYSTEM """
+/// You are a helpful assistant.
+/// You always respond in English.
+/// """
+/// ```
 pub fn parse(content: &str) -> Result<Modelfile, String> {
     let mut from: Option<String> = None;
     let mut parameters = HashMap::new();
@@ -50,11 +58,15 @@ pub fn parse(content: &str) -> Result<Modelfile, String> {
     let mut license: Option<String> = None;
     let mut messages = Vec::new();
 
-    for (line_num, line) in content.lines().enumerate() {
-        let line = line.trim();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i].trim();
 
         // Skip empty lines and comments
         if line.is_empty() || line.starts_with('#') {
+            i += 1;
             continue;
         }
 
@@ -65,14 +77,54 @@ pub fn parse(content: &str) -> Result<Modelfile, String> {
                 // Single-word directives are not valid
                 return Err(format!(
                     "line {}: expected directive and value, got '{line}'",
-                    line_num + 1
+                    i + 1
                 ));
             }
         };
 
+        // Check if value starts a heredoc block (""")
+        let value = if value.starts_with("\"\"\"") {
+            let after_open = value.strip_prefix("\"\"\"").unwrap();
+            // Check if the closing """ is on the same line
+            if let Some(inline_content) = after_open.strip_suffix("\"\"\"") {
+                inline_content.to_string()
+            } else {
+                // Multi-line: collect until closing """
+                let mut multiline = String::new();
+                if !after_open.is_empty() {
+                    multiline.push_str(after_open);
+                    multiline.push('\n');
+                }
+                i += 1;
+                while i < lines.len() {
+                    let ml = lines[i];
+                    if ml.trim() == "\"\"\"" {
+                        break;
+                    }
+                    if !multiline.is_empty() || !ml.trim().is_empty() {
+                        multiline.push_str(ml);
+                        multiline.push('\n');
+                    }
+                    i += 1;
+                }
+                if i >= lines.len() {
+                    return Err(format!(
+                        "unterminated heredoc block starting with {directive}"
+                    ));
+                }
+                // Remove trailing newline
+                if multiline.ends_with('\n') {
+                    multiline.pop();
+                }
+                multiline
+            }
+        } else {
+            value
+        };
+
         match directive.as_str() {
             "FROM" => {
-                from = Some(value);
+                from = Some(unquote(&value));
             }
             "PARAMETER" => {
                 let (key, val) = match value.split_once(char::is_whitespace) {
@@ -80,7 +132,7 @@ pub fn parse(content: &str) -> Result<Modelfile, String> {
                     None => {
                         return Err(format!(
                             "line {}: PARAMETER requires key and value",
-                            line_num + 1
+                            i + 1
                         ));
                     }
                 };
@@ -104,22 +156,27 @@ pub fn parse(content: &str) -> Result<Modelfile, String> {
             }
             "MESSAGE" => {
                 // MESSAGE role content
-                let (role, content) = match value.split_once(char::is_whitespace) {
+                let (role, msg_content) = match value.split_once(char::is_whitespace) {
                     Some((r, c)) => (r.trim().to_string(), unquote(c.trim())),
                     None => {
                         return Err(format!(
                             "line {}: MESSAGE requires role and content",
-                            line_num + 1
+                            i + 1
                         ));
                     }
                 };
-                messages.push(ModelfileMessage { role, content });
+                messages.push(ModelfileMessage {
+                    role,
+                    content: msg_content,
+                });
             }
             _ => {
                 // Ignore unknown directives for forward compatibility
                 tracing::debug!("Ignoring unknown Modelfile directive: {directive}");
             }
         }
+
+        i += 1;
     }
 
     let from = from.ok_or_else(|| "Modelfile missing required FROM directive".to_string())?;
@@ -413,5 +470,97 @@ MESSAGE assistant "Hello!"
         assert!(output.contains("LICENSE"));
         assert!(output.contains("MESSAGE user"));
         assert!(output.contains("MESSAGE assistant"));
+    }
+
+    #[test]
+    fn test_parse_heredoc_system() {
+        let content = r#"
+FROM llama3.2:3b
+SYSTEM """
+You are a helpful assistant.
+You always respond in English.
+"""
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(
+            mf.system.as_deref(),
+            Some("You are a helpful assistant.\nYou always respond in English.")
+        );
+    }
+
+    #[test]
+    fn test_parse_heredoc_template() {
+        let content = r#"
+FROM llama3.2:3b
+TEMPLATE """
+{{ if .System }}<|system|>
+{{ .System }}<|end|>
+{{ end }}{{ if .Prompt }}<|user|>
+{{ .Prompt }}<|end|>
+{{ end }}<|assistant|>
+"""
+"#;
+        let mf = parse(content).unwrap();
+        let tmpl = mf.template.unwrap();
+        assert!(tmpl.contains("<|system|>"));
+        assert!(tmpl.contains("<|assistant|>"));
+        assert!(tmpl.contains("{{ if .System }}"));
+    }
+
+    #[test]
+    fn test_parse_heredoc_license() {
+        let content = r#"
+FROM llama3.2:3b
+LICENSE """
+MIT License
+
+Copyright (c) 2024 Example Corp.
+All rights reserved.
+"""
+"#;
+        let mf = parse(content).unwrap();
+        let lic = mf.license.unwrap();
+        assert!(lic.contains("MIT License"));
+        assert!(lic.contains("Copyright (c) 2024"));
+        assert!(lic.contains("All rights reserved."));
+    }
+
+    #[test]
+    fn test_parse_heredoc_inline() {
+        let content = r#"
+FROM llama3.2:3b
+SYSTEM """You are a pirate."""
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.system.as_deref(), Some("You are a pirate."));
+    }
+
+    #[test]
+    fn test_parse_heredoc_unterminated() {
+        let content = r#"
+FROM llama3.2:3b
+SYSTEM """
+This block never closes.
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unterminated heredoc"));
+    }
+
+    #[test]
+    fn test_parse_heredoc_mixed_with_regular() {
+        let content = r#"
+FROM llama3.2:3b
+PARAMETER temperature 0.7
+SYSTEM """
+You are a helpful assistant.
+You speak multiple languages.
+"""
+PARAMETER top_p 0.9
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.parameters.get("temperature").unwrap(), "0.7");
+        assert_eq!(mf.parameters.get("top_p").unwrap(), "0.9");
+        assert!(mf.system.as_deref().unwrap().contains("multiple languages"));
     }
 }

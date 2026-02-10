@@ -108,7 +108,7 @@ pub async fn execute_with_options(
     backends: &BackendRegistry,
     options: RunOptions,
 ) -> Result<()> {
-    let manifest = match registry.get(model) {
+    let mut manifest = match registry.get(model) {
         Ok(m) => m,
         Err(_) => {
             println!("Model '{model}' not found locally.");
@@ -116,6 +116,11 @@ pub async fn execute_with_options(
             return Ok(());
         }
     };
+
+    // Apply --template override to the manifest so the backend uses it
+    if let Some(ref tmpl) = options.template {
+        manifest.template_override = Some(tmpl.clone());
+    }
 
     let backend = backends.find_for_format(&manifest.format)?;
     tracing::info!(
@@ -126,6 +131,10 @@ pub async fn execute_with_options(
 
     if options.insecure {
         tracing::info!("TLS verification disabled (--insecure)");
+    }
+
+    if let Some(ref ka) = options.keep_alive {
+        tracing::info!(keep_alive = %ka, "Keep-alive set (applies to server mode)");
     }
 
     println!("Loading model '{}'...", manifest.name);

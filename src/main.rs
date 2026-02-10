@@ -77,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Run {
             model,
             prompt,
+            prompt_args,
             temperature,
             top_p,
             top_k,
@@ -91,6 +92,15 @@ async fn main() -> anyhow::Result<()> {
             verbose,
             insecure,
         } => {
+            // Merge --prompt flag and trailing positional args.
+            // Priority: --prompt flag wins; otherwise join trailing args.
+            let effective_prompt = if prompt.is_some() {
+                prompt
+            } else if !prompt_args.is_empty() {
+                Some(prompt_args.join(" "))
+            } else {
+                None
+            };
             let options = a3s_power::cli::run::RunOptions {
                 temperature,
                 top_p,
@@ -108,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
             };
             a3s_power::cli::run::execute_with_options(
                 &model,
-                prompt.as_deref(),
+                effective_prompt.as_deref(),
                 &registry,
                 &backends,
                 options,

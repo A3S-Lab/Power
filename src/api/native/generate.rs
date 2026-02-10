@@ -159,6 +159,8 @@ pub async fn handler(
         main_gpu: apply_defaults(opts.and_then(|o| o.main_gpu), defaults, "main_gpu"),
         use_mmap: apply_defaults(opts.and_then(|o| o.use_mmap), defaults, "use_mmap"),
         use_mlock: apply_defaults(opts.and_then(|o| o.use_mlock), defaults, "use_mlock"),
+        suffix: request.suffix.clone(),
+        context: request.context.clone(),
     };
 
     let is_stream = request.stream.unwrap_or(true);

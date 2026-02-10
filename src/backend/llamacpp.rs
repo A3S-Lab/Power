@@ -352,6 +352,8 @@ impl Backend for LlamaCppBackend {
             main_gpu: request.main_gpu,
             use_mmap: request.use_mmap,
             use_mlock: request.use_mlock,
+            suffix: None,
+            context: None,
         };
 
         // Map CompletionResponseChunk -> ChatResponseChunk with tool call detection
@@ -1085,6 +1087,8 @@ mod tests {
             main_gpu: None,
             use_mmap: None,
             use_mlock: None,
+            suffix: None,
+            context: None,
         };
         let result = backend.complete("test", request).await;
         assert!(result.is_err());
