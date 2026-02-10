@@ -132,6 +132,7 @@ pub async fn handler(
         typical_p: apply_defaults(opts.and_then(|o| o.typical_p), defaults, "typical_p"),
         response_format,
         images,
+        projector_path: manifest.projector_path.clone(),
     };
 
     let is_stream = request.stream.unwrap_or(true);

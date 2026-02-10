@@ -80,6 +80,7 @@ pub async fn handler(
         modelfile_content: Some(modelfile_content),
         license: mf.license.clone(),
         adapter_path: mf.adapter.clone(),
+        projector_path: None,
         messages: mf
             .messages
             .iter()

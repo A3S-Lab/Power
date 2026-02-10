@@ -247,6 +247,9 @@ pub struct CompletionRequest {
     /// Base64-encoded images for multimodal inference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+    /// Path to multimodal projector file (internal, not serialized over API).
+    #[serde(skip)]
+    pub projector_path: Option<String>,
 }
 
 /// A streamed chunk from a text completion.

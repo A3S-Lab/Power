@@ -16,6 +16,7 @@ const MEDIA_TEMPLATE: &str = "application/vnd.ollama.image.template";
 const MEDIA_SYSTEM: &str = "application/vnd.ollama.image.system";
 const MEDIA_PARAMS: &str = "application/vnd.ollama.image.params";
 const MEDIA_LICENSE: &str = "application/vnd.ollama.image.license";
+const MEDIA_PROJECTOR: &str = "application/vnd.ollama.image.projector";
 
 /// OCI-like manifest returned by the Ollama registry.
 #[derive(Debug, Deserialize)]
@@ -67,6 +68,10 @@ pub struct OllamaRegistryModel {
     pub license: Option<String>,
     /// Config metadata (model family, type, quantization, etc.)
     pub config: OllamaModelConfig,
+    /// Digest of the multimodal projector blob (sha256:...), if present
+    pub projector_digest: Option<String>,
+    /// Size of the projector blob in bytes
+    pub projector_size: Option<u64>,
 }
 
 /// Fetch manifest and metadata from the Ollama registry.
@@ -121,6 +126,7 @@ pub async fn fetch_registry_model(name: &str, tag: &str) -> Result<OllamaRegistr
     let system_layer = find_layer(&manifest.layers, MEDIA_SYSTEM);
     let params_layer = find_layer(&manifest.layers, MEDIA_PARAMS);
     let license_layers = find_all_layers(&manifest.layers, MEDIA_LICENSE);
+    let projector_layer = find_layer(&manifest.layers, MEDIA_PROJECTOR);
 
     let (config, template, system_prompt, params, license) = tokio::try_join!(
         fetch_config_blob(&client, &namespace, &manifest.config),
@@ -133,6 +139,11 @@ pub async fn fetch_registry_model(name: &str, tag: &str) -> Result<OllamaRegistr
     let params_map: Option<HashMap<String, serde_json::Value>> =
         params.as_deref().and_then(|s| serde_json::from_str(s).ok());
 
+    let (projector_digest, projector_size) = match projector_layer {
+        Some(layer) => (Some(layer.digest.clone()), Some(layer.size)),
+        None => (None, None),
+    };
+
     Ok(OllamaRegistryModel {
         model_digest: model_layer.digest.clone(),
         model_size: model_layer.size,
@@ -141,6 +152,8 @@ pub async fn fetch_registry_model(name: &str, tag: &str) -> Result<OllamaRegistr
         params: params_map,
         license,
         config,
+        projector_digest,
+        projector_size,
     })
 }
 
@@ -522,5 +535,43 @@ mod tests {
         assert!(config.model_family.is_none());
         assert!(config.model_type.is_none());
         assert!(config.file_type.is_none());
+    }
+
+    #[test]
+    fn test_extract_projector_layer() {
+        let layers = vec![
+            LayerDescriptor {
+                media_type: MEDIA_MODEL.to_string(),
+                digest: "sha256:model123".to_string(),
+                size: 4_000_000_000,
+            },
+            LayerDescriptor {
+                media_type: MEDIA_PROJECTOR.to_string(),
+                digest: "sha256:proj456".to_string(),
+                size: 600_000_000,
+            },
+            LayerDescriptor {
+                media_type: MEDIA_TEMPLATE.to_string(),
+                digest: "sha256:tmpl789".to_string(),
+                size: 1000,
+            },
+        ];
+
+        let proj = find_layer(&layers, MEDIA_PROJECTOR);
+        assert!(proj.is_some());
+        let proj = proj.unwrap();
+        assert_eq!(proj.digest, "sha256:proj456");
+        assert_eq!(proj.size, 600_000_000);
+    }
+
+    #[test]
+    fn test_no_projector_layer() {
+        let layers = vec![LayerDescriptor {
+            media_type: MEDIA_MODEL.to_string(),
+            digest: "sha256:model123".to_string(),
+            size: 4_000_000_000,
+        }];
+
+        assert!(find_layer(&layers, MEDIA_PROJECTOR).is_none());
     }
 }

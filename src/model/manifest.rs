@@ -51,6 +51,10 @@ pub struct ModelManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter_path: Option<String>,
 
+    /// Multimodal projector path (for vision models like llava)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projector_path: Option<String>,
+
     /// Pre-seeded conversation messages (from Modelfile MESSAGE directive)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<ManifestMessage>,
@@ -154,6 +158,7 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            projector_path: None,
             messages: vec![],
             family: None,
             families: None,

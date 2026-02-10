@@ -126,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
                 modelfile_content: Some(modelfile_content),
                 license: None,
                 adapter_path: mf.adapter.clone(),
+                projector_path: None,
                 messages: mf
                     .messages
                     .iter()

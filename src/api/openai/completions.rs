@@ -64,6 +64,7 @@ pub async fn handler(
         typical_p: None,
         response_format: None,
         images: None,
+        projector_path: None,
     };
 
     match backend.complete(&model_name, backend_request).await {

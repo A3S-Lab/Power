@@ -48,6 +48,10 @@ struct LoadedModel {
     /// Cached context for KV cache reuse across requests.
     /// Holds (context, evaluated_tokens) — taken for each request and returned after.
     cached_ctx: Arc<std::sync::Mutex<Option<CachedContext>>>,
+    /// LoRA adapter loaded from manifest.adapter_path (if any).
+    lora_adapter: Option<Arc<std::sync::Mutex<SendableLoraAdapter>>>,
+    /// Path to multimodal projector file (for vision models).
+    projector_path: Option<String>,
 }
 
 /// A cached llama.cpp context with the tokens already evaluated in its KV cache.
@@ -65,6 +69,28 @@ struct CachedContext {
 /// thread-safe for sequential access to a single context.
 #[cfg(feature = "llamacpp")]
 unsafe impl Send for CachedContext {}
+
+/// Newtype wrapper around LlamaLoraAdapter to implement Send.
+///
+/// Safety: LlamaLoraAdapter wraps a C pointer that is safe to send between threads
+/// when accessed sequentially (protected by Mutex). The adapter is only used during
+/// context setup via `lora_adapter_set`, which is serialized by the Mutex.
+#[cfg(feature = "llamacpp")]
+struct SendableLoraAdapter(llama_cpp_2::model::LlamaLoraAdapter);
+
+#[cfg(feature = "llamacpp")]
+unsafe impl Send for SendableLoraAdapter {}
+
+/// Newtype wrapper around MtmdContext to implement Send.
+///
+/// Safety: MtmdContext wraps C pointers that are safe to send between threads
+/// when accessed sequentially (protected by Mutex). The mtmd API docs note that
+/// `eval_chunks` is NOT thread-safe, so we serialize access via Mutex.
+#[cfg(feature = "llamacpp")]
+struct SendableMtmdContext(llama_cpp_2::mtmd::MtmdContext);
+
+#[cfg(feature = "llamacpp")]
+unsafe impl Send for SendableMtmdContext {}
 
 /// llama.cpp backend for GGUF model inference.
 pub struct LlamaCppBackend {
@@ -149,6 +175,41 @@ impl Backend for LlamaCppBackend {
             .map(chat_template::detect)
             .unwrap_or(ChatTemplateKind::Phi);
 
+        // Load LoRA adapter if specified in manifest
+        let lora_adapter = if let Some(ref adapter_path) = manifest.adapter_path {
+            let adapter_path_buf = std::path::PathBuf::from(adapter_path);
+            if adapter_path_buf.exists() {
+                let model_ref = model_arc.clone();
+                let path = adapter_path_buf.clone();
+                let adapter = tokio::task::spawn_blocking(move || {
+                    model_ref.lora_adapter_init(&path).map_err(|e| {
+                        PowerError::InferenceFailed(format!(
+                            "Failed to load LoRA adapter from {}: {e}",
+                            path.display()
+                        ))
+                    })
+                })
+                .await
+                .map_err(|e| PowerError::InferenceFailed(format!("Task join error: {e}")))??;
+
+                tracing::info!(
+                    model = %manifest.name,
+                    adapter = %adapter_path,
+                    "LoRA adapter loaded"
+                );
+                Some(Arc::new(std::sync::Mutex::new(SendableLoraAdapter(adapter))))
+            } else {
+                tracing::warn!(
+                    model = %manifest.name,
+                    adapter = %adapter_path,
+                    "LoRA adapter file not found, skipping"
+                );
+                None
+            }
+        } else {
+            None
+        };
+
         self.models.write().await.insert(
             model_name.clone(),
             LoadedModel {
@@ -159,6 +220,8 @@ impl Backend for LlamaCppBackend {
                 raw_template: raw_template_str,
                 load_mode: LoadMode::Inference,
                 cached_ctx: Arc::new(std::sync::Mutex::new(None)),
+                lora_adapter,
+                projector_path: manifest.projector_path.clone(),
             },
         );
 
@@ -178,13 +241,13 @@ impl Backend for LlamaCppBackend {
         model_name: &str,
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
-        // Look up the chat template for this model
-        let (template, raw_template) = {
+        // Look up the chat template and projector path for this model
+        let (template, raw_template, projector_path) = {
             let models = self.models.read().await;
             models
                 .get(model_name)
-                .map(|m| (m.chat_template.clone(), m.raw_template.clone()))
-                .unwrap_or((ChatTemplateKind::Phi, None))
+                .map(|m| (m.chat_template.clone(), m.raw_template.clone(), m.projector_path.clone()))
+                .unwrap_or((ChatTemplateKind::Phi, None, None))
         };
 
         let prompt = chat_template::format_chat_prompt(
@@ -193,18 +256,59 @@ impl Backend for LlamaCppBackend {
             raw_template.as_deref(),
         );
 
-        // Warn if images are present (vision inference requires clip projector, not yet supported)
+        // Check if images are present in the request
         let has_images = request.messages.iter().any(|m| {
             m.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
                 || matches!(&m.content, super::types::MessageContent::Parts(parts)
                     if parts.iter().any(|p| matches!(p, super::types::ContentPart::ImageUrl { .. })))
         });
-        if has_images {
+
+        if has_images && projector_path.is_none() {
             tracing::warn!(
-                "Vision/multimodal images detected but clip projector not yet supported; \
-                 images will be ignored and only text content will be processed"
+                "Vision/multimodal images detected but no projector file available; \
+                 images will be ignored and only text content will be processed. \
+                 Pull a vision model (e.g. llava) to enable image processing."
             );
+        } else if has_images {
+            tracing::info!("Vision inference with multimodal projector");
         }
+
+        // Extract base64 images from messages for vision inference
+        let images: Vec<String> = if has_images {
+            request
+                .messages
+                .iter()
+                .flat_map(|m| {
+                    // Collect from Ollama-native `images` field
+                    let ollama_imgs = m
+                        .images
+                        .as_ref()
+                        .map(|imgs| imgs.clone())
+                        .unwrap_or_default();
+                    // Collect from OpenAI image_url content parts (extract base64 data URIs)
+                    let openai_imgs: Vec<String> = match &m.content {
+                        super::types::MessageContent::Parts(parts) => parts
+                            .iter()
+                            .filter_map(|p| match p {
+                                super::types::ContentPart::ImageUrl { image_url } => {
+                                    // Handle data:image/...;base64,<data> format
+                                    if let Some(data) = image_url.url.strip_prefix("data:") {
+                                        data.split_once(",").map(|(_, b64)| b64.to_string())
+                                    } else {
+                                        None // URL-based images not supported yet
+                                    }
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                        _ => vec![],
+                    };
+                    ollama_imgs.into_iter().chain(openai_imgs)
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
         let completion_req = CompletionRequest {
             prompt,
@@ -226,7 +330,8 @@ impl Backend for LlamaCppBackend {
             tfs_z: request.tfs_z,
             typical_p: request.typical_p,
             response_format: request.response_format,
-            images: None,
+            images: if images.is_empty() { None } else { Some(images) },
+            projector_path,
         };
 
         // Map CompletionResponseChunk -> ChatResponseChunk with tool call detection
@@ -278,11 +383,11 @@ impl Backend for LlamaCppBackend {
         use llama_cpp_2::sampling::LlamaSampler;
         use llama_cpp_2::token::LlamaToken;
 
-        let (model_arc, cached_ctx_mutex) = {
+        let (model_arc, cached_ctx_mutex, lora_adapter) = {
             let models = self.models.read().await;
             models
                 .get(model_name)
-                .map(|m| (m.model.clone(), m.cached_ctx.clone()))
+                .map(|m| (m.model.clone(), m.cached_ctx.clone(), m.lora_adapter.clone()))
                 .ok_or_else(|| {
                     PowerError::InferenceFailed(format!("Model '{model_name}' not loaded"))
                 })?
@@ -377,6 +482,17 @@ impl Backend for LlamaCppBackend {
             // Only evaluate tokens not already in the KV cache
             let tokens_to_eval = &tokens[skip_tokens..];
             let prompt_eval_start = std::time::Instant::now();
+
+            // Apply LoRA adapter to context if available
+            if let Some(ref adapter_arc) = lora_adapter {
+                let mut wrapper = adapter_arc.lock().unwrap();
+                if let Err(e) = ctx.lora_adapter_set(&mut wrapper.0, 1.0) {
+                    let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
+                        "Failed to apply LoRA adapter: {e}"
+                    ))));
+                    return;
+                }
+            }
 
             if !tokens_to_eval.is_empty() {
                 let mut batch = LlamaBatch::new(ctx_size as usize, 1);
@@ -616,13 +732,15 @@ impl Backend for LlamaCppBackend {
         };
 
         if needs_reload {
-            let (path, chat_template, raw_template) = {
+            let (path, chat_template, raw_template, lora_adapter, projector_path) = {
                 let models = self.models.read().await;
                 let m = models.get(model_name).unwrap();
                 (
                     m.path.clone(),
                     m.chat_template.clone(),
                     m.raw_template.clone(),
+                    m.lora_adapter.clone(),
+                    m.projector_path.clone(),
                 )
             };
 
@@ -664,6 +782,8 @@ impl Backend for LlamaCppBackend {
                     raw_template,
                     load_mode: LoadMode::Embedding,
                     cached_ctx: Arc::new(std::sync::Mutex::new(None)),
+                    lora_adapter,
+                    projector_path,
                 },
             );
         }
@@ -838,6 +958,7 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            projector_path: None,
             messages: vec![],
             family: None,
             families: None,
@@ -903,6 +1024,7 @@ mod tests {
             typical_p: None,
             response_format: None,
             images: None,
+            projector_path: None,
         };
         let result = backend.complete("test", request).await;
         assert!(result.is_err());

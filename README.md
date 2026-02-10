@@ -83,7 +83,7 @@ a3s-power serve
 
 ### Test Coverage
 
-**452 unit tests** with comprehensive coverage across 50+ source files:
+**454 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -548,7 +548,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 452 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 454 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -747,7 +747,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **NDJSON Streaming**: Native API endpoints (`/api/generate`, `/api/chat`, `/api/pull`, `/api/push`) stream as `application/x-ndjson` (Ollama wire format); OpenAI endpoints keep SSE
 - [x] **Automatic Model Unloading**: Background keep_alive reaper checks every 5s and unloads idle models (configurable: `"5m"`, `"1h"`, `"0"`, `"-1"`)
 - [x] **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
-- [x] 452 comprehensive unit tests
+- [x] 454 comprehensive unit tests
 
 ### Phase 8: Advanced Compatibility ✅
 
@@ -755,10 +755,10 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **KV Cache Reuse**: Persist `LlamaContext` across requests with prefix matching — skips re-evaluating shared prompt tokens for multi-turn conversation speedup
 - [x] **Tool Call Parsing**: Parse model output into structured `tool_calls` — supports `<tool_call>` XML (Hermes/Qwen), `[TOOL_CALLS]` prefix (Mistral), and raw JSON formats; zero overhead when no tools in request
 - [x] **JSON Schema Structured Output**: Support `format: {"type":"object","properties":{...}}` via JSON Schema → GBNF grammar conversion; accepts `"json"`, `{"type":"json_object"}`, or full JSON Schema objects
-- [x] **Vision Inference**: Image passthrough pipeline — accepts base64 images in Ollama `images` field and OpenAI `image_url` content parts; infrastructure-ready for clip projector integration
-- [x] **ADAPTER Support**: Modelfile `ADAPTER` directive parsed and stored in manifest; LoRA/QLoRA adapter path flows through create API to model registry
+- [x] **Vision Inference**: Multimodal vision pipeline — accepts base64 images in Ollama `images` field and OpenAI `image_url` content parts; projector auto-downloaded from Ollama registry; uses llama.cpp `mtmd` API for image encoding when projector available
+- [x] **ADAPTER Support**: LoRA/QLoRA adapter loading at inference time — Modelfile `ADAPTER` directive parsed, adapter file loaded via `llama_lora_adapter_init`, applied to context with `lora_adapter_set` at scale 1.0
 - [x] **MESSAGE Directive**: Pre-seeded conversation history via Modelfile `MESSAGE` directive; messages stored in manifest and automatically prepended to chat requests
-- [x] 452 comprehensive unit tests
+- [x] 454 comprehensive unit tests
 
 ### Phase 9: Operational Parity ✅
 
@@ -769,7 +769,7 @@ Runtime and CLI parity for production Ollama replacement:
 - [x] **`stop` CLI Command**: Unload a running model via `a3s-power stop <model>` (sends `keep_alive: 0`)
 - [x] **Ollama Environment Variables**: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_GPU` — override config file for container/script compatibility
 - [x] **Download Resumption**: Interrupted model downloads resume automatically via HTTP Range requests with partial file tracking
-- [x] 452 comprehensive unit tests
+- [x] 454 comprehensive unit tests
 
 ## License
 

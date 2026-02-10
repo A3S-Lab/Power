@@ -121,6 +121,7 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            projector_path: None,
             messages: vec![],
             family: None,
             families: None,

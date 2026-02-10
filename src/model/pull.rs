@@ -49,6 +49,41 @@ pub async fn pull_model(
                 .as_deref()
                 .and_then(ollama_registry::parse_parameter_count);
 
+            // Download projector blob if present (for vision models)
+            let projector_path = if let Some(ref proj_digest) = reg.projector_digest {
+                let proj_name = resolve::ModelRef::parse(name_or_url);
+                let proj_url = ollama_registry::blob_url(&proj_name.name, proj_digest);
+                tracing::info!(digest = %proj_digest, "Downloading multimodal projector");
+                let proj_resp = reqwest::get(&proj_url)
+                    .await
+                    .map_err(|e| PowerError::DownloadFailed {
+                        model: name.clone(),
+                        source: e,
+                    })?;
+                if proj_resp.status().is_success() {
+                    let proj_bytes = proj_resp.bytes().await.map_err(|e| {
+                        PowerError::DownloadFailed {
+                            model: name.clone(),
+                            source: e,
+                        }
+                    })?;
+                    let (proj_blob_path, _) = storage::store_blob(&proj_bytes)?;
+                    tracing::info!(
+                        path = %proj_blob_path.display(),
+                        "Projector stored"
+                    );
+                    Some(proj_blob_path.to_string_lossy().to_string())
+                } else {
+                    tracing::warn!(
+                        status = %proj_resp.status(),
+                        "Failed to download projector, vision will be unavailable"
+                    );
+                    None
+                }
+            } else {
+                None
+            };
+
             ModelManifest {
                 name,
                 format,
@@ -68,6 +103,7 @@ pub async fn pull_model(
                 modelfile_content: None,
                 license: reg.license,
                 adapter_path: None,
+                projector_path,
                 messages: vec![],
                 family: reg.config.model_family.clone(),
                 families: None,
@@ -87,6 +123,7 @@ pub async fn pull_model(
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            projector_path: None,
             messages: vec![],
             family: None,
             families: None,
@@ -343,6 +380,7 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            projector_path: None,
             messages: vec![],
             family: None,
             families: None,
@@ -375,6 +413,8 @@ mod tests {
                 model_type: Some("3.2B".to_string()),
                 file_type: Some("Q4_K_M".to_string()),
             },
+            projector_digest: None,
+            projector_size: None,
         };
 
         let parameter_count = reg
@@ -402,6 +442,7 @@ mod tests {
             modelfile_content: None,
             license: reg.license.clone(),
             adapter_path: None,
+            projector_path: None,
             messages: vec![],
             family: reg.config.model_family.clone(),
             families: None,
