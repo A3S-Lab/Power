@@ -369,4 +369,92 @@ mod tests {
 
         std::env::remove_var("A3S_POWER_HOME");
     }
+
+    #[test]
+    #[serial]
+    fn test_list_sorted_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let registry = ModelRegistry::new();
+        registry.register(sample_manifest("zebra")).unwrap();
+        registry.register(sample_manifest("alpha")).unwrap();
+        registry.register(sample_manifest("beta")).unwrap();
+
+        let models = registry.list().unwrap();
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].name, "alpha");
+        assert_eq!(models[1].name, "beta");
+        assert_eq!(models[2].name, "zebra");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_scan_clears_existing_models() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let registry = ModelRegistry::new();
+        registry.register(sample_manifest("model-a")).unwrap();
+        assert_eq!(registry.count(), 1);
+
+        // Scan should clear and reload from disk
+        registry.scan().unwrap();
+        assert_eq!(registry.count(), 1);
+        assert!(registry.exists("model-a"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_remove_deletes_manifest_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let registry = ModelRegistry::new();
+        let manifest = sample_manifest("to-delete");
+        registry.register(manifest.clone()).unwrap();
+
+        let manifest_path = dirs::manifests_dir().join(manifest.manifest_filename());
+        assert!(manifest_path.exists());
+
+        registry.remove("to-delete").unwrap();
+        assert!(!manifest_path.exists());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_scan_with_multiple_valid_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let registry1 = ModelRegistry::new();
+        registry1.register(sample_manifest("model-1")).unwrap();
+        registry1.register(sample_manifest("model-2")).unwrap();
+        registry1.register(sample_manifest("model-3")).unwrap();
+
+        let registry2 = ModelRegistry::new();
+        registry2.scan().unwrap();
+        assert_eq!(registry2.count(), 3);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    fn test_list_empty_registry() {
+        let registry = ModelRegistry::new();
+        let models = registry.list().unwrap();
+        assert_eq!(models.len(), 0);
+    }
+
+    #[test]
+    fn test_exists_empty_registry() {
+        let registry = ModelRegistry::new();
+        assert!(!registry.exists("any-model"));
+    }
 }

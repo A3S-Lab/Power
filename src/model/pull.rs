@@ -485,4 +485,63 @@ mod tests {
         let hash2 = crate::model::storage::compute_sha256(b"https://example.com/model-b.gguf");
         assert_ne!(&hash1[..16], &hash2[..16]);
     }
+
+    #[test]
+    fn test_extract_name_from_url_with_query_params() {
+        // Query params are kept as part of the filename after stripping .gguf
+        assert_eq!(
+            extract_name_from_url("https://example.com/model.gguf?download=true"),
+            "model.gguf?download=true"
+        );
+    }
+
+    #[test]
+    fn test_extract_name_from_url_with_fragment() {
+        // Fragment is kept as part of the filename after stripping .gguf
+        assert_eq!(
+            extract_name_from_url("https://example.com/model.gguf#section"),
+            "model.gguf#section"
+        );
+    }
+
+    #[test]
+    fn test_extract_name_from_url_multiple_extensions() {
+        assert_eq!(
+            extract_name_from_url("https://example.com/model.tar.gguf"),
+            "model.tar"
+        );
+    }
+
+    #[test]
+    fn test_extract_name_from_url_no_slash() {
+        assert_eq!(extract_name_from_url("model.gguf"), "model");
+    }
+
+    #[test]
+    fn test_detect_format_case_insensitive() {
+        let path = std::path::PathBuf::from("/tmp/MODEL.GGUF");
+        assert_eq!(detect_format("test", &path), ModelFormat::Gguf);
+    }
+
+    #[test]
+    fn test_detect_format_name_priority() {
+        let path = std::path::PathBuf::from("/tmp/sha256-abc");
+        assert_eq!(detect_format("model-GGUF-test", &path), ModelFormat::Gguf);
+        assert_eq!(
+            detect_format("model-SAFETENSORS-test", &path),
+            ModelFormat::SafeTensors
+        );
+    }
+
+    #[test]
+    fn test_detect_format_path_priority() {
+        let path = std::path::PathBuf::from("/tmp/model.gguf");
+        assert_eq!(detect_format("random-name", &path), ModelFormat::Gguf);
+    }
+
+    #[test]
+    fn test_detect_format_both_match() {
+        let path = std::path::PathBuf::from("/tmp/model.gguf");
+        assert_eq!(detect_format("model-gguf", &path), ModelFormat::Gguf);
+    }
 }

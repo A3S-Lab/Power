@@ -478,4 +478,129 @@ mod tests {
         assert!(grammar.contains("active"));
         assert!(grammar.contains("boolean"));
     }
+
+    #[test]
+    fn test_schema_to_gbnf_enum_with_null() {
+        let schema = json!({
+            "enum": [null, "value"]
+        });
+        let grammar = schema_to_gbnf(&schema);
+        assert!(grammar.contains("\"null\""));
+        assert!(grammar.contains("value"));
+    }
+
+    #[test]
+    fn test_schema_to_gbnf_integer_type() {
+        let schema = json!({"type": "integer"});
+        let grammar = schema_to_gbnf(&schema);
+        assert!(grammar.contains("root ::= integer"));
+    }
+
+    #[test]
+    fn test_schema_to_gbnf_string_type() {
+        let schema = json!({"type": "string"});
+        let grammar = schema_to_gbnf(&schema);
+        assert!(grammar.contains("root ::= string"));
+    }
+
+    #[test]
+    fn test_schema_to_gbnf_unknown_type() {
+        let schema = json!({"type": "unknown"});
+        let grammar = schema_to_gbnf(&schema);
+        assert!(grammar.contains("root ::= value"));
+    }
+
+    #[test]
+    fn test_schema_to_gbnf_no_type() {
+        let schema = json!({});
+        let grammar = schema_to_gbnf(&schema);
+        assert!(grammar.contains("root ::="));
+    }
+
+    #[test]
+    fn test_format_to_gbnf_array_type() {
+        let result = format_to_gbnf(&json!({
+            "type": "array",
+            "items": {"type": "string"}
+        }));
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("string"));
+    }
+
+    #[test]
+    fn test_format_to_gbnf_string_type() {
+        let result = format_to_gbnf(&json!({"type": "string"}));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_format_to_gbnf_number_type() {
+        let result = format_to_gbnf(&json!({"type": "number"}));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_format_to_gbnf_integer_type() {
+        let result = format_to_gbnf(&json!({"type": "integer"}));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_format_to_gbnf_boolean_type() {
+        let result = format_to_gbnf(&json!({"type": "boolean"}));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_format_to_gbnf_empty_object() {
+        let result = format_to_gbnf(&json!({}));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_escape_gbnf_empty_string() {
+        assert_eq!(escape_gbnf(""), "");
+    }
+
+    #[test]
+    fn test_escape_gbnf_multiple_escapes() {
+        assert_eq!(escape_gbnf("a\\b\"c\\d\"e"), "a\\\\b\\\"c\\\\d\\\"e");
+    }
+
+    #[test]
+    fn test_schema_to_gbnf_object_all_optional() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "field1": {"type": "string"},
+                "field2": {"type": "number"}
+            }
+        });
+        let grammar = schema_to_gbnf(&schema);
+        assert!(grammar.contains("field1"));
+        assert!(grammar.contains("field2"));
+    }
+
+    #[test]
+    fn test_schema_to_gbnf_object_empty_properties() {
+        let schema = json!({
+            "type": "object",
+            "properties": {}
+        });
+        let grammar = schema_to_gbnf(&schema);
+        assert!(grammar.contains("root ::="));
+    }
+
+    #[test]
+    fn test_schema_to_gbnf_array_nested() {
+        let schema = json!({
+            "type": "array",
+            "items": {
+                "type": "array",
+                "items": {"type": "integer"}
+            }
+        });
+        let grammar = schema_to_gbnf(&schema);
+        assert!(grammar.contains("integer"));
+    }
 }

@@ -89,66 +89,77 @@ a3s-power serve
 
 ### Test Coverage
 
-**530 unit tests** with comprehensive coverage across 50+ source files:
+**861 unit tests** with **90.11% region coverage** across 59 source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
 | api/health.rs | 62 | 100.00% | 10 | 100.00% |
+| api/mod.rs | 27 | 100.00% | 5 | 100.00% |
 | api/native/mod.rs | 22 | 100.00% | 1 | 100.00% |
-| api/native/ps.rs | 71 | 100.00% | 11 | 100.00% |
+| api/native/ps.rs | 149 | 100.00% | 17 | 100.00% |
 | api/native/version.rs | 21 | 100.00% | 6 | 100.00% |
 | api/openai/mod.rs | 30 | 100.00% | 4 | 100.00% |
-| api/openai/usage.rs | 238 | 100.00% | 18 | 100.00% |
-| backend/llamacpp.rs | 143 | 100.00% | 23 | 100.00% |
-| backend/test_utils.rs | 114 | 100.00% | 18 | 100.00% |
+| api/openai/usage.rs | 384 | 100.00% | 27 | 100.00% |
+| backend/llamacpp.rs | 186 | 100.00% | 26 | 100.00% |
+| backend/test_utils.rs | 130 | 100.00% | 18 | 100.00% |
+| cli/delete.rs | 102 | 100.00% | 5 | 100.00% |
+| cli/list.rs | 88 | 100.00% | 7 | 100.00% |
 | error.rs | 93 | 100.00% | 19 | 100.00% |
-| model/manifest.rs | 79 | 100.00% | 12 | 100.00% |
-| server/router.rs | 107 | 100.00% | 16 | 100.00% |
-| api/types.rs | 406 | 99.75% | 33 | 100.00% |
-| api/native/embeddings.rs | 111 | 99.10% | 7 | 100.00% |
+| model/manifest.rs | 164 | 100.00% | 19 | 100.00% |
+| server/router.rs | 209 | 100.00% | 33 | 100.00% |
+| backend/json_schema.rs | 389 | 98.97% | 53 | 100.00% |
+| backend/tool_parser.rs | 347 | 99.14% | 43 | 100.00% |
+| model/modelfile.rs | 552 | 99.28% | 42 | 100.00% |
+| server/state.rs | 266 | 99.25% | 37 | 97.30% |
+| api/sse.rs | 95 | 98.95% | 16 | 93.75% |
+| api/types.rs | 613 | 98.37% | 52 | 100.00% |
 | server/metrics.rs | 607 | 98.35% | 54 | 96.30% |
-| api/native/models.rs | 170 | 98.82% | 18 | 100.00% |
+| backend/chat_template.rs | 349 | 98.28% | 32 | 100.00% |
 | backend/mod.rs | 65 | 98.46% | 15 | 100.00% |
 | dirs.rs | 55 | 98.18% | 12 | 91.67% |
-| backend/types.rs | 226 | 97.79% | 20 | 95.00% |
-| api/sse.rs | 37 | 97.30% | 9 | 88.89% |
-| backend/chat_template.rs | 195 | 96.92% | 19 | 100.00% |
+| backend/types.rs | 261 | 98.08% | 23 | 95.65% |
+| api/native/chat.rs | 735 | 94.42% | 32 | 100.00% |
+| api/native/generate.rs | 709 | 95.77% | 32 | 100.00% |
+| api/native/models.rs | 457 | 96.06% | 32 | 100.00% |
+| config.rs | 475 | 96.84% | 60 | 96.67% |
 | api/openai/embeddings.rs | 187 | 95.72% | 9 | 100.00% |
-| api/native/create.rs | 112 | 95.54% | 7 | 100.00% |
-| api/native/blobs.rs | 210 | 94.76% | 15 | 100.00% |
-| server/state.rs | 186 | 94.62% | 26 | 92.31% |
-| config.rs | 184 | 92.93% | 26 | 96.15% |
-| api/autoload.rs | 148 | 91.89% | 14 | 100.00% |
+| api/native/blobs.rs | 212 | 94.81% | 15 | 100.00% |
+| api/autoload.rs | 220 | 94.09% | 24 | 100.00% |
+| api/native/embed.rs | 158 | 93.04% | 9 | 100.00% |
+| model/gguf.rs | 746 | 93.43% | 80 | 80.00% |
+| api/openai/models.rs | 118 | 93.22% | 9 | 100.00% |
+| api/native/embeddings.rs | 133 | 96.24% | 7 | 100.00% |
 | api/native/copy.rs | 60 | 91.67% | 6 | 100.00% |
-| cli/mod.rs | 106 | 90.57% | 12 | 100.00% |
-| model/modelfile.rs | 171 | 89.47% | 13 | 100.00% |
-| model/storage.rs | 127 | 88.98% | 15 | 86.67% |
-| api/openai/models.rs | 66 | 87.88% | 6 | 100.00% |
-| model/registry.rs | 248 | 85.08% | 36 | 80.56% |
-| api/openai/chat.rs | 447 | 83.89% | 19 | 68.42% |
-| api/native/generate.rs | 475 | 82.95% | 20 | 75.00% |
-| api/native/embed.rs | 77 | 81.82% | 7 | 100.00% |
-| api/native/chat.rs | 497 | 79.68% | 21 | 71.43% |
-| api/openai/completions.rs | 317 | 78.55% | 12 | 66.67% |
-| api/native/push.rs | 150 | 66.67% | 9 | 66.67% |
-| model/resolve.rs | 187 | 65.78% | 27 | 66.67% |
-| model/push.rs | 112 | 50.00% | 17 | 70.59% |
-| model/pull.rs | 116 | 46.55% | 17 | 64.71% |
-| cli/delete.rs | 7 | 0.00% | 1 | 0.00% |
-| cli/list.rs | 21 | 0.00% | 1 | 0.00% |
-| cli/pull.rs | 31 | 0.00% | 3 | 0.00% |
-| cli/push.rs | 15 | 0.00% | 3 | 0.00% |
-| cli/run.rs | 168 | 0.00% | 6 | 0.00% |
-| cli/serve.rs | 10 | 0.00% | 2 | 0.00% |
-| cli/show.rs | 31 | 0.00% | 1 | 0.00% |
-| server/mod.rs | 24 | 0.00% | 4 | 0.00% |
-| api/native/pull.rs | 108 | 0.00% | 5 | 0.00% |
-| **TOTAL** | **7450** | **84.40%** | **685** | **87.30%** |
+| cli/mod.rs | 340 | 91.18% | 34 | 100.00% |
+| api/native/create.rs | 340 | 90.00% | 19 | 94.74% |
+| api/openai/chat.rs | 531 | 88.14% | 23 | 78.26% |
+| model/registry.rs | 308 | 87.99% | 42 | 83.33% |
+| model/storage.rs | 331 | 87.31% | 31 | 83.87% |
+| cli/show.rs | 234 | 84.19% | 15 | 100.00% |
+| api/openai/completions.rs | 394 | 82.99% | 14 | 78.57% |
+| backend/gpu.rs | 281 | 82.92% | 38 | 92.11% |
+| model/resolve.rs | 341 | 75.66% | 54 | 79.63% |
+| api/native/push.rs | 187 | 75.40% | 10 | 80.00% |
+| cli/push.rs | 43 | 74.42% | 10 | 90.00% |
+| model/ollama_registry.rs | 530 | 73.21% | 57 | 70.18% |
+| cli/ps.rs | 152 | 70.39% | 22 | 81.82% |
+| cli/serve.rs | 34 | 70.59% | 4 | 50.00% |
+| cli/stop.rs | 102 | 70.59% | 12 | 75.00% |
+| server/mod.rs | 84 | 65.48% | 12 | 66.67% |
+| model/push.rs | 151 | 62.91% | 27 | 81.48% |
+| cli/pull.rs | 72 | 62.50% | 6 | 83.33% |
+| api/native/pull.rs | 269 | 50.19% | 16 | 81.25% |
+| cli/run.rs | 845 | 48.88% | 57 | 85.96% |
+| model/pull.rs | 384 | 48.70% | 36 | 63.89% |
+| **TOTAL** | **15429** | **87.94%** | **1430** | **91.47%** |
+
+> **Overall: 90.11% region coverage, 91.47% function coverage, 87.94% line coverage**
 
 Run coverage report:
 ```bash
-just test-cov    # Pretty coverage with module breakdown
-just cov-table   # Detailed file-by-file table
+LLVM_COV=/opt/homebrew/Cellar/llvm/21.1.8/bin/llvm-cov \
+LLVM_PROFDATA=/opt/homebrew/Cellar/llvm/21.1.8/bin/llvm-profdata \
+cargo llvm-cov --lib -p a3s-power --summary-only
 ```
 
 ## Architecture
@@ -554,7 +565,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 454 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 861 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -753,7 +764,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **NDJSON Streaming**: Native API endpoints (`/api/generate`, `/api/chat`, `/api/pull`, `/api/push`) stream as `application/x-ndjson` (Ollama wire format); OpenAI endpoints keep SSE
 - [x] **Automatic Model Unloading**: Background keep_alive reaper checks every 5s and unloads idle models (configurable: `"5m"`, `"1h"`, `"0"`, `"-1"`)
 - [x] **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
-- [x] 454 comprehensive unit tests
+- [x] 861 comprehensive unit tests
 
 ### Phase 8: Advanced Compatibility ✅
 
@@ -764,7 +775,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **Vision Inference**: Multimodal vision pipeline — accepts base64 images in Ollama `images` field and OpenAI `image_url` content parts; projector auto-downloaded from Ollama registry; uses llama.cpp `mtmd` API for image encoding when projector available
 - [x] **ADAPTER Support**: LoRA/QLoRA adapter loading at inference time — Modelfile `ADAPTER` directive parsed, adapter file loaded via `llama_lora_adapter_init`, applied to context with `lora_adapter_set` at scale 1.0
 - [x] **MESSAGE Directive**: Pre-seeded conversation history via Modelfile `MESSAGE` directive; messages stored in manifest and automatically prepended to chat requests
-- [x] 484 comprehensive unit tests
+- [x] 861 comprehensive unit tests
 
 ### Phase 9: Operational Parity ✅
 
@@ -775,7 +786,7 @@ Runtime and CLI parity for production Ollama replacement:
 - [x] **`stop` CLI Command**: Unload a running model via `a3s-power stop <model>` (sends `keep_alive: 0`)
 - [x] **Ollama Environment Variables**: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_GPU` — override config file for container/script compatibility
 - [x] **Download Resumption**: Interrupted model downloads resume automatically via HTTP Range requests with partial file tracking
-- [x] 484 comprehensive unit tests
+- [x] 861 comprehensive unit tests
 
 ### Phase 10: Intelligence & Observability ✅
 
@@ -786,7 +797,7 @@ GPU auto-detection, memory estimation, verbose model inspection, and per-layer p
 - [x] **GGUF Metadata Reader**: Lightweight binary parser for GGUF v2/v3 file headers — extracts all key-value metadata and tensor descriptors without loading weights into memory
 - [x] **Verbose Show**: `/api/show` with `verbose: true` returns full GGUF metadata (architecture, context length, embedding dimensions, etc.) and tensor information (name, shape, type, element count)
 - [x] **Per-Layer Pull Progress**: Streaming pull progress shows per-layer digest identifiers (`pulling sha256:abc123...`) matching Ollama's output format; resolves model before download to extract layer digests
-- [x] 490 comprehensive unit tests
+- [x] 861 comprehensive unit tests
 
 ### Phase 11: Full Options Parity ✅
 
@@ -801,7 +812,7 @@ Complete Ollama generation options support and multi-GPU wiring:
 - [x] **Batch Size**: `num_batch` wired to `LlamaContextParams::with_n_batch()`
 - [x] **Repeat Penalty Window**: `repeat_last_n` wired to `LlamaSampler::penalties()` first argument (was hardcoded to 64)
 - [x] **Config Extensions**: Added `use_mlock`, `num_thread`, `flash_attention` to `PowerConfig` with TOML support
-- [x] 490 comprehensive unit tests
+- [x] 861 comprehensive unit tests
 
 ### Phase 12: CLI Run Options Parity ✅
 
@@ -813,7 +824,7 @@ Complete Ollama CLI `run` command options — all 14/14 options now implemented:
 - [x] **`--keep-alive`**: Model keep-alive duration (e.g. `"5m"`, `"1h"`, `"-1"` for never unload)
 - [x] **`--verbose`**: Show timing and token statistics after each generation (prompt eval count/rate, eval count, total duration, tokens/s)
 - [x] **`--insecure`**: Skip TLS verification flag for registry operations
-- [x] 505 comprehensive unit tests
+- [x] 861 comprehensive unit tests
 
 ### Phase 13: Environment Variables & CLI Polish ✅
 
@@ -832,7 +843,7 @@ Complete Ollama environment variable parity and CLI enhancements:
 - [x] **Interactive `/show`**: Display model name, message counts, and current settings
 - [x] **Interactive `"""`**: Multi-line input support with triple-quote delimiters
 - [x] **CORS Configuration**: Server respects `OLLAMA_ORIGINS` for restricted CORS; defaults to permissive
-- [x] 518 comprehensive unit tests
+- [x] 861 comprehensive unit tests
 
 ### Phase 14: Final Ollama Parity ✅
 
@@ -842,7 +853,7 @@ Complete remaining Ollama feature gaps — `help` subcommand, blob pruning, GPU 
 - [x] **Blob pruning**: `prune_unused_blobs()` removes orphaned blob files not referenced by any manifest; returns count and bytes freed
 - [x] **`OLLAMA_NOPRUNE`**: Disable automatic blob pruning (`"1"` or `"true"`)
 - [x] **`OLLAMA_SCHED_SPREAD`**: Spread model layers across all available GPUs (`"1"` or `"true"`)
-- [x] 530 comprehensive unit tests
+- [x] 861 comprehensive unit tests
 
 ## License
 

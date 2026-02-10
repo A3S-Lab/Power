@@ -319,4 +319,66 @@ mod tests {
         let truncated = truncate_digest(digest);
         assert_eq!(truncated, "sha256:abc");
     }
+
+    #[test]
+    fn test_truncate_digest_exact_boundary() {
+        // Exactly 19 chars — should NOT truncate
+        let digest = "sha256:abc123def456";
+        assert_eq!(digest.len(), 19);
+        let truncated = truncate_digest(digest);
+        assert_eq!(truncated, "sha256:abc123def456");
+    }
+
+    #[test]
+    fn test_truncate_digest_one_over_boundary() {
+        // 20 chars — should truncate
+        let digest = "sha256:abc123def4567";
+        assert_eq!(digest.len(), 20);
+        let truncated = truncate_digest(digest);
+        assert_eq!(truncated, "sha256:abc123def456...");
+    }
+
+    #[test]
+    fn test_truncate_digest_empty() {
+        let truncated = truncate_digest("");
+        assert_eq!(truncated, "");
+    }
+
+    #[test]
+    fn test_truncate_digest_real_sha256() {
+        let digest = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        let truncated = truncate_digest(digest);
+        assert!(truncated.ends_with("..."));
+        assert!(truncated.len() < digest.len());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_pull_non_streaming_already_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state
+            .registry
+            .register(sample_manifest("existing"))
+            .unwrap();
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/pull")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"existing","stream":false}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "success");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
 }

@@ -360,4 +360,142 @@ Let me know if you need anything else."#;
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "valid");
     }
+
+    #[test]
+    fn test_parse_json_arguments_as_object() {
+        let text = r#"{"name": "test", "arguments": {"key": "value"}}"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_some());
+        let calls = calls.unwrap();
+        assert_eq!(calls[0].function.name, "test");
+        assert!(calls[0].function.arguments.contains("key"));
+    }
+
+    #[test]
+    fn test_parse_mistral_with_prefix_text() {
+        let text = r#"Here are the tool calls: [TOOL_CALLS] [{"name": "func", "arguments": {}}]"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_some());
+        assert_eq!(calls.unwrap()[0].function.name, "func");
+    }
+
+    #[test]
+    fn test_parse_mistral_empty_array() {
+        let text = r#"[TOOL_CALLS] []"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_mistral_arguments_as_object() {
+        let text = r#"[TOOL_CALLS] [{"name": "test", "arguments": {"x": 1}}]"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_some());
+        let calls = calls.unwrap();
+        assert_eq!(calls[0].function.name, "test");
+        assert!(calls[0].function.arguments.contains("x"));
+    }
+
+    #[test]
+    fn test_parse_mistral_no_arguments() {
+        let text = r#"[TOOL_CALLS] [{"name": "test"}]"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_some());
+        let calls = calls.unwrap();
+        assert_eq!(calls[0].function.arguments, "{}");
+    }
+
+    #[test]
+    fn test_parse_json_with_extra_fields() {
+        let text = r#"{"name": "test", "arguments": {}, "extra": "ignored"}"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_some());
+        assert_eq!(calls.unwrap()[0].function.name, "test");
+    }
+
+    #[test]
+    fn test_parse_json_function_wrapper_no_arguments() {
+        let text = r#"{"function": {"name": "test"}}"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_some());
+        let calls = calls.unwrap();
+        assert_eq!(calls[0].function.name, "test");
+        assert_eq!(calls[0].function.arguments, "{}");
+    }
+
+    #[test]
+    fn test_parse_json_function_wrapper_arguments_as_object() {
+        let text = r#"{"function": {"name": "test", "arguments": {"a": 1}}}"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_some());
+        let calls = calls.unwrap();
+        assert!(calls[0].function.arguments.contains("a"));
+    }
+
+    #[test]
+    fn test_parse_xml_no_closing_tag() {
+        let text = r#"<tool_call>{"name": "test", "arguments": {}}"#;
+        let calls = parse_tool_calls(text);
+        // Should fall back to JSON parsing since XML is incomplete
+        assert!(calls.is_some());
+        assert_eq!(calls.unwrap()[0].function.name, "test");
+    }
+
+    #[test]
+    fn test_parse_xml_no_opening_tag() {
+        let text = r#"{"name": "test", "arguments": {}}</tool_call>"#;
+        let calls = parse_tool_calls(text);
+        // Should fall back to JSON parsing
+        assert!(calls.is_some());
+        assert_eq!(calls.unwrap()[0].function.name, "test");
+    }
+
+    #[test]
+    fn test_parse_json_malformed_braces() {
+        let text = r#"{"name": "test""#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_json_only_opening_brace() {
+        let text = r#"{"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_json_only_closing_brace() {
+        let text = r#"}"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_json_reversed_braces() {
+        let text = r#"}{"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_mistral_missing_name() {
+        let text = r#"[TOOL_CALLS] [{"arguments": {"x": 1}}]"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_xml_empty_content() {
+        let text = r#"<tool_call></tool_call>"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_xml_whitespace_only() {
+        let text = r#"<tool_call>   </tool_call>"#;
+        let calls = parse_tool_calls(text);
+        assert!(calls.is_none());
+    }
 }

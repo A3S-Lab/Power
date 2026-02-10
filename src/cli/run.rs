@@ -754,4 +754,311 @@ mod tests {
         assert_eq!(fmt_opt_u32(None), "(default)");
         assert_eq!(fmt_opt_i64(None), "(default)");
     }
+
+    #[test]
+    fn test_parse_format_flag_empty_json_object() {
+        let result = parse_format_flag("{}");
+        assert!(result.is_some());
+        assert!(result.unwrap().is_object());
+    }
+
+    #[test]
+    fn test_parse_format_flag_json_array() {
+        let result = parse_format_flag("[1,2,3]");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_generation_stats_with_values() {
+        let stats = GenerationStats {
+            eval_count: 50,
+            prompt_eval_count: Some(10),
+            prompt_eval_duration_ns: Some(500_000_000),
+            total_duration: std::time::Duration::from_secs(2),
+        };
+        assert_eq!(stats.eval_count, 50);
+        assert_eq!(stats.prompt_eval_count, Some(10));
+        assert_eq!(stats.prompt_eval_duration_ns, Some(500_000_000));
+        assert_eq!(stats.total_duration.as_secs(), 2);
+    }
+
+    #[test]
+    fn test_print_verbose_stats_no_panic() {
+        // Test that print_verbose_stats doesn't panic with various inputs
+        let stats = GenerationStats::default();
+        print_verbose_stats(&stats);
+
+        let stats = GenerationStats {
+            eval_count: 100,
+            prompt_eval_count: Some(20),
+            prompt_eval_duration_ns: Some(1_000_000_000),
+            total_duration: std::time::Duration::from_millis(500),
+        };
+        print_verbose_stats(&stats);
+    }
+
+    #[test]
+    fn test_print_verbose_stats_zero_duration() {
+        let stats = GenerationStats {
+            eval_count: 0,
+            prompt_eval_count: Some(5),
+            prompt_eval_duration_ns: Some(0),
+            total_duration: std::time::Duration::ZERO,
+        };
+        // Should not panic even with zero duration
+        print_verbose_stats(&stats);
+    }
+
+    #[test]
+    fn test_print_verbose_stats_no_prompt_eval() {
+        let stats = GenerationStats {
+            eval_count: 10,
+            prompt_eval_count: None,
+            prompt_eval_duration_ns: None,
+            total_duration: std::time::Duration::from_millis(100),
+        };
+        print_verbose_stats(&stats);
+    }
+
+    #[test]
+    fn test_parse_format_flag_nested_json() {
+        let schema = r#"{"type":"object","properties":{"nested":{"type":"object","properties":{"field":{"type":"string"}}}}}"#;
+        let result = parse_format_flag(schema);
+        assert!(result.is_some());
+        let v = result.unwrap();
+        assert!(v.is_object());
+    }
+
+    #[test]
+    fn test_parse_format_flag_json_with_spaces() {
+        let schema = r#"{ "type" : "object" }"#;
+        let result = parse_format_flag(schema);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_parse_format_flag_malformed_json() {
+        let result = parse_format_flag("{not valid json");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_format_flag_number() {
+        let result = parse_format_flag("123");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), serde_json::json!(123));
+    }
+
+    #[test]
+    fn test_parse_format_flag_string_value() {
+        let result = parse_format_flag("\"text\"");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), serde_json::json!("text"));
+    }
+
+    #[test]
+    fn test_generation_stats_accumulation() {
+        let mut stats = GenerationStats::default();
+        stats.eval_count = 10;
+        stats.prompt_eval_count = Some(5);
+        stats.prompt_eval_duration_ns = Some(1_000_000);
+        stats.total_duration = std::time::Duration::from_millis(200);
+
+        assert_eq!(stats.eval_count, 10);
+        assert_eq!(stats.prompt_eval_count, Some(5));
+        assert_eq!(stats.prompt_eval_duration_ns, Some(1_000_000));
+        assert_eq!(stats.total_duration.as_millis(), 200);
+    }
+
+    #[test]
+    fn test_run_options_clone() {
+        let opts = RunOptions {
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            top_k: Some(40),
+            num_predict: Some(100),
+            num_ctx: Some(2048),
+            repeat_penalty: Some(1.1),
+            seed: Some(42),
+            format: Some("json".to_string()),
+            system: Some("test".to_string()),
+            template: Some("tmpl".to_string()),
+            keep_alive: Some("5m".to_string()),
+            verbose: true,
+            insecure: false,
+        };
+        let cloned = opts.clone();
+        assert_eq!(opts.temperature, cloned.temperature);
+        assert_eq!(opts.format, cloned.format);
+        assert_eq!(opts.verbose, cloned.verbose);
+    }
+
+    #[test]
+    fn test_run_options_debug() {
+        let opts = RunOptions::default();
+        let debug = format!("{:?}", opts);
+        assert!(debug.contains("RunOptions"));
+    }
+
+    #[test]
+    fn test_fmt_opt_edge_cases() {
+        assert_eq!(fmt_opt(Some(0.0)), "0");
+        assert_eq!(fmt_opt(Some(-1.5)), "-1.5");
+        assert_eq!(fmt_opt(Some(f32::MAX)), format!("{}", f32::MAX));
+    }
+
+    #[test]
+    fn test_fmt_opt_i32_edge_cases() {
+        assert_eq!(fmt_opt_i32(Some(0)), "0");
+        assert_eq!(fmt_opt_i32(Some(-1)), "-1");
+        assert_eq!(fmt_opt_i32(Some(i32::MAX)), format!("{}", i32::MAX));
+        assert_eq!(fmt_opt_i32(Some(i32::MIN)), format!("{}", i32::MIN));
+    }
+
+    #[test]
+    fn test_fmt_opt_u32_edge_cases() {
+        assert_eq!(fmt_opt_u32(Some(0)), "0");
+        assert_eq!(fmt_opt_u32(Some(u32::MAX)), format!("{}", u32::MAX));
+    }
+
+    #[test]
+    fn test_fmt_opt_i64_edge_cases() {
+        assert_eq!(fmt_opt_i64(Some(0)), "0");
+        assert_eq!(fmt_opt_i64(Some(-1)), "-1");
+        assert_eq!(fmt_opt_i64(Some(i64::MAX)), format!("{}", i64::MAX));
+        assert_eq!(fmt_opt_i64(Some(i64::MIN)), format!("{}", i64::MIN));
+    }
+
+    #[test]
+    fn test_generation_stats_large_values() {
+        let stats = GenerationStats {
+            eval_count: u32::MAX,
+            prompt_eval_count: Some(u32::MAX),
+            prompt_eval_duration_ns: Some(u64::MAX),
+            total_duration: std::time::Duration::from_secs(3600),
+        };
+        assert_eq!(stats.eval_count, u32::MAX);
+        assert_eq!(stats.prompt_eval_count, Some(u32::MAX));
+    }
+
+    #[test]
+    fn test_parse_format_flag_array_of_objects() {
+        let schema = r#"[{"type":"string"},{"type":"number"}]"#;
+        let result = parse_format_flag(schema);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_array());
+    }
+
+    #[test]
+    fn test_run_options_partial_fields() {
+        let opts = RunOptions {
+            temperature: Some(0.8),
+            top_p: None,
+            top_k: Some(50),
+            num_predict: None,
+            num_ctx: Some(4096),
+            repeat_penalty: None,
+            seed: None,
+            format: None,
+            system: Some("test".to_string()),
+            template: None,
+            keep_alive: None,
+            verbose: false,
+            insecure: true,
+        };
+        assert_eq!(opts.temperature, Some(0.8));
+        assert!(opts.top_p.is_none());
+        assert_eq!(opts.top_k, Some(50));
+        assert!(opts.insecure);
+    }
+
+    #[test]
+    fn test_print_help_no_panic() {
+        // Test that print_help doesn't panic
+        print_help();
+    }
+
+    #[test]
+    fn test_print_show_info_empty_messages() {
+        let messages = vec![];
+        print_show_info("test-model", &messages, &None, &None);
+    }
+
+    #[test]
+    fn test_print_show_info_with_system() {
+        let messages = vec![];
+        let system = Some("You are helpful.".to_string());
+        print_show_info("test-model", &messages, &system, &None);
+    }
+
+    #[test]
+    fn test_print_show_info_with_format() {
+        let messages = vec![];
+        let format = Some(serde_json::json!({"type": "object"}));
+        print_show_info("test-model", &messages, &None, &format);
+    }
+
+    #[test]
+    fn test_print_show_info_with_messages() {
+        let messages = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("Hello".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: MessageContent::Text("Hi there".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("How are you?".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            },
+        ];
+        print_show_info("test-model", &messages, &None, &None);
+    }
+
+    #[test]
+    fn test_print_show_info_all_options() {
+        let messages = vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: MessageContent::Text("System prompt".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("Test".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: MessageContent::Text("Response".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            },
+        ];
+        let system = Some("You are helpful.".to_string());
+        let format = Some(serde_json::json!("json"));
+        print_show_info("test-model", &messages, &system, &format);
+    }
 }

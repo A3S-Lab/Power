@@ -155,4 +155,64 @@ mod tests {
         let req: NativeEmbedRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.input.into_vec(), vec!["hello", "world"]);
     }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_embed_success_returns_embeddings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let request = NativeEmbedRequest {
+            model: "test".to_string(),
+            input: NativeEmbedInput::Single("hello world".to_string()),
+            truncate: None,
+            keep_alive: None,
+        };
+        let resp = handler(axum::extract::State(state), Json(request))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["model"], "test");
+        assert!(json["embeddings"].is_array());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_embed_multiple_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let request = NativeEmbedRequest {
+            model: "test".to_string(),
+            input: NativeEmbedInput::Multiple(vec!["hello".to_string(), "world".to_string()]),
+            truncate: None,
+            keep_alive: None,
+        };
+        let resp = handler(axum::extract::State(state), Json(request))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let embeddings = json["embeddings"].as_array().unwrap();
+        assert_eq!(embeddings.len(), 2);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
 }

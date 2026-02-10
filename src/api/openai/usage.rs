@@ -361,4 +361,175 @@ mod tests {
         assert_eq!(data[0]["model"], "llama3");
         assert_eq!(json["total"]["requests"], 1);
     }
+
+    #[test]
+    fn test_parse_date_with_time() {
+        let dt = parse_date("2024-01-15T14:30:45Z");
+        assert!(dt.is_some());
+        let dt = dt.unwrap();
+        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2024-01-15");
+    }
+
+    #[test]
+    fn test_parse_date_malformed() {
+        assert!(parse_date("2024-13-01").is_none()); // Invalid month
+        assert!(parse_date("2024-01-32").is_none()); // Invalid day
+        // Note: "24-01-01" might parse as a valid date in some formats, so skip this test
+    }
+
+    #[test]
+    fn test_aggregate_usage_with_cost() {
+        let now = chrono::Utc::now();
+        let records = vec![
+            UsageRecord {
+                timestamp: now,
+                model: "gpt4".to_string(),
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                duration_secs: 1.0,
+                cost_dollars: 0.05,
+            },
+            UsageRecord {
+                timestamp: now,
+                model: "gpt4".to_string(),
+                prompt_tokens: 200,
+                completion_tokens: 100,
+                total_tokens: 300,
+                duration_secs: 2.0,
+                cost_dollars: 0.10,
+            },
+        ];
+
+        let (data, total) = aggregate_usage(&records);
+        assert_eq!(data.len(), 1);
+        assert!((data[0].estimated_cost_dollars - 0.15).abs() < 0.001);
+        assert!((total.estimated_cost_dollars - 0.15).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_aggregate_usage_duration_accumulation() {
+        let now = chrono::Utc::now();
+        let records = vec![
+            UsageRecord {
+                timestamp: now,
+                model: "test".to_string(),
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                duration_secs: 1.5,
+                cost_dollars: 0.0,
+            },
+            UsageRecord {
+                timestamp: now,
+                model: "test".to_string(),
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 30,
+                duration_secs: 2.5,
+                cost_dollars: 0.0,
+            },
+        ];
+
+        let (data, _) = aggregate_usage(&records);
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].total_duration_secs, 4.0);
+    }
+
+    #[test]
+    fn test_aggregate_usage_multiple_models_same_day() {
+        let now = chrono::Utc::now();
+        let records = vec![
+            UsageRecord {
+                timestamp: now,
+                model: "model-a".to_string(),
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                duration_secs: 1.0,
+                cost_dollars: 0.0,
+            },
+            UsageRecord {
+                timestamp: now,
+                model: "model-b".to_string(),
+                prompt_tokens: 200,
+                completion_tokens: 100,
+                total_tokens: 300,
+                duration_secs: 2.0,
+                cost_dollars: 0.0,
+            },
+            UsageRecord {
+                timestamp: now,
+                model: "model-c".to_string(),
+                prompt_tokens: 50,
+                completion_tokens: 25,
+                total_tokens: 75,
+                duration_secs: 0.5,
+                cost_dollars: 0.0,
+            },
+        ];
+
+        let (data, total) = aggregate_usage(&records);
+        assert_eq!(data.len(), 3);
+        assert_eq!(total.requests, 3);
+        assert_eq!(total.total_tokens, 525);
+    }
+
+    #[test]
+    fn test_usage_bucket_clone() {
+        let bucket = UsageBucket {
+            date: "2024-01-01".to_string(),
+            model: "test".to_string(),
+            requests: 10,
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            total_duration_secs: 5.0,
+            estimated_cost_dollars: 0.1,
+        };
+        let cloned = bucket.clone();
+        assert_eq!(bucket.date, cloned.date);
+        assert_eq!(bucket.requests, cloned.requests);
+    }
+
+    #[test]
+    fn test_usage_totals_clone() {
+        let totals = UsageTotals {
+            requests: 100,
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            estimated_cost_dollars: 1.5,
+        };
+        let cloned = totals.clone();
+        assert_eq!(totals.requests, cloned.requests);
+        assert_eq!(totals.estimated_cost_dollars, cloned.estimated_cost_dollars);
+    }
+
+    #[test]
+    fn test_usage_response_clone() {
+        let response = UsageResponse {
+            data: vec![],
+            total: UsageTotals {
+                requests: 0,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+                estimated_cost_dollars: 0.0,
+            },
+        };
+        let cloned = response.clone();
+        assert_eq!(response.data.len(), cloned.data.len());
+    }
+
+    #[test]
+    fn test_usage_query_debug() {
+        let query = UsageQuery {
+            start: Some("2024-01-01".to_string()),
+            end: Some("2024-12-31".to_string()),
+            model: Some("test".to_string()),
+        };
+        let debug = format!("{:?}", query);
+        assert!(debug.contains("UsageQuery"));
+    }
 }

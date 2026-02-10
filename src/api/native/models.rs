@@ -388,4 +388,211 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["error"].as_str().unwrap().contains("not found"));
     }
+
+    #[test]
+    fn test_build_model_info_with_all_fields() {
+        use crate::model::manifest::{ModelManifest, ModelFormat, ModelParameters};
+
+        let manifest = ModelManifest {
+            name: "test".to_string(),
+            format: ModelFormat::Gguf,
+            size: 100,
+            sha256: "abc".to_string(),
+            parameters: Some(ModelParameters {
+                context_length: Some(4096),
+                embedding_length: None,
+                parameter_count: Some(3_000_000_000),
+                quantization: Some("Q4_K_M".to_string()),
+            }),
+            created_at: chrono::Utc::now(),
+            path: std::path::PathBuf::from("/tmp/test"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: vec![],
+            family: Some("llama".to_string()),
+            families: None,
+        };
+
+        let info = super::build_model_info(&manifest);
+        assert!(info.is_some());
+        let info = info.unwrap();
+        assert_eq!(info["general.architecture"], "llama");
+        assert_eq!(info["general.parameter_count"], 3_000_000_000u64);
+        assert_eq!(info["general.file_type"], "Q4_K_M");
+        assert_eq!(info["general.context_length"], 4096);
+    }
+
+    #[test]
+    fn test_build_model_info_empty_when_no_data() {
+        use crate::model::manifest::{ModelManifest, ModelFormat};
+
+        let manifest = ModelManifest {
+            name: "bare".to_string(),
+            format: ModelFormat::Gguf,
+            size: 100,
+            sha256: "abc".to_string(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: std::path::PathBuf::from("/tmp/test"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: vec![],
+            family: None,
+            families: None,
+        };
+
+        let info = super::build_model_info(&manifest);
+        assert!(info.is_none());
+    }
+
+    #[test]
+    fn test_format_parameters_text_with_defaults() {
+        use crate::model::manifest::{ModelManifest, ModelFormat};
+
+        let mut defaults = std::collections::HashMap::new();
+        defaults.insert("temperature".to_string(), serde_json::json!(0.7));
+        defaults.insert("top_p".to_string(), serde_json::json!(0.9));
+
+        let manifest = ModelManifest {
+            name: "test".to_string(),
+            format: ModelFormat::Gguf,
+            size: 100,
+            sha256: "abc".to_string(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: std::path::PathBuf::from("/tmp/test"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: Some(defaults),
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: vec![],
+            family: None,
+            families: None,
+        };
+
+        let text = super::format_parameters_text(&manifest);
+        assert!(text.contains("temperature 0.7"));
+        assert!(text.contains("top_p 0.9"));
+    }
+
+    #[test]
+    fn test_format_parameters_text_empty() {
+        use crate::model::manifest::{ModelManifest, ModelFormat};
+
+        let manifest = ModelManifest {
+            name: "test".to_string(),
+            format: ModelFormat::Gguf,
+            size: 100,
+            sha256: "abc".to_string(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: std::path::PathBuf::from("/tmp/test"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: vec![],
+            family: None,
+            families: None,
+        };
+
+        let text = super::format_parameters_text(&manifest);
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn test_format_parameters_text_string_values_quoted() {
+        use crate::model::manifest::{ModelManifest, ModelFormat};
+
+        let mut defaults = std::collections::HashMap::new();
+        defaults.insert("stop".to_string(), serde_json::json!("END"));
+
+        let manifest = ModelManifest {
+            name: "test".to_string(),
+            format: ModelFormat::Gguf,
+            size: 100,
+            sha256: "abc".to_string(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: std::path::PathBuf::from("/tmp/test"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: Some(defaults),
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: vec![],
+            family: None,
+            families: None,
+        };
+
+        let text = super::format_parameters_text(&manifest);
+        assert!(text.contains("stop \"END\""));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_handler_empty() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .uri("/api/tags")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let models = json["models"].as_array().unwrap();
+        assert!(models.is_empty());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_show_handler_has_system_and_license() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        let mut manifest = sample_manifest("rich-model");
+        manifest.system_prompt = Some("You are helpful.".to_string());
+        manifest.license = Some("MIT".to_string());
+        manifest.modelfile_content = Some("FROM llama3\nSYSTEM You are helpful.".to_string());
+        state.registry.register(manifest).unwrap();
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/show")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"rich-model"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["system"], "You are helpful.");
+        assert_eq!(json["license"], "MIT");
+        // parent_model should be extracted from Modelfile
+        assert_eq!(json["parent_model"], "llama3");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
 }

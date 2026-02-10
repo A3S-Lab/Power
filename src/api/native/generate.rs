@@ -814,4 +814,136 @@ mod tests {
 
         std::env::remove_var("A3S_POWER_HOME");
     }
+
+    #[test]
+    fn test_apply_defaults_returns_explicit_value() {
+        let defaults = Some(std::collections::HashMap::from([
+            ("temperature".to_string(), serde_json::json!(0.5)),
+        ]));
+        let result: Option<f32> = super::apply_defaults(Some(0.9), &defaults, "temperature");
+        assert_eq!(result, Some(0.9));
+    }
+
+    #[test]
+    fn test_apply_defaults_uses_default_when_none() {
+        let defaults = Some(std::collections::HashMap::from([
+            ("temperature".to_string(), serde_json::json!(0.5)),
+        ]));
+        let result: Option<f32> = super::apply_defaults(None, &defaults, "temperature");
+        assert_eq!(result, Some(0.5));
+    }
+
+    #[test]
+    fn test_apply_defaults_returns_none_when_no_defaults() {
+        let defaults: Option<std::collections::HashMap<String, serde_json::Value>> = None;
+        let result: Option<f32> = super::apply_defaults(None, &defaults, "temperature");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_apply_defaults_returns_none_when_key_missing() {
+        let defaults = Some(std::collections::HashMap::from([
+            ("top_p".to_string(), serde_json::json!(0.9)),
+        ]));
+        let result: Option<f32> = super::apply_defaults(None, &defaults, "temperature");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_apply_defaults_type_mismatch_returns_none() {
+        let defaults = Some(std::collections::HashMap::from([
+            ("temperature".to_string(), serde_json::json!("not a number")),
+        ]));
+        let result: Option<f32> = super::apply_defaults(None, &defaults, "temperature");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_generate_with_options() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","prompt":"hi","stream":false,"options":{"temperature":0.5,"top_p":0.9,"seed":42}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["done"], true);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_generate_non_streaming_has_timing_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","prompt":"hi","stream":false}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["total_duration"].is_number());
+        assert!(json["load_duration"].is_number());
+        assert!(json["eval_count"].is_number());
+        assert!(json["eval_duration"].is_number());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_generate_default_stream_true() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        // No "stream" field — should default to true (NDJSON)
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"model":"test","prompt":"hi"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let content_type = resp.headers().get("content-type").unwrap().to_str().unwrap().to_string();
+        assert!(content_type.contains("application/x-ndjson"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
 }

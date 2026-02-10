@@ -221,4 +221,102 @@ mod tests {
         assert_eq!(deserialized.size, manifest.size);
         assert_eq!(deserialized.sha256, manifest.sha256);
     }
+
+    #[test]
+    fn test_manifest_optional_fields_serialization() {
+        let mut manifest = sample_manifest();
+        manifest.system_prompt = Some("You are helpful.".to_string());
+        manifest.template_override = Some("{{ .System }}".to_string());
+        manifest.license = Some("MIT".to_string());
+        manifest.adapter_path = Some("/tmp/adapter.bin".to_string());
+        manifest.projector_path = Some("/tmp/projector.bin".to_string());
+        manifest.family = Some("llama".to_string());
+        manifest.families = Some(vec!["llama".to_string(), "clip".to_string()]);
+        manifest.messages = vec![
+            ManifestMessage { role: "user".to_string(), content: "hi".to_string() },
+            ManifestMessage { role: "assistant".to_string(), content: "hello".to_string() },
+        ];
+
+        let json = serde_json::to_string(&manifest).unwrap();
+        let deserialized: ModelManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.system_prompt.as_deref(), Some("You are helpful."));
+        assert_eq!(deserialized.template_override.as_deref(), Some("{{ .System }}"));
+        assert_eq!(deserialized.license.as_deref(), Some("MIT"));
+        assert_eq!(deserialized.adapter_path.as_deref(), Some("/tmp/adapter.bin"));
+        assert_eq!(deserialized.projector_path.as_deref(), Some("/tmp/projector.bin"));
+        assert_eq!(deserialized.family.as_deref(), Some("llama"));
+        assert_eq!(deserialized.families.as_ref().unwrap().len(), 2);
+        assert_eq!(deserialized.messages.len(), 2);
+        assert_eq!(deserialized.messages[0].role, "user");
+    }
+
+    #[test]
+    fn test_manifest_default_parameters_serialization() {
+        let mut manifest = sample_manifest();
+        let mut params = HashMap::new();
+        params.insert("temperature".to_string(), serde_json::json!(0.7));
+        params.insert("top_p".to_string(), serde_json::json!(0.9));
+        manifest.default_parameters = Some(params);
+
+        let json = serde_json::to_string(&manifest).unwrap();
+        let deserialized: ModelManifest = serde_json::from_str(&json).unwrap();
+        let defaults = deserialized.default_parameters.unwrap();
+        assert_eq!(defaults["temperature"], 0.7);
+        assert_eq!(defaults["top_p"], 0.9);
+    }
+
+    #[test]
+    fn test_manifest_skip_serializing_none_fields() {
+        let manifest = sample_manifest();
+        let json = serde_json::to_string(&manifest).unwrap();
+        // None fields with skip_serializing_if should not appear
+        assert!(!json.contains("system_prompt"));
+        assert!(!json.contains("template_override"));
+        assert!(!json.contains("license"));
+        assert!(!json.contains("adapter_path"));
+        assert!(!json.contains("projector_path"));
+    }
+
+    #[test]
+    fn test_model_format_serde() {
+        let gguf_json = serde_json::to_string(&ModelFormat::Gguf).unwrap();
+        assert_eq!(gguf_json, "\"gguf\"");
+        let st_json = serde_json::to_string(&ModelFormat::SafeTensors).unwrap();
+        assert_eq!(st_json, "\"safetensors\"");
+
+        let gguf: ModelFormat = serde_json::from_str("\"gguf\"").unwrap();
+        assert_eq!(gguf, ModelFormat::Gguf);
+        let st: ModelFormat = serde_json::from_str("\"safetensors\"").unwrap();
+        assert_eq!(st, ModelFormat::SafeTensors);
+    }
+
+    #[test]
+    fn test_model_parameters_all_none() {
+        let params = ModelParameters {
+            context_length: None,
+            embedding_length: None,
+            parameter_count: None,
+            quantization: None,
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let deserialized: ModelParameters = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.context_length.is_none());
+        assert!(deserialized.embedding_length.is_none());
+        assert!(deserialized.parameter_count.is_none());
+        assert!(deserialized.quantization.is_none());
+    }
+
+    #[test]
+    fn test_manifest_filename_no_special_chars() {
+        let mut manifest = sample_manifest();
+        manifest.name = "simple-model".to_string();
+        assert_eq!(manifest.manifest_filename(), "simple-model.json");
+    }
+
+    #[test]
+    fn test_size_display_zero() {
+        let mut manifest = sample_manifest();
+        manifest.size = 0;
+        assert_eq!(manifest.size_display(), "0 B");
+    }
 }

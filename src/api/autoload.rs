@@ -258,4 +258,66 @@ mod tests {
         // Now model-b should be LRU
         assert_eq!(state.lru_model(), Some("model-b".to_string()));
     }
+
+    #[test]
+    fn test_format_bytes_gigabytes() {
+        assert_eq!(format_bytes(2_147_483_648), "2.0 GiB");
+        assert_eq!(format_bytes(1_073_741_824), "1.0 GiB");
+        assert_eq!(format_bytes(5_368_709_120), "5.0 GiB");
+    }
+
+    #[test]
+    fn test_format_bytes_megabytes() {
+        assert_eq!(format_bytes(1_048_576), "1 MiB");
+        assert_eq!(format_bytes(524_288_000), "500 MiB");
+    }
+
+    #[test]
+    fn test_format_bytes_bytes() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1024), "1024 B");
+        assert_eq!(format_bytes(999_999), "999999 B");
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_with_keep_alive_marks_loaded() {
+        let state = test_state_with_mock(MockBackend::success());
+        let manifest = sample_manifest("ka-model");
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        let result = ensure_loaded_with_keep_alive(
+            &state, "ka-model", &manifest, &backend, Some("5m"),
+        ).await;
+        assert!(result.is_ok());
+        assert!(state.is_model_loaded("ka-model"));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_with_keep_alive_zero_unloads_immediately() {
+        let state = test_state_with_mock(MockBackend::success());
+        let manifest = sample_manifest("zero-model");
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        let result = ensure_loaded_with_keep_alive(
+            &state, "zero-model", &manifest, &backend, Some("0"),
+        ).await;
+        assert!(result.is_ok());
+        // keep_alive=0 should immediately unload
+        assert!(!state.is_model_loaded("zero-model"));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_cache_hit_returns_zero_duration() {
+        let state = test_state_with_mock(MockBackend::success());
+        let manifest = sample_manifest("cached");
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        // First load
+        ensure_loaded(&state, "cached", &manifest, &backend).await.unwrap();
+        assert!(state.is_model_loaded("cached"));
+
+        // Second call should be cache hit with zero duration
+        let result = ensure_loaded(&state, "cached", &manifest, &backend).await.unwrap();
+        assert_eq!(result.load_duration, Duration::ZERO);
+    }
 }

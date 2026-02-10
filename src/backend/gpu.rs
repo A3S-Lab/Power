@@ -368,4 +368,101 @@ mod tests {
         assert_eq!(format_bytes(1_073_741_824), "1.0 GiB");
         assert_eq!(format_bytes(1_048_576), "1 MiB");
     }
+
+    #[test]
+    fn test_format_bytes_small() {
+        assert_eq!(format_bytes(1), "1 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+    }
+
+    #[test]
+    fn test_format_bytes_boundary_mb() {
+        // Just below 1 GiB
+        assert_eq!(format_bytes(1_073_741_823), "1024 MiB");
+    }
+
+    #[test]
+    fn test_format_bytes_large_gib() {
+        assert_eq!(format_bytes(32 * 1_073_741_824), "32.0 GiB");
+    }
+
+    #[test]
+    fn test_parse_vram_string_lowercase() {
+        // parse_vram_string uppercases internally
+        assert_eq!(parse_vram_string("16 gb"), 16 * 1_073_741_824);
+        assert_eq!(parse_vram_string("8192 mb"), 8192 * 1_048_576);
+    }
+
+    #[test]
+    fn test_parse_vram_string_plain_number() {
+        assert_eq!(parse_vram_string("1024"), 1024);
+    }
+
+    #[test]
+    fn test_parse_vram_string_fractional_gb() {
+        let result = parse_vram_string("1.5 GB");
+        assert_eq!(result, (1.5 * 1_073_741_824.0) as u64);
+    }
+
+    #[test]
+    fn test_gpu_info_clone() {
+        let gpu = GpuInfo {
+            name: "Test GPU".to_string(),
+            vram_bytes: 8_000_000_000,
+            backend: GpuBackend::Metal,
+        };
+        let cloned = gpu.clone();
+        assert_eq!(cloned.name, "Test GPU");
+        assert_eq!(cloned.vram_bytes, 8_000_000_000);
+        assert_eq!(cloned.backend, GpuBackend::Metal);
+    }
+
+    #[test]
+    fn test_gpu_backend_eq() {
+        assert_eq!(GpuBackend::Metal, GpuBackend::Metal);
+        assert_ne!(GpuBackend::Metal, GpuBackend::Cuda);
+        assert_ne!(GpuBackend::Cuda, GpuBackend::Cpu);
+    }
+
+    #[test]
+    fn test_gpu_info_vram_display_mib() {
+        let gpu = GpuInfo {
+            name: "Test".to_string(),
+            vram_bytes: 512 * 1_048_576, // 512 MiB
+            backend: GpuBackend::Cuda,
+        };
+        assert_eq!(gpu.vram_display(), "512 MiB");
+    }
+
+    #[test]
+    fn test_auto_configure_with_zero_gpu_layers() {
+        let mut config = crate::config::GpuConfig {
+            gpu_layers: 0,
+            main_gpu: 0,
+        };
+        auto_configure(&mut config);
+        // On macOS with Metal, should auto-set to -1
+        // On CI without GPU, stays at 0
+        // Either way, the function should not panic
+        assert!(config.gpu_layers == -1 || config.gpu_layers == 0);
+    }
+
+    #[test]
+    fn test_gpu_info_debug() {
+        let gpu = GpuInfo {
+            name: "Test".to_string(),
+            vram_bytes: 0,
+            backend: GpuBackend::Cpu,
+        };
+        let debug = format!("{:?}", gpu);
+        assert!(debug.contains("Test"));
+        assert!(debug.contains("Cpu"));
+    }
+
+    #[test]
+    fn test_gpu_backend_copy() {
+        let backend = GpuBackend::Metal;
+        let copied = backend;
+        assert_eq!(backend, copied);
+    }
 }

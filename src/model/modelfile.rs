@@ -563,4 +563,173 @@ PARAMETER top_p 0.9
         assert_eq!(mf.parameters.get("top_p").unwrap(), "0.9");
         assert!(mf.system.as_deref().unwrap().contains("multiple languages"));
     }
+
+    #[test]
+    fn test_parse_parameter_missing_value() {
+        let content = r#"
+FROM llama3.2:3b
+PARAMETER temperature
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("PARAMETER requires key and value"));
+    }
+
+    #[test]
+    fn test_parse_single_word_directive() {
+        let content = r#"
+FROM
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_unknown_directive() {
+        let content = r#"
+FROM llama3.2:3b
+UNKNOWN_DIRECTIVE some value
+"#;
+        // Should succeed and ignore unknown directive
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.from, "llama3.2:3b");
+    }
+
+    #[test]
+    fn test_parameters_to_json_boolean() {
+        let content = r#"
+FROM test
+PARAMETER use_mmap true
+PARAMETER use_mlock false
+"#;
+        let mf = parse(content).unwrap();
+        let json = parameters_to_json(&mf);
+        assert_eq!(json.get("use_mmap").unwrap(), &serde_json::json!(true));
+        assert_eq!(json.get("use_mlock").unwrap(), &serde_json::json!(false));
+    }
+
+    #[test]
+    fn test_parameters_to_json_string() {
+        let content = r#"
+FROM test
+PARAMETER model_type llama
+"#;
+        let mf = parse(content).unwrap();
+        let json = parameters_to_json(&mf);
+        assert_eq!(json.get("model_type").unwrap(), &serde_json::json!("llama"));
+    }
+
+    #[test]
+    fn test_parameters_to_json_integer() {
+        let content = r#"
+FROM test
+PARAMETER num_ctx 2048
+"#;
+        let mf = parse(content).unwrap();
+        let json = parameters_to_json(&mf);
+        // Note: integers may be parsed as floats in JSON
+        assert!(json.get("num_ctx").unwrap().is_number());
+    }
+
+    #[test]
+    fn test_unquote_single_quotes() {
+        assert_eq!(unquote("'single quoted'"), "single quoted");
+    }
+
+    #[test]
+    fn test_unquote_no_quotes() {
+        assert_eq!(unquote("no quotes"), "no quotes");
+    }
+
+    #[test]
+    fn test_unquote_with_spaces() {
+        assert_eq!(unquote("  \"spaced\"  "), "spaced");
+    }
+
+    #[test]
+    fn test_to_string_empty_optional_fields() {
+        let mf = Modelfile {
+            from: "test".to_string(),
+            parameters: HashMap::new(),
+            system: None,
+            template: None,
+            stop: vec![],
+            adapter: None,
+            license: None,
+            messages: vec![],
+        };
+        let output = to_string(&mf);
+        assert!(output.contains("FROM test"));
+        assert!(!output.contains("SYSTEM"));
+        assert!(!output.contains("ADAPTER"));
+    }
+
+    #[test]
+    fn test_to_string_with_stop_sequences() {
+        let mf = Modelfile {
+            from: "test".to_string(),
+            parameters: HashMap::new(),
+            system: None,
+            template: None,
+            stop: vec!["<|end|>".to_string(), "<|eot|>".to_string()],
+            adapter: None,
+            license: None,
+            messages: vec![],
+        };
+        let output = to_string(&mf);
+        assert!(output.contains("PARAMETER stop"));
+        assert!(output.contains("<|end|>"));
+        assert!(output.contains("<|eot|>"));
+    }
+
+    #[test]
+    fn test_parse_message_with_heredoc() {
+        // MESSAGE doesn't support heredoc for content, only inline
+        let content = r#"
+FROM llama3.2:3b
+MESSAGE user "Hello, this is a single-line message."
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.messages.len(), 1);
+        assert_eq!(mf.messages[0].role, "user");
+        assert!(mf.messages[0].content.contains("single-line"));
+    }
+
+    #[test]
+    fn test_parse_adapter_with_heredoc() {
+        let content = r#"
+FROM llama3.2:3b
+ADAPTER """/path/to/adapter.gguf"""
+"#;
+        let mf = parse(content).unwrap();
+        assert_eq!(mf.adapter.as_deref(), Some("/path/to/adapter.gguf"));
+    }
+
+    #[test]
+    fn test_modelfile_message_clone() {
+        let msg = ModelfileMessage {
+            role: "user".to_string(),
+            content: "test".to_string(),
+        };
+        let cloned = msg.clone();
+        assert_eq!(msg.role, cloned.role);
+        assert_eq!(msg.content, cloned.content);
+    }
+
+    #[test]
+    fn test_modelfile_clone() {
+        let mf = Modelfile {
+            from: "test".to_string(),
+            parameters: HashMap::new(),
+            system: Some("sys".to_string()),
+            template: None,
+            stop: vec![],
+            adapter: None,
+            license: None,
+            messages: vec![],
+        };
+        let cloned = mf.clone();
+        assert_eq!(mf.from, cloned.from);
+        assert_eq!(mf.system, cloned.system);
+    }
 }

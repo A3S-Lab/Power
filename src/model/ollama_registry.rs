@@ -574,4 +574,168 @@ mod tests {
 
         assert!(find_layer(&layers, MEDIA_PROJECTOR).is_none());
     }
+
+    #[test]
+    fn test_parse_parameter_count_with_whitespace() {
+        assert_eq!(parse_parameter_count("  3.2B  "), Some(3_200_000_000));
+        assert_eq!(parse_parameter_count(" 125M "), Some(125_000_000));
+    }
+
+    #[test]
+    fn test_parse_parameter_count_decimal_millions() {
+        assert_eq!(parse_parameter_count("1.5M"), Some(1_500_000));
+        assert_eq!(parse_parameter_count("0.5M"), Some(500_000));
+    }
+
+    #[test]
+    fn test_parse_parameter_count_decimal_billions() {
+        assert_eq!(parse_parameter_count("1.5B"), Some(1_500_000_000));
+        assert_eq!(parse_parameter_count("13.5B"), Some(13_500_000_000));
+    }
+
+    #[test]
+    fn test_blob_url_with_different_digests() {
+        let url1 = blob_url("llama3", "sha256:abc123");
+        let url2 = blob_url("llama3", "sha256:def456");
+        assert_ne!(url1, url2);
+        assert!(url1.contains("abc123"));
+        assert!(url2.contains("def456"));
+    }
+
+    #[test]
+    fn test_blob_url_format() {
+        let url = blob_url("test-model", "sha256:digest123");
+        assert!(url.starts_with("https://registry.ollama.ai/v2/"));
+        assert!(url.contains("/blobs/"));
+        assert!(url.ends_with("sha256:digest123"));
+    }
+
+    #[test]
+    fn test_find_layer_first_match() {
+        let layers = vec![
+            LayerDescriptor {
+                media_type: MEDIA_MODEL.to_string(),
+                digest: "sha256:first".to_string(),
+                size: 100,
+            },
+            LayerDescriptor {
+                media_type: MEDIA_MODEL.to_string(),
+                digest: "sha256:second".to_string(),
+                size: 200,
+            },
+        ];
+        let found = find_layer(&layers, MEDIA_MODEL).unwrap();
+        assert_eq!(found.digest, "sha256:first");
+    }
+
+    #[test]
+    fn test_find_all_layers_empty() {
+        let layers = vec![LayerDescriptor {
+            media_type: MEDIA_MODEL.to_string(),
+            digest: "sha256:model".to_string(),
+            size: 100,
+        }];
+        let found = find_all_layers(&layers, MEDIA_LICENSE);
+        assert_eq!(found.len(), 0);
+    }
+
+    #[test]
+    fn test_find_all_layers_multiple() {
+        let layers = vec![
+            LayerDescriptor {
+                media_type: MEDIA_LICENSE.to_string(),
+                digest: "sha256:lic1".to_string(),
+                size: 100,
+            },
+            LayerDescriptor {
+                media_type: MEDIA_MODEL.to_string(),
+                digest: "sha256:model".to_string(),
+                size: 200,
+            },
+            LayerDescriptor {
+                media_type: MEDIA_LICENSE.to_string(),
+                digest: "sha256:lic2".to_string(),
+                size: 300,
+            },
+            LayerDescriptor {
+                media_type: MEDIA_LICENSE.to_string(),
+                digest: "sha256:lic3".to_string(),
+                size: 400,
+            },
+        ];
+        let found = find_all_layers(&layers, MEDIA_LICENSE);
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[0].digest, "sha256:lic1");
+        assert_eq!(found[1].digest, "sha256:lic2");
+        assert_eq!(found[2].digest, "sha256:lic3");
+    }
+
+    #[test]
+    fn test_ollama_model_config_partial() {
+        let json = r#"{"model_format": "gguf"}"#;
+        let config: OllamaModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.model_format.as_deref(), Some("gguf"));
+        assert!(config.model_family.is_none());
+        assert!(config.model_type.is_none());
+        assert!(config.file_type.is_none());
+    }
+
+    #[test]
+    fn test_ollama_model_config_empty() {
+        let json = r#"{}"#;
+        let config: OllamaModelConfig = serde_json::from_str(json).unwrap();
+        assert!(config.model_format.is_none());
+        assert!(config.model_family.is_none());
+        assert!(config.model_type.is_none());
+        assert!(config.file_type.is_none());
+    }
+
+    #[test]
+    fn test_layer_descriptor_clone() {
+        let layer = LayerDescriptor {
+            media_type: MEDIA_MODEL.to_string(),
+            digest: "sha256:test".to_string(),
+            size: 1000,
+        };
+        let cloned = layer.clone();
+        assert_eq!(layer.media_type, cloned.media_type);
+        assert_eq!(layer.digest, cloned.digest);
+        assert_eq!(layer.size, cloned.size);
+    }
+
+    #[test]
+    fn test_parse_manifest_with_minimal_fields() {
+        let json = r#"{
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "digest": "sha256:config",
+                "size": 100
+            },
+            "layers": []
+        }"#;
+        let manifest: OllamaManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.layers.len(), 0);
+    }
+
+    #[test]
+    fn test_namespace_bare_name() {
+        let url = blob_url("llama3", "sha256:abc");
+        assert!(url.contains("/library/llama3/"));
+    }
+
+    #[test]
+    fn test_namespace_with_org() {
+        let url = blob_url("myorg/llama3", "sha256:abc");
+        assert!(url.contains("/myorg/llama3/"));
+        assert!(!url.contains("/library/"));
+    }
+
+    #[test]
+    fn test_namespace_with_multiple_slashes() {
+        let url = blob_url("org/team/model", "sha256:abc");
+        assert!(url.contains("/org/team/model/"));
+    }
 }

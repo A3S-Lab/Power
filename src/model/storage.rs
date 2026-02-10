@@ -446,6 +446,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_store_blob_from_path() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -469,6 +470,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_store_blob_from_path_dedup() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());

@@ -90,4 +90,73 @@ mod tests {
         assert_eq!(json["object"], "list");
         assert_eq!(json["data"].as_array().unwrap().len(), 0);
     }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_models_response_format() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test-model")).unwrap();
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Verify OpenAI-compatible format
+        assert_eq!(json["object"], "list");
+        assert!(json["data"].is_array());
+        let model = &json["data"][0];
+        assert_eq!(model["id"], "test-model");
+        assert_eq!(model["object"], "model");
+        assert_eq!(model["owned_by"], "local");
+        assert!(model["created"].is_number());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_models_multiple_models_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("zebra")).unwrap();
+        state.registry.register(sample_manifest("alpha")).unwrap();
+        state.registry.register(sample_manifest("beta")).unwrap();
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["data"].as_array().unwrap().len(), 3);
+        // Verify all models are present
+        let ids: Vec<String> = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect();
+        assert!(ids.contains(&"alpha".to_string()));
+        assert!(ids.contains(&"beta".to_string()));
+        assert!(ids.contains(&"zebra".to_string()));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
 }

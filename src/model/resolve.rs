@@ -320,4 +320,191 @@ mod tests {
         let cloned = r.clone();
         assert_eq!(r, cloned);
     }
+
+    #[test]
+    fn test_model_ref_parse_with_tag() {
+        let r = ModelRef::parse("llama3:7b");
+        assert_eq!(r.name, "llama3");
+        assert_eq!(r.tag, "7b");
+    }
+
+    #[test]
+    fn test_model_ref_parse_without_tag() {
+        let r = ModelRef::parse("llama3");
+        assert_eq!(r.name, "llama3");
+        assert_eq!(r.tag, "latest");
+    }
+
+    #[test]
+    fn test_model_ref_parse_with_namespace() {
+        let r = ModelRef::parse("library/llama3:7b");
+        assert_eq!(r.name, "library/llama3");
+        assert_eq!(r.tag, "7b");
+    }
+
+    #[test]
+    fn test_is_url_http() {
+        assert!(is_url("http://example.com/model.gguf"));
+        assert!(is_url("https://example.com/model.gguf"));
+    }
+
+    #[test]
+    fn test_is_url_not_url() {
+        assert!(!is_url("llama3:7b"));
+        assert!(!is_url("my-model"));
+    }
+
+    #[test]
+    fn test_resolve_from_builtin_known_model() {
+        let r = ModelRef::parse("llama3.2:3b");
+        let result = resolve_from_builtin(&r);
+        assert!(result.is_some());
+        let resolved = result.unwrap();
+        assert!(resolved.url.contains("huggingface.co") || resolved.url.contains("hf.co"));
+    }
+
+    #[test]
+    fn test_resolve_from_builtin_unknown_model() {
+        let r = ModelRef::parse("totally-unknown-model:latest");
+        let result = resolve_from_builtin(&r);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_model_ref_full_name() {
+        let r = ModelRef {
+            name: "llama3".to_string(),
+            tag: "7b".to_string(),
+        };
+        assert_eq!(format!("{}:{}", r.name, r.tag), "llama3:7b");
+    }
+
+    #[test]
+    fn test_model_ref_parse_colon_in_tag() {
+        let r = ModelRef::parse("model:tag:with:colons");
+        assert_eq!(r.name, "model");
+        assert_eq!(r.tag, "tag:with:colons");
+    }
+
+    #[test]
+    fn test_model_ref_parse_only_colon() {
+        let r = ModelRef::parse(":");
+        assert_eq!(r.name, "");
+        assert_eq!(r.tag, "");
+    }
+
+    #[test]
+    fn test_model_ref_parse_trailing_colon() {
+        let r = ModelRef::parse("model:");
+        assert_eq!(r.name, "model");
+        assert_eq!(r.tag, "");
+    }
+
+    #[test]
+    fn test_model_ref_parse_leading_colon() {
+        let r = ModelRef::parse(":tag");
+        assert_eq!(r.name, "");
+        assert_eq!(r.tag, "tag");
+    }
+
+    #[test]
+    fn test_is_url_with_port() {
+        assert!(is_url("http://localhost:8080/model.gguf"));
+        assert!(is_url("https://example.com:443/model.gguf"));
+    }
+
+    #[test]
+    fn test_is_url_with_path() {
+        assert!(is_url("https://example.com/path/to/model.gguf"));
+        assert!(is_url("http://example.com/a/b/c/model.gguf"));
+    }
+
+    #[test]
+    fn test_is_url_with_query() {
+        assert!(is_url("https://example.com/model.gguf?download=true"));
+    }
+
+    #[test]
+    fn test_is_url_with_fragment() {
+        assert!(is_url("https://example.com/model.gguf#section"));
+    }
+
+    #[test]
+    fn test_is_url_case_sensitive() {
+        assert!(!is_url("HTTP://example.com/model.gguf"));
+        assert!(!is_url("HTTPS://example.com/model.gguf"));
+    }
+
+    #[test]
+    fn test_resolve_builtin_with_different_tags() {
+        let r1 = ModelRef::parse("llama3.2:3b");
+        let r2 = ModelRef::parse("llama3.2:1b");
+        let resolved1 = resolve_from_builtin(&r1);
+        let resolved2 = resolve_from_builtin(&r2);
+        // Both should resolve if they exist in known_models.json
+        if resolved1.is_some() && resolved2.is_some() {
+            assert_ne!(resolved1.unwrap().url, resolved2.unwrap().url);
+        }
+    }
+
+    #[test]
+    fn test_resolve_builtin_case_sensitive() {
+        let r1 = ModelRef::parse("llama3.2:3b");
+        let r2 = ModelRef::parse("LLAMA3.2:3B");
+        let resolved1 = resolve_from_builtin(&r1);
+        let resolved2 = resolve_from_builtin(&r2);
+        // Names are case-sensitive
+        if resolved1.is_some() {
+            assert!(resolved2.is_none());
+        }
+    }
+
+    #[test]
+    fn test_resolved_model_clone() {
+        let resolved = ResolvedModel {
+            name: "test:latest".to_string(),
+            url: "https://example.com/model.gguf".to_string(),
+            format: ModelFormat::Gguf,
+            source: ModelSource::Direct,
+        };
+        let cloned = resolved.clone();
+        assert_eq!(resolved.name, cloned.name);
+        assert_eq!(resolved.url, cloned.url);
+    }
+
+    #[test]
+    fn test_model_ref_with_special_chars() {
+        let r = ModelRef::parse("model-name_v1.2:tag-v3.4");
+        assert_eq!(r.name, "model-name_v1.2");
+        assert_eq!(r.tag, "tag-v3.4");
+    }
+
+    #[test]
+    fn test_model_ref_with_slash() {
+        let r = ModelRef::parse("org/model:tag");
+        assert_eq!(r.name, "org/model");
+        assert_eq!(r.tag, "tag");
+    }
+
+    #[test]
+    fn test_model_ref_with_dots() {
+        let r = ModelRef::parse("llama3.2.1:3b");
+        assert_eq!(r.name, "llama3.2.1");
+        assert_eq!(r.tag, "3b");
+    }
+
+    #[test]
+    fn test_is_url_incomplete() {
+        assert!(!is_url("http:/"));
+        assert!(!is_url("https:/"));
+        assert!(!is_url("http"));
+        assert!(!is_url("https"));
+    }
+
+    #[test]
+    fn test_model_source_debug() {
+        let source = ModelSource::Direct;
+        let debug = format!("{:?}", source);
+        assert!(debug.contains("Direct"));
+    }
 }

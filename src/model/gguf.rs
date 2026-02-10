@@ -4,7 +4,7 @@
 // descriptors without loading the full model weights into memory.
 
 use std::collections::HashMap;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{Read, Seek};
 use std::path::Path;
 
 use crate::error::{PowerError, Result};
@@ -672,5 +672,363 @@ mod tests {
             context_size: 2048,
         };
         assert!(est.total_display().contains("GiB"));
+    }
+
+    /// Build a GGUF with all value types for comprehensive testing.
+    fn build_test_gguf_all_types() -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        // Magic + Version 3
+        buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        // Tensor count: 0
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        // Metadata KV count: 10
+        buf.extend_from_slice(&10u64.to_le_bytes());
+
+        // KV: uint8
+        let key = b"test.uint8";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&0u32.to_le_bytes()); // type = uint8
+        buf.push(42u8);
+
+        // KV: int8
+        let key = b"test.int8";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&1u32.to_le_bytes()); // type = int8
+        buf.push((-5i8) as u8);
+
+        // KV: uint16
+        let key = b"test.uint16";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&2u32.to_le_bytes()); // type = uint16
+        buf.extend_from_slice(&1000u16.to_le_bytes());
+
+        // KV: int16
+        let key = b"test.int16";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&3u32.to_le_bytes()); // type = int16
+        buf.extend_from_slice(&(-500i16).to_le_bytes());
+
+        // KV: uint32
+        let key = b"test.uint32";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&4u32.to_le_bytes()); // type = uint32
+        buf.extend_from_slice(&100000u32.to_le_bytes());
+
+        // KV: int32
+        let key = b"test.int32";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&5u32.to_le_bytes()); // type = int32
+        buf.extend_from_slice(&(-99999i32).to_le_bytes());
+
+        // KV: float32
+        let key = b"test.float32";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&6u32.to_le_bytes()); // type = float32
+        buf.extend_from_slice(&3.14f32.to_le_bytes());
+
+        // KV: bool
+        let key = b"test.bool";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&7u32.to_le_bytes()); // type = bool
+        buf.push(1u8);
+
+        // KV: int64
+        let key = b"test.int64";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&11u32.to_le_bytes()); // type = int64
+        buf.extend_from_slice(&(-123456789i64).to_le_bytes());
+
+        // KV: float64
+        let key = b"test.float64";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&12u32.to_le_bytes()); // type = float64
+        buf.extend_from_slice(&2.718281828f64.to_le_bytes());
+
+        buf
+    }
+
+    #[test]
+    fn test_read_all_value_types() {
+        let data = build_test_gguf_all_types();
+        let mut cursor = Cursor::new(data);
+        let meta = read_metadata_from_reader(&mut cursor).unwrap();
+
+        assert_eq!(meta.metadata.len(), 10);
+
+        match meta.metadata.get("test.uint8") {
+            Some(GgufValue::Uint8(v)) => assert_eq!(*v, 42),
+            other => panic!("Expected Uint8(42), got: {other:?}"),
+        }
+        match meta.metadata.get("test.int8") {
+            Some(GgufValue::Int8(v)) => assert_eq!(*v, -5),
+            other => panic!("Expected Int8(-5), got: {other:?}"),
+        }
+        match meta.metadata.get("test.uint16") {
+            Some(GgufValue::Uint16(v)) => assert_eq!(*v, 1000),
+            other => panic!("Expected Uint16(1000), got: {other:?}"),
+        }
+        match meta.metadata.get("test.int16") {
+            Some(GgufValue::Int16(v)) => assert_eq!(*v, -500),
+            other => panic!("Expected Int16(-500), got: {other:?}"),
+        }
+        match meta.metadata.get("test.uint32") {
+            Some(GgufValue::Uint32(v)) => assert_eq!(*v, 100000),
+            other => panic!("Expected Uint32(100000), got: {other:?}"),
+        }
+        match meta.metadata.get("test.int32") {
+            Some(GgufValue::Int32(v)) => assert_eq!(*v, -99999),
+            other => panic!("Expected Int32(-99999), got: {other:?}"),
+        }
+        match meta.metadata.get("test.float32") {
+            Some(GgufValue::Float32(v)) => assert!((v - 3.14).abs() < 0.001),
+            other => panic!("Expected Float32(~3.14), got: {other:?}"),
+        }
+        match meta.metadata.get("test.bool") {
+            Some(GgufValue::Bool(v)) => assert!(*v),
+            other => panic!("Expected Bool(true), got: {other:?}"),
+        }
+        match meta.metadata.get("test.int64") {
+            Some(GgufValue::Int64(v)) => assert_eq!(*v, -123456789),
+            other => panic!("Expected Int64(-123456789), got: {other:?}"),
+        }
+        match meta.metadata.get("test.float64") {
+            Some(GgufValue::Float64(v)) => assert!((v - 2.718281828).abs() < 0.0001),
+            other => panic!("Expected Float64(~2.718), got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_gguf_value_to_json_all_types() {
+        assert_eq!(GgufValue::Uint8(255).to_json(), serde_json::json!(255));
+        assert_eq!(GgufValue::Int8(-1).to_json(), serde_json::json!(-1));
+        assert_eq!(GgufValue::Uint16(65535).to_json(), serde_json::json!(65535));
+        assert_eq!(GgufValue::Int16(-32768).to_json(), serde_json::json!(-32768));
+        assert_eq!(GgufValue::Int32(-1).to_json(), serde_json::json!(-1));
+        assert_eq!(GgufValue::Float32(1.5).to_json(), serde_json::json!(1.5));
+        assert_eq!(GgufValue::Uint64(u64::MAX).to_json(), serde_json::json!(u64::MAX));
+        assert_eq!(GgufValue::Int64(i64::MIN).to_json(), serde_json::json!(i64::MIN));
+        assert_eq!(GgufValue::Float64(2.5).to_json(), serde_json::json!(2.5));
+        assert_eq!(GgufValue::Bool(false).to_json(), serde_json::json!(false));
+    }
+
+    #[test]
+    fn test_gguf_type_names_comprehensive() {
+        assert_eq!(gguf_type_name(3), "Q4_1");
+        assert_eq!(gguf_type_name(6), "Q5_0");
+        assert_eq!(gguf_type_name(7), "Q5_1");
+        assert_eq!(gguf_type_name(8), "Q8_0");
+        assert_eq!(gguf_type_name(9), "Q8_1");
+        assert_eq!(gguf_type_name(10), "Q2_K");
+        assert_eq!(gguf_type_name(11), "Q3_K");
+        assert_eq!(gguf_type_name(13), "Q5_K");
+        assert_eq!(gguf_type_name(14), "Q6_K");
+        assert_eq!(gguf_type_name(15), "IQ2_XXS");
+        assert_eq!(gguf_type_name(16), "IQ2_XS");
+        assert_eq!(gguf_type_name(17), "IQ3_XXS");
+        assert_eq!(gguf_type_name(18), "IQ1_S");
+        assert_eq!(gguf_type_name(19), "IQ4_NL");
+        assert_eq!(gguf_type_name(20), "IQ3_S");
+        assert_eq!(gguf_type_name(21), "IQ2_S");
+        assert_eq!(gguf_type_name(22), "IQ4_XS");
+        assert_eq!(gguf_type_name(23), "I8");
+        assert_eq!(gguf_type_name(24), "I16");
+        assert_eq!(gguf_type_name(25), "I32");
+        assert_eq!(gguf_type_name(26), "I64");
+        assert_eq!(gguf_type_name(27), "F64");
+        assert_eq!(gguf_type_name(28), "IQ1_M");
+    }
+
+    #[test]
+    fn test_format_bytes_kib() {
+        assert_eq!(format_bytes(1024), "1.0 KiB");
+        assert_eq!(format_bytes(2048), "2.0 KiB");
+        assert_eq!(format_bytes(0), "0 B");
+    }
+
+    #[test]
+    fn test_read_gguf_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.gguf");
+        std::fs::write(&path, build_test_gguf()).unwrap();
+
+        let meta = read_metadata(&path).unwrap();
+        assert_eq!(meta.version, 3);
+        assert_eq!(meta.tensor_count, 1);
+    }
+
+    #[test]
+    fn test_read_gguf_file_not_found() {
+        let result = read_metadata(Path::new("/nonexistent/test.gguf"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_gguf_truncated_file() {
+        let data = build_test_gguf();
+        // Truncate to just the magic number
+        let truncated = &data[..4];
+        let mut cursor = Cursor::new(truncated.to_vec());
+        let result = read_metadata_from_reader(&mut cursor);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unknown_value_type() {
+        let mut buf = Vec::new();
+        // Magic + Version 3
+        buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor count
+        buf.extend_from_slice(&1u64.to_le_bytes()); // kv count
+
+        // KV with unknown type 99
+        let key = b"test.unknown";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&99u32.to_le_bytes()); // unknown type
+
+        let mut cursor = Cursor::new(buf);
+        let result = read_metadata_from_reader(&mut cursor);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown GGUF value type"));
+    }
+
+    /// Build a GGUF with an array value type.
+    fn build_test_gguf_with_array() -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor count
+        buf.extend_from_slice(&1u64.to_le_bytes()); // kv count
+
+        // KV: array of uint32
+        let key = b"test.array";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&9u32.to_le_bytes()); // type = array
+        buf.extend_from_slice(&4u32.to_le_bytes()); // element type = uint32
+        buf.extend_from_slice(&3u64.to_le_bytes()); // count = 3
+        buf.extend_from_slice(&10u32.to_le_bytes());
+        buf.extend_from_slice(&20u32.to_le_bytes());
+        buf.extend_from_slice(&30u32.to_le_bytes());
+
+        buf
+    }
+
+    #[test]
+    fn test_read_gguf_array_value() {
+        let data = build_test_gguf_with_array();
+        let mut cursor = Cursor::new(data);
+        let meta = read_metadata_from_reader(&mut cursor).unwrap();
+
+        match meta.metadata.get("test.array") {
+            Some(GgufValue::Array(arr)) => {
+                assert_eq!(arr.len(), 3);
+                match &arr[0] {
+                    GgufValue::Uint32(v) => assert_eq!(*v, 10),
+                    other => panic!("Expected Uint32(10), got: {other:?}"),
+                }
+                match &arr[2] {
+                    GgufValue::Uint32(v) => assert_eq!(*v, 30),
+                    other => panic!("Expected Uint32(30), got: {other:?}"),
+                }
+            }
+            other => panic!("Expected Array, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_estimate_memory_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.gguf");
+
+        // Build a GGUF with embedding_length and block_count metadata
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor count
+        buf.extend_from_slice(&2u64.to_le_bytes()); // kv count
+
+        // llama.embedding_length = 4096
+        let key = b"llama.embedding_length";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&4u32.to_le_bytes()); // uint32
+        buf.extend_from_slice(&4096u32.to_le_bytes());
+
+        // llama.block_count = 32
+        let key = b"llama.block_count";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&4u32.to_le_bytes()); // uint32
+        buf.extend_from_slice(&32u32.to_le_bytes());
+
+        std::fs::write(&path, &buf).unwrap();
+
+        let est = estimate_memory(&path, 2048).unwrap();
+        assert!(est.total > 0);
+        assert_eq!(est.context_size, 2048);
+        assert!(est.kv_cache_size > 0);
+        assert!(est.model_size > 0);
+        assert!(est.total_display().len() > 0);
+    }
+
+    #[test]
+    fn test_estimate_memory_file_not_found() {
+        let result = estimate_memory(Path::new("/nonexistent/model.gguf"), 2048);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_gguf_version_2() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&2u32.to_le_bytes()); // version 2
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor count
+        buf.extend_from_slice(&0u64.to_le_bytes()); // kv count
+
+        let mut cursor = Cursor::new(buf);
+        let meta = read_metadata_from_reader(&mut cursor).unwrap();
+        assert_eq!(meta.version, 2);
+    }
+
+    #[test]
+    fn test_tensor_3d_element_count() {
+        let tensor = GgufTensor {
+            name: "3d".to_string(),
+            dimensions: vec![2, 3, 4],
+            tensor_type: 0,
+            offset: 0,
+        };
+        assert_eq!(tensor.element_count(), 24);
+    }
+
+    #[test]
+    fn test_memory_estimate_fields() {
+        let est = MemoryEstimate {
+            model_size: 1000,
+            kv_cache_size: 200,
+            compute_overhead: 100,
+            total: 1300,
+            context_size: 4096,
+        };
+        assert_eq!(est.model_size, 1000);
+        assert_eq!(est.kv_cache_size, 200);
+        assert_eq!(est.compute_overhead, 100);
+        assert_eq!(est.total, 1300);
+        assert_eq!(est.context_size, 4096);
     }
 }

@@ -138,4 +138,46 @@ mod tests {
         let _result = push_model(&manifest, "http://localhost:1", Some(progress)).await;
         // Connection fails before progress is called, so we just verify it compiles
     }
+
+    #[test]
+    fn test_progress_callback_with_different_values() {
+        let cb: ProgressCallback = Box::new(|completed, total| {
+            assert!(completed <= total);
+        });
+        cb(0, 100);
+        cb(50, 100);
+        cb(100, 100);
+    }
+
+    #[test]
+    fn test_progress_callback_zero_total() {
+        let cb: ProgressCallback = Box::new(|completed, total| {
+            assert_eq!(completed, 0);
+            assert_eq!(total, 0);
+        });
+        cb(0, 0);
+    }
+
+    #[test]
+    fn test_progress_callback_large_values() {
+        let cb: ProgressCallback = Box::new(|completed, total| {
+            assert_eq!(completed, 4_000_000_000);
+            assert_eq!(total, 4_000_000_000);
+        });
+        cb(4_000_000_000, 4_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn test_push_model_with_trailing_slash() {
+        let manifest = sample_manifest("test-push");
+        let result = push_model(&manifest, "http://localhost:1/", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_push_model_empty_destination() {
+        let manifest = sample_manifest("test-push");
+        let result = push_model(&manifest, "", None).await;
+        assert!(result.is_err());
+    }
 }

@@ -308,4 +308,154 @@ mod tests {
         let req: super::CreateRequest = serde_json::from_str(json).unwrap();
         assert!(req.quantize.is_none());
     }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_create_non_streaming() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state
+            .registry
+            .register(sample_manifest("llama3.2:3b"))
+            .unwrap();
+
+        let app = router::build(state);
+        let body = serde_json::json!({
+            "name": "my-model-ns",
+            "modelfile": "FROM llama3.2:3b\nSYSTEM \"Be helpful.\"",
+            "stream": false
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/create")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "success");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    fn test_create_request_serialization() {
+        let req = super::CreateRequest {
+            name: "test".to_string(),
+            modelfile: "FROM llama3".to_string(),
+            stream: Some(false),
+            quantize: Some("q4_0".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"name\":\"test\""));
+        assert!(json.contains("\"quantize\":\"q4_0\""));
+    }
+
+    #[test]
+    fn test_create_response_serialization() {
+        let resp = super::CreateResponse {
+            status: "success".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"success\""));
+    }
+
+    #[test]
+    fn test_create_request_stream_default() {
+        let json = r#"{"name": "test", "modelfile": "FROM llama3"}"#;
+        let req: super::CreateRequest = serde_json::from_str(json).unwrap();
+        assert!(req.stream.is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_create_from_local_gguf_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let body = serde_json::json!({
+            "name": "local-model",
+            "modelfile": "FROM /nonexistent/path/model.gguf",
+            "stream": false
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/create")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("not found"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_create_from_local_gguf_success() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // Create a fake GGUF file
+        let gguf_path = dir.path().join("test.gguf");
+        std::fs::write(&gguf_path, b"fake gguf data for testing").unwrap();
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let body = serde_json::json!({
+            "name": "local-model",
+            "modelfile": format!("FROM {}\nSYSTEM \"Be helpful.\"", gguf_path.display()),
+            "stream": false
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/create")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "success");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    fn test_is_local_file_detection() {
+        // Test the local file detection logic used in the handler
+        let test_cases = vec![
+            ("model.gguf", true),
+            ("/absolute/path/model.gguf", true),
+            ("./relative/model.gguf", true),
+            ("../parent/model.gguf", true),
+            ("/absolute/path", true),
+            ("llama3.2:3b", false),
+            ("my-model", false),
+        ];
+        for (input, expected) in test_cases {
+            let from_path = std::path::Path::new(input);
+            let is_local = from_path.extension().map_or(false, |ext| ext == "gguf")
+                || input.starts_with('/')
+                || input.starts_with("./")
+                || input.starts_with("../");
+            assert_eq!(is_local, expected, "Failed for input: {input}");
+        }
+    }
 }

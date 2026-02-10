@@ -1112,4 +1112,23 @@ mod tests {
         let result = backend.embed("test", request).await;
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_backend_name() {
+        let backend = LlamaCppBackend::new(test_config());
+        assert_eq!(backend.name(), "llama.cpp");
+    }
+
+    #[test]
+    fn test_backend_does_not_support_unknown_format() {
+        let backend = LlamaCppBackend::new(test_config());
+        assert!(!backend.supports(&ModelFormat::SafeTensors));
+    }
+
+    #[test]
+    fn test_backend_config_gpu_layers_default() {
+        let config = PowerConfig::default();
+        let backend = LlamaCppBackend::new(Arc::new(config));
+        assert_eq!(backend.config.gpu.gpu_layers, 0);
+    }
 }

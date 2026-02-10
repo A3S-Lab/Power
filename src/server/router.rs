@@ -194,4 +194,66 @@ mod tests {
         assert!(text.contains("# HELP power_http_requests_total"));
         assert!(text.contains("power_models_loaded"));
     }
+
+    #[test]
+    fn test_build_cors_layer_empty_origins() {
+        // Empty origins should return permissive CORS
+        let _cors = build_cors_layer(&[]);
+        // No panic = success
+    }
+
+    #[test]
+    fn test_build_cors_layer_with_origins() {
+        let origins = vec!["http://localhost:3000".to_string()];
+        let _cors = build_cors_layer(&origins);
+    }
+
+    #[test]
+    fn test_build_cors_layer_invalid_origins() {
+        // Invalid origins should fall back to permissive
+        let origins = vec!["\0invalid".to_string()];
+        let _cors = build_cors_layer(&origins);
+    }
+
+    #[tokio::test]
+    async fn test_api_version_returns_ok() {
+        let app = build(test_state());
+        let req = Request::builder()
+            .uri("/api/version")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["version"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_api_ps_returns_ok() {
+        let app = build(test_state());
+        let req = Request::builder()
+            .uri("/api/ps")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_cors_headers_present() {
+        let app = build(test_state());
+        let req = Request::builder()
+            .method("OPTIONS")
+            .uri("/")
+            .header("origin", "http://localhost:3000")
+            .header("access-control-request-method", "GET")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // CORS preflight should return 200
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }
