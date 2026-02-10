@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use tokio::sync::mpsc;
@@ -15,13 +16,34 @@ pub async fn handler(
     let manifest = match state.registry.get(&request.name) {
         Ok(m) => m,
         Err(_) => {
-            return Json(PushResponse {
-                status: format!("error: model '{}' not found", request.name),
-                digest: None,
-                total: None,
-                completed: None,
-            })
-            .into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(PushResponse {
+                    status: format!("error: model '{}' not found", request.name),
+                    digest: None,
+                    total: None,
+                    completed: None,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Resolve destination: use explicit destination or derive from model name
+    let destination = match request.destination {
+        Some(ref d) => d.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(PushResponse {
+                    status: "error: destination is required (registry push not yet supported)"
+                        .to_string(),
+                    digest: None,
+                    total: None,
+                    completed: None,
+                }),
+            )
+                .into_response();
         }
     };
 
@@ -30,7 +52,7 @@ pub async fn handler(
     if is_stream {
         // Streaming progress via SSE
         let (tx, rx) = mpsc::channel::<PushResponse>(32);
-        let destination = request.destination.clone();
+        let dest = destination.clone();
 
         tokio::spawn(async move {
             let _ = tx
@@ -52,7 +74,7 @@ pub async fn handler(
                 });
             });
 
-            match crate::model::push::push_model(&manifest, &destination, Some(progress)).await {
+            match crate::model::push::push_model(&manifest, &dest, Some(progress)).await {
                 Ok(digest) => {
                     let _ = tx
                         .send(PushResponse {
@@ -81,7 +103,7 @@ pub async fn handler(
         crate::api::sse::ndjson_response(event_stream)
     } else {
         // Non-streaming: push and return final status
-        match crate::model::push::push_model(&manifest, &request.destination, None).await {
+        match crate::model::push::push_model(&manifest, &destination, None).await {
             Ok(digest) => Json(PushResponse {
                 status: "success".to_string(),
                 digest: Some(digest),
@@ -122,12 +144,41 @@ mod tests {
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["status"].as_str().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_push_without_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state
+            .registry
+            .register(sample_manifest("test-push"))
+            .unwrap();
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/push")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"test-push"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["status"].as_str().unwrap().contains("destination"));
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 
     #[tokio::test]

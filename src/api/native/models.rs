@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 
@@ -76,7 +77,11 @@ pub async fn list_handler(State(state): State<AppState>) -> impl IntoResponse {
                 .collect();
             Json(serde_json::json!({ "models": model_infos })).into_response()
         }
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -112,7 +117,11 @@ pub async fn show_handler(
             };
             Json(response).into_response()
         }
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })).into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -126,9 +135,13 @@ pub async fn delete_handler(
             if let Err(e) = storage::delete_blob(&manifest) {
                 tracing::warn!(model = %manifest.name, "Failed to delete blob: {e}");
             }
-            Json(serde_json::json!({ "status": "success" })).into_response()
+            StatusCode::OK.into_response()
         }
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })).into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -209,6 +222,7 @@ mod tests {
             .body(Body::from(r#"{"name":"nonexistent"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -237,11 +251,6 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["status"], "success");
         assert!(!state.registry.exists("to-delete"));
 
         std::env::remove_var("A3S_POWER_HOME");
@@ -258,6 +267,7 @@ mod tests {
             .body(Body::from(r#"{"name":"nonexistent"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();

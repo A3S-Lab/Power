@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use std::time::Instant;
@@ -17,17 +18,24 @@ pub async fn handler(
     let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
         Err(_) => {
-            return Json(serde_json::json!({
-                "error": format!("model '{}' not found", model_name)
-            }))
-            .into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("model '{}' not found", model_name)
+                })),
+            )
+                .into_response();
         }
     };
 
     let backend = match state.backends.find_for_format(&manifest.format) {
         Ok(b) => b,
         Err(e) => {
-            return Json(serde_json::json!({ "error": e.to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
     };
 
@@ -42,7 +50,11 @@ pub async fn handler(
     {
         Ok(r) => r,
         Err(e) => {
-            return Json(serde_json::json!({ "error": e.to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
     };
     let load_duration_ns = load_result.load_duration.as_nanos() as u64;
@@ -62,7 +74,11 @@ pub async fn handler(
             })
             .into_response()
         }
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -86,6 +102,7 @@ mod tests {
         let resp = handler(axum::extract::State(state), Json(request))
             .await
             .into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -113,6 +130,7 @@ mod tests {
         let resp = handler(axum::extract::State(state), Json(request))
             .await
             .into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();

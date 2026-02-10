@@ -63,6 +63,7 @@ pub async fn handler(
         tfs_z: None,
         typical_p: None,
         response_format: None,
+        images: None,
     };
 
     match backend.complete(&model_name, backend_request).await {

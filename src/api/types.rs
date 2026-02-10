@@ -428,7 +428,8 @@ pub struct PullResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushRequest {
     pub name: String,
-    pub destination: String,
+    #[serde(default)]
+    pub destination: Option<String>,
     #[serde(default)]
     pub stream: Option<bool>,
     #[serde(default)]
@@ -775,8 +776,16 @@ mod tests {
         let json = r#"{"name": "llama3", "destination": "https://registry.example.com"}"#;
         let req: PushRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.name, "llama3");
-        assert_eq!(req.destination, "https://registry.example.com");
+        assert_eq!(req.destination, Some("https://registry.example.com".to_string()));
         assert!(req.stream.is_none());
+    }
+
+    #[test]
+    fn test_push_request_without_destination() {
+        let json = r#"{"name": "llama3"}"#;
+        let req: PushRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "llama3");
+        assert!(req.destination.is_none());
     }
 
     #[test]
@@ -1012,7 +1021,7 @@ mod tests {
         // Verify PushRequest/PushResponse serialize correctly
         let req = PushRequest {
             name: "model".to_string(),
-            destination: "http://localhost".to_string(),
+            destination: Some("http://localhost".to_string()),
             stream: Some(true),
             insecure: None,
         };

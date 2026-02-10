@@ -8,9 +8,18 @@ use super::state::AppState;
 use crate::api;
 use crate::server::metrics;
 
+/// GET / - Root health check (Ollama-compatible).
+///
+/// Many Ollama clients (Open WebUI, LangChain, Continue.dev) probe this
+/// endpoint to detect if the server is running.
+async fn root_handler() -> &'static str {
+    "Ollama is running"
+}
+
 /// Build the complete axum Router with all API routes.
 pub fn build(state: AppState) -> Router {
     Router::new()
+        .route("/", get(root_handler).head(root_handler))
         .route("/health", get(api::health::handler))
         .route("/metrics", get(metrics::handler))
         .nest("/api", api::native::routes())
@@ -41,6 +50,33 @@ mod tests {
             Arc::new(BackendRegistry::new()),
             Arc::new(PowerConfig::default()),
         )
+    }
+
+    #[tokio::test]
+    async fn test_root_returns_ollama_is_running() {
+        let app = build(test_state());
+        let req = Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"Ollama is running");
+    }
+
+    #[tokio::test]
+    async fn test_root_head_returns_ok() {
+        let app = build(test_state());
+        let req = Request::builder()
+            .method("HEAD")
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

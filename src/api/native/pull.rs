@@ -15,7 +15,7 @@ pub async fn handler(
     Json(request): Json<PullRequest>,
 ) -> impl IntoResponse {
     let model_name = request.name.clone();
-    let is_stream = request.stream.unwrap_or(false);
+    let is_stream = request.stream.unwrap_or(true);
 
     if state.registry.exists(&model_name) {
         return Json(PullResponse {

@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 
@@ -16,24 +17,35 @@ pub async fn handler(
     let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
         Err(_) => {
-            return Json(serde_json::json!({
-                "error": format!("model '{}' not found", model_name)
-            }))
-            .into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("model '{}' not found", model_name)
+                })),
+            )
+                .into_response();
         }
     };
 
     let backend = match state.backends.find_for_format(&manifest.format) {
         Ok(b) => b,
         Err(e) => {
-            return Json(serde_json::json!({ "error": e.to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
     };
 
     if let Err(e) =
         crate::api::autoload::ensure_loaded(&state, &model_name, &manifest, &backend).await
     {
-        return Json(serde_json::json!({ "error": e.to_string() })).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response();
     }
 
     let backend_request = EmbeddingRequest {
@@ -45,7 +57,11 @@ pub async fn handler(
             let embedding = response.embeddings.into_iter().next().unwrap_or_default();
             Json(NativeEmbeddingResponse { embedding }).into_response()
         }
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -70,6 +86,7 @@ mod tests {
             .body(Body::from(r#"{"model":"nonexistent","prompt":"hello"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -96,6 +113,7 @@ mod tests {
             .body(Body::from(r#"{"model":"st-model","prompt":"hello"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -150,6 +168,7 @@ mod tests {
             .body(Body::from(r#"{"model":"test","prompt":"hello"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();

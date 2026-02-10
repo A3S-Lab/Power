@@ -226,9 +226,8 @@ impl Backend for LlamaCppBackend {
             tfs_z: request.tfs_z,
             typical_p: request.typical_p,
             response_format: request.response_format,
+            images: None,
         };
-
-        let stream = self.complete(model_name, completion_req).await?;
 
         // Map CompletionResponseChunk -> ChatResponseChunk with tool call detection
         use futures::StreamExt;
@@ -903,6 +902,7 @@ mod tests {
             tfs_z: None,
             typical_p: None,
             response_format: None,
+            images: None,
         };
         let result = backend.complete("test", request).await;
         assert!(result.is_err());

@@ -1,11 +1,12 @@
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use futures::StreamExt;
 use std::time::Instant;
 
 use crate::api::types::{ChatCompletionMessage, NativeChatRequest, NativeChatResponse};
-use crate::backend::types::{ChatMessage, ChatRequest, MessageContent};
+use crate::backend::types::{ChatMessage, ChatRequest, MessageContent, ToolCall};
 use crate::server::state::AppState;
 
 /// Apply manifest default_parameters as fallback for unset options.
@@ -33,17 +34,24 @@ pub async fn handler(
     let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
         Err(_) => {
-            return Json(serde_json::json!({
-                "error": format!("model '{}' not found", model_name)
-            }))
-            .into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("model '{}' not found", model_name)
+                })),
+            )
+                .into_response();
         }
     };
 
     let backend = match state.backends.find_for_format(&manifest.format) {
         Ok(b) => b,
         Err(e) => {
-            return Json(serde_json::json!({ "error": e.to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
     };
 
@@ -58,7 +66,11 @@ pub async fn handler(
     {
         Ok(r) => r,
         Err(e) => {
-            return Json(serde_json::json!({ "error": e.to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
     };
     let load_duration_ns = load_result.load_duration.as_nanos() as u64;
@@ -109,7 +121,7 @@ pub async fn handler(
         top_p: apply_defaults(opts.and_then(|o| o.top_p), defaults, "top_p"),
         max_tokens: apply_defaults(opts.and_then(|o| o.num_predict), defaults, "num_predict"),
         stop: opts.and_then(|o| o.stop.clone()),
-        stream: request.stream.unwrap_or(false),
+        stream: request.stream.unwrap_or(true),
         top_k: apply_defaults(opts.and_then(|o| o.top_k), defaults, "top_k"),
         min_p: apply_defaults(opts.and_then(|o| o.min_p), defaults, "min_p"),
         repeat_penalty: apply_defaults(
@@ -139,7 +151,7 @@ pub async fn handler(
         tool_choice: None,
     };
 
-    let is_stream = request.stream.unwrap_or(false);
+    let is_stream = request.stream.unwrap_or(true);
 
     match backend.chat(&model_name, backend_request).await {
         Ok(stream) => {
@@ -290,6 +302,7 @@ pub async fn handler(
                 let mut prompt_eval_count: Option<u32> = None;
                 let mut prompt_eval_duration: Option<u64> = None;
                 let mut done_reason: Option<String> = None;
+                let mut last_tool_calls: Option<Vec<ToolCall>> = None;
                 let mut ttft_recorded = false;
                 let mut stream = stream;
                 while let Some(chunk) = stream.next().await {
@@ -314,9 +327,15 @@ pub async fn handler(
                             if c.done_reason.is_some() {
                                 done_reason = c.done_reason;
                             }
+                            if c.tool_calls.is_some() {
+                                last_tool_calls = c.tool_calls;
+                            }
                         }
                         Err(e) => {
-                            return Json(serde_json::json!({ "error": e.to_string() }))
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({ "error": e.to_string() })),
+                            )
                                 .into_response();
                         }
                     }
@@ -352,7 +371,7 @@ pub async fn handler(
                         role: "assistant".to_string(),
                         content: MessageContent::Text(full_content),
                         name: None,
-                        tool_calls: None,
+                        tool_calls: last_tool_calls,
                         tool_call_id: None,
                         images: None,
                     },
@@ -368,7 +387,11 @@ pub async fn handler(
                 .into_response()
             }
         }
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -395,7 +418,7 @@ mod tests {
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -424,6 +447,7 @@ mod tests {
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -523,6 +547,7 @@ mod tests {
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();

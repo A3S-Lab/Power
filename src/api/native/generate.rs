@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use futures::StreamExt;
@@ -33,17 +34,24 @@ pub async fn handler(
     let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
         Err(_) => {
-            return Json(serde_json::json!({
-                "error": format!("model '{}' not found", model_name)
-            }))
-            .into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("model '{}' not found", model_name)
+                })),
+            )
+                .into_response();
         }
     };
 
     let backend = match state.backends.find_for_format(&manifest.format) {
         Ok(b) => b,
         Err(e) => {
-            return Json(serde_json::json!({ "error": e.to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
     };
 
@@ -58,7 +66,11 @@ pub async fn handler(
     {
         Ok(r) => r,
         Err(e) => {
-            return Json(serde_json::json!({ "error": e.to_string() })).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
     };
     let load_duration_ns = load_result.load_duration.as_nanos() as u64;
@@ -67,10 +79,8 @@ pub async fn handler(
     let defaults = &manifest.default_parameters;
     let response_format = request.format.clone().map(serde_json::Value::String);
 
-    // Warn about unsupported images
-    if request.images.is_some() {
-        tracing::warn!("images field in /api/generate not yet supported; images will be ignored");
-    }
+    // Forward images to backend for multimodal inference
+    let images = request.images.clone();
 
     // Build the prompt: if system is provided and raw is not set, prepend it
     let prompt = if let Some(ref system) = request.system {
@@ -95,7 +105,7 @@ pub async fn handler(
         top_p: apply_defaults(opts.and_then(|o| o.top_p), defaults, "top_p"),
         max_tokens: apply_defaults(opts.and_then(|o| o.num_predict), defaults, "num_predict"),
         stop: opts.and_then(|o| o.stop.clone()),
-        stream: request.stream.unwrap_or(false),
+        stream: request.stream.unwrap_or(true),
         top_k: apply_defaults(opts.and_then(|o| o.top_k), defaults, "top_k"),
         min_p: apply_defaults(opts.and_then(|o| o.min_p), defaults, "min_p"),
         repeat_penalty: apply_defaults(
@@ -121,9 +131,10 @@ pub async fn handler(
         tfs_z: apply_defaults(opts.and_then(|o| o.tfs_z), defaults, "tfs_z"),
         typical_p: apply_defaults(opts.and_then(|o| o.typical_p), defaults, "typical_p"),
         response_format,
+        images,
     };
 
-    let is_stream = request.stream.unwrap_or(false);
+    let is_stream = request.stream.unwrap_or(true);
 
     match backend.complete(&model_name, backend_request).await {
         Ok(stream) => {
@@ -300,7 +311,10 @@ pub async fn handler(
                             }
                         }
                         Err(e) => {
-                            return Json(serde_json::json!({ "error": e.to_string() }))
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({ "error": e.to_string() })),
+                            )
                                 .into_response();
                         }
                     }
@@ -350,7 +364,11 @@ pub async fn handler(
                 .into_response()
             }
         }
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -375,6 +393,7 @@ mod tests {
             .body(Body::from(r#"{"model":"nonexistent","prompt":"hi"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -401,6 +420,7 @@ mod tests {
             .body(Body::from(r#"{"model":"st-model","prompt":"hi"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -495,6 +515,7 @@ mod tests {
             .body(Body::from(r#"{"model":"test","prompt":"hi"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();

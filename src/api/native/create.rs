@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -28,10 +29,13 @@ pub async fn handler(
     let mf = match modelfile::parse(&request.modelfile) {
         Ok(mf) => mf,
         Err(e) => {
-            return Json(serde_json::json!({
-                "error": format!("Failed to parse Modelfile: {e}")
-            }))
-            .into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Failed to parse Modelfile: {e}")
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -39,10 +43,13 @@ pub async fn handler(
     let base_manifest = match state.registry.get(&mf.from) {
         Ok(m) => m,
         Err(_) => {
-            return Json(serde_json::json!({
-                "error": format!("base model '{}' not found; pull it first", mf.from)
-            }))
-            .into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("base model '{}' not found; pull it first", mf.from)
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -77,8 +84,8 @@ pub async fn handler(
                 content: m.content.clone(),
             })
             .collect(),
-        family: None,
-        families: None,
+        family: base_manifest.family.clone(),
+        families: base_manifest.families.clone(),
     };
 
     // Register the new model
@@ -87,10 +94,13 @@ pub async fn handler(
             status: "success".to_string(),
         })
         .into_response(),
-        Err(e) => Json(serde_json::json!({
-            "error": format!("Failed to register model: {e}")
-        }))
-        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to register model: {e}")
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -152,6 +162,7 @@ mod tests {
             .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -174,6 +185,7 @@ mod tests {
             .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
