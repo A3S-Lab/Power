@@ -141,10 +141,20 @@ impl Backend for LlamaCppBackend {
             .get_or_init(|| LlamaBackend::init().expect("Failed to initialize llama.cpp backend"));
 
         let gpu_layers = self.config.gpu.gpu_layers;
-        let params = if gpu_layers != 0 {
-            LlamaModelParams::default().with_n_gpu_layers(gpu_layers)
-        } else {
-            LlamaModelParams::default()
+        let main_gpu = self.config.gpu.main_gpu;
+        let use_mlock = self.config.use_mlock;
+        let params = {
+            let mut p = LlamaModelParams::default();
+            if gpu_layers != 0 {
+                p = p.with_n_gpu_layers(gpu_layers);
+            }
+            if main_gpu != 0 {
+                p = p.with_main_gpu(main_gpu);
+            }
+            if use_mlock {
+                p = p.with_use_mlock(true);
+            }
+            p
         };
 
         let path = manifest.path.clone();
@@ -332,6 +342,16 @@ impl Backend for LlamaCppBackend {
             response_format: request.response_format,
             images: if images.is_empty() { None } else { Some(images) },
             projector_path,
+            repeat_last_n: request.repeat_last_n,
+            penalize_newline: request.penalize_newline,
+            num_batch: request.num_batch,
+            num_thread: request.num_thread,
+            num_thread_batch: request.num_thread_batch,
+            flash_attention: request.flash_attention,
+            num_gpu: request.num_gpu,
+            main_gpu: request.main_gpu,
+            use_mmap: request.use_mmap,
+            use_mlock: request.use_mlock,
         };
 
         // Map CompletionResponseChunk -> ChatResponseChunk with tool call detection
@@ -401,8 +421,14 @@ impl Backend for LlamaCppBackend {
         let repeat_penalty = request.repeat_penalty;
         let frequency_penalty = request.frequency_penalty;
         let presence_penalty = request.presence_penalty;
+        let repeat_last_n = request.repeat_last_n.unwrap_or(64);
+        let penalize_newline = request.penalize_newline.unwrap_or(true);
         let seed = request.seed.unwrap_or(0).max(0) as u32;
         let ctx_size = request.num_ctx.unwrap_or(2048);
+        let num_batch = request.num_batch;
+        let num_thread = request.num_thread;
+        let num_thread_batch = request.num_thread_batch;
+        let flash_attention = request.flash_attention.unwrap_or(false);
         let mirostat = request.mirostat;
         let mirostat_tau = request.mirostat_tau;
         let mirostat_eta = request.mirostat_eta;
@@ -463,10 +489,24 @@ impl Backend for LlamaCppBackend {
                 }
                 _ => {
                     // No cached context or size mismatch — create new
-                    let ctx_params = LlamaContextParams::default().with_n_ctx(
+                    let mut ctx_params = LlamaContextParams::default().with_n_ctx(
                         std::num::NonZeroU32::new(ctx_size)
                             .unwrap_or(std::num::NonZeroU32::new(2048).unwrap()),
                     );
+                    if let Some(batch) = num_batch {
+                        ctx_params = ctx_params.with_n_batch(batch);
+                    }
+                    if let Some(threads) = num_thread {
+                        ctx_params = ctx_params.with_n_threads(threads as i32);
+                    }
+                    if let Some(threads_batch) = num_thread_batch {
+                        ctx_params = ctx_params.with_n_threads_batch(threads_batch as i32);
+                    }
+                    if flash_attention {
+                        ctx_params = ctx_params.with_flash_attention_policy(
+                            llama_cpp_2::context::params::FlashAttentionPolicy::Enabled,
+                        );
+                    }
                     match LlamaContext::with_model(&model_arc, ctx_params) {
                         Ok(c) => (c, 0),
                         Err(e) => {
@@ -530,7 +570,7 @@ impl Backend for LlamaCppBackend {
             if repeat_penalty.is_some() || frequency_penalty.is_some() || presence_penalty.is_some()
             {
                 samplers.push(LlamaSampler::penalties(
-                    64,
+                    repeat_last_n,
                     repeat_penalty.unwrap_or(1.0),
                     frequency_penalty.unwrap_or(0.0),
                     presence_penalty.unwrap_or(0.0),
@@ -994,6 +1034,16 @@ mod tests {
             response_format: None,
             tools: None,
             tool_choice: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
         };
         let result = backend.chat("test", request).await;
         assert!(result.is_err());
@@ -1025,6 +1075,16 @@ mod tests {
             response_format: None,
             images: None,
             projector_path: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
         };
         let result = backend.complete("test", request).await;
         assert!(result.is_err());

@@ -180,6 +180,36 @@ pub struct ChatRequest {
     pub tools: Option<Vec<Tool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// Last N tokens to consider for repetition penalty (0 = disabled, -1 = ctx_size).
+    #[serde(default)]
+    pub repeat_last_n: Option<i32>,
+    /// Whether to penalize newline tokens.
+    #[serde(default)]
+    pub penalize_newline: Option<bool>,
+    /// Number of tokens to process in parallel (batch size).
+    #[serde(default)]
+    pub num_batch: Option<u32>,
+    /// Number of threads for generation.
+    #[serde(default)]
+    pub num_thread: Option<u32>,
+    /// Number of threads for batch processing.
+    #[serde(default)]
+    pub num_thread_batch: Option<u32>,
+    /// Enable flash attention.
+    #[serde(default)]
+    pub flash_attention: Option<bool>,
+    /// Number of GPU layers to offload (-1 = all, 0 = none).
+    #[serde(default)]
+    pub num_gpu: Option<i32>,
+    /// Index of the primary GPU.
+    #[serde(default)]
+    pub main_gpu: Option<i32>,
+    /// Whether to use memory-mapped files.
+    #[serde(default)]
+    pub use_mmap: Option<bool>,
+    /// Whether to lock model in memory.
+    #[serde(default)]
+    pub use_mlock: Option<bool>,
 }
 
 /// A streamed chunk from a chat completion.
@@ -250,6 +280,36 @@ pub struct CompletionRequest {
     /// Path to multimodal projector file (internal, not serialized over API).
     #[serde(skip)]
     pub projector_path: Option<String>,
+    /// Last N tokens to consider for repetition penalty (0 = disabled, -1 = ctx_size).
+    #[serde(default)]
+    pub repeat_last_n: Option<i32>,
+    /// Whether to penalize newline tokens.
+    #[serde(default)]
+    pub penalize_newline: Option<bool>,
+    /// Number of tokens to process in parallel (batch size).
+    #[serde(default)]
+    pub num_batch: Option<u32>,
+    /// Number of threads for generation.
+    #[serde(default)]
+    pub num_thread: Option<u32>,
+    /// Number of threads for batch processing.
+    #[serde(default)]
+    pub num_thread_batch: Option<u32>,
+    /// Enable flash attention.
+    #[serde(default)]
+    pub flash_attention: Option<bool>,
+    /// Number of GPU layers to offload (-1 = all, 0 = none).
+    #[serde(default)]
+    pub num_gpu: Option<i32>,
+    /// Index of the primary GPU.
+    #[serde(default)]
+    pub main_gpu: Option<i32>,
+    /// Whether to use memory-mapped files.
+    #[serde(default)]
+    pub use_mmap: Option<bool>,
+    /// Whether to lock model in memory.
+    #[serde(default)]
+    pub use_mlock: Option<bool>,
 }
 
 /// A streamed chunk from a text completion.

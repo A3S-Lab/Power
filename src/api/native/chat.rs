@@ -149,6 +149,32 @@ pub async fn handler(
         response_format,
         tools: request.tools.clone(),
         tool_choice: None,
+        repeat_last_n: apply_defaults(
+            opts.and_then(|o| o.repeat_last_n),
+            defaults,
+            "repeat_last_n",
+        ),
+        penalize_newline: apply_defaults(
+            opts.and_then(|o| o.penalize_newline),
+            defaults,
+            "penalize_newline",
+        ),
+        num_batch: apply_defaults(opts.and_then(|o| o.num_batch), defaults, "num_batch"),
+        num_thread: apply_defaults(opts.and_then(|o| o.num_thread), defaults, "num_thread"),
+        num_thread_batch: apply_defaults(
+            opts.and_then(|o| o.num_thread_batch),
+            defaults,
+            "num_thread_batch",
+        ),
+        flash_attention: apply_defaults(
+            opts.and_then(|o| o.flash_attention),
+            defaults,
+            "flash_attention",
+        ),
+        num_gpu: apply_defaults(opts.and_then(|o| o.num_gpu), defaults, "num_gpu"),
+        main_gpu: apply_defaults(opts.and_then(|o| o.main_gpu), defaults, "main_gpu"),
+        use_mmap: apply_defaults(opts.and_then(|o| o.use_mmap), defaults, "use_mmap"),
+        use_mlock: apply_defaults(opts.and_then(|o| o.use_mlock), defaults, "use_mlock"),
     };
 
     let is_stream = request.stream.unwrap_or(true);

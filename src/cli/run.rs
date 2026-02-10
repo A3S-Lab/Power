@@ -92,6 +92,16 @@ pub async fn execute_with_options(
             response_format: None,
             tools: None,
             tool_choice: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
         };
 
         match backend.chat(&manifest.name, request).await {
@@ -186,6 +196,16 @@ async fn interactive_chat(
             response_format: None,
             tools: None,
             tool_choice: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
         };
 
         let mut assistant_response = String::new();

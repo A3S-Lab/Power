@@ -83,6 +83,16 @@ pub async fn handler(
         response_format,
         tools: request.tools.clone(),
         tool_choice: request.tool_choice.clone(),
+        repeat_last_n: None,
+        penalize_newline: None,
+        num_batch: None,
+        num_thread: None,
+        num_thread_batch: None,
+        flash_attention: None,
+        num_gpu: None,
+        main_gpu: None,
+        use_mmap: None,
+        use_mlock: None,
     };
 
     let is_stream = request.stream.unwrap_or(false);

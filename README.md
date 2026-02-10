@@ -59,9 +59,10 @@ a3s-power serve
 - **Modelfile Support**: Create custom models with `FROM`, `PARAMETER`, `SYSTEM`, `TEMPLATE`, `ADAPTER` (LoRA/QLoRA), `LICENSE`, and `MESSAGE` (pre-seeded conversations) directives
 - **Multiple Concurrent Models**: Load multiple models with LRU eviction at configurable capacity
 - **Automatic Model Unloading**: Background keep_alive reaper unloads idle models after configurable timeout (default 5m)
-- **GPU Acceleration**: Configurable GPU layer offloading via `[gpu]` config section with automatic GPU detection (Metal/CUDA)
+- **GPU Acceleration**: Configurable GPU layer offloading via `[gpu]` config section with automatic GPU detection (Metal/CUDA), multi-GPU support (`main_gpu`), and per-request `num_gpu` override
 - **GPU Auto-Detection**: Automatically detects Apple Metal and NVIDIA CUDA GPUs at server startup, sets optimal `gpu_layers` when not explicitly configured
 - **Memory Estimation**: Estimates VRAM requirements before loading a model (model weights + KV cache + compute overhead) and logs warnings
+- **Full Ollama Options**: All Ollama generation options supported — `repeat_last_n`, `penalize_newline`, `num_batch`, `num_thread`, `num_thread_batch`, `use_mmap`, `use_mlock`, `numa`, `flash_attention`, `num_gpu`, `main_gpu` — in addition to standard sampling parameters
 - **Embedding Support**: Real embedding generation with automatic model reload in embedding mode
 - **HTTP Server**: Axum-based server with CORS, tracing, and metrics middleware
 - **Ollama-Compatible API**: `/api/generate`, `/api/chat`, `/api/tags`, `/api/pull`, `/api/push`, `/api/show`, `/api/delete`, `/api/embeddings`, `/api/embed`, `/api/ps`, `/api/copy`, `/api/version`, `/api/blobs/:digest`
@@ -88,7 +89,7 @@ a3s-power serve
 
 ### Test Coverage
 
-**484 unit tests** with comprehensive coverage across 50+ source files:
+**490 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -785,7 +786,22 @@ GPU auto-detection, memory estimation, verbose model inspection, and per-layer p
 - [x] **GGUF Metadata Reader**: Lightweight binary parser for GGUF v2/v3 file headers — extracts all key-value metadata and tensor descriptors without loading weights into memory
 - [x] **Verbose Show**: `/api/show` with `verbose: true` returns full GGUF metadata (architecture, context length, embedding dimensions, etc.) and tensor information (name, shape, type, element count)
 - [x] **Per-Layer Pull Progress**: Streaming pull progress shows per-layer digest identifiers (`pulling sha256:abc123...`) matching Ollama's output format; resolves model before download to extract layer digests
-- [x] 484 comprehensive unit tests
+- [x] 490 comprehensive unit tests
+
+### Phase 11: Full Options Parity ✅
+
+Complete Ollama generation options support and multi-GPU wiring:
+
+- [x] **Missing Generation Options**: Added `repeat_last_n`, `penalize_newline`, `num_batch`, `num_thread`, `num_thread_batch`, `use_mmap`, `use_mlock`, `numa`, `flash_attention`, `num_gpu`, `main_gpu` to `GenerateOptions`
+- [x] **Backend Wiring**: All new options flow through API → backend `CompletionRequest`/`ChatRequest` → llama.cpp context params and sampler
+- [x] **Flash Attention**: Wired to `LlamaContextParams::with_flash_attention_policy(Enabled)` when `flash_attention: true`
+- [x] **Multi-GPU**: `main_gpu` config wired to `LlamaModelParams::with_main_gpu()`; per-request `num_gpu`/`main_gpu` override supported
+- [x] **Memory Lock**: `use_mlock` config wired to `LlamaModelParams::with_use_mlock(true)` to prevent model swapping
+- [x] **Thread Control**: `num_thread` and `num_thread_batch` wired to `LlamaContextParams::with_n_threads()` and `with_n_threads_batch()`
+- [x] **Batch Size**: `num_batch` wired to `LlamaContextParams::with_n_batch()`
+- [x] **Repeat Penalty Window**: `repeat_last_n` wired to `LlamaSampler::penalties()` first argument (was hardcoded to 64)
+- [x] **Config Extensions**: Added `use_mlock`, `num_thread`, `flash_attention` to `PowerConfig` with TOML support
+- [x] 490 comprehensive unit tests
 
 ## License
 

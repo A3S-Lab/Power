@@ -45,6 +45,18 @@ pub struct PowerConfig {
     /// Default: "5m".
     #[serde(default = "default_keep_alive")]
     pub keep_alive: String,
+
+    /// Lock model weights in memory to prevent swapping (default: false).
+    #[serde(default)]
+    pub use_mlock: bool,
+
+    /// Number of threads for generation (default: auto-detect).
+    #[serde(default)]
+    pub num_thread: Option<u32>,
+
+    /// Enable flash attention globally (default: false).
+    #[serde(default)]
+    pub flash_attention: bool,
 }
 
 fn default_keep_alive() -> String {
@@ -115,6 +127,9 @@ impl Default for PowerConfig {
             max_loaded_models: default_max_loaded_models(),
             gpu: GpuConfig::default(),
             keep_alive: default_keep_alive(),
+            use_mlock: false,
+            num_thread: None,
+            flash_attention: false,
         }
     }
 }
@@ -273,6 +288,9 @@ mod tests {
             max_loaded_models: 5,
             gpu: GpuConfig::default(),
             keep_alive: "5m".to_string(),
+            use_mlock: false,
+            num_thread: None,
+            flash_attention: false,
         };
         config.save().unwrap();
 
@@ -472,5 +490,32 @@ mod tests {
         assert_eq!(config.gpu.gpu_layers, 0); // unchanged
         std::env::remove_var("OLLAMA_MAX_LOADED_MODELS");
         std::env::remove_var("OLLAMA_NUM_GPU");
+    }
+
+    #[test]
+    fn test_config_new_fields_defaults() {
+        let config = PowerConfig::default();
+        assert!(!config.use_mlock);
+        assert!(config.num_thread.is_none());
+        assert!(!config.flash_attention);
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_new_fields_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let toml = r#"
+            use_mlock = true
+            flash_attention = true
+            num_thread = 8
+        "#;
+        let config: PowerConfig = toml::from_str(toml).unwrap();
+        assert!(config.use_mlock);
+        assert!(config.flash_attention);
+        assert_eq!(config.num_thread, Some(8));
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 }

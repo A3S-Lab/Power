@@ -312,6 +312,31 @@ pub struct GenerateOptions {
     pub mirostat_eta: Option<f32>,
     pub tfs_z: Option<f32>,
     pub typical_p: Option<f32>,
+    /// Number of tokens to keep from the initial prompt for penalty evaluation.
+    /// 0 = disabled, -1 = ctx_size.
+    pub num_keep: Option<i32>,
+    /// Last N tokens to consider for repetition penalty (0 = disabled, -1 = ctx_size).
+    pub repeat_last_n: Option<i32>,
+    /// Whether to penalize newline tokens in repetition penalty.
+    pub penalize_newline: Option<bool>,
+    /// Number of tokens to process in parallel (batch size).
+    pub num_batch: Option<u32>,
+    /// Number of threads to use for generation.
+    pub num_thread: Option<u32>,
+    /// Number of threads to use for batch processing.
+    pub num_thread_batch: Option<u32>,
+    /// Whether to use memory-mapped files for model loading.
+    pub use_mmap: Option<bool>,
+    /// Whether to lock the model in memory (prevent swapping).
+    pub use_mlock: Option<bool>,
+    /// Enable NUMA optimizations.
+    pub numa: Option<bool>,
+    /// Enable flash attention.
+    pub flash_attention: Option<bool>,
+    /// Number of layers to offload to GPU (-1 = all, 0 = none).
+    pub num_gpu: Option<i32>,
+    /// Index of the primary GPU to use.
+    pub main_gpu: Option<i32>,
 }
 
 /// Ollama-compatible generate response.
@@ -1086,5 +1111,93 @@ mod tests {
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"stream\":true"));
+    }
+
+    #[test]
+    fn test_generate_options_new_fields() {
+        let json = r#"{
+            "temperature": 0.7,
+            "num_predict": 100,
+            "repeat_last_n": 128,
+            "penalize_newline": false,
+            "num_batch": 512,
+            "num_thread": 8,
+            "num_thread_batch": 4,
+            "use_mmap": true,
+            "use_mlock": true,
+            "numa": true,
+            "flash_attention": true,
+            "num_gpu": -1,
+            "main_gpu": 0
+        }"#;
+        let opts: GenerateOptions = serde_json::from_str(json).unwrap();
+        assert_eq!(opts.temperature, Some(0.7));
+        assert_eq!(opts.repeat_last_n, Some(128));
+        assert_eq!(opts.penalize_newline, Some(false));
+        assert_eq!(opts.num_batch, Some(512));
+        assert_eq!(opts.num_thread, Some(8));
+        assert_eq!(opts.num_thread_batch, Some(4));
+        assert_eq!(opts.use_mmap, Some(true));
+        assert_eq!(opts.use_mlock, Some(true));
+        assert_eq!(opts.numa, Some(true));
+        assert_eq!(opts.flash_attention, Some(true));
+        assert_eq!(opts.num_gpu, Some(-1));
+        assert_eq!(opts.main_gpu, Some(0));
+    }
+
+    #[test]
+    fn test_generate_options_new_fields_default_to_none() {
+        let json = r#"{"temperature": 0.5}"#;
+        let opts: GenerateOptions = serde_json::from_str(json).unwrap();
+        assert_eq!(opts.temperature, Some(0.5));
+        assert!(opts.repeat_last_n.is_none());
+        assert!(opts.penalize_newline.is_none());
+        assert!(opts.num_batch.is_none());
+        assert!(opts.num_thread.is_none());
+        assert!(opts.flash_attention.is_none());
+        assert!(opts.num_gpu.is_none());
+        assert!(opts.main_gpu.is_none());
+        assert!(opts.use_mmap.is_none());
+        assert!(opts.use_mlock.is_none());
+    }
+
+    #[test]
+    fn test_backend_completion_request_new_fields() {
+        let json = r#"{
+            "prompt": "test",
+            "repeat_last_n": 64,
+            "penalize_newline": true,
+            "num_batch": 256,
+            "num_thread": 4,
+            "flash_attention": true,
+            "num_gpu": -1,
+            "main_gpu": 1,
+            "use_mlock": true
+        }"#;
+        let req: crate::backend::types::CompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.prompt, "test");
+        assert_eq!(req.repeat_last_n, Some(64));
+        assert_eq!(req.penalize_newline, Some(true));
+        assert_eq!(req.num_batch, Some(256));
+        assert_eq!(req.num_thread, Some(4));
+        assert_eq!(req.flash_attention, Some(true));
+        assert_eq!(req.num_gpu, Some(-1));
+        assert_eq!(req.main_gpu, Some(1));
+        assert_eq!(req.use_mlock, Some(true));
+    }
+
+    #[test]
+    fn test_backend_chat_request_new_fields() {
+        let json = r#"{
+            "messages": [],
+            "repeat_last_n": 32,
+            "flash_attention": true,
+            "num_thread": 8
+        }"#;
+        let req: crate::backend::types::ChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.repeat_last_n, Some(32));
+        assert_eq!(req.flash_attention, Some(true));
+        assert_eq!(req.num_thread, Some(8));
+        assert!(req.penalize_newline.is_none());
     }
 }
