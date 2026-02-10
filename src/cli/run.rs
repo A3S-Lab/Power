@@ -266,8 +266,21 @@ async fn interactive_chat(
     let mut messages: Vec<ChatMessage> = Vec::new();
     let stdin = io::stdin();
 
+    // Mutable session state for /set commands
+    let mut session_system = options.system.clone();
+    let mut session_verbose = options.verbose;
+    let mut session_format = response_format;
+    let mut session_temperature = options.temperature;
+    let mut session_top_p = options.top_p;
+    let mut session_top_k = options.top_k;
+    let mut session_num_predict = options.num_predict;
+    let mut session_num_ctx = options.num_ctx;
+    let mut session_repeat_penalty = options.repeat_penalty;
+    let mut session_seed = options.seed;
+    let mut wordwrap = true;
+
     // Prepend system message if --system is provided
-    if let Some(ref sys) = options.system {
+    if let Some(ref sys) = session_system {
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: MessageContent::Text(sys.clone()),
@@ -299,14 +312,7 @@ async fn interactive_chat(
             break;
         }
         if trimmed == "/help" || trimmed == "/?" {
-            println!("Available commands:");
-            println!("  /help       Show this help message");
-            println!("  /clear      Clear conversation history");
-            println!("  /show       Show current model info and message count");
-            println!("  /exit       Exit the chat");
-            println!();
-            println!("Use \"\"\" to begin and end a multi-line message.");
-            println!();
+            print_help();
             continue;
         }
         if trimmed == "/clear" {
@@ -320,18 +326,152 @@ async fn interactive_chat(
             println!("Conversation cleared.\n");
             continue;
         }
-        if trimmed == "/show" {
-            println!("Model: {model_name}");
-            let user_msgs = messages.iter().filter(|m| m.role == "user").count();
-            let asst_msgs = messages.iter().filter(|m| m.role == "assistant").count();
-            println!("Messages: {user_msgs} user, {asst_msgs} assistant");
-            if let Some(ref sys) = options.system {
-                println!("System: {sys}");
+
+        // /show commands
+        if trimmed == "/show" || trimmed == "/show info" {
+            print_show_info(model_name, &messages, &session_system, &session_format);
+            continue;
+        }
+        if trimmed == "/show system" {
+            match &session_system {
+                Some(sys) => println!("{sys}\n"),
+                None => println!("(no system prompt set)\n"),
             }
-            if let Some(ref fmt) = response_format {
-                println!("Format: {fmt}");
+            continue;
+        }
+        if trimmed == "/show template" {
+            if let Some(ref tmpl) = options.template {
+                println!("{tmpl}\n");
+            } else {
+                println!("(using model default template)\n");
+            }
+            continue;
+        }
+        if trimmed == "/show license" {
+            println!("(license info not available in interactive mode)\n");
+            continue;
+        }
+        if trimmed == "/show modelfile" {
+            println!("(modelfile not available in interactive mode)\n");
+            continue;
+        }
+        if trimmed == "/show parameters" {
+            println!("Current parameters:");
+            println!("  temperature:    {}", fmt_opt(session_temperature));
+            println!("  top_p:          {}", fmt_opt(session_top_p));
+            println!("  top_k:          {}", fmt_opt_i32(session_top_k));
+            println!("  num_predict:    {}", fmt_opt_u32(session_num_predict));
+            println!("  num_ctx:        {}", fmt_opt_u32(session_num_ctx));
+            println!("  repeat_penalty: {}", fmt_opt(session_repeat_penalty));
+            println!("  seed:           {}", fmt_opt_i64(session_seed));
+            println!("  verbose:        {session_verbose}");
+            println!("  wordwrap:       {wordwrap}");
+            if let Some(ref fmt) = session_format {
+                println!("  format:         {fmt}");
             }
             println!();
+            continue;
+        }
+
+        // /set commands
+        if let Some(rest) = trimmed.strip_prefix("/set ") {
+            let rest = rest.trim();
+            if rest == "verbose" {
+                session_verbose = !session_verbose;
+                println!("Verbose mode: {}\n", if session_verbose { "on" } else { "off" });
+            } else if rest == "nowordwrap" {
+                wordwrap = false;
+                println!("Word wrap: off\n");
+            } else if rest == "wordwrap" {
+                wordwrap = true;
+                println!("Word wrap: on\n");
+            } else if let Some(sys) = rest.strip_prefix("system ") {
+                let sys = sys.trim().trim_matches('"').to_string();
+                // Remove old system message and add new one
+                messages.retain(|m| m.role != "system");
+                messages.insert(0, ChatMessage {
+                    role: "system".to_string(),
+                    content: MessageContent::Text(sys.clone()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    images: None,
+                });
+                session_system = Some(sys);
+                println!("System prompt updated.\n");
+            } else if let Some(fmt) = rest.strip_prefix("format ") {
+                let fmt = fmt.trim();
+                session_format = parse_format_flag(fmt);
+                println!("Format set to: {fmt}\n");
+            } else if let Some(param) = rest.strip_prefix("parameter ") {
+                if let Some((key, val)) = param.trim().split_once(char::is_whitespace) {
+                    match key.trim() {
+                        "temperature" => {
+                            if let Ok(v) = val.trim().parse::<f32>() {
+                                session_temperature = Some(v);
+                                println!("temperature = {v}\n");
+                            } else {
+                                println!("Invalid value for temperature\n");
+                            }
+                        }
+                        "top_p" => {
+                            if let Ok(v) = val.trim().parse::<f32>() {
+                                session_top_p = Some(v);
+                                println!("top_p = {v}\n");
+                            } else {
+                                println!("Invalid value for top_p\n");
+                            }
+                        }
+                        "top_k" => {
+                            if let Ok(v) = val.trim().parse::<i32>() {
+                                session_top_k = Some(v);
+                                println!("top_k = {v}\n");
+                            } else {
+                                println!("Invalid value for top_k\n");
+                            }
+                        }
+                        "num_predict" => {
+                            if let Ok(v) = val.trim().parse::<u32>() {
+                                session_num_predict = Some(v);
+                                println!("num_predict = {v}\n");
+                            } else {
+                                println!("Invalid value for num_predict\n");
+                            }
+                        }
+                        "num_ctx" => {
+                            if let Ok(v) = val.trim().parse::<u32>() {
+                                session_num_ctx = Some(v);
+                                println!("num_ctx = {v}\n");
+                            } else {
+                                println!("Invalid value for num_ctx\n");
+                            }
+                        }
+                        "repeat_penalty" => {
+                            if let Ok(v) = val.trim().parse::<f32>() {
+                                session_repeat_penalty = Some(v);
+                                println!("repeat_penalty = {v}\n");
+                            } else {
+                                println!("Invalid value for repeat_penalty\n");
+                            }
+                        }
+                        "seed" => {
+                            if let Ok(v) = val.trim().parse::<i64>() {
+                                session_seed = Some(v);
+                                println!("seed = {v}\n");
+                            } else {
+                                println!("Invalid value for seed\n");
+                            }
+                        }
+                        other => {
+                            println!("Unknown parameter: {other}\n");
+                        }
+                    }
+                } else {
+                    println!("Usage: /set parameter <key> <value>\n");
+                }
+            } else {
+                println!("Unknown /set command. Available: verbose, nowordwrap, wordwrap, system, format, parameter\n");
+            }
             continue;
         }
 
@@ -370,24 +510,24 @@ async fn interactive_chat(
 
         let request = ChatRequest {
             messages: messages.clone(),
-            temperature: options.temperature,
-            top_p: options.top_p,
-            max_tokens: options.num_predict,
+            temperature: session_temperature,
+            top_p: session_top_p,
+            max_tokens: session_num_predict,
             stop: None,
             stream: true,
-            top_k: options.top_k,
+            top_k: session_top_k,
             min_p: None,
-            repeat_penalty: options.repeat_penalty,
+            repeat_penalty: session_repeat_penalty,
             frequency_penalty: None,
             presence_penalty: None,
-            seed: options.seed,
-            num_ctx: options.num_ctx,
+            seed: session_seed,
+            num_ctx: session_num_ctx,
             mirostat: None,
             mirostat_tau: None,
             mirostat_eta: None,
             tfs_z: None,
             typical_p: None,
-            response_format: response_format.clone(),
+            response_format: session_format.clone(),
             tools: None,
             tool_choice: None,
             repeat_last_n: None,
@@ -441,7 +581,7 @@ async fn interactive_chat(
         }
 
         stats.total_duration = start.elapsed();
-        if options.verbose {
+        if session_verbose {
             print_verbose_stats(&stats);
         }
 
@@ -458,6 +598,66 @@ async fn interactive_chat(
     }
 
     println!("Goodbye!");
+}
+
+/// Print help for interactive mode commands.
+fn print_help() {
+    println!("Available commands:");
+    println!("  /help                          Show this help message");
+    println!("  /clear                         Clear conversation history");
+    println!("  /show                          Show current model info");
+    println!("  /show info                     Show current model info");
+    println!("  /show system                   Show system prompt");
+    println!("  /show template                 Show chat template");
+    println!("  /show parameters               Show current parameters");
+    println!("  /show license                  Show model license");
+    println!("  /show modelfile                Show model Modelfile");
+    println!("  /set system <prompt>           Set system prompt");
+    println!("  /set parameter <key> <value>   Set a generation parameter");
+    println!("  /set format <json|schema>      Set output format");
+    println!("  /set verbose                   Toggle verbose mode");
+    println!("  /set wordwrap                  Enable word wrap");
+    println!("  /set nowordwrap                Disable word wrap");
+    println!("  /exit                          Exit the chat");
+    println!();
+    println!("Use \"\"\" to begin and end a multi-line message.");
+    println!();
+}
+
+/// Print model info for /show command.
+fn print_show_info(
+    model_name: &str,
+    messages: &[ChatMessage],
+    system: &Option<String>,
+    format: &Option<serde_json::Value>,
+) {
+    println!("Model: {model_name}");
+    let user_msgs = messages.iter().filter(|m| m.role == "user").count();
+    let asst_msgs = messages.iter().filter(|m| m.role == "assistant").count();
+    println!("Messages: {user_msgs} user, {asst_msgs} assistant");
+    if let Some(ref sys) = system {
+        println!("System: {sys}");
+    }
+    if let Some(ref fmt) = format {
+        println!("Format: {fmt}");
+    }
+    println!();
+}
+
+fn fmt_opt(v: Option<f32>) -> String {
+    v.map_or("(default)".to_string(), |v| format!("{v}"))
+}
+
+fn fmt_opt_i32(v: Option<i32>) -> String {
+    v.map_or("(default)".to_string(), |v| format!("{v}"))
+}
+
+fn fmt_opt_u32(v: Option<u32>) -> String {
+    v.map_or("(default)".to_string(), |v| format!("{v}"))
+}
+
+fn fmt_opt_i64(v: Option<i64>) -> String {
+    v.map_or("(default)".to_string(), |v| format!("{v}"))
 }
 
 #[cfg(test)]
@@ -537,5 +737,21 @@ mod tests {
         assert_eq!(opts.keep_alive.as_deref(), Some("10m"));
         assert!(opts.verbose);
         assert!(opts.insecure);
+    }
+
+    #[test]
+    fn test_fmt_opt_some() {
+        assert_eq!(fmt_opt(Some(0.7)), "0.7");
+        assert_eq!(fmt_opt_i32(Some(40)), "40");
+        assert_eq!(fmt_opt_u32(Some(100)), "100");
+        assert_eq!(fmt_opt_i64(Some(-1)), "-1");
+    }
+
+    #[test]
+    fn test_fmt_opt_none() {
+        assert_eq!(fmt_opt(None), "(default)");
+        assert_eq!(fmt_opt_i32(None), "(default)");
+        assert_eq!(fmt_opt_u32(None), "(default)");
+        assert_eq!(fmt_opt_i64(None), "(default)");
     }
 }

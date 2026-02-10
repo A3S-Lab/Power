@@ -14,6 +14,11 @@ pub struct CreateRequest {
     pub modelfile: String,
     #[serde(default)]
     pub stream: Option<bool>,
+    /// Quantization level to apply (e.g. "q4_0", "q4_1", "q5_0", "q5_1", "q8_0").
+    /// Note: actual re-quantization is not yet supported; this field is accepted
+    /// for API compatibility and stored in the manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantize: Option<String>,
 }
 
 /// Response body for POST /api/create.
@@ -43,17 +48,89 @@ pub async fn handler(
         }
     };
 
-    // Resolve the base model
-    let base_manifest = match state.registry.get(&mf.from) {
-        Ok(m) => m,
-        Err(_) => {
+    // Resolve the base model — either a registered model name or a local GGUF file path
+    let from_path = std::path::Path::new(&mf.from);
+    let is_local_file = from_path.extension().map_or(false, |ext| ext == "gguf")
+        || mf.from.starts_with('/')
+        || mf.from.starts_with("./")
+        || mf.from.starts_with("../");
+
+    let (base_format, base_size, base_sha256, base_params, base_path, base_family, base_families) = if is_local_file {
+        let gguf_path = from_path.to_path_buf();
+        if !gguf_path.exists() {
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({
-                    "error": format!("base model '{}' not found; pull it first", mf.from)
+                    "error": format!("GGUF file '{}' not found", mf.from)
                 })),
             )
                 .into_response();
+        }
+        let file_size = match std::fs::metadata(&gguf_path) {
+            Ok(m) => m.len(),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("Failed to read GGUF file: {e}")
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        let blob_path = match crate::model::storage::store_blob_from_path(&gguf_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("Failed to store blob: {e}")
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        let sha256 = match crate::model::storage::compute_sha256_file(&gguf_path) {
+            Ok(h) => h,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("Failed to compute hash: {e}")
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        (
+            crate::model::manifest::ModelFormat::Gguf,
+            file_size,
+            sha256,
+            None,
+            blob_path,
+            None,
+            None,
+        )
+    } else {
+        match state.registry.get(&mf.from) {
+            Ok(base) => (
+                base.format.clone(),
+                base.size,
+                base.sha256.clone(),
+                base.parameters.clone(),
+                base.path.clone(),
+                base.family.clone(),
+                base.families.clone(),
+            ),
+            Err(_) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": format!("base model '{}' not found; pull it first", mf.from)
+                    })),
+                )
+                    .into_response();
+            }
         }
     };
 
@@ -64,12 +141,12 @@ pub async fn handler(
     // Create new manifest inheriting from the base model
     let new_manifest = crate::model::manifest::ModelManifest {
         name: request.name.clone(),
-        format: base_manifest.format.clone(),
-        size: base_manifest.size,
-        sha256: base_manifest.sha256.clone(),
-        parameters: base_manifest.parameters.clone(),
+        format: base_format,
+        size: base_size,
+        sha256: base_sha256,
+        parameters: base_params,
         created_at: chrono::Utc::now(),
-        path: base_manifest.path.clone(),
+        path: base_path,
         system_prompt: mf.system.clone(),
         template_override: mf.template.clone(),
         default_parameters: if default_params.is_empty() {
@@ -89,8 +166,8 @@ pub async fn handler(
                 content: m.content.clone(),
             })
             .collect(),
-        family: base_manifest.family.clone(),
-        families: base_manifest.families.clone(),
+        family: base_family,
+        families: base_families,
     };
 
     // Register the new model
@@ -215,5 +292,20 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["error"].as_str().unwrap().contains("FROM"));
+    }
+
+    #[test]
+    fn test_create_request_with_quantize() {
+        let json = r#"{"name": "my-model", "modelfile": "FROM llama3", "quantize": "q4_0"}"#;
+        let req: super::CreateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "my-model");
+        assert_eq!(req.quantize.as_deref(), Some("q4_0"));
+    }
+
+    #[test]
+    fn test_create_request_without_quantize() {
+        let json = r#"{"name": "my-model", "modelfile": "FROM llama3"}"#;
+        let req: super::CreateRequest = serde_json::from_str(json).unwrap();
+        assert!(req.quantize.is_none());
     }
 }

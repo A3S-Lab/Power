@@ -63,6 +63,56 @@ pub fn compute_sha256(data: &[u8]) -> String {
     format!("{result:x}")
 }
 
+/// Compute SHA-256 hash of a file on disk (streaming, memory-efficient).
+pub fn compute_sha256_file(path: &std::path::Path) -> Result<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        PowerError::Io(std::io::Error::other(format!(
+            "Failed to open file for hashing {}: {e}",
+            path.display()
+        )))
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| {
+            PowerError::Io(std::io::Error::other(format!(
+                "Failed to read file for hashing {}: {e}",
+                path.display()
+            )))
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let result = hasher.finalize();
+    Ok(format!("{result:x}"))
+}
+
+/// Store a local file into the content-addressed blob store by copying it.
+///
+/// Returns the blob path in the store.
+pub fn store_blob_from_path(source: &std::path::Path) -> Result<PathBuf> {
+    let blob_dir = dirs::blobs_dir();
+    std::fs::create_dir_all(&blob_dir)?;
+
+    let hash = compute_sha256_file(source)?;
+    let blob_name = format!("sha256-{hash}");
+    let blob_path = blob_dir.join(&blob_name);
+
+    if !blob_path.exists() {
+        std::fs::copy(source, &blob_path).map_err(|e| {
+            PowerError::Io(std::io::Error::other(format!(
+                "Failed to copy '{}' to blob store: {e}",
+                source.display()
+            )))
+        })?;
+    }
+
+    Ok(blob_path)
+}
+
 /// Remove blob files that are not referenced by any model manifest.
 ///
 /// Scans the blobs directory and compares against the set of blob paths
@@ -376,5 +426,61 @@ mod tests {
         // the function handles missing dirs gracefully by returning (0, 0).
         let result = prune_unused_blobs(&[]);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_compute_sha256_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.bin");
+        std::fs::write(&file_path, b"hello world").unwrap();
+
+        let hash = compute_sha256_file(&file_path).unwrap();
+        let expected = compute_sha256(b"hello world");
+        assert_eq!(hash, expected);
+    }
+
+    #[test]
+    fn test_compute_sha256_file_nonexistent() {
+        let result = compute_sha256_file(std::path::Path::new("/nonexistent/file.bin"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_store_blob_from_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let source_dir = tempfile::tempdir().unwrap();
+        let source_path = source_dir.path().join("model.gguf");
+        std::fs::write(&source_path, b"fake gguf data").unwrap();
+
+        let blob_path = store_blob_from_path(&source_path).unwrap();
+        assert!(blob_path.exists());
+
+        // Verify content matches
+        let stored = std::fs::read(&blob_path).unwrap();
+        assert_eq!(stored, b"fake gguf data");
+
+        // Verify blob name contains sha256
+        let filename = blob_path.file_name().unwrap().to_str().unwrap();
+        assert!(filename.starts_with("sha256-"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    fn test_store_blob_from_path_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let source_dir = tempfile::tempdir().unwrap();
+        let source_path = source_dir.path().join("model.gguf");
+        std::fs::write(&source_path, b"same content").unwrap();
+
+        let path1 = store_blob_from_path(&source_path).unwrap();
+        let path2 = store_blob_from_path(&source_path).unwrap();
+        assert_eq!(path1, path2);
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 }

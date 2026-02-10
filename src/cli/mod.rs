@@ -102,6 +102,7 @@ pub enum Commands {
     },
 
     /// List locally available models
+    #[command(alias = "ls")]
     List,
 
     /// Show details about a model
@@ -115,6 +116,7 @@ pub enum Commands {
     },
 
     /// Delete a local model
+    #[command(alias = "rm")]
     Delete {
         /// Model name to delete
         model: String,
@@ -139,6 +141,11 @@ pub enum Commands {
         /// Path to the Modelfile
         #[arg(short = 'f', long)]
         file: PathBuf,
+
+        /// Quantization level (e.g. "q4_0", "q5_1", "q8_0").
+        /// Note: actual re-quantization is not yet supported.
+        #[arg(long)]
+        quantize: Option<String>,
     },
 
     /// Push a model to a remote registry
@@ -336,9 +343,10 @@ mod tests {
     fn test_parse_create_command() {
         let cli = Cli::parse_from(["a3s-power", "create", "my-model", "-f", "Modelfile"]);
         match cli.command {
-            Commands::Create { name, file } => {
+            Commands::Create { name, file, quantize } => {
                 assert_eq!(name, "my-model");
                 assert_eq!(file, PathBuf::from("Modelfile"));
+                assert!(quantize.is_none());
             }
             _ => panic!("Expected Create command"),
         }
@@ -647,6 +655,36 @@ mod tests {
                 assert!(prompt_args.is_empty());
             }
             _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ls_alias() {
+        let cli = Cli::parse_from(["a3s-power", "ls"]);
+        assert!(matches!(cli.command, Commands::List));
+    }
+
+    #[test]
+    fn test_parse_rm_alias() {
+        let cli = Cli::parse_from(["a3s-power", "rm", "llama3"]);
+        match cli.command {
+            Commands::Delete { model } => assert_eq!(model, "llama3"),
+            _ => panic!("Expected Delete command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_with_quantize() {
+        let cli = Cli::parse_from([
+            "a3s-power", "create", "my-model", "-f", "Modelfile", "--quantize", "q4_0",
+        ]);
+        match cli.command {
+            Commands::Create { name, file, quantize } => {
+                assert_eq!(name, "my-model");
+                assert_eq!(file, PathBuf::from("Modelfile"));
+                assert_eq!(quantize.as_deref(), Some("q4_0"));
+            }
+            _ => panic!("Expected Create command"),
         }
     }
 }

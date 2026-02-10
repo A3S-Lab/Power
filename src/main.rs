@@ -143,25 +143,79 @@ async fn main() -> anyhow::Result<()> {
         Commands::Serve { host, port } => {
             a3s_power::cli::serve::execute(&host, port).await?;
         }
-        Commands::Create { name, file } => {
+        Commands::Create { name, file, quantize } => {
+            if let Some(ref q) = quantize {
+                tracing::warn!(
+                    quantize = %q,
+                    "Quantization requested but re-quantization is not yet supported; \
+                     the model will use its original quantization level"
+                );
+            }
             let content = std::fs::read_to_string(&file).map_err(|e| {
                 anyhow::anyhow!("Failed to read Modelfile '{}': {e}", file.display())
             })?;
             let mf = a3s_power::model::modelfile::parse(&content)
                 .map_err(|e| anyhow::anyhow!("Failed to parse Modelfile: {e}"))?;
-            let base = registry.get(&mf.from).map_err(|_| {
-                anyhow::anyhow!("Base model '{}' not found; pull it first", mf.from)
-            })?;
+
+            // Determine if FROM references a local file or a registered model
+            let from_path = std::path::Path::new(&mf.from);
+            let is_local_file = from_path.extension().map_or(false, |ext| ext == "gguf")
+                || mf.from.starts_with('/')
+                || mf.from.starts_with("./")
+                || mf.from.starts_with("../");
+
+            let (base_format, base_size, base_sha256, base_params, base_path, base_family, base_families) = if is_local_file {
+                // FROM /path/to/file.gguf — import local GGUF file
+                let gguf_path = from_path.to_path_buf();
+                if !gguf_path.exists() {
+                    return Err(anyhow::anyhow!(
+                        "GGUF file '{}' not found", mf.from
+                    ));
+                }
+                let metadata = std::fs::metadata(&gguf_path).map_err(|e| {
+                    anyhow::anyhow!("Failed to read GGUF file '{}': {e}", mf.from)
+                })?;
+                let file_size = metadata.len();
+
+                // Copy/link the file into blob storage
+                let blob_path = a3s_power::model::storage::store_blob_from_path(&gguf_path)?;
+                let sha256 = a3s_power::model::storage::compute_sha256_file(&gguf_path)?;
+
+                (
+                    a3s_power::model::manifest::ModelFormat::Gguf,
+                    file_size,
+                    sha256,
+                    None, // no parameters yet
+                    blob_path,
+                    None,
+                    None,
+                )
+            } else {
+                // FROM model-name — look up registered model
+                let base = registry.get(&mf.from).map_err(|_| {
+                    anyhow::anyhow!("Base model '{}' not found; pull it first", mf.from)
+                })?;
+                (
+                    base.format.clone(),
+                    base.size,
+                    base.sha256.clone(),
+                    base.parameters.clone(),
+                    base.path.clone(),
+                    base.family.clone(),
+                    base.families.clone(),
+                )
+            };
+
             let default_params = a3s_power::model::modelfile::parameters_to_json(&mf);
             let modelfile_content = a3s_power::model::modelfile::to_string(&mf);
             let manifest = a3s_power::model::manifest::ModelManifest {
                 name: name.clone(),
-                format: base.format.clone(),
-                size: base.size,
-                sha256: base.sha256.clone(),
-                parameters: base.parameters.clone(),
+                format: base_format,
+                size: base_size,
+                sha256: base_sha256,
+                parameters: base_params,
                 created_at: chrono::Utc::now(),
-                path: base.path.clone(),
+                path: base_path,
                 system_prompt: mf.system.clone(),
                 template_override: mf.template.clone(),
                 default_parameters: if default_params.is_empty() {
@@ -170,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
                     Some(default_params)
                 },
                 modelfile_content: Some(modelfile_content),
-                license: None,
+                license: mf.license.clone(),
                 adapter_path: mf.adapter.clone(),
                 projector_path: None,
                 messages: mf
@@ -181,8 +235,8 @@ async fn main() -> anyhow::Result<()> {
                         content: m.content.clone(),
                     })
                     .collect(),
-                family: None,
-                families: None,
+                family: base_family,
+                families: base_families,
             };
             registry.register(manifest)?;
             println!("Created model '{name}' from '{}'", mf.from);
