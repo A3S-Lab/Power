@@ -139,6 +139,21 @@ impl AppState {
             .map(|(name, _)| name.clone())
             .collect()
     }
+
+    /// Return the expiry timestamp for a loaded model.
+    /// Returns `None` if the model is not loaded or has infinite keep-alive.
+    pub fn model_expires_at(&self, name: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        let models = self.loaded_models.read().unwrap();
+        models.get(name).and_then(|entry| {
+            if entry.keep_alive == Duration::MAX {
+                None
+            } else {
+                let elapsed = entry.last_used.elapsed();
+                let remaining = entry.keep_alive.saturating_sub(elapsed);
+                Some(chrono::Utc::now() + chrono::Duration::from_std(remaining).unwrap_or_default())
+            }
+        })
+    }
 }
 
 #[cfg(test)]

@@ -56,7 +56,7 @@ pub enum Commands {
 
         /// Random seed for reproducible output
         #[arg(long)]
-        seed: Option<u32>,
+        seed: Option<i64>,
     },
 
     /// Download a model

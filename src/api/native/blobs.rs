@@ -2,6 +2,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
+use axum::Json;
 
 use crate::dirs;
 use crate::model::storage;
@@ -42,10 +43,12 @@ pub async fn upload_handler(
     if computed_hash != hash {
         return (
             StatusCode::BAD_REQUEST,
-            format!(
-                "Digest mismatch: expected sha256:{}, got sha256:{}",
-                hash, computed_hash
-            ),
+            Json(serde_json::json!({
+                "error": format!(
+                    "Digest mismatch: expected sha256:{}, got sha256:{}",
+                    hash, computed_hash
+                )
+            })),
         )
             .into_response();
     }
@@ -54,7 +57,7 @@ pub async fn upload_handler(
         Ok((_path, _stored_hash)) => StatusCode::CREATED.into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to store blob: {e}"),
+            Json(serde_json::json!({ "error": format!("Failed to store blob: {e}") })),
         )
             .into_response(),
     }
@@ -95,7 +98,7 @@ pub async fn delete_handler(
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to delete blob: {e}"),
+            Json(serde_json::json!({ "error": format!("Failed to delete blob: {e}") })),
         )
             .into_response(),
     }

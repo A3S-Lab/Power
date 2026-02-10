@@ -48,6 +48,25 @@ fn build_model_info(manifest: &ModelManifest) -> Option<serde_json::Value> {
     }
 }
 
+/// Format default_parameters as Ollama-style key-value text.
+///
+/// Ollama returns parameters as `"temperature 0.7\ntop_p 0.9"`, not JSON.
+fn format_parameters_text(
+    manifest: &ModelManifest,
+) -> String {
+    let mut lines = Vec::new();
+    if let Some(ref defaults) = manifest.default_parameters {
+        for (key, value) in defaults {
+            let val_str = match value {
+                serde_json::Value::String(s) => format!("\"{}\"", s),
+                other => other.to_string(),
+            };
+            lines.push(format!("{} {}", key, val_str));
+        }
+    }
+    lines.join("\n")
+}
+
 /// GET /api/tags - List local models (Ollama-compatible).
 pub async fn list_handler(State(state): State<AppState>) -> impl IntoResponse {
     match state.registry.list() {
@@ -56,7 +75,8 @@ pub async fn list_handler(State(state): State<AppState>) -> impl IntoResponse {
                 .iter()
                 .map(|m| NativeModelInfo {
                     name: m.name.clone(),
-                    modified_at: m.created_at.to_rfc3339(),
+                    model: m.name.clone(),
+                    modified_at: crate::api::format_ollama_timestamp(&m.created_at),
                     size: m.size,
                     digest: format!("sha256:{}", &m.sha256),
                     details: NativeModelDetails {
@@ -92,9 +112,16 @@ pub async fn show_handler(
 ) -> impl IntoResponse {
     match state.registry.get(&request.name) {
         Ok(manifest) => {
+            // Extract parent model from Modelfile content (FROM directive)
+            let parent_model = manifest.modelfile_content.as_ref().and_then(|mf| {
+                mf.lines()
+                    .find(|l| l.trim().starts_with("FROM "))
+                    .map(|l| l.trim().strip_prefix("FROM ").unwrap_or("").trim().to_string())
+            });
+
             let response = ShowResponse {
                 modelfile: manifest.modelfile_content.clone().unwrap_or_default(),
-                parameters: serde_json::to_string_pretty(&manifest.parameters).unwrap_or_default(),
+                parameters: format_parameters_text(&manifest),
                 template: manifest.template_override.clone().unwrap_or_default(),
                 details: NativeModelDetails {
                     format: manifest.format.to_string(),
@@ -113,7 +140,8 @@ pub async fn show_handler(
                 system: manifest.system_prompt.clone(),
                 license: manifest.license.clone(),
                 model_info: build_model_info(&manifest),
-                modified_at: manifest.created_at.to_rfc3339(),
+                modified_at: crate::api::format_ollama_timestamp(&manifest.created_at),
+                parent_model,
             };
             Json(response).into_response()
         }
@@ -177,6 +205,11 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let models = json["models"].as_array().unwrap();
         assert_eq!(models.len(), 2);
+        // M-5: Both `name` and `model` fields should be present
+        assert!(models[0]["model"].is_string());
+        assert_eq!(models[0]["name"], models[0]["model"]);
+        // M-9: Timestamp should end with Z
+        assert!(models[0]["modified_at"].as_str().unwrap().ends_with('Z'));
 
         std::env::remove_var("A3S_POWER_HOME");
     }

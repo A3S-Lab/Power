@@ -12,6 +12,8 @@ use crate::server::state::AppState;
 pub struct CreateRequest {
     pub name: String,
     pub modelfile: String,
+    #[serde(default)]
+    pub stream: Option<bool>,
 }
 
 /// Response body for POST /api/create.
@@ -25,6 +27,8 @@ pub async fn handler(
     State(state): State<AppState>,
     Json(request): Json<CreateRequest>,
 ) -> impl IntoResponse {
+    let is_stream = request.stream.unwrap_or(true);
+
     // Parse the Modelfile
     let mf = match modelfile::parse(&request.modelfile) {
         Ok(mf) => mf,
@@ -90,10 +94,25 @@ pub async fn handler(
 
     // Register the new model
     match state.registry.register(new_manifest) {
-        Ok(()) => Json(CreateResponse {
-            status: "success".to_string(),
-        })
-        .into_response(),
+        Ok(()) => {
+            if is_stream {
+                // Stream NDJSON status updates (Ollama-compatible)
+                let statuses = vec![
+                    CreateResponse { status: "reading model metadata".to_string() },
+                    CreateResponse { status: "creating system layer".to_string() },
+                    CreateResponse { status: "using already created layer".to_string() },
+                    CreateResponse { status: "writing manifest".to_string() },
+                    CreateResponse { status: "success".to_string() },
+                ];
+                let stream = futures::stream::iter(statuses);
+                crate::api::sse::ndjson_response(stream)
+            } else {
+                Json(CreateResponse {
+                    status: "success".to_string(),
+                })
+                .into_response()
+            }
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -141,8 +160,12 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["status"], "success");
+        // Default stream=true returns NDJSON; last line should be "success"
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        let lines: Vec<&str> = text.trim().lines().collect();
+        assert!(!lines.is_empty(), "NDJSON body should have at least one line");
+        let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        assert_eq!(last["status"], "success");
 
         std::env::remove_var("A3S_POWER_HOME");
     }

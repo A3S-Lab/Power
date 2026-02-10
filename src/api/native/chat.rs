@@ -77,7 +77,7 @@ pub async fn handler(
 
     let opts = request.options.as_ref();
     let defaults = &manifest.default_parameters;
-    let response_format = request.format.clone().map(serde_json::Value::String);
+    let response_format = request.format.clone();
 
     // Build messages, prepending system_prompt from manifest if set
     let mut messages: Vec<ChatMessage> = Vec::new();
@@ -196,7 +196,7 @@ pub async fn handler(
                                     counter_clone.load(std::sync::atomic::Ordering::Relaxed);
                                 NativeChatResponse {
                                     model: model_name_owned.clone(),
-                                    created_at: chrono::Utc::now().to_rfc3339(),
+                                    created_at: crate::api::ollama_timestamp(),
                                     message: ChatCompletionMessage {
                                         role: "assistant".to_string(),
                                         content: MessageContent::Text(c.content),
@@ -225,7 +225,7 @@ pub async fn handler(
                             }
                             Err(e) => NativeChatResponse {
                                 model: model_name_owned.clone(),
-                                created_at: chrono::Utc::now().to_rfc3339(),
+                                created_at: crate::api::ollama_timestamp(),
                                 message: ChatCompletionMessage {
                                     role: "assistant".to_string(),
                                     content: MessageContent::Text(format!("Error: {e}")),
@@ -266,7 +266,7 @@ pub async fn handler(
                         // Sentinel for metrics flush
                         NativeChatResponse {
                             model: model_for_done,
-                            created_at: chrono::Utc::now().to_rfc3339(),
+                            created_at: crate::api::ollama_timestamp(),
                             message: ChatCompletionMessage {
                                 role: "assistant".to_string(),
                                 content: MessageContent::Text(String::new()),
@@ -366,7 +366,7 @@ pub async fn handler(
 
                 Json(NativeChatResponse {
                     model: model_name,
-                    created_at: chrono::Utc::now().to_rfc3339(),
+                    created_at: crate::api::ollama_timestamp(),
                     message: ChatCompletionMessage {
                         role: "assistant".to_string(),
                         content: MessageContent::Text(full_content),

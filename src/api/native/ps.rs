@@ -13,10 +13,14 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
         .iter()
         .filter_map(|name| {
             state.registry.get(name).ok().map(|manifest| {
+                let expires_at = state
+                    .model_expires_at(name)
+                    .map(|dt| crate::api::format_ollama_timestamp(&dt));
                 serde_json::json!({
                     "name": manifest.name,
                     "model": manifest.name,
                     "size": manifest.size,
+                    "size_vram": manifest.size,
                     "digest": format!("sha256:{}", &manifest.sha256),
                     "details": NativeModelDetails {
                         format: manifest.format.to_string(),
@@ -32,6 +36,7 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
                         family: manifest.family.clone(),
                         families: manifest.families.clone(),
                     },
+                    "expires_at": expires_at,
                 })
             })
         })

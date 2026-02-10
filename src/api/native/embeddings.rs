@@ -55,7 +55,11 @@ pub async fn handler(
     match backend.embed(&model_name, backend_request).await {
         Ok(response) => {
             let embedding = response.embeddings.into_iter().next().unwrap_or_default();
-            Json(NativeEmbeddingResponse { embedding }).into_response()
+            Json(NativeEmbeddingResponse {
+                model: model_name,
+                embedding,
+            })
+            .into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

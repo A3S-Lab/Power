@@ -16,7 +16,7 @@ pub struct RunOptions {
     pub num_predict: Option<u32>,
     pub num_ctx: Option<u32>,
     pub repeat_penalty: Option<f32>,
-    pub seed: Option<u32>,
+    pub seed: Option<i64>,
 }
 
 /// Execute the `run` command: load a model and start interactive chat.

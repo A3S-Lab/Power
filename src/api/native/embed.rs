@@ -60,6 +60,7 @@ pub async fn handler(
     let load_duration_ns = load_result.load_duration.as_nanos() as u64;
 
     let input_texts = request.input.into_vec();
+    let input_count = input_texts.len();
     let backend_request = EmbeddingRequest { input: input_texts };
 
     let start = Instant::now();
@@ -71,6 +72,7 @@ pub async fn handler(
                 embeddings: response.embeddings,
                 total_duration: Some(total_duration_ns),
                 load_duration: Some(load_duration_ns),
+                prompt_eval_count: Some(input_count as u32),
             })
             .into_response()
         }

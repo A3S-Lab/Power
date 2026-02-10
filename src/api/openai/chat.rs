@@ -73,7 +73,7 @@ pub async fn handler(
         repeat_penalty: None,
         frequency_penalty: request.frequency_penalty,
         presence_penalty: request.presence_penalty,
-        seed: request.seed.map(|s| s as u32),
+        seed: request.seed,
         num_ctx: None,
         mirostat: None,
         mirostat_tau: None,

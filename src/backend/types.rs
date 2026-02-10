@@ -160,7 +160,7 @@ pub struct ChatRequest {
     #[serde(default)]
     pub presence_penalty: Option<f32>,
     #[serde(default)]
-    pub seed: Option<u32>,
+    pub seed: Option<i64>,
     #[serde(default)]
     pub num_ctx: Option<u32>,
     #[serde(default)]
@@ -228,7 +228,7 @@ pub struct CompletionRequest {
     #[serde(default)]
     pub presence_penalty: Option<f32>,
     #[serde(default)]
-    pub seed: Option<u32>,
+    pub seed: Option<i64>,
     #[serde(default)]
     pub num_ctx: Option<u32>,
     #[serde(default)]

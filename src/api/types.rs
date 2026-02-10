@@ -270,7 +270,7 @@ pub struct GenerateRequest {
     #[serde(default)]
     pub options: Option<GenerateOptions>,
     #[serde(default)]
-    pub format: Option<String>,
+    pub format: Option<serde_json::Value>,
     #[serde(default)]
     pub keep_alive: Option<String>,
     /// Base64-encoded images for multimodal models.
@@ -305,7 +305,7 @@ pub struct GenerateOptions {
     pub repeat_penalty: Option<f32>,
     pub frequency_penalty: Option<f32>,
     pub presence_penalty: Option<f32>,
-    pub seed: Option<u32>,
+    pub seed: Option<i64>,
     pub num_ctx: Option<u32>,
     pub mirostat: Option<u32>,
     pub mirostat_tau: Option<f32>,
@@ -350,7 +350,7 @@ pub struct NativeChatRequest {
     #[serde(default)]
     pub options: Option<GenerateOptions>,
     #[serde(default)]
-    pub format: Option<String>,
+    pub format: Option<serde_json::Value>,
     #[serde(default)]
     pub keep_alive: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -384,6 +384,8 @@ pub struct NativeChatResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeModelInfo {
     pub name: String,
+    /// Alias of `name` — many Ollama clients read this field.
+    pub model: String,
     pub modified_at: String,
     pub size: u64,
     pub digest: String,
@@ -470,6 +472,9 @@ pub struct ShowResponse {
     pub model_info: Option<serde_json::Value>,
     /// ISO 8601 timestamp of when the model was last modified locally.
     pub modified_at: String,
+    /// Parent model name (for models created via Modelfile).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_model: Option<String>,
 }
 
 /// Delete model request.
@@ -488,6 +493,7 @@ pub struct NativeEmbeddingRequest {
 /// Native embedding response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeEmbeddingResponse {
+    pub model: String,
     pub embedding: Vec<f32>,
 }
 
@@ -539,6 +545,9 @@ pub struct NativeEmbedResponse {
     /// Model load time in nanoseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_duration: Option<u64>,
+    /// Number of tokens in the prompt(s).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_eval_count: Option<u32>,
 }
 
 #[cfg(test)]
@@ -888,7 +897,7 @@ mod tests {
             "keep_alive": "5m"
         }"#;
         let req: GenerateRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.format.as_deref(), Some("json"));
+        assert_eq!(req.format, Some(serde_json::Value::String("json".to_string())));
         assert_eq!(req.keep_alive.as_deref(), Some("5m"));
     }
 
@@ -901,8 +910,31 @@ mod tests {
             "keep_alive": "-1"
         }"#;
         let req: NativeChatRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.format.as_deref(), Some("json"));
+        assert_eq!(req.format, Some(serde_json::Value::String("json".to_string())));
         assert_eq!(req.keep_alive.as_deref(), Some("-1"));
+    }
+
+    #[test]
+    fn test_format_accepts_json_schema_object() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "test",
+            "format": {"type": "object", "properties": {"name": {"type": "string"}}}
+        }"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert!(req.format.is_some());
+        assert!(req.format.unwrap().is_object());
+    }
+
+    #[test]
+    fn test_seed_accepts_negative_value() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "test",
+            "options": {"seed": -1}
+        }"#;
+        let req: GenerateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.options.unwrap().seed, Some(-1));
     }
 
     #[test]
@@ -922,6 +954,7 @@ mod tests {
             license: None,
             model_info: None,
             modified_at: chrono::Utc::now().to_rfc3339(),
+            parent_model: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("GGUF"));

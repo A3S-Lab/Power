@@ -296,7 +296,7 @@ impl Backend for LlamaCppBackend {
         let repeat_penalty = request.repeat_penalty;
         let frequency_penalty = request.frequency_penalty;
         let presence_penalty = request.presence_penalty;
-        let seed = request.seed.unwrap_or(0);
+        let seed = request.seed.unwrap_or(0).max(0) as u32;
         let ctx_size = request.num_ctx.unwrap_or(2048);
         let mirostat = request.mirostat;
         let mirostat_tau = request.mirostat_tau;
