@@ -16,15 +16,42 @@ async fn root_handler() -> &'static str {
     "Ollama is running"
 }
 
+/// Build a CORS layer from configured origins.
+///
+/// If `origins` is empty, returns a permissive CORS layer (allow all).
+/// Otherwise, restricts to the specified origins.
+fn build_cors_layer(origins: &[String]) -> CorsLayer {
+    if origins.is_empty() {
+        return CorsLayer::permissive();
+    }
+
+    use axum::http::HeaderValue;
+    let allowed: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| o.parse::<HeaderValue>().ok())
+        .collect();
+
+    if allowed.is_empty() {
+        return CorsLayer::permissive();
+    }
+
+    CorsLayer::new()
+        .allow_origin(allowed)
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any)
+}
+
 /// Build the complete axum Router with all API routes.
 pub fn build(state: AppState) -> Router {
+    let cors = build_cors_layer(&state.config.origins);
+
     Router::new()
         .route("/", get(root_handler).head(root_handler))
         .route("/health", get(api::health::handler))
         .route("/metrics", get(metrics::handler))
         .nest("/api", api::native::routes())
         .nest("/v1", api::openai::routes())
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(
             state.clone(),

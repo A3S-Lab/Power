@@ -89,6 +89,10 @@ pub enum Commands {
     Pull {
         /// Model name or URL to download
         model: String,
+
+        /// Skip TLS verification for registry operations
+        #[arg(long)]
+        insecure: bool,
     },
 
     /// List locally available models
@@ -98,6 +102,10 @@ pub enum Commands {
     Show {
         /// Model name to inspect
         model: String,
+
+        /// Show verbose GGUF metadata and tensor information
+        #[arg(long)]
+        verbose: bool,
     },
 
     /// Delete a local model
@@ -135,6 +143,10 @@ pub enum Commands {
         /// Destination registry URL
         #[arg(long)]
         destination: String,
+
+        /// Skip TLS verification for registry operations
+        #[arg(long)]
+        insecure: bool,
     },
 
     /// Copy/alias a model to a new name
@@ -211,7 +223,10 @@ mod tests {
     fn test_parse_pull_command() {
         let cli = Cli::parse_from(["a3s-power", "pull", "llama3:3b"]);
         match cli.command {
-            Commands::Pull { model } => assert_eq!(model, "llama3:3b"),
+            Commands::Pull { model, insecure } => {
+                assert_eq!(model, "llama3:3b");
+                assert!(!insecure);
+            }
             _ => panic!("Expected Pull command"),
         }
     }
@@ -226,9 +241,14 @@ mod tests {
             "https://registry.example.com",
         ]);
         match cli.command {
-            Commands::Push { model, destination } => {
+            Commands::Push {
+                model,
+                destination,
+                insecure,
+            } => {
                 assert_eq!(model, "llama3");
                 assert_eq!(destination, "https://registry.example.com");
+                assert!(!insecure);
             }
             _ => panic!("Expected Push command"),
         }
@@ -259,7 +279,10 @@ mod tests {
     fn test_parse_show_command() {
         let cli = Cli::parse_from(["a3s-power", "show", "llama3"]);
         match cli.command {
-            Commands::Show { model } => assert_eq!(model, "llama3"),
+            Commands::Show { model, verbose } => {
+                assert_eq!(model, "llama3");
+                assert!(!verbose);
+            }
             _ => panic!("Expected Show command"),
         }
     }
@@ -490,6 +513,54 @@ mod tests {
                 assert_eq!(temperature, Some(0.5));
             }
             _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_pull_with_insecure() {
+        let cli = Cli::parse_from(["a3s-power", "pull", "llama3", "--insecure"]);
+        match cli.command {
+            Commands::Pull { model, insecure } => {
+                assert_eq!(model, "llama3");
+                assert!(insecure);
+            }
+            _ => panic!("Expected Pull command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_push_with_insecure() {
+        let cli = Cli::parse_from([
+            "a3s-power",
+            "push",
+            "llama3",
+            "--destination",
+            "https://example.com",
+            "--insecure",
+        ]);
+        match cli.command {
+            Commands::Push {
+                model,
+                destination,
+                insecure,
+            } => {
+                assert_eq!(model, "llama3");
+                assert_eq!(destination, "https://example.com");
+                assert!(insecure);
+            }
+            _ => panic!("Expected Push command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_show_with_verbose() {
+        let cli = Cli::parse_from(["a3s-power", "show", "llama3", "--verbose"]);
+        match cli.command {
+            Commands::Show { model, verbose } => {
+                assert_eq!(model, "llama3");
+                assert!(verbose);
+            }
+            _ => panic!("Expected Show command"),
         }
     }
 }

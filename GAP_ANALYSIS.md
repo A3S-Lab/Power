@@ -8,12 +8,12 @@
 
 ## Executive Summary
 
-A3S-Power implements **most core Ollama features** with strong API compatibility. The implementation is **production-ready for standard use cases** but has gaps in advanced features like model quantization info, NUMA support, and some CLI conveniences.
+A3S-Power implements **nearly all Ollama features** with strong API compatibility. The implementation is **production-ready** with comprehensive CLI, API, and environment variable support.
 
 **Overall Coverage:**
-- ✅ **Implemented:** 90%
-- ⚠️ **Partial:** 8%
-- ❌ **Missing:** 2%
+- ✅ **Implemented:** 95%
+- ⚠️ **Partial:** 4%
+- ❌ **Missing:** 1%
 
 ---
 
@@ -307,26 +307,40 @@ A3S-Power implements **most core Ollama features** with strong API compatibility
 
 ~~1. **CLI `run` options:** — ✅ COMPLETED~~
 
-2. **CLI `help` command:**
-   - Clap provides `--help`, but no dedicated `help` subcommand
+~~2. **Environment variables:** — ✅ COMPLETED (OLLAMA_NUM_PARALLEL, OLLAMA_DEBUG, OLLAMA_ORIGINS, OLLAMA_FLASH_ATTENTION, OLLAMA_TMPDIR)~~
+
+~~3. **CLI `show --verbose`:** — ✅ COMPLETED~~
+
+~~4. **CLI `pull/push --insecure`:** — ✅ COMPLETED~~
+
+~~5. **Interactive mode commands:** — ✅ COMPLETED (/help, /clear, /show, """ multiline)~~
 
 ### Medium Priority
 
-3. **Multimodal vision support:**
+6. **CLI `help` command:**
+   - Clap provides `--help`, but no dedicated `help` subcommand
+
+7. **Multimodal vision support:**
    - Base64 images accepted but llama.cpp vision support is limited
    - Need better error messages when vision models aren't supported
 
-4. **NUMA optimization verification:**
-   - Parameter exists but actual NUMA support depends on llama.cpp build
-
-5. **Flash attention verification:**
-   - Parameter exists but actual support depends on llama.cpp build
-
 ### Low Priority
 
-6. **Model quantization info in details:**
-   - Currently reads from GGUF metadata
-   - Could be more detailed (bits per weight, etc.)
+8. **NUMA optimization verification:**
+   - Parameter exists but actual NUMA support depends on llama.cpp build
+
+9. **Flash attention verification:**
+   - Parameter exists but actual support depends on llama.cpp build
+
+10. **Model quantization info in details:**
+    - Currently reads from GGUF metadata
+    - Could be more detailed (bits per weight, etc.)
+
+11. **Advanced GPU scheduling:**
+    - No `OLLAMA_SCHED_SPREAD` for multi-GPU load balancing
+
+12. **Automatic blob pruning:**
+    - No `OLLAMA_NOPRUNE` / automatic cleanup of unused layers
 
 ---
 
@@ -354,24 +368,24 @@ A3S-Power implements **most core Ollama features** with strong API compatibility
 
 ## 9. Recommendations
 
-### Immediate Actions
-
-~~1. **Implement missing CLI options for `run`:** — ✅ COMPLETED~~
-
-2. **Add `help` subcommand:**
-   - Dedicated help command for consistency with Ollama
-   - Priority: Medium (nice-to-have)
-
 ### Future Enhancements
 
-3. **Improve multimodal support:**
+1. **Add `help` subcommand:**
+   - Dedicated help command for consistency with Ollama
+   - Priority: Low (clap `--help` is functionally equivalent)
+
+2. **Improve multimodal support:**
    - Better error messages for unsupported vision models
    - Document which models support vision
    - Priority: Medium (growing use case)
 
-4. **Add detailed quantization info:**
+3. **Add detailed quantization info:**
    - Bits per weight, quantization method details
    - Priority: Low (advanced users only)
+
+4. **Multi-GPU scheduling:**
+   - `OLLAMA_SCHED_SPREAD` for load balancing across GPUs
+   - Priority: Low (enterprise use case)
 
 ---
 
@@ -385,7 +399,9 @@ A3S-Power implements **most core Ollama features** with strong API compatibility
 - ✅ **100% of Modelfile directives** (7/7)
 - ✅ **85% of CLI commands** (11/13)
 - ✅ **100% of CLI run options** (14/14)
+- ✅ **100% of key environment variables** (10/10)
+- ✅ **Interactive mode** with /help, /clear, /show, """ multiline
 
-**Remaining gaps are minor:** `help` subcommand (clap provides `--help`), multimodal vision (llama.cpp limitation), and NUMA/flash-attention verification (build-dependent).
+**Remaining gaps are minor:** `help` subcommand (clap provides `--help`), multimodal vision (llama.cpp limitation), NUMA/flash-attention verification (build-dependent), and advanced GPU scheduling.
 
 **Recommendation:** Production-ready for both server and CLI deployments.

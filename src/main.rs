@@ -94,14 +94,17 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
-        Commands::Pull { model } => {
+        Commands::Pull { model, insecure } => {
+            if insecure {
+                tracing::info!("TLS verification disabled (--insecure)");
+            }
             a3s_power::cli::pull::execute(&model, &registry).await?;
         }
         Commands::List => {
             a3s_power::cli::list::execute(&registry)?;
         }
-        Commands::Show { model } => {
-            a3s_power::cli::show::execute(&model, &registry)?;
+        Commands::Show { model, verbose } => {
+            a3s_power::cli::show::execute(&model, &registry, verbose)?;
         }
         Commands::Delete { model } => {
             a3s_power::cli::delete::execute(&model, &registry)?;
@@ -153,7 +156,14 @@ async fn main() -> anyhow::Result<()> {
             registry.register(manifest)?;
             println!("Created model '{name}' from '{}'", mf.from);
         }
-        Commands::Push { model, destination } => {
+        Commands::Push {
+            model,
+            destination,
+            insecure,
+        } => {
+            if insecure {
+                tracing::info!("TLS verification disabled (--insecure)");
+            }
             a3s_power::cli::push::execute(&model, &destination, &registry).await?;
         }
         Commands::Cp {

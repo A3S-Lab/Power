@@ -269,7 +269,7 @@ async fn interactive_chat(
         });
     }
 
-    println!("Interactive chat with '{model_name}' (type /exit to quit)\n");
+    println!("Interactive chat with '{model_name}' (type /help for commands)\n");
 
     loop {
         print!(">>> ");
@@ -280,17 +280,79 @@ async fn interactive_chat(
             break;
         }
 
-        let input = input.trim();
-        if input.is_empty() {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
             continue;
         }
-        if input == "/exit" || input == "/quit" {
+
+        // Handle slash commands
+        if trimmed == "/exit" || trimmed == "/quit" {
             break;
         }
+        if trimmed == "/help" || trimmed == "/?" {
+            println!("Available commands:");
+            println!("  /help       Show this help message");
+            println!("  /clear      Clear conversation history");
+            println!("  /show       Show current model info and message count");
+            println!("  /exit       Exit the chat");
+            println!();
+            println!("Use \"\"\" to begin and end a multi-line message.");
+            println!();
+            continue;
+        }
+        if trimmed == "/clear" {
+            // Keep system message if present, clear the rest
+            let system_msg: Vec<_> = messages
+                .iter()
+                .filter(|m| m.role == "system")
+                .cloned()
+                .collect();
+            messages = system_msg;
+            println!("Conversation cleared.\n");
+            continue;
+        }
+        if trimmed == "/show" {
+            println!("Model: {model_name}");
+            let user_msgs = messages.iter().filter(|m| m.role == "user").count();
+            let asst_msgs = messages.iter().filter(|m| m.role == "assistant").count();
+            println!("Messages: {user_msgs} user, {asst_msgs} assistant");
+            if let Some(ref sys) = options.system {
+                println!("System: {sys}");
+            }
+            if let Some(ref fmt) = response_format {
+                println!("Format: {fmt}");
+            }
+            println!();
+            continue;
+        }
+
+        // Handle multi-line input with """ delimiter
+        let user_input = if trimmed == "\"\"\"" {
+            let mut multiline = String::new();
+            loop {
+                print!("... ");
+                io::stdout().flush().ok();
+                let mut line = String::new();
+                if stdin.lock().read_line(&mut line).is_err() || line.is_empty() {
+                    break;
+                }
+                if line.trim() == "\"\"\"" {
+                    break;
+                }
+                multiline.push_str(&line);
+            }
+            let result = multiline.trim().to_string();
+            if result.is_empty() {
+                continue;
+            }
+            result
+        } else {
+            trimmed.to_string()
+        };
 
         messages.push(ChatMessage {
             role: "user".to_string(),
-            content: MessageContent::Text(input.to_string()),
+            content: MessageContent::Text(user_input),
             name: None,
             tool_calls: None,
             tool_call_id: None,

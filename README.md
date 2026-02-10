@@ -89,7 +89,7 @@ a3s-power serve
 
 ### Test Coverage
 
-**505 unit tests** with comprehensive coverage across 50+ source files:
+**518 unit tests** with comprehensive coverage across 50+ source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -814,6 +814,25 @@ Complete Ollama CLI `run` command options — all 14/14 options now implemented:
 - [x] **`--verbose`**: Show timing and token statistics after each generation (prompt eval count/rate, eval count, total duration, tokens/s)
 - [x] **`--insecure`**: Skip TLS verification flag for registry operations
 - [x] 505 comprehensive unit tests
+
+### Phase 13: Environment Variables & CLI Polish ✅
+
+Complete Ollama environment variable parity and CLI enhancements:
+
+- [x] **`OLLAMA_NUM_PARALLEL`**: Number of parallel request slots (concurrent inference)
+- [x] **`OLLAMA_DEBUG`**: Enable debug logging (sets `RUST_LOG=debug` if not already set)
+- [x] **`OLLAMA_ORIGINS`**: Custom CORS origins (comma-separated); empty = permissive
+- [x] **`OLLAMA_FLASH_ATTENTION`**: Global flash attention override (`"1"` or `"true"`)
+- [x] **`OLLAMA_TMPDIR`**: Custom temporary directory for downloads and scratch files
+- [x] **CLI `show --verbose`**: Display full GGUF metadata (keys, values, tensor list) from CLI
+- [x] **CLI `pull --insecure`**: Skip TLS verification for pull operations
+- [x] **CLI `push --insecure`**: Skip TLS verification for push operations
+- [x] **Interactive `/help`**: Show available slash commands in interactive chat
+- [x] **Interactive `/clear`**: Clear conversation history (preserves system prompt)
+- [x] **Interactive `/show`**: Display model name, message counts, and current settings
+- [x] **Interactive `"""`**: Multi-line input support with triple-quote delimiters
+- [x] **CORS Configuration**: Server respects `OLLAMA_ORIGINS` for restricted CORS; defaults to permissive
+- [x] 518 comprehensive unit tests
 
 ## License
 

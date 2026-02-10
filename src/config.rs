@@ -57,10 +57,26 @@ pub struct PowerConfig {
     /// Enable flash attention globally (default: false).
     #[serde(default)]
     pub flash_attention: bool,
+
+    /// Number of parallel request slots (concurrent inference). Default: 1.
+    #[serde(default = "default_num_parallel")]
+    pub num_parallel: usize,
+
+    /// Custom CORS origins (comma-separated). Empty = permissive.
+    #[serde(default)]
+    pub origins: Vec<String>,
+
+    /// Custom temporary directory for downloads and scratch files.
+    #[serde(default)]
+    pub tmpdir: Option<PathBuf>,
 }
 
 fn default_keep_alive() -> String {
     "5m".to_string()
+}
+
+fn default_num_parallel() -> usize {
+    1
 }
 
 /// Parse a keep-alive duration string into a `std::time::Duration`.
@@ -130,6 +146,9 @@ impl Default for PowerConfig {
             use_mlock: false,
             num_thread: None,
             flash_attention: false,
+            num_parallel: default_num_parallel(),
+            origins: Vec::new(),
+            tmpdir: None,
         }
     }
 }
@@ -168,6 +187,11 @@ impl PowerConfig {
     /// - `OLLAMA_KEEP_ALIVE` — default keep-alive duration (e.g. `"5m"`, `"-1"`)
     /// - `OLLAMA_MAX_LOADED_MODELS` — maximum concurrent loaded models
     /// - `OLLAMA_NUM_GPU` — number of GPU layers to offload (-1 = all)
+    /// - `OLLAMA_NUM_PARALLEL` — number of parallel request slots
+    /// - `OLLAMA_DEBUG` — enable debug logging (`"1"` or `"true"`)
+    /// - `OLLAMA_ORIGINS` — comma-separated CORS origins
+    /// - `OLLAMA_FLASH_ATTENTION` — enable flash attention (`"1"` or `"true"`)
+    /// - `OLLAMA_TMPDIR` — custom temporary directory
     fn apply_env_overrides(&mut self) {
         if let Ok(host_str) = std::env::var("OLLAMA_HOST") {
             // OLLAMA_HOST can be "host:port" or just "host"
@@ -215,6 +239,39 @@ impl PowerConfig {
             if let Ok(gpu) = gpu_str.parse::<i32>() {
                 self.gpu.gpu_layers = gpu;
             }
+        }
+
+        if let Ok(par_str) = std::env::var("OLLAMA_NUM_PARALLEL") {
+            if let Ok(par) = par_str.parse::<usize>() {
+                self.num_parallel = par;
+            }
+        }
+
+        if let Ok(debug_str) = std::env::var("OLLAMA_DEBUG") {
+            if debug_str == "1" || debug_str.eq_ignore_ascii_case("true") {
+                // Set RUST_LOG to debug if not already set, so tracing picks it up.
+                if std::env::var("RUST_LOG").is_err() {
+                    std::env::set_var("RUST_LOG", "debug");
+                }
+            }
+        }
+
+        if let Ok(origins_str) = std::env::var("OLLAMA_ORIGINS") {
+            self.origins = origins_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+
+        if let Ok(fa_str) = std::env::var("OLLAMA_FLASH_ATTENTION") {
+            if fa_str == "1" || fa_str.eq_ignore_ascii_case("true") {
+                self.flash_attention = true;
+            }
+        }
+
+        if let Ok(tmpdir) = std::env::var("OLLAMA_TMPDIR") {
+            self.tmpdir = Some(std::path::PathBuf::from(tmpdir));
         }
     }
 
@@ -291,6 +348,9 @@ mod tests {
             use_mlock: false,
             num_thread: None,
             flash_attention: false,
+            num_parallel: 4,
+            origins: vec!["http://localhost:3000".to_string()],
+            tmpdir: None,
         };
         config.save().unwrap();
 
@@ -298,6 +358,8 @@ mod tests {
         assert_eq!(loaded.host, "0.0.0.0");
         assert_eq!(loaded.port, 9999);
         assert_eq!(loaded.max_loaded_models, 5);
+        assert_eq!(loaded.num_parallel, 4);
+        assert_eq!(loaded.origins, vec!["http://localhost:3000"]);
 
         std::env::remove_var("A3S_POWER_HOME");
     }
@@ -498,6 +560,9 @@ mod tests {
         assert!(!config.use_mlock);
         assert!(config.num_thread.is_none());
         assert!(!config.flash_attention);
+        assert_eq!(config.num_parallel, 1);
+        assert!(config.origins.is_empty());
+        assert!(config.tmpdir.is_none());
     }
 
     #[test]
@@ -517,5 +582,117 @@ mod tests {
         assert_eq!(config.num_thread, Some(8));
 
         std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_num_parallel() {
+        std::env::set_var("OLLAMA_NUM_PARALLEL", "8");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(config.num_parallel, 8);
+        std::env::remove_var("OLLAMA_NUM_PARALLEL");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_num_parallel_invalid_ignored() {
+        std::env::set_var("OLLAMA_NUM_PARALLEL", "abc");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(config.num_parallel, 1); // unchanged
+        std::env::remove_var("OLLAMA_NUM_PARALLEL");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_debug_sets_rust_log() {
+        std::env::remove_var("RUST_LOG");
+        std::env::set_var("OLLAMA_DEBUG", "1");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(std::env::var("RUST_LOG").unwrap(), "debug");
+        std::env::remove_var("OLLAMA_DEBUG");
+        std::env::remove_var("RUST_LOG");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_debug_true_string() {
+        std::env::remove_var("RUST_LOG");
+        std::env::set_var("OLLAMA_DEBUG", "true");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(std::env::var("RUST_LOG").unwrap(), "debug");
+        std::env::remove_var("OLLAMA_DEBUG");
+        std::env::remove_var("RUST_LOG");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_debug_does_not_override_existing_rust_log() {
+        std::env::set_var("RUST_LOG", "trace");
+        std::env::set_var("OLLAMA_DEBUG", "1");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(std::env::var("RUST_LOG").unwrap(), "trace"); // unchanged
+        std::env::remove_var("OLLAMA_DEBUG");
+        std::env::remove_var("RUST_LOG");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_origins() {
+        std::env::set_var("OLLAMA_ORIGINS", "http://localhost:3000,https://example.com");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(
+            config.origins,
+            vec!["http://localhost:3000", "https://example.com"]
+        );
+        std::env::remove_var("OLLAMA_ORIGINS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_origins_trims_whitespace() {
+        std::env::set_var("OLLAMA_ORIGINS", " http://a.com , http://b.com ");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(config.origins, vec!["http://a.com", "http://b.com"]);
+        std::env::remove_var("OLLAMA_ORIGINS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_flash_attention() {
+        std::env::set_var("OLLAMA_FLASH_ATTENTION", "1");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.flash_attention);
+        std::env::remove_var("OLLAMA_FLASH_ATTENTION");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_flash_attention_false_ignored() {
+        std::env::set_var("OLLAMA_FLASH_ATTENTION", "0");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(!config.flash_attention); // unchanged
+        std::env::remove_var("OLLAMA_FLASH_ATTENTION");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_ollama_tmpdir() {
+        std::env::set_var("OLLAMA_TMPDIR", "/tmp/ollama-scratch");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(
+            config.tmpdir,
+            Some(std::path::PathBuf::from("/tmp/ollama-scratch"))
+        );
+        std::env::remove_var("OLLAMA_TMPDIR");
     }
 }
