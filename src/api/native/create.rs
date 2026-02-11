@@ -55,84 +55,85 @@ pub async fn handler(
         || mf.from.starts_with("./")
         || mf.from.starts_with("../");
 
-    let (base_format, base_size, base_sha256, base_params, base_path, base_family, base_families) = if is_local_file {
-        let gguf_path = from_path.to_path_buf();
-        if !gguf_path.exists() {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "error": format!("GGUF file '{}' not found", mf.from)
-                })),
-            )
-                .into_response();
-        }
-        let file_size = match std::fs::metadata(&gguf_path) {
-            Ok(m) => m.len(),
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": format!("Failed to read GGUF file: {e}")
-                    })),
-                )
-                    .into_response();
-            }
-        };
-        let blob_path = match crate::model::storage::store_blob_from_path(&gguf_path) {
-            Ok(p) => p,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": format!("Failed to store blob: {e}")
-                    })),
-                )
-                    .into_response();
-            }
-        };
-        let sha256 = match crate::model::storage::compute_sha256_file(&gguf_path) {
-            Ok(h) => h,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": format!("Failed to compute hash: {e}")
-                    })),
-                )
-                    .into_response();
-            }
-        };
-        (
-            crate::model::manifest::ModelFormat::Gguf,
-            file_size,
-            sha256,
-            None,
-            blob_path,
-            None,
-            None,
-        )
-    } else {
-        match state.registry.get(&mf.from) {
-            Ok(base) => (
-                base.format.clone(),
-                base.size,
-                base.sha256.clone(),
-                base.parameters.clone(),
-                base.path.clone(),
-                base.family.clone(),
-                base.families.clone(),
-            ),
-            Err(_) => {
+    let (base_format, base_size, base_sha256, base_params, base_path, base_family, base_families) =
+        if is_local_file {
+            let gguf_path = from_path.to_path_buf();
+            if !gguf_path.exists() {
                 return (
                     StatusCode::NOT_FOUND,
                     Json(serde_json::json!({
-                        "error": format!("base model '{}' not found; pull it first", mf.from)
+                        "error": format!("GGUF file '{}' not found", mf.from)
                     })),
                 )
                     .into_response();
             }
-        }
-    };
+            let file_size = match std::fs::metadata(&gguf_path) {
+                Ok(m) => m.len(),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": format!("Failed to read GGUF file: {e}")
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+            let blob_path = match crate::model::storage::store_blob_from_path(&gguf_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": format!("Failed to store blob: {e}")
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+            let sha256 = match crate::model::storage::compute_sha256_file(&gguf_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": format!("Failed to compute hash: {e}")
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+            (
+                crate::model::manifest::ModelFormat::Gguf,
+                file_size,
+                sha256,
+                None,
+                blob_path,
+                None,
+                None,
+            )
+        } else {
+            match state.registry.get(&mf.from) {
+                Ok(base) => (
+                    base.format.clone(),
+                    base.size,
+                    base.sha256.clone(),
+                    base.parameters.clone(),
+                    base.path.clone(),
+                    base.family.clone(),
+                    base.families.clone(),
+                ),
+                Err(_) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({
+                            "error": format!("base model '{}' not found; pull it first", mf.from)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        };
 
     // Build default parameters from Modelfile
     let default_params = modelfile::parameters_to_json(&mf);
@@ -192,11 +193,21 @@ pub async fn handler(
             if is_stream {
                 // Stream NDJSON status updates (Ollama-compatible)
                 let statuses = vec![
-                    CreateResponse { status: "reading model metadata".to_string() },
-                    CreateResponse { status: "creating system layer".to_string() },
-                    CreateResponse { status: "using already created layer".to_string() },
-                    CreateResponse { status: "writing manifest".to_string() },
-                    CreateResponse { status: "success".to_string() },
+                    CreateResponse {
+                        status: "reading model metadata".to_string(),
+                    },
+                    CreateResponse {
+                        status: "creating system layer".to_string(),
+                    },
+                    CreateResponse {
+                        status: "using already created layer".to_string(),
+                    },
+                    CreateResponse {
+                        status: "writing manifest".to_string(),
+                    },
+                    CreateResponse {
+                        status: "success".to_string(),
+                    },
                 ];
                 let stream = futures::stream::iter(statuses);
                 crate::api::sse::ndjson_response(stream)
@@ -257,7 +268,10 @@ mod tests {
         // Default stream=true returns NDJSON; last line should be "success"
         let text = String::from_utf8(body.to_vec()).unwrap();
         let lines: Vec<&str> = text.trim().lines().collect();
-        assert!(!lines.is_empty(), "NDJSON body should have at least one line");
+        assert!(
+            !lines.is_empty(),
+            "NDJSON body should have at least one line"
+        );
         let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
         assert_eq!(last["status"], "success");
 

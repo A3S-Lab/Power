@@ -534,7 +534,8 @@ Let me know if you need anything else."#;
 
     #[test]
     fn test_mistral_tool_calls_have_indices() {
-        let text = r#"[TOOL_CALLS] [{"name": "a", "arguments": {}}, {"name": "b", "arguments": {}}]"#;
+        let text =
+            r#"[TOOL_CALLS] [{"name": "a", "arguments": {}}, {"name": "b", "arguments": {}}]"#;
         let calls = parse_tool_calls(text).unwrap();
         assert_eq!(calls[0].index, Some(0));
         assert_eq!(calls[1].index, Some(1));

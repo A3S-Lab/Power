@@ -221,7 +221,9 @@ impl Backend for LlamaCppBackend {
                     adapter = %adapter_path,
                     "LoRA adapter loaded"
                 );
-                Some(Arc::new(std::sync::Mutex::new(SendableLoraAdapter(adapter))))
+                Some(Arc::new(std::sync::Mutex::new(SendableLoraAdapter(
+                    adapter,
+                ))))
             } else {
                 tracing::warn!(
                     model = %manifest.name,
@@ -271,7 +273,14 @@ impl Backend for LlamaCppBackend {
             let models = self.models.read().await;
             models
                 .get(model_name)
-                .map(|m| (m.chat_template.clone(), m.raw_template.clone(), m.projector_path.clone(), m.n_ctx_train))
+                .map(|m| {
+                    (
+                        m.chat_template.clone(),
+                        m.raw_template.clone(),
+                        m.projector_path.clone(),
+                        m.n_ctx_train,
+                    )
+                })
                 .unwrap_or((ChatTemplateKind::Phi, None, None, 2048))
         };
 
@@ -355,7 +364,11 @@ impl Backend for LlamaCppBackend {
             tfs_z: request.tfs_z,
             typical_p: request.typical_p,
             response_format: request.response_format,
-            images: if images.is_empty() { None } else { Some(images) },
+            images: if images.is_empty() {
+                None
+            } else {
+                Some(images)
+            },
             projector_path,
             repeat_last_n: request.repeat_last_n,
             penalize_newline: request.penalize_newline,
@@ -424,7 +437,14 @@ impl Backend for LlamaCppBackend {
             let models = self.models.read().await;
             models
                 .get(model_name)
-                .map(|m| (m.model.clone(), m.cached_ctx.clone(), m.lora_adapter.clone(), m.n_ctx_train))
+                .map(|m| {
+                    (
+                        m.model.clone(),
+                        m.cached_ctx.clone(),
+                        m.lora_adapter.clone(),
+                        m.n_ctx_train,
+                    )
+                })
                 .ok_or_else(|| {
                     PowerError::InferenceFailed(format!("Model '{model_name}' not loaded"))
                 })?

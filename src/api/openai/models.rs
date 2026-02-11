@@ -98,7 +98,10 @@ mod tests {
         std::env::set_var("A3S_POWER_HOME", dir.path());
 
         let state = test_state_with_mock(MockBackend::success());
-        state.registry.register(sample_manifest("test-model")).unwrap();
+        state
+            .registry
+            .register(sample_manifest("test-model"))
+            .unwrap();
 
         let app = router::build(state);
         let req = Request::builder()

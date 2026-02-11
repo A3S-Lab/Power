@@ -15,17 +15,12 @@ pub async fn execute(model: &str) -> Result<()> {
     });
 
     let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            PowerError::Server(format!(
-                "Failed to connect to server at {}: {e}. Is the server running?",
-                config.bind_address()
-            ))
-        })?;
+    let resp = client.post(&url).json(&body).send().await.map_err(|e| {
+        PowerError::Server(format!(
+            "Failed to connect to server at {}: {e}. Is the server running?",
+            config.bind_address()
+        ))
+    })?;
 
     if resp.status().is_success() {
         println!("Stopped '{model}'");

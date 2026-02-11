@@ -90,9 +90,7 @@ fn build_verbose_model_info(manifest: &ModelManifest) -> Option<serde_json::Valu
 /// Format default_parameters as Ollama-style key-value text.
 ///
 /// Ollama returns parameters as `"temperature 0.7\ntop_p 0.9"`, not JSON.
-fn format_parameters_text(
-    manifest: &ModelManifest,
-) -> String {
+fn format_parameters_text(manifest: &ModelManifest) -> String {
     let mut lines = Vec::new();
     if let Some(ref defaults) = manifest.default_parameters {
         for (key, value) in defaults {
@@ -156,9 +154,13 @@ pub async fn show_handler(
         Ok(manifest) => {
             // Extract parent model from Modelfile content (FROM directive)
             let parent_model = manifest.modelfile_content.as_ref().and_then(|mf| {
-                mf.lines()
-                    .find(|l| l.trim().starts_with("FROM "))
-                    .map(|l| l.trim().strip_prefix("FROM ").unwrap_or("").trim().to_string())
+                mf.lines().find(|l| l.trim().starts_with("FROM ")).map(|l| {
+                    l.trim()
+                        .strip_prefix("FROM ")
+                        .unwrap_or("")
+                        .trim()
+                        .to_string()
+                })
             });
 
             // Build model_info: basic metadata always, GGUF details when verbose
@@ -391,7 +393,7 @@ mod tests {
 
     #[test]
     fn test_build_model_info_with_all_fields() {
-        use crate::model::manifest::{ModelManifest, ModelFormat, ModelParameters};
+        use crate::model::manifest::{ModelFormat, ModelManifest, ModelParameters};
 
         let manifest = ModelManifest {
             name: "test".to_string(),
@@ -429,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_build_model_info_empty_when_no_data() {
-        use crate::model::manifest::{ModelManifest, ModelFormat};
+        use crate::model::manifest::{ModelFormat, ModelManifest};
 
         let manifest = ModelManifest {
             name: "bare".to_string(),
@@ -457,7 +459,7 @@ mod tests {
 
     #[test]
     fn test_format_parameters_text_with_defaults() {
-        use crate::model::manifest::{ModelManifest, ModelFormat};
+        use crate::model::manifest::{ModelFormat, ModelManifest};
 
         let mut defaults = std::collections::HashMap::new();
         defaults.insert("temperature".to_string(), serde_json::json!(0.7));
@@ -490,7 +492,7 @@ mod tests {
 
     #[test]
     fn test_format_parameters_text_empty() {
-        use crate::model::manifest::{ModelManifest, ModelFormat};
+        use crate::model::manifest::{ModelFormat, ModelManifest};
 
         let manifest = ModelManifest {
             name: "test".to_string(),
@@ -518,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_format_parameters_text_string_values_quoted() {
-        use crate::model::manifest::{ModelManifest, ModelFormat};
+        use crate::model::manifest::{ModelFormat, ModelManifest};
 
         let mut defaults = std::collections::HashMap::new();
         defaults.insert("stop".to_string(), serde_json::json!("END"));
@@ -558,7 +560,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let models = json["models"].as_array().unwrap();
         assert!(models.is_empty());
@@ -586,7 +590,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["system"], "You are helpful.");
         assert_eq!(json["license"], "MIT");

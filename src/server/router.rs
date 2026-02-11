@@ -82,10 +82,7 @@ mod tests {
     #[tokio::test]
     async fn test_root_returns_ollama_is_running() {
         let app = build(test_state());
-        let req = Request::builder()
-            .uri("/")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)

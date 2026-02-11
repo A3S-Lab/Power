@@ -76,7 +76,9 @@ pub async fn handler(
                 });
             });
 
-            match crate::model::push::push_model(&manifest, &dest, Some(progress), push_insecure).await {
+            match crate::model::push::push_model(&manifest, &dest, Some(progress), push_insecure)
+                .await
+            {
                 Ok(digest) => {
                     let _ = tx
                         .send(PushResponse {

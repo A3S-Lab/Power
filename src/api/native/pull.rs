@@ -76,9 +76,7 @@ pub async fn handler(
 
             // Extract layer digest for per-layer progress display
             let layer_digest = resolved.as_ref().and_then(|r| match &r.source {
-                resolve::ModelSource::OllamaRegistry(reg) => {
-                    Some(reg.model_digest.clone())
-                }
+                resolve::ModelSource::OllamaRegistry(reg) => Some(reg.model_digest.clone()),
                 _ => None,
             });
 
@@ -117,7 +115,8 @@ pub async fn handler(
                 )
                 .await
             } else {
-                crate::model::pull::pull_model(&name_or_url, None, Some(progress), pull_insecure).await
+                crate::model::pull::pull_model(&name_or_url, None, Some(progress), pull_insecure)
+                    .await
             };
 
             match pull_result {

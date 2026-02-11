@@ -817,18 +817,20 @@ mod tests {
 
     #[test]
     fn test_apply_defaults_returns_explicit_value() {
-        let defaults = Some(std::collections::HashMap::from([
-            ("temperature".to_string(), serde_json::json!(0.5)),
-        ]));
+        let defaults = Some(std::collections::HashMap::from([(
+            "temperature".to_string(),
+            serde_json::json!(0.5),
+        )]));
         let result: Option<f32> = super::apply_defaults(Some(0.9), &defaults, "temperature");
         assert_eq!(result, Some(0.9));
     }
 
     #[test]
     fn test_apply_defaults_uses_default_when_none() {
-        let defaults = Some(std::collections::HashMap::from([
-            ("temperature".to_string(), serde_json::json!(0.5)),
-        ]));
+        let defaults = Some(std::collections::HashMap::from([(
+            "temperature".to_string(),
+            serde_json::json!(0.5),
+        )]));
         let result: Option<f32> = super::apply_defaults(None, &defaults, "temperature");
         assert_eq!(result, Some(0.5));
     }
@@ -842,18 +844,20 @@ mod tests {
 
     #[test]
     fn test_apply_defaults_returns_none_when_key_missing() {
-        let defaults = Some(std::collections::HashMap::from([
-            ("top_p".to_string(), serde_json::json!(0.9)),
-        ]));
+        let defaults = Some(std::collections::HashMap::from([(
+            "top_p".to_string(),
+            serde_json::json!(0.9),
+        )]));
         let result: Option<f32> = super::apply_defaults(None, &defaults, "temperature");
         assert!(result.is_none());
     }
 
     #[test]
     fn test_apply_defaults_type_mismatch_returns_none() {
-        let defaults = Some(std::collections::HashMap::from([
-            ("temperature".to_string(), serde_json::json!("not a number")),
-        ]));
+        let defaults = Some(std::collections::HashMap::from([(
+            "temperature".to_string(),
+            serde_json::json!("not a number"),
+        )]));
         let result: Option<f32> = super::apply_defaults(None, &defaults, "temperature");
         assert!(result.is_none());
     }
@@ -941,7 +945,13 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let content_type = resp.headers().get("content-type").unwrap().to_str().unwrap().to_string();
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         assert!(content_type.contains("application/x-ndjson"));
 
         std::env::remove_var("A3S_POWER_HOME");

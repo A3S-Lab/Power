@@ -361,10 +361,7 @@ fn gguf_type_name(type_id: u32) -> &'static str {
 pub fn estimate_memory(path: &Path, ctx_size: u32) -> Result<MemoryEstimate> {
     let file_size = std::fs::metadata(path)
         .map_err(|e| {
-            PowerError::Config(format!(
-                "Failed to stat GGUF file {}: {e}",
-                path.display()
-            ))
+            PowerError::Config(format!("Failed to stat GGUF file {}: {e}", path.display()))
         })?
         .len();
 
@@ -421,8 +418,7 @@ pub fn estimate_memory(path: &Path, ctx_size: u32) -> Result<MemoryEstimate> {
 
     // KV cache size estimate: 2 (K+V) * n_layers * ctx_size * head_dim * n_head_kv * sizeof(f16)
     let head_dim = if n_head > 0 { n_embd / n_head } else { 128 };
-    let kv_cache_bytes =
-        2 * n_layers * (ctx_size as u64) * head_dim * n_head_kv * 2; // f16 = 2 bytes
+    let kv_cache_bytes = 2 * n_layers * (ctx_size as u64) * head_dim * n_head_kv * 2; // f16 = 2 bytes
 
     // Compute buffer overhead (~10% of model size for scratch buffers)
     let compute_overhead = file_size / 10;
@@ -814,11 +810,20 @@ mod tests {
         assert_eq!(GgufValue::Uint8(255).to_json(), serde_json::json!(255));
         assert_eq!(GgufValue::Int8(-1).to_json(), serde_json::json!(-1));
         assert_eq!(GgufValue::Uint16(65535).to_json(), serde_json::json!(65535));
-        assert_eq!(GgufValue::Int16(-32768).to_json(), serde_json::json!(-32768));
+        assert_eq!(
+            GgufValue::Int16(-32768).to_json(),
+            serde_json::json!(-32768)
+        );
         assert_eq!(GgufValue::Int32(-1).to_json(), serde_json::json!(-1));
         assert_eq!(GgufValue::Float32(1.5).to_json(), serde_json::json!(1.5));
-        assert_eq!(GgufValue::Uint64(u64::MAX).to_json(), serde_json::json!(u64::MAX));
-        assert_eq!(GgufValue::Int64(i64::MIN).to_json(), serde_json::json!(i64::MIN));
+        assert_eq!(
+            GgufValue::Uint64(u64::MAX).to_json(),
+            serde_json::json!(u64::MAX)
+        );
+        assert_eq!(
+            GgufValue::Int64(i64::MIN).to_json(),
+            serde_json::json!(i64::MIN)
+        );
         assert_eq!(GgufValue::Float64(2.5).to_json(), serde_json::json!(2.5));
         assert_eq!(GgufValue::Bool(false).to_json(), serde_json::json!(false));
     }
@@ -902,7 +907,10 @@ mod tests {
         let mut cursor = Cursor::new(buf);
         let result = read_metadata_from_reader(&mut cursor);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown GGUF value type"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown GGUF value type"));
     }
 
     /// Build a GGUF with an array value type.

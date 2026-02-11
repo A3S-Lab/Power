@@ -46,25 +46,22 @@ pub async fn handler(
         return openai_error("server_error", &e.to_string()).into_response();
     }
 
-    let response_format = request
-        .response_format
-        .as_ref()
-        .map(|f| {
-            if f.r#type == "json_schema" {
-                // Extract the actual JSON Schema and pass it directly to the backend
-                // so it can generate a GBNF grammar for constrained output.
-                if let Some(ref spec) = f.json_schema {
-                    if let Some(ref schema) = spec.schema {
-                        return schema.clone();
-                    }
+    let response_format = request.response_format.as_ref().map(|f| {
+        if f.r#type == "json_schema" {
+            // Extract the actual JSON Schema and pass it directly to the backend
+            // so it can generate a GBNF grammar for constrained output.
+            if let Some(ref spec) = f.json_schema {
+                if let Some(ref schema) = spec.schema {
+                    return schema.clone();
                 }
-                // Fallback to generic JSON if schema is missing
-                serde_json::json!("json")
-            } else {
-                // "json_object" or "text" — pass type as-is
-                serde_json::json!({"type": f.r#type})
             }
-        });
+            // Fallback to generic JSON if schema is missing
+            serde_json::json!("json")
+        } else {
+            // "json_object" or "text" — pass type as-is
+            serde_json::json!({"type": f.r#type})
+        }
+    });
     let backend_request = ChatRequest {
         messages: request
             .messages
@@ -657,7 +654,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["usage"].is_object());
         assert!(json["usage"]["completion_tokens"].is_number());
@@ -687,7 +686,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let choices = json["choices"].as_array().unwrap();
         assert_eq!(choices.len(), 1);
@@ -742,7 +743,13 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let content_type = resp.headers().get("content-type").unwrap().to_str().unwrap().to_string();
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         // Non-streaming should return JSON, not SSE
         assert!(content_type.contains("application/json"));
     }

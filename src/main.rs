@@ -58,7 +58,9 @@ async fn main() -> anyhow::Result<()> {
             return a3s_power::cli::ps::execute().await.map_err(Into::into);
         }
         Commands::Stop { model } => {
-            return a3s_power::cli::stop::execute(model).await.map_err(Into::into);
+            return a3s_power::cli::stop::execute(model)
+                .await
+                .map_err(Into::into);
         }
         _ => {}
     }
@@ -143,7 +145,11 @@ async fn main() -> anyhow::Result<()> {
         Commands::Serve { host, port } => {
             a3s_power::cli::serve::execute(&host, port).await?;
         }
-        Commands::Create { name, file, quantize } => {
+        Commands::Create {
+            name,
+            file,
+            quantize,
+        } => {
             if let Some(ref q) = quantize {
                 tracing::warn!(
                     quantize = %q,
@@ -164,17 +170,22 @@ async fn main() -> anyhow::Result<()> {
                 || mf.from.starts_with("./")
                 || mf.from.starts_with("../");
 
-            let (base_format, base_size, base_sha256, base_params, base_path, base_family, base_families) = if is_local_file {
+            let (
+                base_format,
+                base_size,
+                base_sha256,
+                base_params,
+                base_path,
+                base_family,
+                base_families,
+            ) = if is_local_file {
                 // FROM /path/to/file.gguf — import local GGUF file
                 let gguf_path = from_path.to_path_buf();
                 if !gguf_path.exists() {
-                    return Err(anyhow::anyhow!(
-                        "GGUF file '{}' not found", mf.from
-                    ));
+                    return Err(anyhow::anyhow!("GGUF file '{}' not found", mf.from));
                 }
-                let metadata = std::fs::metadata(&gguf_path).map_err(|e| {
-                    anyhow::anyhow!("Failed to read GGUF file '{}': {e}", mf.from)
-                })?;
+                let metadata = std::fs::metadata(&gguf_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to read GGUF file '{}': {e}", mf.from))?;
                 let file_size = metadata.len();
 
                 // Copy/link the file into blob storage

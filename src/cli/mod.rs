@@ -343,7 +343,11 @@ mod tests {
     fn test_parse_create_command() {
         let cli = Cli::parse_from(["a3s-power", "create", "my-model", "-f", "Modelfile"]);
         match cli.command {
-            Commands::Create { name, file, quantize } => {
+            Commands::Create {
+                name,
+                file,
+                quantize,
+            } => {
                 assert_eq!(name, "my-model");
                 assert_eq!(file, PathBuf::from("Modelfile"));
                 assert!(quantize.is_none());
@@ -417,10 +421,7 @@ mod tests {
                 model, template, ..
             } => {
                 assert_eq!(model, "llama3");
-                assert_eq!(
-                    template.as_deref(),
-                    Some("{{ .System }}\n{{ .Prompt }}")
-                );
+                assert_eq!(template.as_deref(), Some("{{ .System }}\n{{ .Prompt }}"));
             }
             _ => panic!("Expected Run command"),
         }
@@ -608,7 +609,16 @@ mod tests {
 
     #[test]
     fn test_parse_run_trailing_args_as_prompt() {
-        let cli = Cli::parse_from(["a3s-power", "run", "llama3", "why", "is", "the", "sky", "blue"]);
+        let cli = Cli::parse_from([
+            "a3s-power",
+            "run",
+            "llama3",
+            "why",
+            "is",
+            "the",
+            "sky",
+            "blue",
+        ]);
         match cli.command {
             Commands::Run {
                 model,
@@ -627,7 +637,13 @@ mod tests {
     #[test]
     fn test_parse_run_prompt_flag_overrides_trailing() {
         let cli = Cli::parse_from([
-            "a3s-power", "run", "llama3", "--prompt", "hello", "extra", "args",
+            "a3s-power",
+            "run",
+            "llama3",
+            "--prompt",
+            "hello",
+            "extra",
+            "args",
         ]);
         match cli.command {
             Commands::Run {
@@ -676,10 +692,20 @@ mod tests {
     #[test]
     fn test_parse_create_with_quantize() {
         let cli = Cli::parse_from([
-            "a3s-power", "create", "my-model", "-f", "Modelfile", "--quantize", "q4_0",
+            "a3s-power",
+            "create",
+            "my-model",
+            "-f",
+            "Modelfile",
+            "--quantize",
+            "q4_0",
         ]);
         match cli.command {
-            Commands::Create { name, file, quantize } => {
+            Commands::Create {
+                name,
+                file,
+                quantize,
+            } => {
                 assert_eq!(name, "my-model");
                 assert_eq!(file, PathBuf::from("Modelfile"));
                 assert_eq!(quantize.as_deref(), Some("q4_0"));

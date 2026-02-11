@@ -2,7 +2,12 @@ use crate::error::Result;
 use crate::model::registry::ModelRegistry;
 
 /// Execute the `push` command: upload a model to a remote registry.
-pub async fn execute(model: &str, destination: &str, registry: &ModelRegistry, insecure: bool) -> Result<()> {
+pub async fn execute(
+    model: &str,
+    destination: &str,
+    registry: &ModelRegistry,
+    insecure: bool,
+) -> Result<()> {
     let manifest = registry.get(model)?;
 
     println!("Pushing '{}' to {}", model, destination);
@@ -14,7 +19,8 @@ pub async fn execute(model: &str, destination: &str, registry: &ModelRegistry, i
         }
     });
 
-    let digest = crate::model::push::push_model(&manifest, destination, Some(progress), insecure).await?;
+    let digest =
+        crate::model::push::push_model(&manifest, destination, Some(progress), insecure).await?;
 
     println!("Push complete: {}", digest);
     Ok(())

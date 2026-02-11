@@ -59,7 +59,10 @@ pub fn execute(model: &str, registry: &ModelRegistry, verbose: bool) -> Result<(
 /// Print verbose GGUF metadata and tensor information.
 fn print_verbose_info(manifest: &crate::model::manifest::ModelManifest) -> Result<()> {
     if !manifest.path.exists() {
-        println!("\n(Verbose: model file not found at {})", manifest.path.display());
+        println!(
+            "\n(Verbose: model file not found at {})",
+            manifest.path.display()
+        );
         return Ok(());
     }
 

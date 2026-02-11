@@ -131,7 +131,10 @@ pub fn auto_configure(config: &mut crate::config::GpuConfig) {
             config.gpu_layers = recommended;
         }
     } else {
-        tracing::info!(gpu_layers = config.gpu_layers, "Using configured GPU layers");
+        tracing::info!(
+            gpu_layers = config.gpu_layers,
+            "Using configured GPU layers"
+        );
     }
 }
 

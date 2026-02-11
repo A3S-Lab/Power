@@ -69,20 +69,21 @@ pub async fn pull_model(
                 let proj_url = ollama_registry::blob_url(&proj_name.name, proj_digest);
                 tracing::info!(digest = %proj_digest, "Downloading multimodal projector");
                 let proj_client = build_http_client(insecure)?;
-                let proj_resp = proj_client.get(&proj_url)
-                    .send()
-                    .await
-                    .map_err(|e| PowerError::DownloadFailed {
+                let proj_resp = proj_client.get(&proj_url).send().await.map_err(|e| {
+                    PowerError::DownloadFailed {
                         model: name.clone(),
                         source: e,
-                    })?;
+                    }
+                })?;
                 if proj_resp.status().is_success() {
-                    let proj_bytes = proj_resp.bytes().await.map_err(|e| {
-                        PowerError::DownloadFailed {
-                            model: name.clone(),
-                            source: e,
-                        }
-                    })?;
+                    let proj_bytes =
+                        proj_resp
+                            .bytes()
+                            .await
+                            .map_err(|e| PowerError::DownloadFailed {
+                                model: name.clone(),
+                                source: e,
+                            })?;
                     let (proj_blob_path, _) = storage::store_blob(&proj_bytes)?;
                     tracing::info!(
                         path = %proj_blob_path.display(),
@@ -191,10 +192,13 @@ async fn download_with_resume(
         request = request.header("Range", format!("bytes={existing_size}-"));
     }
 
-    let response = request.send().await.map_err(|e| PowerError::DownloadFailed {
-        model: name.to_string(),
-        source: e,
-    })?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| PowerError::DownloadFailed {
+            model: name.to_string(),
+            source: e,
+        })?;
 
     let status = response.status();
 

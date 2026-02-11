@@ -679,7 +679,10 @@ mod tests {
     #[test]
     #[serial]
     fn test_env_ollama_origins() {
-        std::env::set_var("OLLAMA_ORIGINS", "http://localhost:3000,https://example.com");
+        std::env::set_var(
+            "OLLAMA_ORIGINS",
+            "http://localhost:3000,https://example.com",
+        );
         let mut config = PowerConfig::default();
         config.apply_env_overrides();
         assert_eq!(

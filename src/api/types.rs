@@ -881,7 +881,10 @@ mod tests {
         let json = r#"{"name": "llama3", "destination": "https://registry.example.com"}"#;
         let req: PushRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.name, "llama3");
-        assert_eq!(req.destination, Some("https://registry.example.com".to_string()));
+        assert_eq!(
+            req.destination,
+            Some("https://registry.example.com".to_string())
+        );
         assert!(req.stream.is_none());
     }
 
@@ -993,7 +996,10 @@ mod tests {
             "keep_alive": "5m"
         }"#;
         let req: GenerateRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.format, Some(serde_json::Value::String("json".to_string())));
+        assert_eq!(
+            req.format,
+            Some(serde_json::Value::String("json".to_string()))
+        );
         assert_eq!(req.keep_alive.as_deref(), Some("5m"));
     }
 
@@ -1006,7 +1012,10 @@ mod tests {
             "keep_alive": "-1"
         }"#;
         let req: NativeChatRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.format, Some(serde_json::Value::String("json".to_string())));
+        assert_eq!(
+            req.format,
+            Some(serde_json::Value::String("json".to_string()))
+        );
         assert_eq!(req.keep_alive.as_deref(), Some("-1"));
     }
 

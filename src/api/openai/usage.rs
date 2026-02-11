@@ -374,7 +374,7 @@ mod tests {
     fn test_parse_date_malformed() {
         assert!(parse_date("2024-13-01").is_none()); // Invalid month
         assert!(parse_date("2024-01-32").is_none()); // Invalid day
-        // Note: "24-01-01" might parse as a valid date in some formats, so skip this test
+                                                     // Note: "24-01-01" might parse as a valid date in some formats, so skip this test
     }
 
     #[test]

@@ -130,10 +130,7 @@ pub fn parse(content: &str) -> Result<Modelfile, String> {
                 let (key, val) = match value.split_once(char::is_whitespace) {
                     Some((k, v)) => (k.trim().to_string(), v.trim().to_string()),
                     None => {
-                        return Err(format!(
-                            "line {}: PARAMETER requires key and value",
-                            i + 1
-                        ));
+                        return Err(format!("line {}: PARAMETER requires key and value", i + 1));
                     }
                 };
                 if key == "stop" {
@@ -159,10 +156,7 @@ pub fn parse(content: &str) -> Result<Modelfile, String> {
                 let (role, msg_content) = match value.split_once(char::is_whitespace) {
                     Some((r, c)) => (r.trim().to_string(), unquote(c.trim())),
                     None => {
-                        return Err(format!(
-                            "line {}: MESSAGE requires role and content",
-                            i + 1
-                        ));
+                        return Err(format!("line {}: MESSAGE requires role and content", i + 1));
                     }
                 };
                 messages.push(ModelfileMessage {
@@ -572,7 +566,9 @@ PARAMETER temperature
 "#;
         let result = parse(content);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("PARAMETER requires key and value"));
+        assert!(result
+            .unwrap_err()
+            .contains("PARAMETER requires key and value"));
     }
 
     #[test]

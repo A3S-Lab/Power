@@ -20,9 +20,10 @@ pub async fn execute() -> Result<()> {
         )));
     }
 
-    let body: serde_json::Value = resp.json().await.map_err(|e| {
-        PowerError::Server(format!("Failed to parse server response: {e}"))
-    })?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| PowerError::Server(format!("Failed to parse server response: {e}")))?;
 
     let models = body["models"].as_array();
     match models {
@@ -38,11 +39,12 @@ pub async fn execute() -> Result<()> {
                 let quant = model["details"]["quantization_level"]
                     .as_str()
                     .unwrap_or("-");
-                let expires = model["expires_at"]
-                    .as_str()
-                    .unwrap_or("never");
+                let expires = model["expires_at"].as_str().unwrap_or("never");
                 let size_str = format_size(size);
-                println!("{:<30} {:<10} {:<12} {:<10} {}", name, size_str, format, quant, expires);
+                println!(
+                    "{:<30} {:<10} {:<12} {:<10} {}",
+                    name, size_str, format, quant, expires
+                );
             }
         }
         _ => {
@@ -161,8 +163,14 @@ mod tests {
         assert_eq!(model["name"].as_str().unwrap(), "llama3.2:3b");
         assert_eq!(model["size"].as_u64().unwrap(), 2_000_000_000);
         assert_eq!(model["details"]["format"].as_str().unwrap(), "GGUF");
-        assert_eq!(model["details"]["quantization_level"].as_str().unwrap(), "Q4_K_M");
-        assert_eq!(model["expires_at"].as_str().unwrap(), "2024-01-01T00:00:00Z");
+        assert_eq!(
+            model["details"]["quantization_level"].as_str().unwrap(),
+            "Q4_K_M"
+        );
+        assert_eq!(
+            model["expires_at"].as_str().unwrap(),
+            "2024-01-01T00:00:00Z"
+        );
     }
 
     #[test]
@@ -185,7 +193,12 @@ mod tests {
         assert_eq!(model["name"].as_str().unwrap(), "test");
         assert_eq!(model["size"].as_u64().unwrap_or(0), 0);
         assert_eq!(model["details"]["format"].as_str().unwrap_or("?"), "?");
-        assert_eq!(model["details"]["quantization_level"].as_str().unwrap_or("-"), "-");
+        assert_eq!(
+            model["details"]["quantization_level"]
+                .as_str()
+                .unwrap_or("-"),
+            "-"
+        );
         assert_eq!(model["expires_at"].as_str().unwrap_or("never"), "never");
     }
 
@@ -196,7 +209,10 @@ mod tests {
         let format = "GGUF";
         let quant = "Q4_K_M";
         let expires = "2024-01-01T00:00:00Z";
-        let row = format!("{:<30} {:<10} {:<12} {:<10} {}", name, size_str, format, quant, expires);
+        let row = format!(
+            "{:<30} {:<10} {:<12} {:<10} {}",
+            name, size_str, format, quant, expires
+        );
         assert!(row.contains("llama3.2:3b"));
         assert!(row.contains("2.0 GB"));
         assert!(row.contains("GGUF"));

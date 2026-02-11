@@ -861,18 +861,20 @@ mod tests {
 
     #[test]
     fn test_apply_defaults_returns_explicit_value() {
-        let defaults = Some(std::collections::HashMap::from([
-            ("temperature".to_string(), serde_json::json!(0.5)),
-        ]));
+        let defaults = Some(std::collections::HashMap::from([(
+            "temperature".to_string(),
+            serde_json::json!(0.5),
+        )]));
         let result: Option<f32> = super::apply_defaults(Some(0.9), &defaults, "temperature");
         assert_eq!(result, Some(0.9));
     }
 
     #[test]
     fn test_apply_defaults_uses_default_when_none() {
-        let defaults = Some(std::collections::HashMap::from([
-            ("temperature".to_string(), serde_json::json!(0.5)),
-        ]));
+        let defaults = Some(std::collections::HashMap::from([(
+            "temperature".to_string(),
+            serde_json::json!(0.5),
+        )]));
         let result: Option<f32> = super::apply_defaults(None, &defaults, "temperature");
         assert_eq!(result, Some(0.5));
     }
@@ -905,7 +907,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["done"], true);
 
@@ -933,7 +937,13 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let content_type = resp.headers().get("content-type").unwrap().to_str().unwrap().to_string();
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         assert!(content_type.contains("application/x-ndjson"));
 
         std::env::remove_var("A3S_POWER_HOME");
@@ -962,7 +972,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["done"], true);
 

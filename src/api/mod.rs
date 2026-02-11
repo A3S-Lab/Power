@@ -40,7 +40,9 @@ mod tests {
     #[test]
     fn test_format_ollama_timestamp_specific() {
         use chrono::TimeZone;
-        let dt = chrono::Utc.with_ymd_and_hms(2024, 1, 15, 10, 30, 0).unwrap();
+        let dt = chrono::Utc
+            .with_ymd_and_hms(2024, 1, 15, 10, 30, 0)
+            .unwrap();
         let ts = format_ollama_timestamp(&dt);
         assert_eq!(ts, "2024-01-15T10:30:00.000000000Z");
     }

@@ -76,17 +76,13 @@ fn print_verbose_stats(stats: &GenerationStats) {
         eprintln!("prompt eval count:    {count} token(s){rate}");
     }
     if let Some(dur) = stats.prompt_eval_duration_ns {
-        eprintln!(
-            "prompt eval duration: {:.2}ms",
-            dur as f64 / 1_000_000.0
-        );
+        eprintln!("prompt eval duration: {:.2}ms", dur as f64 / 1_000_000.0);
     }
     eprintln!("eval count:           {} token(s)", stats.eval_count);
     let total_ms = stats.total_duration.as_secs_f64() * 1000.0;
     eprintln!("total duration:       {total_ms:.2}ms");
     if stats.eval_count > 0 {
-        let eval_rate =
-            stats.eval_count as f64 / stats.total_duration.as_secs_f64();
+        let eval_rate = stats.eval_count as f64 / stats.total_duration.as_secs_f64();
         eprintln!("eval rate:            {eval_rate:.2} tokens/s");
     }
 }
@@ -144,10 +140,7 @@ pub async fn execute_with_options(
     }
 
     // Parse --format flag into response_format value
-    let response_format = options
-        .format
-        .as_deref()
-        .and_then(parse_format_flag);
+    let response_format = options.format.as_deref().and_then(parse_format_flag);
 
     if let Some(prompt_text) = prompt {
         // Non-interactive: send a single prompt and print the streamed response
@@ -378,7 +371,10 @@ async fn interactive_chat(
             let rest = rest.trim();
             if rest == "verbose" {
                 session_verbose = !session_verbose;
-                println!("Verbose mode: {}\n", if session_verbose { "on" } else { "off" });
+                println!(
+                    "Verbose mode: {}\n",
+                    if session_verbose { "on" } else { "off" }
+                );
             } else if rest == "nowordwrap" {
                 wordwrap = false;
                 println!("Word wrap: off\n");
@@ -389,14 +385,17 @@ async fn interactive_chat(
                 let sys = sys.trim().trim_matches('"').to_string();
                 // Remove old system message and add new one
                 messages.retain(|m| m.role != "system");
-                messages.insert(0, ChatMessage {
-                    role: "system".to_string(),
-                    content: MessageContent::Text(sys.clone()),
-                    name: None,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    images: None,
-                });
+                messages.insert(
+                    0,
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: MessageContent::Text(sys.clone()),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        images: None,
+                    },
+                );
                 session_system = Some(sys);
                 println!("System prompt updated.\n");
             } else if let Some(fmt) = rest.strip_prefix("format ") {

@@ -233,17 +233,35 @@ mod tests {
         manifest.family = Some("llama".to_string());
         manifest.families = Some(vec!["llama".to_string(), "clip".to_string()]);
         manifest.messages = vec![
-            ManifestMessage { role: "user".to_string(), content: "hi".to_string() },
-            ManifestMessage { role: "assistant".to_string(), content: "hello".to_string() },
+            ManifestMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            },
+            ManifestMessage {
+                role: "assistant".to_string(),
+                content: "hello".to_string(),
+            },
         ];
 
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: ModelManifest = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.system_prompt.as_deref(), Some("You are helpful."));
-        assert_eq!(deserialized.template_override.as_deref(), Some("{{ .System }}"));
+        assert_eq!(
+            deserialized.system_prompt.as_deref(),
+            Some("You are helpful.")
+        );
+        assert_eq!(
+            deserialized.template_override.as_deref(),
+            Some("{{ .System }}")
+        );
         assert_eq!(deserialized.license.as_deref(), Some("MIT"));
-        assert_eq!(deserialized.adapter_path.as_deref(), Some("/tmp/adapter.bin"));
-        assert_eq!(deserialized.projector_path.as_deref(), Some("/tmp/projector.bin"));
+        assert_eq!(
+            deserialized.adapter_path.as_deref(),
+            Some("/tmp/adapter.bin")
+        );
+        assert_eq!(
+            deserialized.projector_path.as_deref(),
+            Some("/tmp/projector.bin")
+        );
         assert_eq!(deserialized.family.as_deref(), Some("llama"));
         assert_eq!(deserialized.families.as_ref().unwrap().len(), 2);
         assert_eq!(deserialized.messages.len(), 2);

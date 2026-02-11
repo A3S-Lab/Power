@@ -285,9 +285,9 @@ mod tests {
         let manifest = sample_manifest("ka-model");
         let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
 
-        let result = ensure_loaded_with_keep_alive(
-            &state, "ka-model", &manifest, &backend, Some("5m"),
-        ).await;
+        let result =
+            ensure_loaded_with_keep_alive(&state, "ka-model", &manifest, &backend, Some("5m"))
+                .await;
         assert!(result.is_ok());
         assert!(state.is_model_loaded("ka-model"));
     }
@@ -298,9 +298,9 @@ mod tests {
         let manifest = sample_manifest("zero-model");
         let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
 
-        let result = ensure_loaded_with_keep_alive(
-            &state, "zero-model", &manifest, &backend, Some("0"),
-        ).await;
+        let result =
+            ensure_loaded_with_keep_alive(&state, "zero-model", &manifest, &backend, Some("0"))
+                .await;
         assert!(result.is_ok());
         // keep_alive=0 should immediately unload
         assert!(!state.is_model_loaded("zero-model"));
@@ -313,11 +313,15 @@ mod tests {
         let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
 
         // First load
-        ensure_loaded(&state, "cached", &manifest, &backend).await.unwrap();
+        ensure_loaded(&state, "cached", &manifest, &backend)
+            .await
+            .unwrap();
         assert!(state.is_model_loaded("cached"));
 
         // Second call should be cache hit with zero duration
-        let result = ensure_loaded(&state, "cached", &manifest, &backend).await.unwrap();
+        let result = ensure_loaded(&state, "cached", &manifest, &backend)
+            .await
+            .unwrap();
         assert_eq!(result.load_duration, Duration::ZERO);
     }
 }

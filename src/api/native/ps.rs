@@ -122,10 +122,7 @@ mod tests {
         let models = json["models"].as_array().unwrap();
         assert_eq!(models.len(), 2);
 
-        let names: Vec<&str> = models
-            .iter()
-            .map(|m| m["name"].as_str().unwrap())
-            .collect();
+        let names: Vec<&str> = models.iter().map(|m| m["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"model-a"));
         assert!(names.contains(&"model-c"));
         assert!(!names.contains(&"model-b"));
