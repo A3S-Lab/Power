@@ -697,7 +697,10 @@ mod tests {
             .unwrap()
             .filter_map(|e| e.ok())
             .collect();
-        assert!(!manifest_files.is_empty(), "Manifest file should be written");
+        assert!(
+            !manifest_files.is_empty(),
+            "Manifest file should be written"
+        );
 
         std::env::remove_var("A3S_POWER_HOME");
     }

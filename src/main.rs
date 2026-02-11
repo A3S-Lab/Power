@@ -189,7 +189,8 @@ async fn main() -> anyhow::Result<()> {
                 let file_size = metadata.len();
 
                 // Copy/link the file into blob storage
-                let (blob_path, sha256) = a3s_power::model::storage::store_blob_from_path(&gguf_path)?;
+                let (blob_path, sha256) =
+                    a3s_power::model::storage::store_blob_from_path(&gguf_path)?;
 
                 (
                     a3s_power::model::manifest::ModelFormat::Gguf,

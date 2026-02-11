@@ -79,7 +79,8 @@ pub async fn handler(
                         .into_response();
                 }
             };
-            let (blob_path, sha256) = match crate::model::storage::store_blob_from_path(&gguf_path) {
+            let (blob_path, sha256) = match crate::model::storage::store_blob_from_path(&gguf_path)
+            {
                 Ok(p) => p,
                 Err(e) => {
                     return (

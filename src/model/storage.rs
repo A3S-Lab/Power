@@ -599,7 +599,12 @@ mod tests {
         assert!(!source_path.exists()); // renamed away
         let stored = std::fs::read(&blob_path).unwrap();
         assert_eq!(stored, b"rename me");
-        assert!(blob_path.file_name().unwrap().to_str().unwrap().starts_with("sha256-"));
+        assert!(blob_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("sha256-"));
         assert!(!hash.is_empty());
 
         std::env::remove_var("A3S_POWER_HOME");
