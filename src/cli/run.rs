@@ -29,6 +29,10 @@ pub struct RunOptions {
     pub verbose: bool,
     /// Skip TLS verification (reserved for future registry operations).
     pub insecure: bool,
+    /// Enable thinking/reasoning mode for supported models.
+    pub think: bool,
+    /// Hide thinking output (only show final response).
+    pub hidethinking: bool,
 }
 
 /// Execute the `run` command: load a model and start interactive chat.
@@ -209,6 +213,15 @@ pub async fn execute_with_options(
                 while let Some(chunk) = stream.next().await {
                     match chunk {
                         Ok(c) => {
+                            // Display thinking content with dim styling
+                            if !options.hidethinking {
+                                if let Some(ref thinking) = c.thinking_content {
+                                    if !thinking.is_empty() {
+                                        eprint!("\x1b[2m{}\x1b[0m", thinking);
+                                        io::stderr().flush().ok();
+                                    }
+                                }
+                            }
                             if !c.content.is_empty() {
                                 print!("{}", c.content);
                                 io::stdout().flush().ok();
@@ -550,6 +563,15 @@ async fn interactive_chat(
                 while let Some(chunk) = stream.next().await {
                     match chunk {
                         Ok(c) => {
+                            // Display thinking content with dim styling
+                            if !options.hidethinking {
+                                if let Some(ref thinking) = c.thinking_content {
+                                    if !thinking.is_empty() {
+                                        eprint!("\x1b[2m{}\x1b[0m", thinking);
+                                        io::stderr().flush().ok();
+                                    }
+                                }
+                            }
                             if !c.content.is_empty() {
                                 print!("{}", c.content);
                                 io::stdout().flush().ok();
@@ -728,6 +750,8 @@ mod tests {
             keep_alive: Some("10m".to_string()),
             verbose: true,
             insecure: true,
+            think: false,
+            hidethinking: false,
         };
         assert_eq!(opts.temperature, Some(0.7));
         assert_eq!(opts.format.as_deref(), Some("json"));
@@ -886,6 +910,8 @@ mod tests {
             keep_alive: Some("5m".to_string()),
             verbose: true,
             insecure: false,
+            think: true,
+            hidethinking: false,
         };
         let cloned = opts.clone();
         assert_eq!(opts.temperature, cloned.temperature);
@@ -965,6 +991,8 @@ mod tests {
             keep_alive: None,
             verbose: false,
             insecure: true,
+            think: false,
+            hidethinking: false,
         };
         assert_eq!(opts.temperature, Some(0.8));
         assert!(opts.top_p.is_none());

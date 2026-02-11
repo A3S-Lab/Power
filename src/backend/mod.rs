@@ -5,6 +5,7 @@ pub mod llamacpp;
 /// Test utilities for integration tests. Not part of the public API.
 #[doc(hidden)]
 pub mod test_utils;
+pub mod think_parser;
 pub mod tool_parser;
 pub mod types;
 

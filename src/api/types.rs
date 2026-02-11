@@ -125,6 +125,9 @@ pub struct ChatCompletionMessage {
     /// Base64-encoded images for multimodal models (Ollama-native format).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+    /// Reasoning/thinking content from reasoning models (Ollama native wire format).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 /// OpenAI-compatible chat completion response.
@@ -171,6 +174,9 @@ pub struct ChatDelta {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// Reasoning/thinking content from reasoning models (DeepSeek-R1, QwQ).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
 }
@@ -444,6 +450,9 @@ pub struct NativeChatRequest {
     pub keep_alive: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
+    /// Enable thinking/reasoning mode for supported models (DeepSeek-R1, QwQ).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub think: Option<bool>,
 }
 
 /// Ollama-compatible chat response.
@@ -736,6 +745,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     images: None,
+                    thinking: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -755,11 +765,13 @@ mod tests {
         let delta = ChatDelta {
             role: None,
             content: Some("hi".to_string()),
+            reasoning_content: None,
             tool_calls: None,
         };
         let json = serde_json::to_string(&delta).unwrap();
         assert!(!json.contains("role"));
         assert!(!json.contains("tool_calls"));
+        assert!(!json.contains("reasoning_content"));
         assert!(json.contains("hi"));
     }
 
@@ -768,6 +780,7 @@ mod tests {
         let delta = ChatDelta {
             role: Some("assistant".to_string()),
             content: None,
+            reasoning_content: None,
             tool_calls: Some(vec![ToolCall {
                 id: "call_1".to_string(),
                 tool_type: "function".to_string(),
@@ -1172,6 +1185,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             images: None,
+            thinking: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("images"));
@@ -1419,5 +1433,84 @@ mod tests {
         let json = serde_json::to_string(&fmt).unwrap();
         assert!(json.contains("json_object"));
         assert!(!json.contains("json_schema"));
+    }
+
+    #[test]
+    fn test_chat_delta_with_reasoning_content() {
+        let delta = ChatDelta {
+            role: None,
+            content: None,
+            reasoning_content: Some("Let me think...".to_string()),
+            tool_calls: None,
+        };
+        let json = serde_json::to_string(&delta).unwrap();
+        assert!(json.contains("reasoning_content"));
+        assert!(json.contains("Let me think..."));
+        assert!(!json.contains("\"content\""));
+    }
+
+    #[test]
+    fn test_chat_delta_reasoning_content_skipped_when_none() {
+        let delta = ChatDelta {
+            role: None,
+            content: Some("answer".to_string()),
+            reasoning_content: None,
+            tool_calls: None,
+        };
+        let json = serde_json::to_string(&delta).unwrap();
+        assert!(!json.contains("reasoning_content"));
+        assert!(json.contains("answer"));
+    }
+
+    #[test]
+    fn test_chat_message_thinking_field() {
+        let msg = ChatCompletionMessage {
+            role: "assistant".to_string(),
+            content: MessageContent::Text("answer".to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images: None,
+            thinking: Some("reasoning here".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"thinking\":\"reasoning here\""));
+        assert!(json.contains("answer"));
+    }
+
+    #[test]
+    fn test_chat_message_thinking_skipped_when_none() {
+        let msg = ChatCompletionMessage {
+            role: "assistant".to_string(),
+            content: MessageContent::Text("hello".to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images: None,
+            thinking: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("thinking"));
+    }
+
+    #[test]
+    fn test_native_chat_request_with_think() {
+        let json = r#"{
+            "model": "deepseek-r1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "think": true
+        }"#;
+        let req: NativeChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.think, Some(true));
+    }
+
+    #[test]
+    fn test_native_chat_request_think_defaults_to_none() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}]
+        }"#;
+        let req: NativeChatRequest = serde_json::from_str(json).unwrap();
+        assert!(req.think.is_none());
     }
 }

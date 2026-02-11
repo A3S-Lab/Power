@@ -50,6 +50,7 @@ a3s-power serve
 - **CLI Model Management**: Pull, list, show, delete, and push models from the command line
 - **Ollama Registry Integration**: Pull any model from `registry.ollama.ai` by name (`llama3.2:3b`) — primary resolution source with built-in registry and HuggingFace fallback
 - **Interactive Chat**: Multi-turn conversation with streaming token output
+- **Thinking & Reasoning**: Support for reasoning models (DeepSeek-R1, QwQ) — streaming `<think>` block parser separates thinking from content, exposed via `message.thinking` (native) and `delta.reasoning_content` (OpenAI)
 - **Vision/Multimodal Support**: Accept base64 images (Ollama `images` field) and image URLs (OpenAI `content` array format); projector auto-downloaded from Ollama registry; image processing requires vision model with projector (e.g. llava)
 - **Tool/Function Calling**: Structured tool definitions, tool choice, and tool call responses (OpenAI-compatible)
 - **JSON Schema Structured Output**: Constrain model output to match JSON Schema via GBNF grammar generation — supports `"json"`, `{"type":"json_object"}`, or full JSON Schema objects
@@ -63,6 +64,7 @@ a3s-power serve
 - **GPU Acceleration**: Configurable GPU layer offloading via `[gpu]` config section with automatic GPU detection (Metal/CUDA), multi-GPU support (`main_gpu`), and per-request `num_gpu` override
 - **GPU Auto-Detection**: Automatically detects Apple Metal and NVIDIA CUDA GPUs at server startup, sets optimal `gpu_layers` when not explicitly configured
 - **Memory Estimation**: Estimates VRAM requirements before loading a model (model weights + KV cache + compute overhead) and logs warnings
+- **Safe Context Size Default**: Defaults to 2048 context tokens when `num_ctx` is not specified, preventing OOM on resource-constrained machines (models like llama3.2 advertise 128K trained context which would exhaust memory). Override with `--num-ctx` or the `num_ctx` API field.
 - **Full Ollama Options**: All Ollama generation options supported — `repeat_last_n`, `penalize_newline`, `num_batch`, `num_thread`, `num_thread_batch`, `use_mmap`, `use_mlock`, `numa`, `flash_attention`, `num_gpu`, `main_gpu` — in addition to standard sampling parameters
 - **Embedding Support**: Real embedding generation with automatic model reload in embedding mode
 - **HTTP Server**: Axum-based server with CORS, tracing, and metrics middleware
@@ -103,6 +105,7 @@ a3s-power serve
 | Runner options | num_ctx, num_predict, num_batch, num_gpu, num_thread, use_mmap |
 | Keep-alive | String + numeric, per-request + global config, `"0"` / `"-1"` special values |
 | Tool/Function calling | Both native `/api/chat` and OpenAI `/v1/chat/completions`, XML/Mistral/JSON parsing |
+| Thinking & Reasoning | Streaming `<think>` block parser, `message.thinking` (native), `delta.reasoning_content` (OpenAI), `--think`/`--hidethinking` CLI |
 | JSON structured output | `"json"`, `{"type":"json_object"}`, full JSON Schema → GBNF grammar |
 | Ollama registry | Pull from `registry.ollama.ai` with template/system/params/license extraction |
 | KV cache reuse | Prefix matching across multi-turn requests |
@@ -121,9 +124,9 @@ a3s-power serve
 
 | Gap | Severity | Ollama Source | Description |
 |-----|----------|---------------|-------------|
-| `think` parameter | Critical | `api/types.go:109,173` | `ThinkValue` (bool or `"high"/"medium"/"low"`) in generate/chat requests — enables reasoning models (DeepSeek-R1, QwQ). Not implemented. |
-| `thinking` response field | Critical | `api/types.go:216,856` | `Message.Thinking` and `GenerateResponse.Thinking` — returns thinking content separately from response. Not implemented. |
-| Thinking parser | Critical | `thinking/parser.go` | Streaming parser that separates `<think>...</think>` blocks from content in real-time. Infers tags from template. Not implemented. |
+| `think` parameter | ✅ Done | `api/types.go:109,173` | `think: Option<bool>` in native chat requests. Enables reasoning mode for DeepSeek-R1, QwQ. |
+| `thinking` response field | ✅ Done | `api/types.go:216,856` | `Message.thinking` (native) and `ChatDelta.reasoning_content` (OpenAI) — returns thinking content separately from response. |
+| Thinking parser | ✅ Done | `thinking/parser.go` | Streaming state machine that separates `<think>...</think>` blocks from content across token boundaries. |
 | `logprobs` / `top_logprobs` | Important | `api/types.go:123-129,187-193` | Log probability support in generate/chat requests + `Logprob`/`TokenLogprob` response types. Not implemented. |
 | `truncate` field (generate/chat) | Important | `api/types.go:112,176` | Truncate prompt when exceeding context length instead of erroring. Not implemented. |
 | `shift` field (generate/chat) | Important | `api/types.go:117,180` | Shift context window when hitting limit instead of erroring. Not implemented. |
@@ -139,7 +142,7 @@ a3s-power serve
 | `POST /v1/messages` | Moderate | `routes.go:1617` | Anthropic Messages API compatibility via middleware. Not implemented. |
 | `POST /v1/images/generations` | Nice-to-have | `routes.go:1613` | Image generation endpoint. Not implemented. |
 | `POST /v1/images/edits` | Nice-to-have | `routes.go:1614` | Image editing endpoint. Not implemented. |
-| `reasoning` / `reasoning_effort` | Important | `openai/openai.go:94-96,112-113` | OpenAI reasoning effort (`"high"/"medium"/"low"`) mapped to `think`. Not implemented. |
+| `reasoning_content` | ✅ Done | `openai/openai.go:94-96,112-113` | Thinking content mapped to `delta.reasoning_content` in OpenAI streaming. `reasoning_effort` level mapping not yet implemented. |
 | `stream_options.include_usage` | Moderate | `openai/openai.go:90-92` | Return usage stats in final streaming chunk when requested. Not implemented. |
 | `encoding_format` (embeddings) | Moderate | `openai/openai.go:87` | `"float"` or `"base64"` encoding for embedding responses. Not implemented. |
 | `dimensions` (embeddings) | Moderate | `api/types.go:626` | Truncate output embeddings to specified dimension. Not implemented. |
@@ -197,8 +200,8 @@ a3s-power serve
 
 | Gap | Severity | Ollama Source | Description |
 |-----|----------|---------------|-------------|
-| `run --think` | Critical | `cmd/cmd.go:2069` | Enable thinking mode from CLI. Not implemented. |
-| `run --hidethinking` | Important | `cmd/cmd.go:2071` | Hide thinking output in CLI. Not implemented. |
+| `run --think` | ✅ Done | `cmd/cmd.go:2069` | Enable thinking mode from CLI. |
+| `run --hidethinking` | ✅ Done | `cmd/cmd.go:2071` | Hide thinking output in CLI (dim ANSI styling by default). |
 | `run --truncate` | Moderate | `cmd/cmd.go:2072` | Truncate embeddings input. Not implemented. |
 | `run --dimensions` | Moderate | `cmd/cmd.go:2073` | Truncate output embeddings dimension. Not implemented. |
 | `run --nowordwrap` | Nice-to-have | `cmd/cmd.go:2067` | Disable word wrapping in CLI. Not implemented. |
@@ -236,7 +239,7 @@ These are kept in a3s-power for backward compatibility but may diverge from Olla
 
 ### Test Coverage
 
-**888 unit tests** with **90.11% region coverage** across 59 source files:
+**890 unit tests** with **90.11% region coverage** across 59 source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -743,7 +746,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 888 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 890 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -942,7 +945,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **NDJSON Streaming**: Native API endpoints (`/api/generate`, `/api/chat`, `/api/pull`, `/api/push`) stream as `application/x-ndjson` (Ollama wire format); OpenAI endpoints keep SSE
 - [x] **Automatic Model Unloading**: Background keep_alive reaper checks every 5s and unloads idle models (configurable: `"5m"`, `"1h"`, `"0"`, `"-1"`)
 - [x] **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
-- [x] 888 comprehensive unit tests
+- [x] 890 comprehensive unit tests
 
 ### Phase 8: Advanced Compatibility ✅
 
@@ -953,7 +956,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **Vision Inference**: Multimodal vision pipeline — accepts base64 images in Ollama `images` field and OpenAI `image_url` content parts; projector auto-downloaded from Ollama registry; uses llama.cpp `mtmd` API for image encoding when projector available
 - [x] **ADAPTER Support**: LoRA/QLoRA adapter loading at inference time — Modelfile `ADAPTER` directive parsed, adapter file loaded via `llama_lora_adapter_init`, applied to context with `lora_adapter_set` at scale 1.0
 - [x] **MESSAGE Directive**: Pre-seeded conversation history via Modelfile `MESSAGE` directive; messages stored in manifest and automatically prepended to chat requests
-- [x] 888 comprehensive unit tests
+- [x] 890 comprehensive unit tests
 
 ### Phase 9: Operational Parity ✅
 
@@ -964,7 +967,7 @@ Runtime and CLI parity for production Ollama replacement:
 - [x] **`stop` CLI Command**: Unload a running model via `a3s-power stop <model>` (sends `keep_alive: 0`)
 - [x] **Ollama Environment Variables**: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_GPU` — override config file for container/script compatibility
 - [x] **Download Resumption**: Interrupted model downloads resume automatically via HTTP Range requests with partial file tracking
-- [x] 888 comprehensive unit tests
+- [x] 890 comprehensive unit tests
 
 ### Phase 10: Intelligence & Observability ✅
 
@@ -975,7 +978,7 @@ GPU auto-detection, memory estimation, verbose model inspection, and per-layer p
 - [x] **GGUF Metadata Reader**: Lightweight binary parser for GGUF v2/v3 file headers — extracts all key-value metadata and tensor descriptors without loading weights into memory
 - [x] **Verbose Show**: `/api/show` with `verbose: true` returns full GGUF metadata (architecture, context length, embedding dimensions, etc.) and tensor information (name, shape, type, element count)
 - [x] **Per-Layer Pull Progress**: Streaming pull progress shows per-layer digest identifiers (`pulling sha256:abc123...`) matching Ollama's output format; resolves model before download to extract layer digests
-- [x] 888 comprehensive unit tests
+- [x] 890 comprehensive unit tests
 
 ### Phase 11: Full Options Parity ✅
 
@@ -990,7 +993,7 @@ Complete Ollama generation options support and multi-GPU wiring:
 - [x] **Batch Size**: `num_batch` wired to `LlamaContextParams::with_n_batch()`
 - [x] **Repeat Penalty Window**: `repeat_last_n` wired to `LlamaSampler::penalties()` first argument (was hardcoded to 64)
 - [x] **Config Extensions**: Added `use_mlock`, `num_thread`, `flash_attention` to `PowerConfig` with TOML support
-- [x] 888 comprehensive unit tests
+- [x] 890 comprehensive unit tests
 
 ### Phase 12: CLI Run Options Parity ✅
 
@@ -1002,7 +1005,7 @@ Complete Ollama CLI `run` command options — all 14/14 options now implemented:
 - [x] **`--keep-alive`**: Model keep-alive duration (e.g. `"5m"`, `"1h"`, `"-1"` for never unload)
 - [x] **`--verbose`**: Show timing and token statistics after each generation (prompt eval count/rate, eval count, total duration, tokens/s)
 - [x] **`--insecure`**: Skip TLS verification flag for registry operations
-- [x] 888 comprehensive unit tests
+- [x] 890 comprehensive unit tests
 
 ### Phase 13: Environment Variables & CLI Polish ✅
 
@@ -1021,7 +1024,7 @@ Complete Ollama environment variable parity and CLI enhancements:
 - [x] **Interactive `/show`**: Display model name, message counts, and current settings
 - [x] **Interactive `"""`**: Multi-line input support with triple-quote delimiters
 - [x] **CORS Configuration**: Server respects `OLLAMA_ORIGINS` for restricted CORS; defaults to permissive
-- [x] 888 comprehensive unit tests
+- [x] 890 comprehensive unit tests
 
 ### Phase 14: Final Ollama Parity ✅
 
@@ -1031,18 +1034,18 @@ Complete remaining Ollama feature gaps — `help` subcommand, blob pruning, GPU 
 - [x] **Blob pruning**: `prune_unused_blobs()` removes orphaned blob files not referenced by any manifest; returns count and bytes freed
 - [x] **`OLLAMA_NOPRUNE`**: Disable automatic blob pruning (`"1"` or `"true"`)
 - [x] **`OLLAMA_SCHED_SPREAD`**: Spread model layers across all available GPUs (`"1"` or `"true"`)
-- [x] 888 comprehensive unit tests
+- [x] 920 comprehensive unit tests
 
-### Phase 15: Thinking & Reasoning 🚧
+### Phase 15: Thinking & Reasoning ✅
 
 Critical for DeepSeek-R1, QwQ, and other reasoning models:
 
-- [ ] **`think` parameter**: `ThinkValue` type (bool or `"high"/"medium"/"low"`) in generate/chat requests
-- [ ] **`thinking` response field**: Separate thinking content from response in `Message.thinking` and `GenerateResponse.thinking`
-- [ ] **Thinking parser**: Streaming parser that separates `<think>...</think>` blocks from content; infer tags from template
-- [ ] **`run --think` CLI flag**: Enable thinking mode from interactive chat
-- [ ] **`run --hidethinking` CLI flag**: Hide thinking output in CLI display
-- [ ] **OpenAI `reasoning` / `reasoning_effort`**: Map to `think` parameter in `/v1/chat/completions`
+- [x] **`think` parameter**: `think: Option<bool>` in native chat requests — enables reasoning mode
+- [x] **`thinking` response field**: Separate thinking content from response in `Message.thinking` (native) and `ChatDelta.reasoning_content` (OpenAI)
+- [x] **Thinking parser**: Streaming state machine that separates `<think>...</think>` blocks from content across token boundaries
+- [x] **`run --think` CLI flag**: Enable thinking mode from interactive chat
+- [x] **`run --hidethinking` CLI flag**: Hide thinking output in CLI display (dim ANSI styling by default)
+- [x] **OpenAI `reasoning_content`**: Thinking content mapped to `delta.reasoning_content` in `/v1/chat/completions` streaming
 
 ### Phase 16: Logprobs & Context Control 🚧
 

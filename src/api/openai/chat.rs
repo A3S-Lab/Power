@@ -128,6 +128,7 @@ pub async fn handler(
                         delta: ChatDelta {
                             role: Some("assistant".to_string()),
                             content: None,
+                            reasoning_content: None,
                             tool_calls: None,
                         },
                         finish_reason: None,
@@ -182,6 +183,11 @@ pub async fn handler(
                                     delta: ChatDelta {
                                         role: None,
                                         content: if c.done { None } else { Some(c.content) },
+                                        reasoning_content: if c.done {
+                                            None
+                                        } else {
+                                            c.thinking_content
+                                        },
                                         tool_calls: c.tool_calls,
                                     },
                                     finish_reason,
@@ -227,6 +233,7 @@ pub async fn handler(
                 // Non-streaming: collect full response
                 let start = Instant::now();
                 let mut full_content = String::new();
+                let mut full_thinking = String::new();
                 let mut completion_tokens: u32 = 0;
                 let mut prompt_tokens: u32 = 0;
                 let mut finish_reason = "stop".to_string();
@@ -236,6 +243,9 @@ pub async fn handler(
                     match chunk {
                         Ok(c) => {
                             full_content.push_str(&c.content);
+                            if let Some(ref t) = c.thinking_content {
+                                full_thinking.push_str(t);
+                            }
                             if !c.done {
                                 completion_tokens += 1;
                                 if !ttft_recorded {
@@ -296,6 +306,11 @@ pub async fn handler(
                             tool_calls: None,
                             tool_call_id: None,
                             images: None,
+                            thinking: if full_thinking.is_empty() {
+                                None
+                            } else {
+                                Some(full_thinking)
+                            },
                         },
                         finish_reason: Some(finish_reason),
                     }],

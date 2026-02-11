@@ -93,6 +93,8 @@ async fn main() -> anyhow::Result<()> {
             keep_alive,
             verbose,
             insecure,
+            think,
+            hidethinking,
         } => {
             // Merge --prompt flag and trailing positional args.
             // Priority: --prompt flag wins; otherwise join trailing args.
@@ -117,6 +119,8 @@ async fn main() -> anyhow::Result<()> {
                 keep_alive,
                 verbose,
                 insecure,
+                think,
+                hidethinking,
             };
             a3s_power::cli::run::execute_with_options(
                 &model,

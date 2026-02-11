@@ -230,6 +230,7 @@ pub async fn handler(
                                         tool_calls: c.tool_calls.clone(),
                                         tool_call_id: None,
                                         images: None,
+                                        thinking: c.thinking_content.clone(),
                                     },
                                     done: c.done,
                                     done_reason: c.done_reason,
@@ -259,6 +260,7 @@ pub async fn handler(
                                     tool_calls: None,
                                     tool_call_id: None,
                                     images: None,
+                                    thinking: None,
                                 },
                                 done: true,
                                 done_reason: None,
@@ -300,6 +302,7 @@ pub async fn handler(
                                 tool_calls: None,
                                 tool_call_id: None,
                                 images: None,
+                                thinking: None,
                             },
                             done: true,
                             done_reason: None,
@@ -324,6 +327,7 @@ pub async fn handler(
                 // Collect full response
                 let start = Instant::now();
                 let mut full_content = String::new();
+                let mut full_thinking = String::new();
                 let mut eval_count: u32 = 0;
                 let mut prompt_eval_count: Option<u32> = None;
                 let mut prompt_eval_duration: Option<u64> = None;
@@ -335,6 +339,9 @@ pub async fn handler(
                     match chunk {
                         Ok(c) => {
                             full_content.push_str(&c.content);
+                            if let Some(ref t) = c.thinking_content {
+                                full_thinking.push_str(t);
+                            }
                             if !c.done {
                                 eval_count += 1;
                                 if !ttft_recorded {
@@ -400,6 +407,11 @@ pub async fn handler(
                         tool_calls: last_tool_calls,
                         tool_call_id: None,
                         images: None,
+                        thinking: if full_thinking.is_empty() {
+                            None
+                        } else {
+                            Some(full_thinking)
+                        },
                     },
                     done: true,
                     done_reason,

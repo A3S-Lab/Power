@@ -89,6 +89,14 @@ pub enum Commands {
         /// Skip TLS verification for registry operations
         #[arg(long)]
         insecure: bool,
+
+        /// Enable thinking/reasoning mode for supported models (DeepSeek-R1, QwQ)
+        #[arg(long)]
+        think: bool,
+
+        /// Hide thinking output (only show final response)
+        #[arg(long)]
+        hidethinking: bool,
     },
 
     /// Download a model
@@ -711,6 +719,49 @@ mod tests {
                 assert_eq!(quantize.as_deref(), Some("q4_0"));
             }
             _ => panic!("Expected Create command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_with_think() {
+        let cli = Cli::parse_from(["a3s-power", "run", "deepseek-r1", "--think"]);
+        match cli.command {
+            Commands::Run {
+                model, think, hidethinking, ..
+            } => {
+                assert_eq!(model, "deepseek-r1");
+                assert!(think);
+                assert!(!hidethinking);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_with_hidethinking() {
+        let cli = Cli::parse_from(["a3s-power", "run", "deepseek-r1", "--think", "--hidethinking"]);
+        match cli.command {
+            Commands::Run {
+                think, hidethinking, ..
+            } => {
+                assert!(think);
+                assert!(hidethinking);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_think_defaults_false() {
+        let cli = Cli::parse_from(["a3s-power", "run", "llama3"]);
+        match cli.command {
+            Commands::Run {
+                think, hidethinking, ..
+            } => {
+                assert!(!think);
+                assert!(!hidethinking);
+            }
+            _ => panic!("Expected Run command"),
         }
     }
 }

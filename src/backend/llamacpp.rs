@@ -26,6 +26,13 @@ use super::types::{
 };
 use super::Backend;
 
+/// Default context size when `num_ctx` is not specified by the user.
+///
+/// Matches Ollama's default. Using the model's full `n_ctx_train` (e.g. 128K for
+/// llama3.2) would allocate a massive KV cache that can OOM on machines with
+/// limited memory. Users can override with `--num-ctx` or the `num_ctx` API field.
+const DEFAULT_CTX_SIZE: u32 = 2048;
+
 /// Whether a model was loaded for inference or embedding.
 #[cfg(feature = "llamacpp")]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -402,11 +409,12 @@ impl Backend for LlamaCppBackend {
         // Get completion stream from the underlying complete() method
         let stream = self.complete(model_name, completion_req).await?;
 
-        // Map CompletionResponseChunk -> ChatResponseChunk with tool call detection
+        // Map CompletionResponseChunk -> ChatResponseChunk with tool call and think block detection
         use futures::StreamExt;
         let collected_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let text_clone = collected_text.clone();
         let has_tools = request.tools.is_some();
+        let mut think_parser = super::think_parser::ThinkBlockParser::new();
         let chat_stream = stream.map(move |chunk_result| {
             chunk_result.map(|chunk| {
                 // Accumulate text for tool call detection
@@ -415,6 +423,26 @@ impl Backend for LlamaCppBackend {
                         t.push_str(&chunk.text);
                     }
                 }
+
+                // Parse think blocks from the token stream
+                let (content, thinking) = if chunk.done {
+                    let (mut c, mut t) = think_parser.flush();
+                    // Prepend any remaining text from the final chunk
+                    if !chunk.text.is_empty() {
+                        let (fc, ft) = think_parser.feed(&chunk.text);
+                        c = fc + &c;
+                        t = ft + &t;
+                    }
+                    (c, t)
+                } else {
+                    think_parser.feed(&chunk.text)
+                };
+
+                let thinking_content = if thinking.is_empty() {
+                    None
+                } else {
+                    Some(thinking)
+                };
 
                 // On the final chunk, try to parse tool calls from accumulated text
                 let tool_calls = if chunk.done && has_tools {
@@ -425,7 +453,8 @@ impl Backend for LlamaCppBackend {
                 };
 
                 ChatResponseChunk {
-                    content: chunk.text,
+                    content,
+                    thinking_content,
                     done: chunk.done,
                     prompt_tokens: chunk.prompt_tokens,
                     done_reason: if tool_calls.is_some() && chunk.done {
@@ -479,14 +508,27 @@ impl Backend for LlamaCppBackend {
         let repeat_last_n = request.repeat_last_n.unwrap_or(64);
         let _penalize_newline = request.penalize_newline.unwrap_or(true);
         let seed = request.seed.unwrap_or(0).max(0) as u32;
-        let ctx_size = request.num_ctx.unwrap_or(model_n_ctx_train);
-        if ctx_size > model_n_ctx_train {
-            tracing::warn!(
-                requested = ctx_size,
-                trained = model_n_ctx_train,
-                "Requested context size exceeds model's trained context length, quality may degrade"
-            );
-        }
+        let ctx_size = match request.num_ctx {
+            Some(requested) => {
+                if requested > model_n_ctx_train {
+                    tracing::warn!(
+                        requested = requested,
+                        trained = model_n_ctx_train,
+                        "Requested context size exceeds model's trained context length, quality may degrade"
+                    );
+                }
+                requested
+            }
+            None => {
+                let effective = DEFAULT_CTX_SIZE.min(model_n_ctx_train);
+                tracing::info!(
+                    default = effective,
+                    trained = model_n_ctx_train,
+                    "Using default context size (override with num_ctx or --num-ctx)"
+                );
+                effective
+            }
+        };
         let num_batch = request.num_batch;
         let num_thread = request.num_thread;
         let num_thread_batch = request.num_thread_batch;
@@ -606,7 +648,9 @@ impl Backend for LlamaCppBackend {
             }
 
             if !tokens_to_eval.is_empty() {
-                let mut batch = LlamaBatch::new(ctx_size as usize, 1);
+                // Allocate batch only for the tokens we need to evaluate, not the full context.
+                let batch_size = tokens_to_eval.len().max(1);
+                let mut batch = LlamaBatch::new(batch_size, 1);
                 for (i, &token) in tokens_to_eval.iter().enumerate() {
                     let pos = (skip_tokens + i) as i32;
                     let is_last = i == tokens_to_eval.len() - 1;
@@ -1213,5 +1257,19 @@ mod tests {
         let config = PowerConfig::default();
         let backend = LlamaCppBackend::new(Arc::new(config));
         assert_eq!(backend.config.gpu.gpu_layers, 0);
+    }
+
+    #[test]
+    fn test_default_ctx_size_is_2048() {
+        // Matches Ollama's default to prevent OOM on resource-constrained machines.
+        assert_eq!(DEFAULT_CTX_SIZE, 2048);
+    }
+
+    #[test]
+    fn test_default_ctx_size_less_than_large_model_ctx() {
+        // Models like llama3.2 have n_ctx_train = 131072 (128K).
+        // DEFAULT_CTX_SIZE must be much smaller to avoid OOM.
+        assert!(DEFAULT_CTX_SIZE < 131072);
+        assert!(DEFAULT_CTX_SIZE <= 8192);
     }
 }

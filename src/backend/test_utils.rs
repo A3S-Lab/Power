@@ -18,6 +18,8 @@ use crate::server::state::AppState;
 /// A mock backend for testing handlers without real inference.
 pub struct MockBackend {
     load_succeeds: bool,
+    /// When true, chat() emits chunks simulating `<think>reasoning</think>answer`.
+    emit_thinking: bool,
 }
 
 impl MockBackend {
@@ -25,6 +27,7 @@ impl MockBackend {
     pub fn success() -> Self {
         Self {
             load_succeeds: true,
+            emit_thinking: false,
         }
     }
 
@@ -32,6 +35,15 @@ impl MockBackend {
     pub fn load_fails() -> Self {
         Self {
             load_succeeds: false,
+            emit_thinking: false,
+        }
+    }
+
+    /// Create a mock backend that emits thinking content in chat responses.
+    pub fn with_thinking() -> Self {
+        Self {
+            load_succeeds: true,
+            emit_thinking: true,
         }
     }
 }
@@ -63,24 +75,58 @@ impl Backend for MockBackend {
         _model_name: &str,
         _request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
-        let chunks = vec![
-            Ok(ChatResponseChunk {
-                content: "Hello".to_string(),
-                done: false,
-                prompt_tokens: None,
-                done_reason: None,
-                prompt_eval_duration_ns: None,
-                tool_calls: None,
-            }),
-            Ok(ChatResponseChunk {
-                content: "".to_string(),
-                done: true,
-                prompt_tokens: Some(5),
-                done_reason: Some("stop".to_string()),
-                prompt_eval_duration_ns: Some(1_000_000),
-                tool_calls: None,
-            }),
-        ];
+        let chunks = if self.emit_thinking {
+            vec![
+                Ok(ChatResponseChunk {
+                    content: "".to_string(),
+                    thinking_content: Some("Let me think about this.".to_string()),
+                    done: false,
+                    prompt_tokens: None,
+                    done_reason: None,
+                    prompt_eval_duration_ns: None,
+                    tool_calls: None,
+                }),
+                Ok(ChatResponseChunk {
+                    content: "The answer is 42.".to_string(),
+                    thinking_content: None,
+                    done: false,
+                    prompt_tokens: None,
+                    done_reason: None,
+                    prompt_eval_duration_ns: None,
+                    tool_calls: None,
+                }),
+                Ok(ChatResponseChunk {
+                    content: "".to_string(),
+                    thinking_content: None,
+                    done: true,
+                    prompt_tokens: Some(5),
+                    done_reason: Some("stop".to_string()),
+                    prompt_eval_duration_ns: Some(1_000_000),
+                    tool_calls: None,
+                }),
+            ]
+        } else {
+            vec![
+                Ok(ChatResponseChunk {
+                    content: "Hello".to_string(),
+                    thinking_content: None,
+                    done: false,
+                    prompt_tokens: None,
+                    done_reason: None,
+                    prompt_eval_duration_ns: None,
+                    tool_calls: None,
+                }),
+                Ok(ChatResponseChunk {
+                    content: "".to_string(),
+                    thinking_content: None,
+                    done: true,
+                    prompt_tokens: Some(5),
+                    done_reason: Some("stop".to_string()),
+                    prompt_eval_duration_ns: Some(1_000_000),
+                    tool_calls: None,
+                }),
+            ]
+        };
         Ok(Box::pin(futures::stream::iter(chunks)))
     }
 
@@ -229,5 +275,63 @@ mod tests {
         assert!(!first.done);
         let second = stream.next().await.unwrap().unwrap();
         assert!(second.done);
+    }
+
+    #[tokio::test]
+    async fn test_mock_backend_with_thinking() {
+        use futures::StreamExt;
+
+        let mock = MockBackend::with_thinking();
+        let request = ChatRequest {
+            messages: vec![],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop: None,
+            stream: false,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
+        };
+        let mut stream = mock.chat("test", request).await.unwrap();
+
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.content, "");
+        assert_eq!(
+            first.thinking_content.as_deref(),
+            Some("Let me think about this.")
+        );
+        assert!(!first.done);
+
+        let second = stream.next().await.unwrap().unwrap();
+        assert_eq!(second.content, "The answer is 42.");
+        assert!(second.thinking_content.is_none());
+        assert!(!second.done);
+
+        let third = stream.next().await.unwrap().unwrap();
+        assert!(third.done);
+        assert_eq!(third.done_reason.as_deref(), Some("stop"));
     }
 }

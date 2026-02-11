@@ -219,6 +219,10 @@ pub struct ChatRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponseChunk {
     pub content: String,
+    /// Reasoning/thinking content from models like DeepSeek-R1, QwQ.
+    /// Populated when the model emits `<think>...</think>` blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_content: Option<String>,
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_tokens: Option<u32>,
@@ -440,6 +444,7 @@ mod tests {
     fn test_chat_response_chunk() {
         let chunk = ChatResponseChunk {
             content: "hi".to_string(),
+            thinking_content: None,
             done: false,
             prompt_tokens: None,
             done_reason: None,
@@ -453,12 +458,14 @@ mod tests {
         assert!(!json.contains("prompt_tokens"));
         assert!(!json.contains("done_reason"));
         assert!(!json.contains("tool_calls"));
+        assert!(!json.contains("thinking_content"));
     }
 
     #[test]
     fn test_chat_response_chunk_with_tool_calls() {
         let chunk = ChatResponseChunk {
             content: String::new(),
+            thinking_content: None,
             done: true,
             prompt_tokens: Some(10),
             done_reason: Some("tool_calls".to_string()),
