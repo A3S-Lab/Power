@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="#features">Features</a> •
+  <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#api-reference">API Reference</a> •
@@ -369,17 +370,48 @@ pub trait Backend: Send + Sync {
 }
 ```
 
-## Quick Start
+## Installation
 
-### Build
+### Homebrew (macOS)
 
 ```bash
-# Build without inference backend (model management only)
-cargo build -p a3s-power
-
-# Build with llama.cpp inference (requires C++ compiler + CMake)
-cargo build -p a3s-power --features llamacpp
+brew install a3s-lab/tap/a3s-power
 ```
+
+### Cargo (cross-platform)
+
+```bash
+# Model management only
+cargo install a3s-power
+
+# With llama.cpp inference backend (requires C++ compiler + CMake)
+cargo install a3s-power --features llamacpp
+```
+
+### Pre-built Binary (macOS Apple Silicon)
+
+```bash
+curl -LO https://github.com/A3S-Lab/Power/releases/download/v0.1.2/a3s-power-v0.1.2-aarch64-apple-darwin.tar.gz
+tar xzf a3s-power-v0.1.2-aarch64-apple-darwin.tar.gz
+sudo mv a3s-power /usr/local/bin/
+```
+
+### Build from Source
+
+```bash
+git clone https://github.com/A3S-Lab/Power.git
+cd Power
+
+# Without inference backend (model management only)
+cargo build --release
+
+# With llama.cpp inference (requires C++ compiler + CMake)
+cargo build --release --features llamacpp
+
+# Binary at target/release/a3s-power
+```
+
+## Quick Start
 
 ### Model Management
 
