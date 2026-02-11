@@ -727,7 +727,10 @@ mod tests {
         let cli = Cli::parse_from(["a3s-power", "run", "deepseek-r1", "--think"]);
         match cli.command {
             Commands::Run {
-                model, think, hidethinking, ..
+                model,
+                think,
+                hidethinking,
+                ..
             } => {
                 assert_eq!(model, "deepseek-r1");
                 assert!(think);
@@ -739,10 +742,18 @@ mod tests {
 
     #[test]
     fn test_parse_run_with_hidethinking() {
-        let cli = Cli::parse_from(["a3s-power", "run", "deepseek-r1", "--think", "--hidethinking"]);
+        let cli = Cli::parse_from([
+            "a3s-power",
+            "run",
+            "deepseek-r1",
+            "--think",
+            "--hidethinking",
+        ]);
         match cli.command {
             Commands::Run {
-                think, hidethinking, ..
+                think,
+                hidethinking,
+                ..
             } => {
                 assert!(think);
                 assert!(hidethinking);
@@ -756,7 +767,9 @@ mod tests {
         let cli = Cli::parse_from(["a3s-power", "run", "llama3"]);
         match cli.command {
             Commands::Run {
-                think, hidethinking, ..
+                think,
+                hidethinking,
+                ..
             } => {
                 assert!(!think);
                 assert!(!hidethinking);
