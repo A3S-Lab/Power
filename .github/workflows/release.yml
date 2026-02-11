@@ -1,0 +1,212 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build release assets for"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: a3s-power
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package binary
+        id: package
+        run: |
+          TAG="${{ steps.tag.outputs.version }}"
+          ARCHIVE="${BINARY_NAME}-${TAG}-${{ matrix.target }}.tar.gz"
+          cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
+          tar czf "${ARCHIVE}" "${BINARY_NAME}"
+          shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release/ \;
+          ls -lh release/
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.version }}"
+
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            echo "Release ${TAG} exists — uploading assets (overwriting duplicates)..."
+            gh release upload "${TAG}" release/* --clobber
+          else
+            echo "Creating release ${TAG}..."
+            gh release create "${TAG}" release/* \
+              --title "${TAG}" \
+              --generate-notes
+          fi
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Determine tag
+        id: tag
+        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute SHA256 values
+        id: sha
+        run: |
+          TAG="${{ steps.tag.outputs.version }}"
+          VERSION="${TAG#v}"
+          for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            ARCHIVE="a3s-power-${TAG}-${target}.tar.gz"
+            SHA=$(sha256sum "artifacts/${target}/${ARCHIVE}" | awk '{print $1}')
+            KEY=$(echo "${target}" | tr '-' '_')
+            echo "${KEY}=${SHA}" >> "$GITHUB_OUTPUT"
+          done
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          SHA_AARCH64_DARWIN: ${{ steps.sha.outputs.aarch64_apple_darwin }}
+          SHA_X86_64_DARWIN: ${{ steps.sha.outputs.x86_64_apple_darwin }}
+          SHA_AARCH64_LINUX: ${{ steps.sha.outputs.aarch64_unknown_linux_gnu }}
+          SHA_X86_64_LINUX: ${{ steps.sha.outputs.x86_64_unknown_linux_gnu }}
+        run: |
+          TAG="${{ steps.tag.outputs.version }}"
+          VERSION="${{ steps.sha.outputs.version }}"
+
+          git clone https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/homebrew-tap.git tap
+          cd tap
+
+          cat > Formula/a3s-power.rb <<FORMULA
+          class A3sPower < Formula
+            desc "Local model management and serving with OpenAI-compatible API"
+            homepage "https://github.com/A3S-Lab/Power"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/A3S-Lab/Power/releases/download/${TAG}/a3s-power-${TAG}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_AARCH64_DARWIN}"
+              end
+              on_intel do
+                url "https://github.com/A3S-Lab/Power/releases/download/${TAG}/a3s-power-${TAG}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_X86_64_DARWIN}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/A3S-Lab/Power/releases/download/${TAG}/a3s-power-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_AARCH64_LINUX}"
+              end
+              on_intel do
+                url "https://github.com/A3S-Lab/Power/releases/download/${TAG}/a3s-power-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_X86_64_LINUX}"
+              end
+            end
+
+            def install
+              bin.install "a3s-power"
+            end
+
+            test do
+              assert_match "a3s-power", shell_output("#{bin}/a3s-power --version")
+            end
+          end
+          FORMULA
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/a3s-power.rb
+          git commit -m "chore: update a3s-power to ${TAG}"
+          git push
