@@ -235,7 +235,7 @@ These are kept in a3s-power for backward compatibility but may diverge from Olla
 
 ### Test Coverage
 
-**861 unit tests** with **90.11% region coverage** across 59 source files:
+**878 unit tests** with **90.11% region coverage** across 59 source files:
 
 | Module | Lines | Coverage | Functions | Coverage |
 |--------|-------|----------|-----------|----------|
@@ -711,7 +711,7 @@ cargo build -p a3s-power --release                 # Release build
 cargo build -p a3s-power --features llamacpp       # With llama.cpp
 
 # Test
-cargo test -p a3s-power --lib -- --test-threads=1  # All 861 tests
+cargo test -p a3s-power --lib -- --test-threads=1  # All 878 tests
 
 # Lint
 cargo clippy -p a3s-power -- -D warnings           # Clippy
@@ -910,7 +910,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **NDJSON Streaming**: Native API endpoints (`/api/generate`, `/api/chat`, `/api/pull`, `/api/push`) stream as `application/x-ndjson` (Ollama wire format); OpenAI endpoints keep SSE
 - [x] **Automatic Model Unloading**: Background keep_alive reaper checks every 5s and unloads idle models (configurable: `"5m"`, `"1h"`, `"0"`, `"-1"`)
 - [x] **Context Token Return**: `/api/generate` returns token IDs in `context` field for conversation continuity
-- [x] 861 comprehensive unit tests
+- [x] 878 comprehensive unit tests
 
 ### Phase 8: Advanced Compatibility ✅
 
@@ -921,7 +921,7 @@ Wire-format and runtime compatibility for seamless Ollama replacement:
 - [x] **Vision Inference**: Multimodal vision pipeline — accepts base64 images in Ollama `images` field and OpenAI `image_url` content parts; projector auto-downloaded from Ollama registry; uses llama.cpp `mtmd` API for image encoding when projector available
 - [x] **ADAPTER Support**: LoRA/QLoRA adapter loading at inference time — Modelfile `ADAPTER` directive parsed, adapter file loaded via `llama_lora_adapter_init`, applied to context with `lora_adapter_set` at scale 1.0
 - [x] **MESSAGE Directive**: Pre-seeded conversation history via Modelfile `MESSAGE` directive; messages stored in manifest and automatically prepended to chat requests
-- [x] 861 comprehensive unit tests
+- [x] 878 comprehensive unit tests
 
 ### Phase 9: Operational Parity ✅
 
@@ -932,7 +932,7 @@ Runtime and CLI parity for production Ollama replacement:
 - [x] **`stop` CLI Command**: Unload a running model via `a3s-power stop <model>` (sends `keep_alive: 0`)
 - [x] **Ollama Environment Variables**: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_GPU` — override config file for container/script compatibility
 - [x] **Download Resumption**: Interrupted model downloads resume automatically via HTTP Range requests with partial file tracking
-- [x] 861 comprehensive unit tests
+- [x] 878 comprehensive unit tests
 
 ### Phase 10: Intelligence & Observability ✅
 
@@ -943,7 +943,7 @@ GPU auto-detection, memory estimation, verbose model inspection, and per-layer p
 - [x] **GGUF Metadata Reader**: Lightweight binary parser for GGUF v2/v3 file headers — extracts all key-value metadata and tensor descriptors without loading weights into memory
 - [x] **Verbose Show**: `/api/show` with `verbose: true` returns full GGUF metadata (architecture, context length, embedding dimensions, etc.) and tensor information (name, shape, type, element count)
 - [x] **Per-Layer Pull Progress**: Streaming pull progress shows per-layer digest identifiers (`pulling sha256:abc123...`) matching Ollama's output format; resolves model before download to extract layer digests
-- [x] 861 comprehensive unit tests
+- [x] 878 comprehensive unit tests
 
 ### Phase 11: Full Options Parity ✅
 
@@ -958,7 +958,7 @@ Complete Ollama generation options support and multi-GPU wiring:
 - [x] **Batch Size**: `num_batch` wired to `LlamaContextParams::with_n_batch()`
 - [x] **Repeat Penalty Window**: `repeat_last_n` wired to `LlamaSampler::penalties()` first argument (was hardcoded to 64)
 - [x] **Config Extensions**: Added `use_mlock`, `num_thread`, `flash_attention` to `PowerConfig` with TOML support
-- [x] 861 comprehensive unit tests
+- [x] 878 comprehensive unit tests
 
 ### Phase 12: CLI Run Options Parity ✅
 
@@ -970,7 +970,7 @@ Complete Ollama CLI `run` command options — all 14/14 options now implemented:
 - [x] **`--keep-alive`**: Model keep-alive duration (e.g. `"5m"`, `"1h"`, `"-1"` for never unload)
 - [x] **`--verbose`**: Show timing and token statistics after each generation (prompt eval count/rate, eval count, total duration, tokens/s)
 - [x] **`--insecure`**: Skip TLS verification flag for registry operations
-- [x] 861 comprehensive unit tests
+- [x] 878 comprehensive unit tests
 
 ### Phase 13: Environment Variables & CLI Polish ✅
 
@@ -989,7 +989,7 @@ Complete Ollama environment variable parity and CLI enhancements:
 - [x] **Interactive `/show`**: Display model name, message counts, and current settings
 - [x] **Interactive `"""`**: Multi-line input support with triple-quote delimiters
 - [x] **CORS Configuration**: Server respects `OLLAMA_ORIGINS` for restricted CORS; defaults to permissive
-- [x] 861 comprehensive unit tests
+- [x] 878 comprehensive unit tests
 
 ### Phase 14: Final Ollama Parity ✅
 
@@ -999,7 +999,7 @@ Complete remaining Ollama feature gaps — `help` subcommand, blob pruning, GPU 
 - [x] **Blob pruning**: `prune_unused_blobs()` removes orphaned blob files not referenced by any manifest; returns count and bytes freed
 - [x] **`OLLAMA_NOPRUNE`**: Disable automatic blob pruning (`"1"` or `"true"`)
 - [x] **`OLLAMA_SCHED_SPREAD`**: Spread model layers across all available GPUs (`"1"` or `"true"`)
-- [x] 861 comprehensive unit tests
+- [x] 878 comprehensive unit tests
 
 ### Phase 15: Thinking & Reasoning 🚧
 
