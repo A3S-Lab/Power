@@ -56,8 +56,8 @@ axum-extra = { version = "0.9", features = ["typed-header"] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
-# HTTP client (for model downloads)
-reqwest = { version = "0.12", features = ["stream", "json"] }
+# HTTP client (for model downloads, rustls for cross-compilation)
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
 
 # Progress reporting
 indicatif = "0.17"
