@@ -276,7 +276,7 @@ PARAMETER stop "<|eot_id|>"
 "#;
         let mf = parse(content).unwrap();
         assert_eq!(mf.stop, vec!["<|end|>", "<|eot_id|>"]);
-        assert!(mf.parameters.get("stop").is_none());
+        assert!(!mf.parameters.contains_key("stop"));
     }
 
     #[test]

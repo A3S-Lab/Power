@@ -138,7 +138,7 @@ fn read_metadata_from_reader<R: Read + Seek>(reader: &mut R) -> Result<GgufMetad
 
     // 2. Read version
     let version = read_u32(reader)?;
-    if version < 2 || version > 3 {
+    if !(2..=3).contains(&version) {
         return Err(PowerError::Config(format!(
             "Unsupported GGUF version {version} (supported: 2, 3)"
         )));
@@ -729,7 +729,7 @@ mod tests {
         buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
         buf.extend_from_slice(key);
         buf.extend_from_slice(&6u32.to_le_bytes()); // type = float32
-        buf.extend_from_slice(&3.14f32.to_le_bytes());
+        buf.extend_from_slice(&std::f32::consts::PI.to_le_bytes());
 
         // KV: bool
         let key = b"test.bool";
@@ -750,7 +750,7 @@ mod tests {
         buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
         buf.extend_from_slice(key);
         buf.extend_from_slice(&12u32.to_le_bytes()); // type = float64
-        buf.extend_from_slice(&2.718281828f64.to_le_bytes());
+        buf.extend_from_slice(&std::f64::consts::E.to_le_bytes());
 
         buf
     }
@@ -788,7 +788,7 @@ mod tests {
             other => panic!("Expected Int32(-99999), got: {other:?}"),
         }
         match meta.metadata.get("test.float32") {
-            Some(GgufValue::Float32(v)) => assert!((v - 3.14).abs() < 0.001),
+            Some(GgufValue::Float32(v)) => assert!((v - std::f32::consts::PI).abs() < 0.001),
             other => panic!("Expected Float32(~3.14), got: {other:?}"),
         }
         match meta.metadata.get("test.bool") {
@@ -800,7 +800,7 @@ mod tests {
             other => panic!("Expected Int64(-123456789), got: {other:?}"),
         }
         match meta.metadata.get("test.float64") {
-            Some(GgufValue::Float64(v)) => assert!((v - 2.718281828).abs() < 0.0001),
+            Some(GgufValue::Float64(v)) => assert!((v - std::f64::consts::E).abs() < 0.0001),
             other => panic!("Expected Float64(~2.718), got: {other:?}"),
         }
     }
@@ -991,7 +991,7 @@ mod tests {
         assert_eq!(est.context_size, 2048);
         assert!(est.kv_cache_size > 0);
         assert!(est.model_size > 0);
-        assert!(est.total_display().len() > 0);
+        assert!(!est.total_display().is_empty());
     }
 
     #[test]

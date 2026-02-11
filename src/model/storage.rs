@@ -92,8 +92,10 @@ pub fn compute_sha256_file(path: &std::path::Path) -> Result<String> {
 
 /// Store a local file into the content-addressed blob store by copying it.
 ///
-/// Returns the blob path in the store.
-pub fn store_blob_from_path(source: &std::path::Path) -> Result<PathBuf> {
+/// Returns the blob path and SHA-256 hash. Uses streaming hash computation
+/// so it works with arbitrarily large files without loading them into memory.
+/// The source file is NOT modified or deleted.
+pub fn store_blob_from_path(source: &std::path::Path) -> Result<(PathBuf, String)> {
     let blob_dir = dirs::blobs_dir();
     std::fs::create_dir_all(&blob_dir)?;
 
@@ -110,7 +112,39 @@ pub fn store_blob_from_path(source: &std::path::Path) -> Result<PathBuf> {
         })?;
     }
 
-    Ok(blob_path)
+    Ok((blob_path, hash))
+}
+
+/// Move a temporary file into the content-addressed blob store.
+///
+/// Like `store_blob_from_path`, but tries to rename (move) the source file
+/// instead of copying, which is much faster for large files on the same
+/// filesystem. The source file is removed after a successful store.
+pub fn store_blob_from_temp(source: &std::path::Path) -> Result<(PathBuf, String)> {
+    let blob_dir = dirs::blobs_dir();
+    std::fs::create_dir_all(&blob_dir)?;
+
+    let hash = compute_sha256_file(source)?;
+    let blob_name = format!("sha256-{hash}");
+    let blob_path = blob_dir.join(&blob_name);
+
+    if !blob_path.exists() {
+        // Try rename first (fast, same filesystem), fall back to copy
+        if std::fs::rename(source, &blob_path).is_err() {
+            std::fs::copy(source, &blob_path).map_err(|e| {
+                PowerError::Io(std::io::Error::other(format!(
+                    "Failed to copy '{}' to blob store: {e}",
+                    source.display()
+                )))
+            })?;
+            let _ = std::fs::remove_file(source);
+        }
+    } else {
+        // Blob already exists, just clean up the temp source
+        let _ = std::fs::remove_file(source);
+    }
+
+    Ok((blob_path, hash))
 }
 
 /// Remove blob files that are not referenced by any model manifest.
@@ -455,7 +489,7 @@ mod tests {
         let source_path = source_dir.path().join("model.gguf");
         std::fs::write(&source_path, b"fake gguf data").unwrap();
 
-        let blob_path = store_blob_from_path(&source_path).unwrap();
+        let (blob_path, _hash) = store_blob_from_path(&source_path).unwrap();
         assert!(blob_path.exists());
 
         // Verify content matches
@@ -479,9 +513,153 @@ mod tests {
         let source_path = source_dir.path().join("model.gguf");
         std::fs::write(&source_path, b"same content").unwrap();
 
-        let path1 = store_blob_from_path(&source_path).unwrap();
-        let path2 = store_blob_from_path(&source_path).unwrap();
+        let (path1, _) = store_blob_from_path(&source_path).unwrap();
+        let (path2, _) = store_blob_from_path(&source_path).unwrap();
         assert_eq!(path1, path2);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    // ========================================================================
+    // store_blob_from_temp integration tests
+    // ========================================================================
+
+    #[test]
+    #[serial]
+    fn test_store_blob_from_temp_moves_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let source_dir = tempfile::tempdir().unwrap();
+        let source_path = source_dir.path().join("partial-abc123");
+        std::fs::write(&source_path, b"large model data").unwrap();
+        assert!(source_path.exists());
+
+        let (blob_path, hash) = store_blob_from_temp(&source_path).unwrap();
+
+        // Blob should exist with correct content
+        assert!(blob_path.exists());
+        let stored = std::fs::read(&blob_path).unwrap();
+        assert_eq!(stored, b"large model data");
+
+        // Hash should be valid hex
+        assert!(!hash.is_empty());
+        let filename = blob_path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(filename, format!("sha256-{hash}"));
+
+        // Source temp file should be gone (renamed or deleted)
+        assert!(!source_path.exists());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_store_blob_from_temp_dedup_cleans_source() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // First: store via normal path to create the blob
+        let source_dir = tempfile::tempdir().unwrap();
+        let source1 = source_dir.path().join("original.bin");
+        std::fs::write(&source1, b"dedup content").unwrap();
+        let (blob_path, _) = store_blob_from_path(&source1).unwrap();
+        assert!(blob_path.exists());
+
+        // Second: store_blob_from_temp with same content — blob already exists
+        let source2 = source_dir.path().join("partial-duplicate");
+        std::fs::write(&source2, b"dedup content").unwrap();
+        let (blob_path2, hash2) = store_blob_from_temp(&source2).unwrap();
+
+        // Should return same blob path
+        assert_eq!(blob_path, blob_path2);
+        assert!(!hash2.is_empty());
+
+        // Temp source should be cleaned up even though blob already existed
+        assert!(!source2.exists());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_store_blob_from_temp_same_dir_uses_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // Create blobs dir and put the temp file directly in it (same filesystem)
+        let blobs_dir = dirs::blobs_dir();
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+        let source_path = blobs_dir.join("partial-inplace");
+        std::fs::write(&source_path, b"rename me").unwrap();
+
+        let (blob_path, hash) = store_blob_from_temp(&source_path).unwrap();
+
+        assert!(blob_path.exists());
+        assert!(!source_path.exists()); // renamed away
+        let stored = std::fs::read(&blob_path).unwrap();
+        assert_eq!(stored, b"rename me");
+        assert!(blob_path.file_name().unwrap().to_str().unwrap().starts_with("sha256-"));
+        assert!(!hash.is_empty());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_store_blob_from_path_preserves_source() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let source_dir = tempfile::tempdir().unwrap();
+        let source_path = source_dir.path().join("user-model.gguf");
+        std::fs::write(&source_path, b"user data").unwrap();
+
+        let (blob_path, hash) = store_blob_from_path(&source_path).unwrap();
+
+        // Blob should exist
+        assert!(blob_path.exists());
+        assert!(!hash.is_empty());
+
+        // Source file should still exist (not moved/deleted)
+        assert!(source_path.exists());
+        let original = std::fs::read(&source_path).unwrap();
+        assert_eq!(original, b"user data");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_store_blob_from_path_returns_correct_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let source_dir = tempfile::tempdir().unwrap();
+        let source_path = source_dir.path().join("hashtest.bin");
+        std::fs::write(&source_path, b"hash me").unwrap();
+
+        let (blob_path, hash) = store_blob_from_path(&source_path).unwrap();
+
+        // Hash from store_blob_from_path should match compute_sha256
+        let expected_hash = compute_sha256(b"hash me");
+        assert_eq!(hash, expected_hash);
+        assert_eq!(
+            blob_path.file_name().unwrap().to_str().unwrap(),
+            format!("sha256-{expected_hash}")
+        );
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_store_blob_from_temp_nonexistent_source_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let result = store_blob_from_temp(std::path::Path::new("/nonexistent/partial-xyz"));
+        assert!(result.is_err());
 
         std::env::remove_var("A3S_POWER_HOME");
     }

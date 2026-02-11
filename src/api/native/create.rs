@@ -50,7 +50,7 @@ pub async fn handler(
 
     // Resolve the base model — either a registered model name or a local GGUF file path
     let from_path = std::path::Path::new(&mf.from);
-    let is_local_file = from_path.extension().map_or(false, |ext| ext == "gguf")
+    let is_local_file = from_path.extension().is_some_and(|ext| ext == "gguf")
         || mf.from.starts_with('/')
         || mf.from.starts_with("./")
         || mf.from.starts_with("../");
@@ -79,25 +79,13 @@ pub async fn handler(
                         .into_response();
                 }
             };
-            let blob_path = match crate::model::storage::store_blob_from_path(&gguf_path) {
+            let (blob_path, sha256) = match crate::model::storage::store_blob_from_path(&gguf_path) {
                 Ok(p) => p,
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({
                             "error": format!("Failed to store blob: {e}")
-                        })),
-                    )
-                        .into_response();
-                }
-            };
-            let sha256 = match crate::model::storage::compute_sha256_file(&gguf_path) {
-                Ok(h) => h,
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": format!("Failed to compute hash: {e}")
                         })),
                     )
                         .into_response();
@@ -481,7 +469,7 @@ mod tests {
         ];
         for (input, expected) in test_cases {
             let from_path = std::path::Path::new(input);
-            let is_local = from_path.extension().map_or(false, |ext| ext == "gguf")
+            let is_local = from_path.extension().is_some_and(|ext| ext == "gguf")
                 || input.starts_with('/')
                 || input.starts_with("./")
                 || input.starts_with("../");

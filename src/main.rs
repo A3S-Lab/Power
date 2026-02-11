@@ -165,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
 
             // Determine if FROM references a local file or a registered model
             let from_path = std::path::Path::new(&mf.from);
-            let is_local_file = from_path.extension().map_or(false, |ext| ext == "gguf")
+            let is_local_file = from_path.extension().is_some_and(|ext| ext == "gguf")
                 || mf.from.starts_with('/')
                 || mf.from.starts_with("./")
                 || mf.from.starts_with("../");
@@ -189,8 +189,7 @@ async fn main() -> anyhow::Result<()> {
                 let file_size = metadata.len();
 
                 // Copy/link the file into blob storage
-                let blob_path = a3s_power::model::storage::store_blob_from_path(&gguf_path)?;
-                let sha256 = a3s_power::model::storage::compute_sha256_file(&gguf_path)?;
+                let (blob_path, sha256) = a3s_power::model::storage::store_blob_from_path(&gguf_path)?;
 
                 (
                     a3s_power::model::manifest::ModelFormat::Gguf,

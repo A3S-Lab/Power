@@ -442,8 +442,8 @@ mod tests {
         let resolved1 = resolve_from_builtin(&r1);
         let resolved2 = resolve_from_builtin(&r2);
         // Both should resolve if they exist in known_models.json
-        if resolved1.is_some() && resolved2.is_some() {
-            assert_ne!(resolved1.unwrap().url, resolved2.unwrap().url);
+        if let (Some(r1), Some(r2)) = (resolved1, resolved2) {
+            assert_ne!(r1.url, r2.url);
         }
     }
 

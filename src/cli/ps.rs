@@ -29,7 +29,7 @@ pub async fn execute() -> Result<()> {
     match models {
         Some(models) if !models.is_empty() => {
             println!(
-                "{:<30} {:<10} {:<12} {:<10} {}",
+                "{:<30} {:<10} {:<12} {:<10} {:<10}",
                 "NAME", "SIZE", "FORMAT", "QUANT", "EXPIRES"
             );
             for model in models {

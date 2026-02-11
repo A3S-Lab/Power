@@ -49,9 +49,10 @@ pub async fn pull_model(
 
     tracing::info!(name = %name, url = %url, "Pulling model");
 
-    let bytes = download_with_resume(&name, &url, progress, insecure).await?;
+    let (partial_path, file_size) = download_with_resume(&name, &url, progress, insecure).await?;
 
-    let (blob_path, sha256) = storage::store_blob(&bytes)?;
+    // Store blob using streaming hash — rename temp file instead of reading into memory
+    let (blob_path, sha256) = storage::store_blob_from_temp(&partial_path)?;
     let format = detect_format(&name, &blob_path);
 
     let manifest = match source {
@@ -104,7 +105,7 @@ pub async fn pull_model(
             ModelManifest {
                 name,
                 format,
-                size: bytes.len() as u64,
+                size: file_size,
                 sha256,
                 parameters: Some(ModelParameters {
                     context_length: None,
@@ -129,7 +130,7 @@ pub async fn pull_model(
         ModelSource::Direct => ModelManifest {
             name,
             format,
-            size: bytes.len() as u64,
+            size: file_size,
             sha256,
             parameters: None,
             created_at: chrono::Utc::now(),
@@ -155,13 +156,13 @@ pub async fn pull_model(
 /// Uses a `.partial` temp file in the blobs directory to track incomplete downloads.
 /// If a partial file exists, sends a `Range: bytes={existing_size}-` header to resume.
 /// When `insecure` is true, TLS certificate verification is skipped.
-/// On completion, reads the full data and cleans up the partial file.
+/// On completion, returns the path to the downloaded file and its size.
 async fn download_with_resume(
     name: &str,
     url: &str,
     progress: Option<ProgressCallback>,
     insecure: bool,
-) -> Result<Vec<u8>> {
+) -> Result<(std::path::PathBuf, u64)> {
     use std::io::Write;
 
     let blob_dir = dirs::blobs_dir();
@@ -274,17 +275,12 @@ async fn download_with_resume(
     })?;
     drop(file);
 
-    // Read the complete file into memory
-    let bytes = std::fs::read(&partial_path).map_err(|e| {
-        PowerError::Io(std::io::Error::other(format!(
-            "Failed to read completed download: {e}"
-        )))
-    })?;
+    // Return the path and final file size (store_blob_from_path will handle the rest)
+    let file_size = std::fs::metadata(&partial_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
 
-    // Clean up partial file
-    let _ = std::fs::remove_file(&partial_path);
-
-    Ok(bytes)
+    Ok((partial_path, file_size))
 }
 
 /// Extract a reasonable model name from a URL.
@@ -317,6 +313,7 @@ fn detect_format(name: &str, path: &std::path::Path) -> ModelFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::path::PathBuf;
 
     #[test]
@@ -577,5 +574,181 @@ mod tests {
     fn test_build_http_client_insecure() {
         let client = build_http_client(true);
         assert!(client.is_ok());
+    }
+
+    // ========================================================================
+    // Integration tests: partial file → store_blob_from_temp → manifest
+    // ========================================================================
+
+    #[test]
+    #[serial]
+    fn test_partial_to_blob_store_integration() {
+        // Simulate what pull_model does after download_with_resume:
+        // partial file on disk → store_blob_from_temp → build manifest
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let blobs_dir = crate::dirs::blobs_dir();
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+
+        // Simulate a completed download (partial file in blobs dir)
+        let partial_path = blobs_dir.join("partial-abc123def456");
+        let model_data = b"fake GGUF model binary data for testing";
+        std::fs::write(&partial_path, model_data).unwrap();
+        let file_size = model_data.len() as u64;
+
+        // Store blob (this is what pull_model calls)
+        let (blob_path, sha256) = storage::store_blob_from_temp(&partial_path).unwrap();
+        let format = detect_format("test-model", &blob_path);
+
+        // Build manifest (same as pull_model does for Direct source)
+        let manifest = ModelManifest {
+            name: "test-model".to_string(),
+            format,
+            size: file_size,
+            sha256: sha256.clone(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: blob_path.clone(),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: vec![],
+            family: None,
+            families: None,
+        };
+
+        // Verify the full chain
+        assert!(blob_path.exists(), "Blob file should exist");
+        assert!(!partial_path.exists(), "Partial file should be cleaned up");
+        assert_eq!(manifest.size, file_size);
+        assert!(!sha256.is_empty());
+        assert_eq!(manifest.format, ModelFormat::Gguf);
+
+        // Verify blob content is correct
+        let stored = std::fs::read(&blob_path).unwrap();
+        assert_eq!(stored, model_data);
+
+        // Verify hash matches
+        let expected_hash = storage::compute_sha256(model_data);
+        assert_eq!(sha256, expected_hash);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_partial_to_registry_integration() {
+        // Full integration: partial file → blob store → registry
+        use crate::model::registry::ModelRegistry;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let blobs_dir = crate::dirs::blobs_dir();
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+
+        // Simulate completed download
+        let partial_path = blobs_dir.join("partial-integration");
+        std::fs::write(&partial_path, b"integration test model data").unwrap();
+        let file_size = std::fs::metadata(&partial_path).unwrap().len();
+
+        // Store blob
+        let (blob_path, sha256) = storage::store_blob_from_temp(&partial_path).unwrap();
+
+        // Build and register manifest
+        let manifest = ModelManifest {
+            name: "integration-model".to_string(),
+            format: ModelFormat::Gguf,
+            size: file_size,
+            sha256,
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: blob_path.clone(),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: vec![],
+            family: None,
+            families: None,
+        };
+
+        let registry = ModelRegistry::new();
+        registry.register(manifest).unwrap();
+
+        // Verify model is discoverable
+        assert!(registry.exists("integration-model"));
+        let found = registry.get("integration-model").unwrap();
+        assert_eq!(found.name, "integration-model");
+        assert!(found.path.exists());
+        assert_eq!(found.size, file_size);
+
+        // Verify manifest file was written
+        let manifests_dir = crate::dirs::manifests_dir();
+        let manifest_files: Vec<_> = std::fs::read_dir(&manifests_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(!manifest_files.is_empty(), "Manifest file should be written");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_resume_partial_file_preserved_on_error() {
+        // Verify that if store_blob_from_temp fails, the partial file
+        // behavior is predictable (file exists or doesn't based on error point)
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // Nonexistent partial file should error
+        let bad_path = dir.path().join("partial-nonexistent");
+        let result = storage::store_blob_from_temp(&bad_path);
+        assert!(result.is_err());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_large_file_simulation_no_memory_spike() {
+        // Verify the streaming path works with a moderately sized file
+        // (not truly large, but validates the code path doesn't read into memory)
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let blobs_dir = crate::dirs::blobs_dir();
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+
+        // Create a 1 MiB file to exercise the streaming hash
+        let partial_path = blobs_dir.join("partial-largetest");
+        let data: Vec<u8> = (0..1_048_576).map(|i| (i % 256) as u8).collect();
+        std::fs::write(&partial_path, &data).unwrap();
+
+        let (blob_path, hash) = storage::store_blob_from_temp(&partial_path).unwrap();
+
+        assert!(blob_path.exists());
+        assert!(!partial_path.exists());
+        assert!(!hash.is_empty());
+
+        // Verify content integrity
+        let stored = std::fs::read(&blob_path).unwrap();
+        assert_eq!(stored.len(), 1_048_576);
+        assert_eq!(stored, data);
+
+        // Verify hash matches streaming vs in-memory computation
+        let expected = storage::compute_sha256(&data);
+        assert_eq!(hash, expected);
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 }

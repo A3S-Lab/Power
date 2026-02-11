@@ -857,11 +857,12 @@ mod tests {
 
     #[test]
     fn test_generation_stats_accumulation() {
-        let mut stats = GenerationStats::default();
-        stats.eval_count = 10;
-        stats.prompt_eval_count = Some(5);
-        stats.prompt_eval_duration_ns = Some(1_000_000);
-        stats.total_duration = std::time::Duration::from_millis(200);
+        let stats = GenerationStats {
+            eval_count: 10,
+            prompt_eval_count: Some(5),
+            prompt_eval_duration_ns: Some(1_000_000),
+            total_duration: std::time::Duration::from_millis(200),
+        };
 
         assert_eq!(stats.eval_count, 10);
         assert_eq!(stats.prompt_eval_count, Some(5));
