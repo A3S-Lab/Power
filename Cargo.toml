@@ -19,7 +19,7 @@ name = "a3s-power"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["llamacpp"]
 llamacpp = ["dep:llama-cpp-2"]
 
 [dependencies]

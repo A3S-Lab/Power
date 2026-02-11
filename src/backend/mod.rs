@@ -2,7 +2,8 @@ pub mod chat_template;
 pub mod gpu;
 pub mod json_schema;
 pub mod llamacpp;
-#[cfg(test)]
+/// Test utilities for integration tests. Not part of the public API.
+#[doc(hidden)]
 pub mod test_utils;
 pub mod tool_parser;
 pub mod types;
