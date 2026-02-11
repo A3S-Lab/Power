@@ -1,20 +1,20 @@
-/// Streaming parser for `<think>...</think>` blocks emitted by reasoning models
-/// (DeepSeek-R1, QwQ, etc.).
-///
-/// Separates thinking/reasoning content from regular response content in a
-/// token-by-token streaming pipeline. Handles partial tag matches across
-/// token boundaries.
-///
-/// # Usage
-/// ```ignore
-/// let mut parser = ThinkBlockParser::new();
-/// for token in tokens {
-///     let (content, thinking) = parser.feed(&token);
-///     // content goes to the user-visible response
-///     // thinking goes to the reasoning/thinking field
-/// }
-/// let (content, thinking) = parser.flush();
-/// ```
+//! Streaming parser for `<think>...</think>` blocks emitted by reasoning models
+//! (DeepSeek-R1, QwQ, etc.).
+//!
+//! Separates thinking/reasoning content from regular response content in a
+//! token-by-token streaming pipeline. Handles partial tag matches across
+//! token boundaries.
+//!
+//! # Usage
+//! ```ignore
+//! let mut parser = ThinkBlockParser::new();
+//! for token in tokens {
+//!     let (content, thinking) = parser.feed(&token);
+//!     // content goes to the user-visible response
+//!     // thinking goes to the reasoning/thinking field
+//! }
+//! let (content, thinking) = parser.flush();
+//! ```
 
 /// State machine states for think block detection.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +41,12 @@ pub struct ThinkBlockParser {
     /// Whether we have already seen and closed a think block.
     /// After the first complete think block, subsequent `<think>` tags are treated as literal text.
     seen_complete_block: bool,
+}
+
+impl Default for ThinkBlockParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ThinkBlockParser {

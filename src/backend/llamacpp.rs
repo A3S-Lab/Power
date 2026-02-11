@@ -1269,7 +1269,7 @@ mod tests {
     fn test_default_ctx_size_less_than_large_model_ctx() {
         // Models like llama3.2 have n_ctx_train = 131072 (128K).
         // DEFAULT_CTX_SIZE must be much smaller to avoid OOM.
-        assert!(DEFAULT_CTX_SIZE < 131072);
-        assert!(DEFAULT_CTX_SIZE <= 8192);
+        const { assert!(DEFAULT_CTX_SIZE < 131072) };
+        const { assert!(DEFAULT_CTX_SIZE <= 8192) };
     }
 }
