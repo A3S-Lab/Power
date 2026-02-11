@@ -87,20 +87,21 @@ a3s-power serve
 
 ## Ollama Compatibility Status
 
+> Compared against Ollama source at [github.com/ollama/ollama](https://github.com/ollama/ollama) (latest main).
+
 ### ✅ Fully Aligned
 
 | Category | Status |
 |----------|--------|
-| Native API (14 endpoints) | All `/api/*` endpoints implemented with matching request/response schemas |
-| OpenAI API (4+1 endpoints) | `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`, `/v1/usage` |
+| Native API (14 endpoints) | `/api/generate`, `/api/chat`, `/api/pull`, `/api/push`, `/api/tags`, `/api/show`, `/api/delete`, `/api/copy`, `/api/embed`, `/api/embeddings`, `/api/ps`, `/api/version`, `/api/create`, `/api/blobs/:digest` |
+| OpenAI API (4 endpoints) | `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings` |
 | CLI commands (12) | `run`, `pull`, `list/ls`, `show`, `delete/rm`, `serve`, `create`, `push`, `cp`, `ps`, `stop`, `help` |
 | Streaming | NDJSON for native API, SSE for OpenAI API |
 | Modelfile | `FROM`, `PARAMETER`, `SYSTEM`, `TEMPLATE`, `ADAPTER`, `LICENSE`, `MESSAGE` + heredoc |
-| Sampling parameters | temperature, top_p, top_k, min_p, repeat_penalty, frequency/presence_penalty, seed, mirostat, tfs_z, typical_p |
-| Runtime options | num_ctx, num_predict, num_batch, num_thread, num_gpu, main_gpu, use_mmap, use_mlock, numa, flash_attention |
-| Keep-alive | String + numeric, per-request + global config, "0"/"−1" special values |
-| Environment variables | All 12 `OLLAMA_*` variables supported |
-| Tool/Function calling | Both native and OpenAI format, XML/Mistral/JSON parsing |
+| Sampling parameters | temperature, top_p, top_k, min_p, repeat_penalty, frequency/presence_penalty, seed, typical_p, num_keep, stop |
+| Runner options | num_ctx, num_predict, num_batch, num_gpu, num_thread, use_mmap |
+| Keep-alive | String + numeric, per-request + global config, `"0"` / `"-1"` special values |
+| Tool/Function calling | Both native `/api/chat` and OpenAI `/v1/chat/completions`, XML/Mistral/JSON parsing |
 | JSON structured output | `"json"`, `{"type":"json_object"}`, full JSON Schema → GBNF grammar |
 | Ollama registry | Pull from `registry.ollama.ai` with template/system/params/license extraction |
 | KV cache reuse | Prefix matching across multi-turn requests |
@@ -108,18 +109,127 @@ a3s-power serve
 | GPU auto-detection | Metal + CUDA, auto `gpu_layers`, multi-GPU |
 | Blob management | HEAD/POST/GET/DELETE `/api/blobs/:digest` |
 | Context return | `/api/generate` returns `context` token array |
+| `done_reason` | Returned in generate/chat responses |
+| `raw` mode | Skip template formatting in `/api/generate` |
+| `suffix` field | Fill-in-the-middle in `/api/generate` |
+| CORS | Configurable origins with `OLLAMA_ORIGINS` |
 
-### 🔴 Remaining Gaps
+### 🔴 Remaining Gaps (vs Ollama latest)
 
-| Gap | Severity | Description |
-|-----|----------|-------------|
-| Thinking mode | Critical | `think` parameter for reasoning models (DeepSeek-R1, QwQ) — not yet supported |
-| Vision image processing | Important | Types and projector plumbing exist, but URL-based image fetching not wired in llama.cpp backend |
-| Re-quantization | Important | `create --quantize` accepted but no-op — actual GGUF quantization not implemented |
-| Registry push (OCI) | Important | Push to `registry.ollama.ai` not supported — only custom destination URLs |
-| `num_parallel` wiring | Moderate | Config exists but unclear if wired to llama.cpp `n_parallel` context param |
-| SafeTensors import | Nice-to-have | `ModelFormat::SafeTensors` enum exists but no backend supports it |
-| Digest-based model refs | Nice-to-have | `@sha256:...` model references not supported |
+#### API Request/Response Fields
+
+| Gap | Severity | Ollama Source | Description |
+|-----|----------|---------------|-------------|
+| `think` parameter | Critical | `api/types.go:109,173` | `ThinkValue` (bool or `"high"/"medium"/"low"`) in generate/chat requests — enables reasoning models (DeepSeek-R1, QwQ). Not implemented. |
+| `thinking` response field | Critical | `api/types.go:216,856` | `Message.Thinking` and `GenerateResponse.Thinking` — returns thinking content separately from response. Not implemented. |
+| Thinking parser | Critical | `thinking/parser.go` | Streaming parser that separates `<think>...</think>` blocks from content in real-time. Infers tags from template. Not implemented. |
+| `logprobs` / `top_logprobs` | Important | `api/types.go:123-129,187-193` | Log probability support in generate/chat requests + `Logprob`/`TokenLogprob` response types. Not implemented. |
+| `truncate` field (generate/chat) | Important | `api/types.go:112,176` | Truncate prompt when exceeding context length instead of erroring. Not implemented. |
+| `shift` field (generate/chat) | Important | `api/types.go:117,180` | Shift context window when hitting limit instead of erroring. Not implemented. |
+| `_debug_render_only` | Nice-to-have | `api/types.go:121,185` | Debug mode that returns rendered template without calling model. Not implemented. |
+| `tool_calls` in GenerateResponse | Moderate | `api/types.go:870` | `/api/generate` can also return `tool_calls` (not just `/api/chat`). Not implemented. |
+
+#### OpenAI API Gaps
+
+| Gap | Severity | Ollama Source | Description |
+|-----|----------|---------------|-------------|
+| `GET /v1/models/:model` | Important | `routes.go:1610` | Retrieve single model details. Not implemented (only `GET /v1/models` list). |
+| `POST /v1/responses` | Moderate | `routes.go:1611` | OpenAI Responses API compatibility. Not implemented. |
+| `POST /v1/messages` | Moderate | `routes.go:1617` | Anthropic Messages API compatibility via middleware. Not implemented. |
+| `POST /v1/images/generations` | Nice-to-have | `routes.go:1613` | Image generation endpoint. Not implemented. |
+| `POST /v1/images/edits` | Nice-to-have | `routes.go:1614` | Image editing endpoint. Not implemented. |
+| `reasoning` / `reasoning_effort` | Important | `openai/openai.go:94-96,112-113` | OpenAI reasoning effort (`"high"/"medium"/"low"`) mapped to `think`. Not implemented. |
+| `stream_options.include_usage` | Moderate | `openai/openai.go:90-92` | Return usage stats in final streaming chunk when requested. Not implemented. |
+| `encoding_format` (embeddings) | Moderate | `openai/openai.go:87` | `"float"` or `"base64"` encoding for embedding responses. Not implemented. |
+| `dimensions` (embeddings) | Moderate | `api/types.go:626` | Truncate output embeddings to specified dimension. Not implemented. |
+
+#### ShowResponse Fields
+
+| Gap | Severity | Ollama Source | Description |
+|-----|----------|---------------|-------------|
+| `capabilities` | Important | `api/types.go:755` | List of model capabilities (`completion`, `tools`, `vision`, `thinking`, `embedding`, `insert`, `image`). Not implemented. |
+| `renderer` / `parser` | Moderate | `api/types.go:746-747` | Custom renderer/parser names for model. Not implemented. |
+| `projector_info` | Moderate | `api/types.go:753` | Projector metadata for vision models. Not implemented. |
+| `remote_model` / `remote_host` | Moderate | `api/types.go:750-751` | Remote model proxy info. Not implemented. |
+| `requires` | Nice-to-have | `api/types.go:757` | Minimum Ollama version required. Not implemented. |
+| `messages` | Moderate | `api/types.go:749` | Pre-seeded messages in show response. Not implemented. |
+
+#### ProcessResponse (ps) Fields
+
+| Gap | Severity | Ollama Source | Description |
+|-----|----------|---------------|-------------|
+| `size_vram` | Moderate | `api/types.go:829` | VRAM usage per loaded model. Not implemented. |
+| `context_length` | Moderate | `api/types.go:830` | Active context length per loaded model. Not implemented. |
+
+#### Create API
+
+| Gap | Severity | Ollama Source | Description |
+|-----|----------|---------------|-------------|
+| New structured Create API | Important | `api/types.go:663-709` | Ollama's new `from`, `files`, `adapters`, `template`, `system`, `parameters`, `messages`, `license` fields (replacing Modelfile-only approach). a3s-power only supports Modelfile-based create. |
+| Re-quantization | Important | `server/create.go` | `create --quantize q4_K_M` actually quantizes the model. a3s-power accepts but no-ops. |
+| SafeTensors conversion | Moderate | `convert/` | Convert SafeTensors → GGUF during create. Not implemented. |
+
+#### Environment Variables
+
+| Gap | Severity | Ollama Source | Description |
+|-----|----------|---------------|-------------|
+| `OLLAMA_KV_CACHE_TYPE` | Important | `envconfig/config.go:278` | KV cache quantization type (default: f16). Not implemented. |
+| `OLLAMA_GPU_OVERHEAD` | Moderate | `envconfig/config.go:279` | Reserve VRAM per GPU (bytes). Not implemented. |
+| `OLLAMA_LOAD_TIMEOUT` | Moderate | `envconfig/config.go:283` | Stall detection timeout for model loads (default 5m). Not implemented. |
+| `OLLAMA_MAX_QUEUE` | Moderate | `envconfig/config.go:285` | Maximum queued requests. Not implemented. |
+| `OLLAMA_NOHISTORY` | Nice-to-have | `envconfig/config.go:287` | Disable readline history. Not implemented. |
+| `OLLAMA_MULTIUSER_CACHE` | Nice-to-have | `envconfig/config.go:292` | Optimize prompt caching for multi-user. Not implemented. |
+| `OLLAMA_CONTEXT_LENGTH` | Important | `envconfig/config.go:293` | Global default context length override. Not implemented. |
+| `OLLAMA_REMOTES` | Moderate | `envconfig/config.go:295` | Allowed hosts for remote models. Not implemented. |
+| `OLLAMA_LLM_LIBRARY` | Nice-to-have | `envconfig/config.go:282` | Override LLM library autodetection. Not applicable (Rust bindings). |
+
+#### Auth & Account
+
+| Gap | Severity | Ollama Source | Description |
+|-----|----------|---------------|-------------|
+| `signin` / `signout` CLI | Moderate | `cmd/cmd.go:666,697` | Sign in/out of ollama.com account. Not implemented. |
+| `POST /api/me` | Moderate | `routes.go:1583` | Whoami endpoint. Not implemented. |
+| `POST /api/signout` | Moderate | `routes.go:1585` | Signout endpoint. Not implemented. |
+| Registry auth (push) | Important | `auth/auth.go` | Keypair-based auth for pushing to `registry.ollama.ai`. Not implemented. |
+
+#### CLI Flags
+
+| Gap | Severity | Ollama Source | Description |
+|-----|----------|---------------|-------------|
+| `run --think` | Critical | `cmd/cmd.go:2069` | Enable thinking mode from CLI. Not implemented. |
+| `run --hidethinking` | Important | `cmd/cmd.go:2071` | Hide thinking output in CLI. Not implemented. |
+| `run --truncate` | Moderate | `cmd/cmd.go:2072` | Truncate embeddings input. Not implemented. |
+| `run --dimensions` | Moderate | `cmd/cmd.go:2073` | Truncate output embeddings dimension. Not implemented. |
+| `run --nowordwrap` | Nice-to-have | `cmd/cmd.go:2067` | Disable word wrapping in CLI. Not implemented. |
+| `show --license` | Nice-to-have | `cmd/cmd.go:2049` | Show only license. Not implemented (shows all). |
+| `show --modelfile` | Nice-to-have | `cmd/cmd.go:2050` | Show only modelfile. Not implemented. |
+| `show --parameters` | Nice-to-have | `cmd/cmd.go:2051` | Show only parameters. Not implemented. |
+| `show --template` | Nice-to-have | `cmd/cmd.go:2052` | Show only template. Not implemented. |
+| `show --system` | Nice-to-have | `cmd/cmd.go:2053` | Show only system message. Not implemented. |
+| `run --experimental` | Nice-to-have | `cmd/cmd.go:2074` | Experimental agent loop with tools. Not implemented. |
+
+#### Server/Runtime
+
+| Gap | Severity | Ollama Source | Description |
+|-----|----------|---------------|-------------|
+| `GET /` and `HEAD /` | Nice-to-have | `routes.go:1570-1571` | Returns `"Ollama is running"` string. Not implemented (a3s-power has `/health`). |
+| Experimental aliases API | Nice-to-have | `routes.go:1594-1596` | `GET/POST/DELETE /api/experimental/aliases`. Not implemented. |
+| Request queuing | Moderate | `envconfig:OLLAMA_MAX_QUEUE` | Queue requests when all model slots busy. Not implemented. |
+| `num_parallel` wiring | Moderate | — | Concurrent request slots per loaded model. Config exists but unclear if wired to llama.cpp. |
+
+#### Extra Options (a3s-power has but Ollama removed)
+
+Note: a3s-power supports some options that Ollama has **removed** from their latest `Options` struct:
+- `mirostat`, `mirostat_tau`, `mirostat_eta` — removed from Ollama
+- `tfs_z` — removed from Ollama
+- `main_gpu` — removed from Ollama Runner
+- `use_mlock` — removed from Ollama Runner
+- `flash_attention` — removed from Ollama Runner (now env-only via `OLLAMA_FLASH_ATTENTION`)
+- `num_thread_batch` — removed from Ollama Runner
+- `penalize_newline` — removed from Ollama
+- `numa` — removed from Ollama
+
+These are kept in a3s-power for backward compatibility but may diverge from Ollama's current behavior.
 
 ## Quality Metrics
 
@@ -891,17 +1001,75 @@ Complete remaining Ollama feature gaps — `help` subcommand, blob pruning, GPU 
 - [x] **`OLLAMA_SCHED_SPREAD`**: Spread model layers across all available GPUs (`"1"` or `"true"`)
 - [x] 861 comprehensive unit tests
 
-### Phase 15: Remaining Ollama Gaps 🚧
+### Phase 15: Thinking & Reasoning 🚧
 
-Close the last compatibility gaps for full Ollama drop-in replacement:
+Critical for DeepSeek-R1, QwQ, and other reasoning models:
 
-- [ ] **Thinking Mode**: `think` parameter for reasoning models (DeepSeek-R1, QwQ) — return `<think>` blocks in response, support `think: true` in `/api/chat` and `/api/generate`
-- [ ] **Vision Image URL Fetching**: Wire URL-based image fetching in llama.cpp backend (currently logs warning and returns `None`)
-- [ ] **Re-quantization**: Integrate llama.cpp quantization for `create --quantize` (currently accepted but no-op)
-- [ ] **Registry Push (OCI Auth)**: Implement OCI push protocol to `registry.ollama.ai` with authentication
-- [ ] **`num_parallel` Wiring**: Wire `num_parallel` config to llama.cpp `n_parallel` context parameter for concurrent request slots
-- [ ] **SafeTensors Import**: Convert SafeTensors → GGUF during `create` for HuggingFace model compatibility
-- [ ] **Digest-based Model Refs**: Support `@sha256:...` model references in CLI and API
+- [ ] **`think` parameter**: `ThinkValue` type (bool or `"high"/"medium"/"low"`) in generate/chat requests
+- [ ] **`thinking` response field**: Separate thinking content from response in `Message.thinking` and `GenerateResponse.thinking`
+- [ ] **Thinking parser**: Streaming parser that separates `<think>...</think>` blocks from content; infer tags from template
+- [ ] **`run --think` CLI flag**: Enable thinking mode from interactive chat
+- [ ] **`run --hidethinking` CLI flag**: Hide thinking output in CLI display
+- [ ] **OpenAI `reasoning` / `reasoning_effort`**: Map to `think` parameter in `/v1/chat/completions`
+
+### Phase 16: Logprobs & Context Control 🚧
+
+Log probabilities and context window management:
+
+- [ ] **`logprobs` / `top_logprobs`**: Return log probabilities in generate/chat responses with `Logprob`/`TokenLogprob` types
+- [ ] **`truncate` field**: Truncate prompt when exceeding context length instead of erroring
+- [ ] **`shift` field**: Shift context window when hitting limit instead of erroring
+- [ ] **`OLLAMA_CONTEXT_LENGTH`**: Global default context length override env var
+- [ ] **`OLLAMA_KV_CACHE_TYPE`**: KV cache quantization type (f16/q8_0/q4_0)
+
+### Phase 17: OpenAI API Parity 🚧
+
+Additional OpenAI-compatible endpoints and fields:
+
+- [ ] **`GET /v1/models/:model`**: Retrieve single model details
+- [ ] **`POST /v1/responses`**: OpenAI Responses API compatibility
+- [ ] **`POST /v1/messages`**: Anthropic Messages API compatibility via middleware
+- [ ] **`stream_options.include_usage`**: Return usage stats in final streaming chunk
+- [ ] **`encoding_format`**: `"float"` or `"base64"` for embedding responses
+- [ ] **`dimensions`**: Truncate output embeddings to specified dimension
+
+### Phase 18: Create API & Model Management 🚧
+
+Align with Ollama's new structured Create API:
+
+- [ ] **Structured Create API**: Support `from`, `files`, `adapters`, `template`, `system`, `parameters`, `messages`, `license` fields (not just Modelfile)
+- [ ] **Re-quantization**: Integrate llama.cpp quantization for `create --quantize`
+- [ ] **SafeTensors conversion**: Convert SafeTensors → GGUF during create
+- [ ] **ShowResponse fields**: Add `capabilities`, `renderer`, `parser`, `projector_info`, `messages`, `remote_model`, `remote_host`
+- [ ] **ProcessResponse fields**: Add `size_vram`, `context_length` to `/api/ps`
+- [ ] **`tool_calls` in GenerateResponse**: Return tool calls from `/api/generate` (not just `/api/chat`)
+
+### Phase 19: Auth & Registry Push 🚧
+
+Account management and registry push:
+
+- [ ] **Registry push (OCI auth)**: Push to `registry.ollama.ai` with keypair-based auth
+- [ ] **`signin` / `signout` CLI**: Sign in/out of ollama.com account
+- [ ] **`POST /api/me`**: Whoami endpoint
+- [ ] **`POST /api/signout`**: Signout endpoint
+
+### Phase 20: Environment Variables & CLI Polish 🚧
+
+Remaining env vars and CLI flags:
+
+- [ ] **`OLLAMA_GPU_OVERHEAD`**: Reserve VRAM per GPU (bytes)
+- [ ] **`OLLAMA_LOAD_TIMEOUT`**: Stall detection timeout for model loads
+- [ ] **`OLLAMA_MAX_QUEUE`**: Maximum queued requests
+- [ ] **`OLLAMA_NOHISTORY`**: Disable readline history
+- [ ] **`OLLAMA_MULTIUSER_CACHE`**: Optimize prompt caching for multi-user
+- [ ] **`OLLAMA_REMOTES`**: Allowed hosts for remote models
+- [ ] **`show --license/--modelfile/--parameters/--template/--system`**: Show individual sections
+- [ ] **`run --nowordwrap`**: Disable word wrapping in CLI
+- [ ] **`run --truncate` / `--dimensions`**: Embedding-specific CLI flags
+- [ ] **`_debug_render_only`**: Debug mode returning rendered template
+- [ ] **`GET /` and `HEAD /`**: Return `"Ollama is running"` for compatibility checks
+- [ ] **Request queuing**: Queue requests when all model slots busy (`OLLAMA_MAX_QUEUE`)
+- [ ] **`num_parallel` wiring**: Wire to llama.cpp `n_parallel` for concurrent request slots
 
 ## License
 
