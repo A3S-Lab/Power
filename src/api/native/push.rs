@@ -48,11 +48,13 @@ pub async fn handler(
     };
 
     let is_stream = request.stream.unwrap_or(false);
+    let insecure = request.insecure.unwrap_or(false);
 
     if is_stream {
         // Streaming progress via SSE
         let (tx, rx) = mpsc::channel::<PushResponse>(32);
         let dest = destination.clone();
+        let push_insecure = insecure;
 
         tokio::spawn(async move {
             let _ = tx
@@ -74,7 +76,7 @@ pub async fn handler(
                 });
             });
 
-            match crate::model::push::push_model(&manifest, &dest, Some(progress)).await {
+            match crate::model::push::push_model(&manifest, &dest, Some(progress), push_insecure).await {
                 Ok(digest) => {
                     let _ = tx
                         .send(PushResponse {
@@ -103,7 +105,7 @@ pub async fn handler(
         crate::api::sse::ndjson_response(event_stream)
     } else {
         // Non-streaming: push and return final status
-        match crate::model::push::push_model(&manifest, &destination, None).await {
+        match crate::model::push::push_model(&manifest, &destination, None, insecure).await {
             Ok(digest) => Json(PushResponse {
                 status: "success".to_string(),
                 digest: Some(digest),

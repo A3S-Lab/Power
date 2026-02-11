@@ -49,7 +49,22 @@ pub async fn handler(
     let response_format = request
         .response_format
         .as_ref()
-        .map(|f| serde_json::json!({"type": f.r#type}));
+        .map(|f| {
+            if f.r#type == "json_schema" {
+                // Extract the actual JSON Schema and pass it directly to the backend
+                // so it can generate a GBNF grammar for constrained output.
+                if let Some(ref spec) = f.json_schema {
+                    if let Some(ref schema) = spec.schema {
+                        return schema.clone();
+                    }
+                }
+                // Fallback to generic JSON if schema is missing
+                serde_json::json!("json")
+            } else {
+                // "json_object" or "text" — pass type as-is
+                serde_json::json!({"type": f.r#type})
+            }
+        });
     let backend_request = ChatRequest {
         messages: request
             .messages

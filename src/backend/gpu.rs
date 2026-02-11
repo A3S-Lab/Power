@@ -356,6 +356,7 @@ mod tests {
         let mut config = crate::config::GpuConfig {
             gpu_layers: 10,
             main_gpu: 0,
+            tensor_split: vec![],
         };
         auto_configure(&mut config);
         // Should NOT change explicitly set value
@@ -439,6 +440,7 @@ mod tests {
         let mut config = crate::config::GpuConfig {
             gpu_layers: 0,
             main_gpu: 0,
+            tensor_split: vec![],
         };
         auto_configure(&mut config);
         // On macOS with Metal, should auto-set to -1

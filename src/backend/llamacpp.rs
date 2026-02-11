@@ -45,6 +45,8 @@ struct LoadedModel {
     /// Raw Jinja2 template string from GGUF metadata (for minijinja rendering).
     raw_template: Option<String>,
     load_mode: LoadMode,
+    /// Trained context length from the model's GGUF metadata.
+    n_ctx_train: u32,
     /// Cached context for KV cache reuse across requests.
     /// Holds (context, evaluated_tokens) — taken for each request and returned after.
     cached_ctx: Arc<std::sync::Mutex<Option<CachedContext>>>,
@@ -143,6 +145,8 @@ impl Backend for LlamaCppBackend {
         let gpu_layers = self.config.gpu.gpu_layers;
         let main_gpu = self.config.gpu.main_gpu;
         let use_mlock = self.config.use_mlock;
+        let sched_spread = self.config.sched_spread;
+        let has_tensor_split = !self.config.gpu.tensor_split.is_empty();
         let params = {
             let mut p = LlamaModelParams::default();
             if gpu_layers != 0 {
@@ -153,6 +157,12 @@ impl Backend for LlamaCppBackend {
             }
             if use_mlock {
                 p = p.with_use_mlock(true);
+            }
+            // Enable multi-GPU layer splitting when tensor_split is configured or sched_spread is on
+            if has_tensor_split || sched_spread {
+                use llama_cpp_2::model::params::LlamaSplitMode;
+                p = p.with_split_mode(LlamaSplitMode::Layer);
+                tracing::info!("Multi-GPU layer splitting enabled");
             }
             p
         };
@@ -184,6 +194,10 @@ impl Backend for LlamaCppBackend {
             .as_deref()
             .map(chat_template::detect)
             .unwrap_or(ChatTemplateKind::Phi);
+
+        // Read trained context length from model metadata
+        let n_ctx_train = model_arc.n_ctx_train();
+        tracing::info!(model = %manifest.name, n_ctx_train = n_ctx_train, "Model context window detected");
 
         // Load LoRA adapter if specified in manifest
         let lora_adapter = if let Some(ref adapter_path) = manifest.adapter_path {
@@ -229,6 +243,7 @@ impl Backend for LlamaCppBackend {
                 chat_template,
                 raw_template: raw_template_str,
                 load_mode: LoadMode::Inference,
+                n_ctx_train,
                 cached_ctx: Arc::new(std::sync::Mutex::new(None)),
                 lora_adapter,
                 projector_path: manifest.projector_path.clone(),
@@ -252,12 +267,12 @@ impl Backend for LlamaCppBackend {
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
         // Look up the chat template and projector path for this model
-        let (template, raw_template, projector_path) = {
+        let (template, raw_template, projector_path, model_n_ctx_train) = {
             let models = self.models.read().await;
             models
                 .get(model_name)
-                .map(|m| (m.chat_template.clone(), m.raw_template.clone(), m.projector_path.clone()))
-                .unwrap_or((ChatTemplateKind::Phi, None, None))
+                .map(|m| (m.chat_template.clone(), m.raw_template.clone(), m.projector_path.clone(), m.n_ctx_train))
+                .unwrap_or((ChatTemplateKind::Phi, None, None, 2048))
         };
 
         let prompt = chat_template::format_chat_prompt(
@@ -405,11 +420,11 @@ impl Backend for LlamaCppBackend {
         use llama_cpp_2::sampling::LlamaSampler;
         use llama_cpp_2::token::LlamaToken;
 
-        let (model_arc, cached_ctx_mutex, lora_adapter) = {
+        let (model_arc, cached_ctx_mutex, lora_adapter, model_n_ctx_train) = {
             let models = self.models.read().await;
             models
                 .get(model_name)
-                .map(|m| (m.model.clone(), m.cached_ctx.clone(), m.lora_adapter.clone()))
+                .map(|m| (m.model.clone(), m.cached_ctx.clone(), m.lora_adapter.clone(), m.n_ctx_train))
                 .ok_or_else(|| {
                     PowerError::InferenceFailed(format!("Model '{model_name}' not loaded"))
                 })?
@@ -426,7 +441,14 @@ impl Backend for LlamaCppBackend {
         let repeat_last_n = request.repeat_last_n.unwrap_or(64);
         let penalize_newline = request.penalize_newline.unwrap_or(true);
         let seed = request.seed.unwrap_or(0).max(0) as u32;
-        let ctx_size = request.num_ctx.unwrap_or(2048);
+        let ctx_size = request.num_ctx.unwrap_or(model_n_ctx_train);
+        if ctx_size > model_n_ctx_train {
+            tracing::warn!(
+                requested = ctx_size,
+                trained = model_n_ctx_train,
+                "Requested context size exceeds model's trained context length, quality may degrade"
+            );
+        }
         let num_batch = request.num_batch;
         let num_thread = request.num_thread;
         let num_thread_batch = request.num_thread_batch;

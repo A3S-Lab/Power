@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
             if insecure {
                 tracing::info!("TLS verification disabled (--insecure)");
             }
-            a3s_power::cli::pull::execute(&model, &registry).await?;
+            a3s_power::cli::pull::execute(&model, &registry, insecure).await?;
         }
         Commands::List => {
             a3s_power::cli::list::execute(&registry)?;
@@ -249,7 +249,7 @@ async fn main() -> anyhow::Result<()> {
             if insecure {
                 tracing::info!("TLS verification disabled (--insecure)");
             }
-            a3s_power::cli::push::execute(&model, &destination, &registry).await?;
+            a3s_power::cli::push::execute(&model, &destination, &registry, insecure).await?;
         }
         Commands::Cp {
             source,

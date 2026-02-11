@@ -13,30 +13,40 @@ use super::types::{FunctionCall, ToolCall};
 ///
 /// Returns `Some(Vec<ToolCall>)` if tool calls were detected, `None` otherwise.
 /// This is a best-effort parser — it tries multiple formats and returns the
-/// first successful parse.
+/// first successful parse. Each tool call is assigned an index for OpenAI
+/// streaming delta compatibility.
 pub fn parse_tool_calls(text: &str) -> Option<Vec<ToolCall>> {
     let trimmed = text.trim();
 
     // Try XML-style <tool_call> tags first (most common in fine-tuned models)
     if let Some(calls) = parse_xml_tool_calls(trimmed) {
         if !calls.is_empty() {
-            return Some(calls);
+            return Some(assign_indices(calls));
         }
     }
 
     // Try [TOOL_CALLS] prefix (Mistral-style)
     if let Some(calls) = parse_mistral_tool_calls(trimmed) {
         if !calls.is_empty() {
-            return Some(calls);
+            return Some(assign_indices(calls));
         }
     }
 
     // Try raw JSON object with name/arguments
-    if let Some(call) = parse_json_tool_call(trimmed) {
+    if let Some(mut call) = parse_json_tool_call(trimmed) {
+        call.index = Some(0);
         return Some(vec![call]);
     }
 
     None
+}
+
+/// Assign sequential indices to tool calls for OpenAI streaming format.
+fn assign_indices(mut calls: Vec<ToolCall>) -> Vec<ToolCall> {
+    for (i, call) in calls.iter_mut().enumerate() {
+        call.index = Some(i as u32);
+    }
+    calls
 }
 
 /// Parse `<tool_call>{"name": "...", "arguments": {...}}</tool_call>` format.
@@ -100,6 +110,7 @@ fn parse_mistral_tool_calls(text: &str) -> Option<Vec<ToolCall>> {
                 id: generate_call_id(),
                 tool_type: "function".to_string(),
                 function: FunctionCall { name, arguments },
+                index: None,
             })
         })
         .collect();
@@ -144,6 +155,7 @@ fn parse_json_tool_call(text: &str) -> Option<ToolCall> {
                 name: name.to_string(),
                 arguments,
             },
+            index: None,
         });
     }
 
@@ -163,6 +175,7 @@ fn parse_json_tool_call(text: &str) -> Option<ToolCall> {
             id: generate_call_id(),
             tool_type: "function".to_string(),
             function: FunctionCall { name, arguments },
+            index: None,
         });
     }
 
@@ -497,5 +510,33 @@ Let me know if you need anything else."#;
         let text = r#"<tool_call>   </tool_call>"#;
         let calls = parse_tool_calls(text);
         assert!(calls.is_none());
+    }
+
+    #[test]
+    fn test_tool_calls_have_sequential_indices() {
+        let text = r#"<tool_call>{"name": "a", "arguments": {}}</tool_call>
+<tool_call>{"name": "b", "arguments": {}}</tool_call>
+<tool_call>{"name": "c", "arguments": {}}</tool_call>"#;
+        let calls = parse_tool_calls(text).unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].index, Some(0));
+        assert_eq!(calls[1].index, Some(1));
+        assert_eq!(calls[2].index, Some(2));
+    }
+
+    #[test]
+    fn test_single_tool_call_has_index_zero() {
+        let text = r#"{"name": "test", "arguments": {}}"#;
+        let calls = parse_tool_calls(text).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].index, Some(0));
+    }
+
+    #[test]
+    fn test_mistral_tool_calls_have_indices() {
+        let text = r#"[TOOL_CALLS] [{"name": "a", "arguments": {}}, {"name": "b", "arguments": {}}]"#;
+        let calls = parse_tool_calls(text).unwrap();
+        assert_eq!(calls[0].index, Some(0));
+        assert_eq!(calls[1].index, Some(1));
     }
 }

@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::model::registry::ModelRegistry;
 
 /// Execute the `push` command: upload a model to a remote registry.
-pub async fn execute(model: &str, destination: &str, registry: &ModelRegistry) -> Result<()> {
+pub async fn execute(model: &str, destination: &str, registry: &ModelRegistry, insecure: bool) -> Result<()> {
     let manifest = registry.get(model)?;
 
     println!("Pushing '{}' to {}", model, destination);
@@ -14,7 +14,7 @@ pub async fn execute(model: &str, destination: &str, registry: &ModelRegistry) -
         }
     });
 
-    let digest = crate::model::push::push_model(&manifest, destination, Some(progress)).await?;
+    let digest = crate::model::push::push_model(&manifest, destination, Some(progress), insecure).await?;
 
     println!("Push complete: {}", digest);
     Ok(())
@@ -65,7 +65,7 @@ mod tests {
         std::env::set_var("A3S_POWER_HOME", dir.path());
 
         let registry = ModelRegistry::new();
-        let result = execute("nonexistent", "http://localhost:9999", &registry).await;
+        let result = execute("nonexistent", "http://localhost:9999", &registry, false).await;
         assert!(result.is_err());
 
         std::env::remove_var("A3S_POWER_HOME");

@@ -106,6 +106,9 @@ pub struct ToolCall {
     #[serde(rename = "type")]
     pub tool_type: String,
     pub function: FunctionCall,
+    /// Index of this tool call in the list (used for OpenAI streaming delta format).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
 }
 
 /// A function invocation within a tool call.
@@ -467,6 +470,7 @@ mod tests {
                     name: "get_weather".to_string(),
                     arguments: r#"{"location":"SF"}"#.to_string(),
                 },
+                index: Some(0),
             }]),
         };
         let json = serde_json::to_string(&chunk).unwrap();
@@ -499,6 +503,7 @@ mod tests {
                 name: "test_fn".to_string(),
                 arguments: "{}".to_string(),
             },
+            index: None,
         };
         let json = serde_json::to_string(&tc).unwrap();
         assert!(json.contains("call_abc"));

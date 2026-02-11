@@ -74,13 +74,40 @@ pub struct ChatCompletionRequest {
     pub tools: Option<Vec<Tool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// Whether the model may generate multiple tool calls in parallel.
+    /// Accepted for API compatibility; the model decides based on its training.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
 }
 
 /// Structured output format specifier.
+///
+/// Supports OpenAI's `response_format` variants:
+/// - `{"type": "json_object"}` — unconstrained JSON output
+/// - `{"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}` — schema-constrained
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseFormat {
     #[serde(rename = "type")]
     pub r#type: String,
+    /// JSON Schema definition for structured output (when type = "json_schema").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<JsonSchemaSpec>,
+}
+
+/// JSON Schema specification for structured output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonSchemaSpec {
+    /// Name of the schema (required by OpenAI API).
+    pub name: String,
+    /// Optional description of what the schema represents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The JSON Schema object defining the output structure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+    /// Whether to enforce strict schema adherence (default: false).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 /// A single message in the chat format.
@@ -474,6 +501,9 @@ pub struct PullRequest {
     pub name: String,
     #[serde(default)]
     pub stream: Option<bool>,
+    /// When true, skip TLS certificate verification for the download.
+    #[serde(default)]
+    pub insecure: Option<bool>,
 }
 
 /// Ollama-compatible pull progress response (streamed).
@@ -745,6 +775,7 @@ mod tests {
                     name: "test".to_string(),
                     arguments: "{}".to_string(),
                 },
+                index: Some(0),
             }]),
         };
         let json = serde_json::to_string(&delta).unwrap();
@@ -1300,5 +1331,84 @@ mod tests {
         }"#;
         let req: NativeChatRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.keep_alive.as_deref(), Some("10m"));
+    }
+
+    #[test]
+    fn test_pull_request_with_insecure() {
+        let json = r#"{"name": "llama3", "insecure": true}"#;
+        let req: PullRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "llama3");
+        assert_eq!(req.insecure, Some(true));
+    }
+
+    #[test]
+    fn test_pull_request_insecure_defaults_to_none() {
+        let json = r#"{"name": "llama3"}"#;
+        let req: PullRequest = serde_json::from_str(json).unwrap();
+        assert!(req.insecure.is_none());
+    }
+
+    #[test]
+    fn test_response_format_json_object() {
+        let json = r#"{"type": "json_object"}"#;
+        let fmt: ResponseFormat = serde_json::from_str(json).unwrap();
+        assert_eq!(fmt.r#type, "json_object");
+        assert!(fmt.json_schema.is_none());
+    }
+
+    #[test]
+    fn test_response_format_json_schema() {
+        let json = r#"{
+            "type": "json_schema",
+            "json_schema": {
+                "name": "person",
+                "description": "A person object",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "age": {"type": "integer"}
+                    },
+                    "required": ["name"]
+                },
+                "strict": true
+            }
+        }"#;
+        let fmt: ResponseFormat = serde_json::from_str(json).unwrap();
+        assert_eq!(fmt.r#type, "json_schema");
+        let spec = fmt.json_schema.unwrap();
+        assert_eq!(spec.name, "person");
+        assert_eq!(spec.description.as_deref(), Some("A person object"));
+        assert_eq!(spec.strict, Some(true));
+        let schema = spec.schema.unwrap();
+        assert!(schema["properties"]["name"]["type"] == "string");
+    }
+
+    #[test]
+    fn test_response_format_json_schema_minimal() {
+        let json = r#"{
+            "type": "json_schema",
+            "json_schema": {
+                "name": "output"
+            }
+        }"#;
+        let fmt: ResponseFormat = serde_json::from_str(json).unwrap();
+        assert_eq!(fmt.r#type, "json_schema");
+        let spec = fmt.json_schema.unwrap();
+        assert_eq!(spec.name, "output");
+        assert!(spec.schema.is_none());
+        assert!(spec.description.is_none());
+        assert!(spec.strict.is_none());
+    }
+
+    #[test]
+    fn test_response_format_serialization_skips_none() {
+        let fmt = ResponseFormat {
+            r#type: "json_object".to_string(),
+            json_schema: None,
+        };
+        let json = serde_json::to_string(&fmt).unwrap();
+        assert!(json.contains("json_object"));
+        assert!(!json.contains("json_schema"));
     }
 }

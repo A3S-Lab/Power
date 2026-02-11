@@ -8,16 +8,30 @@ use crate::{dirs, model};
 /// Progress callback type for download reporting.
 pub type ProgressCallback = Box<dyn Fn(u64, u64) + Send + Sync>;
 
+/// Build a reqwest client, optionally disabling TLS certificate verification.
+fn build_http_client(insecure: bool) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if insecure {
+        builder = builder.danger_accept_invalid_certs(true);
+        tracing::warn!("TLS certificate verification disabled (insecure mode)");
+    }
+    builder
+        .build()
+        .map_err(|e| PowerError::Config(format!("Failed to build HTTP client: {e}")))
+}
+
 /// Download a model from a direct URL or resolve a model name first.
 ///
 /// If `name_or_url` is a URL, downloads directly.
 /// Otherwise, resolves the name via the model registry, then downloads.
 /// Supports resuming interrupted downloads via HTTP Range requests.
+/// When `insecure` is true, TLS certificate verification is skipped.
 /// Returns the resulting `ModelManifest` after download and storage.
 pub async fn pull_model(
     name_or_url: &str,
     url_override: Option<&str>,
     progress: Option<ProgressCallback>,
+    insecure: bool,
 ) -> Result<ModelManifest> {
     let (name, url, source) = if let Some(url) = url_override {
         (
@@ -35,7 +49,7 @@ pub async fn pull_model(
 
     tracing::info!(name = %name, url = %url, "Pulling model");
 
-    let bytes = download_with_resume(&name, &url, progress).await?;
+    let bytes = download_with_resume(&name, &url, progress, insecure).await?;
 
     let (blob_path, sha256) = storage::store_blob(&bytes)?;
     let format = detect_format(&name, &blob_path);
@@ -54,7 +68,9 @@ pub async fn pull_model(
                 let proj_name = resolve::ModelRef::parse(name_or_url);
                 let proj_url = ollama_registry::blob_url(&proj_name.name, proj_digest);
                 tracing::info!(digest = %proj_digest, "Downloading multimodal projector");
-                let proj_resp = reqwest::get(&proj_url)
+                let proj_client = build_http_client(insecure)?;
+                let proj_resp = proj_client.get(&proj_url)
+                    .send()
                     .await
                     .map_err(|e| PowerError::DownloadFailed {
                         model: name.clone(),
@@ -137,11 +153,13 @@ pub async fn pull_model(
 ///
 /// Uses a `.partial` temp file in the blobs directory to track incomplete downloads.
 /// If a partial file exists, sends a `Range: bytes={existing_size}-` header to resume.
+/// When `insecure` is true, TLS certificate verification is skipped.
 /// On completion, reads the full data and cleans up the partial file.
 async fn download_with_resume(
     name: &str,
     url: &str,
     progress: Option<ProgressCallback>,
+    insecure: bool,
 ) -> Result<Vec<u8>> {
     use std::io::Write;
 
@@ -161,7 +179,7 @@ async fn download_with_resume(
         0
     };
 
-    let client = reqwest::Client::new();
+    let client = build_http_client(insecure)?;
     let mut request = client.get(url);
 
     if existing_size > 0 {
@@ -543,5 +561,17 @@ mod tests {
     fn test_detect_format_both_match() {
         let path = std::path::PathBuf::from("/tmp/model.gguf");
         assert_eq!(detect_format("model-gguf", &path), ModelFormat::Gguf);
+    }
+
+    #[test]
+    fn test_build_http_client_default() {
+        let client = build_http_client(false);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_build_http_client_insecure() {
+        let client = build_http_client(true);
+        assert!(client.is_ok());
     }
 }

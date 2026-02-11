@@ -139,12 +139,28 @@ pub async fn handler(
     let modelfile_content = modelfile::to_string(&mf);
 
     // Create new manifest inheriting from the base model
+    // If quantize was requested, store it in the parameters metadata
+    let parameters = match (&base_params, &request.quantize) {
+        (Some(params), Some(quant)) => Some(crate::model::manifest::ModelParameters {
+            quantization: Some(quant.clone()),
+            ..params.clone()
+        }),
+        (None, Some(quant)) => Some(crate::model::manifest::ModelParameters {
+            context_length: None,
+            embedding_length: None,
+            parameter_count: None,
+            quantization: Some(quant.clone()),
+        }),
+        (Some(params), None) => Some(params.clone()),
+        (None, None) => None,
+    };
+
     let new_manifest = crate::model::manifest::ModelManifest {
         name: request.name.clone(),
         format: base_format,
         size: base_size,
         sha256: base_sha256,
-        parameters: base_params,
+        parameters,
         created_at: chrono::Utc::now(),
         path: base_path,
         system_prompt: mf.system.clone(),
@@ -457,5 +473,78 @@ mod tests {
                 || input.starts_with("../");
             assert_eq!(is_local, expected, "Failed for input: {input}");
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_create_with_quantize_stores_in_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state
+            .registry
+            .register(sample_manifest("llama3.2:3b"))
+            .unwrap();
+
+        let app = router::build(state.clone());
+        let body = serde_json::json!({
+            "name": "quantized-model",
+            "modelfile": "FROM llama3.2:3b\nSYSTEM \"Be helpful.\"",
+            "stream": false,
+            "quantize": "q4_0"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/create")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify quantize was stored in the manifest parameters
+        let manifest = state.registry.get("quantized-model").unwrap();
+        let params = manifest.parameters.unwrap();
+        assert_eq!(params.quantization.as_deref(), Some("q4_0"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_create_without_quantize_preserves_base_params() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state
+            .registry
+            .register(sample_manifest("llama3.2:3b"))
+            .unwrap();
+
+        let app = router::build(state.clone());
+        let body = serde_json::json!({
+            "name": "no-quant-model",
+            "modelfile": "FROM llama3.2:3b",
+            "stream": false
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/create")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify base model parameters are preserved
+        let manifest = state.registry.get("no-quant-model").unwrap();
+        // sample_manifest has parameters with Q4_K_M quantization
+        if let Some(params) = manifest.parameters {
+            assert_eq!(params.quantization.as_deref(), Some("Q4_K_M"));
+        }
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 }

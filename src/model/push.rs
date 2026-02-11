@@ -10,12 +10,22 @@ pub type ProgressCallback = Box<dyn Fn(u64, u64) + Send + Sync>;
 /// 1. Check if blob exists on remote (HEAD)
 /// 2. Upload blob if missing (POST)
 /// 3. Upload manifest (POST)
+///
+/// When `insecure` is true, TLS certificate verification is skipped.
 pub async fn push_model(
     manifest: &ModelManifest,
     destination: &str,
     progress: Option<ProgressCallback>,
+    insecure: bool,
 ) -> Result<String> {
-    let client = reqwest::Client::new();
+    let mut builder = reqwest::Client::builder();
+    if insecure {
+        builder = builder.danger_accept_invalid_certs(true);
+        tracing::warn!("TLS certificate verification disabled for push (insecure mode)");
+    }
+    let client = builder
+        .build()
+        .map_err(|e| PowerError::UploadFailed(format!("Failed to build HTTP client: {e}")))?;
     let digest = format!("sha256:{}", manifest.sha256);
     let blob_size = manifest.size;
 
@@ -113,7 +123,7 @@ mod tests {
     #[tokio::test]
     async fn test_push_model_connection_refused() {
         let manifest = sample_manifest("test-push");
-        let result = push_model(&manifest, "http://localhost:1", None).await;
+        let result = push_model(&manifest, "http://localhost:1", None, false).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Failed to check blob") || err.contains("Upload failed"));
@@ -122,7 +132,7 @@ mod tests {
     #[tokio::test]
     async fn test_push_model_invalid_destination() {
         let manifest = sample_manifest("test-push");
-        let result = push_model(&manifest, "not-a-url", None).await;
+        let result = push_model(&manifest, "not-a-url", None, false).await;
         assert!(result.is_err());
     }
 
@@ -135,7 +145,7 @@ mod tests {
             called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         // Will fail due to connection, but progress callback type is valid
-        let _result = push_model(&manifest, "http://localhost:1", Some(progress)).await;
+        let _result = push_model(&manifest, "http://localhost:1", Some(progress), false).await;
         // Connection fails before progress is called, so we just verify it compiles
     }
 
@@ -170,14 +180,24 @@ mod tests {
     #[tokio::test]
     async fn test_push_model_with_trailing_slash() {
         let manifest = sample_manifest("test-push");
-        let result = push_model(&manifest, "http://localhost:1/", None).await;
+        let result = push_model(&manifest, "http://localhost:1/", None, false).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_push_model_empty_destination() {
         let manifest = sample_manifest("test-push");
-        let result = push_model(&manifest, "", None).await;
+        let result = push_model(&manifest, "", None, false).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_push_model_insecure_mode() {
+        let manifest = sample_manifest("test-push");
+        // Insecure mode should still fail on connection, but the client builds successfully
+        let result = push_model(&manifest, "http://localhost:1", None, true).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Failed to check blob") || err.contains("Upload failed"));
     }
 }

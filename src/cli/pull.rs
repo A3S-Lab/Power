@@ -6,7 +6,7 @@ use crate::model::registry::ModelRegistry;
 use crate::model::resolve;
 
 /// Execute the `pull` command: download a model by name or URL.
-pub async fn execute(model: &str, registry: &ModelRegistry) -> Result<()> {
+pub async fn execute(model: &str, registry: &ModelRegistry, insecure: bool) -> Result<()> {
     if registry.exists(model) {
         println!("Model '{model}' already exists locally.");
         return Ok(());
@@ -37,7 +37,7 @@ pub async fn execute(model: &str, registry: &ModelRegistry) -> Result<()> {
 
     println!("Pulling '{display_name}'...");
 
-    let manifest = pull_model(model, None, Some(progress)).await?;
+    let manifest = pull_model(model, None, Some(progress), insecure).await?;
     pb.finish_with_message("Download complete");
 
     let pulled_name = manifest.name.clone();
@@ -82,7 +82,7 @@ mod tests {
         registry.register(manifest).unwrap();
 
         // Should return Ok without attempting to download
-        let result = execute("existing-model", &registry).await;
+        let result = execute("existing-model", &registry, false).await;
         assert!(result.is_ok());
 
         std::env::remove_var("A3S_POWER_HOME");

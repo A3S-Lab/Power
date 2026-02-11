@@ -15,6 +15,13 @@ pub struct GpuConfig {
     /// Index of the primary GPU to use (default: 0).
     #[serde(default)]
     pub main_gpu: i32,
+
+    /// Proportion of work to distribute across multiple GPUs.
+    /// Each value is a float representing the fraction of work for that GPU.
+    /// Example: `[0.5, 0.5]` splits evenly across 2 GPUs.
+    /// Empty means use a single GPU (default behavior).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tensor_split: Vec<f32>,
 }
 
 /// User-configurable settings for the Power server and CLI.
@@ -783,5 +790,32 @@ mod tests {
         config.apply_env_overrides();
         assert!(!config.sched_spread); // unchanged
         std::env::remove_var("OLLAMA_SCHED_SPREAD");
+    }
+
+    #[test]
+    fn test_gpu_config_tensor_split_default_empty() {
+        let config = GpuConfig::default();
+        assert!(config.tensor_split.is_empty());
+    }
+
+    #[test]
+    fn test_gpu_config_tensor_split_from_toml() {
+        let toml_str = r#"
+            host = "127.0.0.1"
+            port = 11434
+
+            [gpu]
+            gpu_layers = -1
+            tensor_split = [0.5, 0.5]
+        "#;
+        let config: PowerConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.gpu.tensor_split, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn test_gpu_config_tensor_split_serialization_skips_empty() {
+        let config = PowerConfig::default();
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        assert!(!serialized.contains("tensor_split"));
     }
 }

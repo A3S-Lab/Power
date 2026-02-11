@@ -24,6 +24,7 @@ pub async fn handler(
 ) -> impl IntoResponse {
     let model_name = request.name.clone();
     let is_stream = request.stream.unwrap_or(true);
+    let insecure = request.insecure.unwrap_or(false);
 
     if state.registry.exists(&model_name) {
         return Json(PullResponse {
@@ -40,6 +41,7 @@ pub async fn handler(
         let registry = state.registry.clone();
         let (tx, rx) = mpsc::channel::<PullResponse>(32);
         let name_or_url = model_name.clone();
+        let pull_insecure = insecure;
 
         tokio::spawn(async move {
             // Step 1: Pulling manifest
@@ -111,10 +113,11 @@ pub async fn handler(
                     &name_or_url,
                     Some(&resolved.url),
                     Some(progress),
+                    pull_insecure,
                 )
                 .await
             } else {
-                crate::model::pull::pull_model(&name_or_url, None, Some(progress)).await
+                crate::model::pull::pull_model(&name_or_url, None, Some(progress), pull_insecure).await
             };
 
             match pull_result {
@@ -183,7 +186,7 @@ pub async fn handler(
         crate::api::sse::ndjson_response(event_stream)
     } else {
         // Non-streaming: download and return final status
-        match crate::model::pull::pull_model(&model_name, None, None).await {
+        match crate::model::pull::pull_model(&model_name, None, None, insecure).await {
             Ok(manifest) => {
                 let digest = format!("sha256:{}", &manifest.sha256);
                 let size = manifest.size;
