@@ -20,7 +20,7 @@ path = "src/main.rs"
 
 [features]
 default = ["llamacpp"]
-llamacpp = ["dep:llama-cpp-2"]
+llamacpp = ["dep:llama-cpp-2", "dep:encoding_rs"]
 
 [dependencies]
 # Async runtime
@@ -82,6 +82,9 @@ minijinja = "2"
 
 # llama.cpp backend (optional, requires C++ toolchain)
 llama-cpp-2 = { version = "0.1", optional = true }
+
+# UTF-8 decoding for llama.cpp token_to_piece (re-exported by llama-cpp-2)
+encoding_rs = { version = "0.8", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

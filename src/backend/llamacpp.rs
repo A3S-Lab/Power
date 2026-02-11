@@ -83,16 +83,23 @@ struct SendableLoraAdapter(llama_cpp_2::model::LlamaLoraAdapter);
 #[cfg(feature = "llamacpp")]
 unsafe impl Send for SendableLoraAdapter {}
 
-/// Newtype wrapper around MtmdContext to implement Send.
-///
-/// Safety: MtmdContext wraps C pointers that are safe to send between threads
-/// when accessed sequentially (protected by Mutex). The mtmd API docs note that
-/// `eval_chunks` is NOT thread-safe, so we serialize access via Mutex.
-#[cfg(feature = "llamacpp")]
-struct SendableMtmdContext(llama_cpp_2::mtmd::MtmdContext);
+// NOTE: MtmdContext requires the `mtmd` feature on llama-cpp-2.
+// Vision/multimodal support is not yet wired up; the projector_path field
+// on LoadedModel is reserved for future use.
 
+/// Create a dummy `LlamaBackend` reference for `new_context()`.
+///
+/// Safety: `LlamaBackend` is a zero-sized type and the `new_context` method
+/// accepts `_: &LlamaBackend` as an unused proof-of-initialization parameter.
+/// The actual backend is initialized once via `OnceLock` in `LlamaCppBackend::load`.
+/// This helper avoids lifetime issues when calling `new_context` inside `spawn_blocking`.
 #[cfg(feature = "llamacpp")]
-unsafe impl Send for SendableMtmdContext {}
+fn backend_ref() -> &'static llama_cpp_2::llama_backend::LlamaBackend {
+    // LlamaBackend is a ZST — this creates a valid reference without allocation.
+    // Safety: ZSTs have no data to read/write; the reference is only used as a
+    // type-level proof that the backend was initialized.
+    unsafe { &*(std::ptr::NonNull::dangling().as_ptr()) }
+}
 
 /// llama.cpp backend for GGUF model inference.
 pub struct LlamaCppBackend {
@@ -138,8 +145,8 @@ impl Backend for LlamaCppBackend {
 
         tracing::info!(model = %manifest.name, path = %manifest.path.display(), "Loading model");
 
-        let backend = self
-            .llama_backend
+        // Ensure the backend is initialized (first call wins, subsequent calls are no-ops)
+        self.llama_backend
             .get_or_init(|| LlamaBackend::init().expect("Failed to initialize llama.cpp backend"));
 
         let gpu_layers = self.config.gpu.gpu_layers;
@@ -147,10 +154,17 @@ impl Backend for LlamaCppBackend {
         let use_mlock = self.config.use_mlock;
         let sched_spread = self.config.sched_spread;
         let has_tensor_split = !self.config.gpu.tensor_split.is_empty();
-        let params = {
+
+        let path = manifest.path.clone();
+        let model_name = manifest.name.clone();
+
+        // Load model in a blocking task since it's CPU-intensive.
+        // LlamaModelParams contains raw pointers (not Send), so we build everything
+        // inside the blocking task and use backend_ref() for the ZST marker.
+        let model = tokio::task::spawn_blocking(move || {
             let mut p = LlamaModelParams::default();
             if gpu_layers != 0 {
-                p = p.with_n_gpu_layers(gpu_layers);
+                p = p.with_n_gpu_layers(gpu_layers.max(0) as u32);
             }
             if main_gpu != 0 {
                 p = p.with_main_gpu(main_gpu);
@@ -158,21 +172,13 @@ impl Backend for LlamaCppBackend {
             if use_mlock {
                 p = p.with_use_mlock(true);
             }
-            // Enable multi-GPU layer splitting when tensor_split is configured or sched_spread is on
             if has_tensor_split || sched_spread {
                 use llama_cpp_2::model::params::LlamaSplitMode;
                 p = p.with_split_mode(LlamaSplitMode::Layer);
                 tracing::info!("Multi-GPU layer splitting enabled");
             }
-            p
-        };
 
-        let path = manifest.path.clone();
-        let model_name = manifest.name.clone();
-
-        // Load model in a blocking task since it's CPU-intensive
-        let model = tokio::task::spawn_blocking(move || {
-            LlamaModel::load_from_file(backend, &path, &params)
+            LlamaModel::load_from_file(backend_ref(), &path, &p)
                 .map_err(|e| PowerError::InferenceFailed(format!("Failed to load model: {e}")))
         })
         .await
@@ -182,11 +188,7 @@ impl Backend for LlamaCppBackend {
 
         // Detect chat template: prefer manifest.template_override (from Ollama registry),
         // then GGUF metadata, then fallback to Phi.
-        let gguf_template = model_arc
-            .metadata()
-            .and_then(|meta| meta.get("tokenizer.chat_template"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let gguf_template = model_arc.meta_val_str("tokenizer.chat_template").ok();
 
         let raw_template_str = manifest.template_override.clone().or(gguf_template);
 
@@ -206,12 +208,15 @@ impl Backend for LlamaCppBackend {
                 let model_ref = model_arc.clone();
                 let path = adapter_path_buf.clone();
                 let adapter = tokio::task::spawn_blocking(move || {
-                    model_ref.lora_adapter_init(&path).map_err(|e| {
+                    let adapter = model_ref.lora_adapter_init(&path).map_err(|e| {
                         PowerError::InferenceFailed(format!(
                             "Failed to load LoRA adapter from {}: {e}",
                             path.display()
                         ))
-                    })
+                    })?;
+                    // Wrap immediately inside spawn_blocking so we never send
+                    // the raw LlamaLoraAdapter across threads.
+                    Ok::<_, PowerError>(SendableLoraAdapter(adapter))
                 })
                 .await
                 .map_err(|e| PowerError::InferenceFailed(format!("Task join error: {e}")))??;
@@ -221,9 +226,7 @@ impl Backend for LlamaCppBackend {
                     adapter = %adapter_path,
                     "LoRA adapter loaded"
                 );
-                Some(Arc::new(std::sync::Mutex::new(SendableLoraAdapter(
-                    adapter,
-                ))))
+                Some(Arc::new(std::sync::Mutex::new(adapter)))
             } else {
                 tracing::warn!(
                     model = %manifest.name,
@@ -269,7 +272,7 @@ impl Backend for LlamaCppBackend {
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
         // Look up the chat template and projector path for this model
-        let (template, raw_template, projector_path, model_n_ctx_train) = {
+        let (template, raw_template, projector_path, _model_n_ctx_train) = {
             let models = self.models.read().await;
             models
                 .get(model_name)
@@ -384,6 +387,9 @@ impl Backend for LlamaCppBackend {
             context: None,
         };
 
+        // Get completion stream from the underlying complete() method
+        let stream = self.complete(model_name, completion_req).await?;
+
         // Map CompletionResponseChunk -> ChatResponseChunk with tool call detection
         use futures::StreamExt;
         let collected_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -428,10 +434,8 @@ impl Backend for LlamaCppBackend {
         request: CompletionRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<CompletionResponseChunk>> + Send>>> {
         use llama_cpp_2::context::params::LlamaContextParams;
-        use llama_cpp_2::context::LlamaContext;
         use llama_cpp_2::llama_batch::LlamaBatch;
         use llama_cpp_2::sampling::LlamaSampler;
-        use llama_cpp_2::token::LlamaToken;
 
         let (model_arc, cached_ctx_mutex, lora_adapter, model_n_ctx_train) = {
             let models = self.models.read().await;
@@ -459,7 +463,7 @@ impl Backend for LlamaCppBackend {
         let frequency_penalty = request.frequency_penalty;
         let presence_penalty = request.presence_penalty;
         let repeat_last_n = request.repeat_last_n.unwrap_or(64);
-        let penalize_newline = request.penalize_newline.unwrap_or(true);
+        let _penalize_newline = request.penalize_newline.unwrap_or(true);
         let seed = request.seed.unwrap_or(0).max(0) as u32;
         let ctx_size = request.num_ctx.unwrap_or(model_n_ctx_train);
         if ctx_size > model_n_ctx_train {
@@ -476,7 +480,7 @@ impl Backend for LlamaCppBackend {
         let mirostat = request.mirostat;
         let mirostat_tau = request.mirostat_tau;
         let mirostat_eta = request.mirostat_eta;
-        let tfs_z = request.tfs_z;
+        let _tfs_z = request.tfs_z; // tail_free sampling removed in llama-cpp-2 v0.1.133
         let typical_p = request.typical_p;
         let response_format = request.response_format.clone();
         let stop_sequences = request.stop.clone().unwrap_or_default();
@@ -503,7 +507,7 @@ impl Backend for LlamaCppBackend {
             // Try to reuse cached context with KV cache prefix matching
             let cached = cached_ctx_mutex.lock().unwrap().take();
             let (mut ctx, skip_tokens) = match cached {
-                Some(cached) if cached.ctx_size == ctx_size => {
+                Some(mut cached) if cached.ctx_size == ctx_size => {
                     // Find common prefix between cached tokens and new tokens
                     let common_len = cached
                         .evaluated_tokens
@@ -515,9 +519,11 @@ impl Backend for LlamaCppBackend {
                     if common_len > 0 && common_len <= tokens.len() {
                         // Remove KV cache entries after the common prefix
                         if common_len < cached.evaluated_tokens.len() {
-                            cached
-                                .ctx
-                                .clear_kv_cache_seq(Some(0), Some(common_len as u32), None);
+                            let _ = cached.ctx.clear_kv_cache_seq(
+                                Some(0),
+                                Some(common_len as u32),
+                                None,
+                            );
                         }
                         tracing::debug!(
                             common = common_len,
@@ -533,10 +539,10 @@ impl Backend for LlamaCppBackend {
                 }
                 _ => {
                     // No cached context or size mismatch — create new
-                    let mut ctx_params = LlamaContextParams::default().with_n_ctx(
+                    let mut ctx_params = LlamaContextParams::default().with_n_ctx(Some(
                         std::num::NonZeroU32::new(ctx_size)
                             .unwrap_or(std::num::NonZeroU32::new(2048).unwrap()),
-                    );
+                    ));
                     if let Some(batch) = num_batch {
                         ctx_params = ctx_params.with_n_batch(batch);
                     }
@@ -547,12 +553,19 @@ impl Backend for LlamaCppBackend {
                         ctx_params = ctx_params.with_n_threads_batch(threads_batch as i32);
                     }
                     if flash_attention {
-                        ctx_params = ctx_params.with_flash_attention_policy(
-                            llama_cpp_2::context::params::FlashAttentionPolicy::Enabled,
-                        );
+                        // LLAMA_FLASH_ATTN_TYPE_ENABLED = 1
+                        ctx_params = ctx_params.with_flash_attention_policy(1);
                     }
-                    match LlamaContext::with_model(&model_arc, ctx_params) {
-                        Ok(c) => (c, 0),
+                    match model_arc.new_context(backend_ref(), ctx_params) {
+                        Ok(c) => {
+                            // Safety: model_arc is an Arc kept alive in LoadedModel for the
+                            // entire duration the context exists. The context is returned to
+                            // CachedContext (which stores LlamaContext<'static>) and is always
+                            // dropped before the model.
+                            let c: llama_cpp_2::context::LlamaContext<'static> =
+                                unsafe { std::mem::transmute(c) };
+                            (c, 0)
+                        }
                         Err(e) => {
                             let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
                                 "Failed to create context: {e}"
@@ -606,7 +619,12 @@ impl Backend for LlamaCppBackend {
             // JSON grammar constraint (supports "json" string or JSON Schema object)
             if let Some(ref fmt) = response_format {
                 if let Some(grammar) = super::json_schema::format_to_gbnf(fmt) {
-                    samplers.push(LlamaSampler::grammar(&model_arc, &grammar, "root"));
+                    match LlamaSampler::grammar(&model_arc, &grammar, "root") {
+                        Ok(s) => samplers.push(s),
+                        Err(e) => {
+                            tracing::warn!("Failed to create grammar sampler: {e}, ignoring");
+                        }
+                    }
                 }
             }
 
@@ -647,9 +665,7 @@ impl Backend for LlamaCppBackend {
                         samplers.push(LlamaSampler::top_k(k));
                     }
 
-                    if let Some(z) = tfs_z {
-                        samplers.push(LlamaSampler::tail_free(z, 1));
-                    }
+                    // NOTE: tail_free sampling (tfs_z) was removed in llama-cpp-2 v0.1.133
 
                     if let Some(p) = typical_p {
                         samplers.push(LlamaSampler::typical(p, 1));
@@ -698,10 +714,12 @@ impl Backend for LlamaCppBackend {
 
                 all_tokens.push(new_token);
 
-                let text = model_arc
-                    .token_to_str(new_token, llama_cpp_2::token::data::LlamaTokenAttr::all())
-                    .unwrap_or_default()
-                    .to_string();
+                let text = {
+                    let mut decoder = encoding_rs::UTF_8.new_decoder();
+                    model_arc
+                        .token_to_piece(new_token, &mut decoder, true, None)
+                        .unwrap_or_default()
+                };
 
                 generated_text.push_str(&text);
 
@@ -797,7 +815,6 @@ impl Backend for LlamaCppBackend {
         request: EmbeddingRequest,
     ) -> Result<EmbeddingResponse> {
         use llama_cpp_2::context::params::LlamaContextParams;
-        use llama_cpp_2::context::LlamaContext;
         use llama_cpp_2::llama_batch::LlamaBatch;
         use llama_cpp_2::model::params::LlamaModelParams;
         use llama_cpp_2::model::LlamaModel;
@@ -830,22 +847,16 @@ impl Backend for LlamaCppBackend {
 
             tracing::info!(model = model_name, "Reloading model with embedding mode");
 
-            let backend = self.llama_backend.get().ok_or_else(|| {
-                PowerError::InferenceFailed("llama.cpp backend not initialized".to_string())
-            })?;
-
             let gpu_layers = self.config.gpu.gpu_layers;
-            let params = if gpu_layers != 0 {
-                LlamaModelParams::default()
-                    .with_n_gpu_layers(gpu_layers)
-                    .with_embedding(true)
-            } else {
-                LlamaModelParams::default().with_embedding(true)
-            };
 
             let path_clone = path.clone();
             let model = tokio::task::spawn_blocking(move || {
-                LlamaModel::load_from_file(backend, &path_clone, &params).map_err(|e| {
+                let params = if gpu_layers != 0 {
+                    LlamaModelParams::default().with_n_gpu_layers(gpu_layers.max(0) as u32)
+                } else {
+                    LlamaModelParams::default()
+                };
+                LlamaModel::load_from_file(backend_ref(), &path_clone, &params).map_err(|e| {
                     PowerError::InferenceFailed(format!(
                         "Failed to reload model for embedding: {e}"
                     ))
@@ -855,6 +866,7 @@ impl Backend for LlamaCppBackend {
             .map_err(|e| PowerError::InferenceFailed(format!("Task join error: {e}")))??;
 
             let model_arc = Arc::new(model);
+            let n_ctx_train = model_arc.n_ctx_train();
             let name = model_name.to_string();
             self.models.write().await.insert(
                 name.clone(),
@@ -865,6 +877,7 @@ impl Backend for LlamaCppBackend {
                     chat_template,
                     raw_template,
                     load_mode: LoadMode::Embedding,
+                    n_ctx_train,
                     cached_ctx: Arc::new(std::sync::Mutex::new(None)),
                     lora_adapter,
                     projector_path,
@@ -883,9 +896,11 @@ impl Backend for LlamaCppBackend {
             let ctx_params = LlamaContextParams::default()
                 .with_n_ctx(std::num::NonZeroU32::new(2048))
                 .with_embeddings(true);
-            let mut ctx = LlamaContext::with_model(&model_arc, ctx_params).map_err(|e| {
-                PowerError::InferenceFailed(format!("Failed to create context: {e}"))
-            })?;
+            let mut ctx = model_arc
+                .new_context(backend_ref(), ctx_params)
+                .map_err(|e| {
+                    PowerError::InferenceFailed(format!("Failed to create context: {e}"))
+                })?;
 
             let mut embeddings = Vec::with_capacity(input.len());
 

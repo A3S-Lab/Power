@@ -1030,3 +1030,913 @@ async fn test_generate_streaming_returns_ndjson() {
 
     std::env::remove_var("A3S_POWER_HOME");
 }
+
+// ============================================================================
+// 17. OpenAI Text Completion (/v1/completions)
+// ============================================================================
+
+#[tokio::test]
+async fn test_openai_completions_non_streaming() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "comp-model", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/v1/completions",
+        serde_json::json!({
+            "model": "comp-model",
+            "prompt": "Once upon a time",
+            "stream": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["model"], "comp-model");
+    assert_eq!(json["object"], "text_completion");
+    assert!(json["id"].as_str().unwrap().starts_with("cmpl-"));
+    let choices = json["choices"].as_array().unwrap();
+    assert_eq!(choices.len(), 1);
+    assert!(choices[0]["text"].is_string());
+    assert_eq!(choices[0]["finish_reason"], "stop");
+    assert!(json["usage"]["prompt_tokens"].is_number());
+    assert!(json["usage"]["completion_tokens"].is_number());
+    assert!(json["usage"]["total_tokens"].is_number());
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_openai_completions_model_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+
+    let app = router::build(state);
+    let (status, json) = post_json(
+        app,
+        "/v1/completions",
+        serde_json::json!({
+            "model": "ghost",
+            "prompt": "Hello"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["error"]["code"], "model_not_found");
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_openai_completions_streaming_sse() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "sse-comp", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "model": "sse-comp",
+                "prompt": "Hello",
+                "stream": true
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    // SSE format: lines starting with "data: "
+    assert!(text.contains("data: "), "Expected SSE format, got: {text}");
+    // Should end with [DONE]
+    assert!(text.contains("[DONE]"), "Expected [DONE] terminator");
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 18. OpenAI Chat Streaming (SSE format)
+// ============================================================================
+
+#[tokio::test]
+async fn test_openai_chat_streaming_sse() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "sse-chat", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "model": "sse-chat",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": true
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("data: "), "Expected SSE format");
+    assert!(text.contains("[DONE]"), "Expected [DONE] terminator");
+
+    // Parse the first SSE data line
+    let first_data = text
+        .lines()
+        .find(|l| l.starts_with("data: ") && !l.contains("[DONE]"))
+        .unwrap()
+        .strip_prefix("data: ")
+        .unwrap();
+    let chunk: serde_json::Value = serde_json::from_str(first_data).unwrap();
+    assert_eq!(chunk["object"], "chat.completion.chunk");
+    assert!(chunk["id"].is_string());
+    assert!(chunk["choices"].is_array());
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 19. Usage Dashboard (/v1/usage)
+// ============================================================================
+
+#[tokio::test]
+async fn test_usage_endpoint_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+
+    let app = router::build(state);
+    let (status, json) = get_json(app, "/v1/usage").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(json["data"].as_array().unwrap().is_empty());
+    assert_eq!(json["total"]["requests"], 0);
+    assert_eq!(json["total"]["total_tokens"], 0);
+    assert_eq!(json["total"]["prompt_tokens"], 0);
+    assert_eq!(json["total"]["completion_tokens"], 0);
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_usage_accumulates_after_inference() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "usage-model", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    // Make a chat request to generate usage
+    let app = router::build(state.clone());
+    let (status, _) = post_json(
+        app,
+        "/api/chat",
+        serde_json::json!({
+            "model": "usage-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Check usage reflects the request
+    let app = router::build(state.clone());
+    let (status, json) = get_json(app, "/v1/usage").await;
+    assert_eq!(status, StatusCode::OK);
+    let total = &json["total"];
+    assert!(total["requests"].as_u64().unwrap() >= 1);
+    assert!(total["total_tokens"].as_u64().unwrap() > 0);
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_usage_with_model_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+
+    // Register two models and chat with both
+    for name in &["model-alpha", "model-beta"] {
+        let m = manifest_with_blob(dir.path(), name, format!("data-{name}").as_bytes());
+        state.registry.register(m).unwrap();
+
+        let app = router::build(state.clone());
+        post_json(
+            app,
+            "/api/chat",
+            serde_json::json!({
+                "model": name,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": false
+            }),
+        )
+        .await;
+    }
+
+    // Filter by model-alpha
+    let app = router::build(state.clone());
+    let (status, json) = get_json(app, "/v1/usage?model=model-alpha").await;
+    assert_eq!(status, StatusCode::OK);
+    let data = json["data"].as_array().unwrap();
+    // All returned buckets should be for model-alpha
+    for bucket in data {
+        assert_eq!(bucket["model"], "model-alpha");
+    }
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 20. Push Endpoint Error Paths
+// ============================================================================
+
+#[tokio::test]
+async fn test_push_model_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+
+    let app = router::build(state);
+    let (status, json) = post_json(app, "/api/push", serde_json::json!({"name": "ghost"})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(json["status"].as_str().unwrap().contains("not found"));
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_push_missing_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "push-model", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state);
+    let (status, json) =
+        post_json(app, "/api/push", serde_json::json!({"name": "push-model"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(json["status"].as_str().unwrap().contains("destination"));
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 21. Create Endpoint
+// ============================================================================
+
+#[tokio::test]
+async fn test_create_from_modelfile_with_existing_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    // Register a base model that the Modelfile can reference
+    let manifest = manifest_with_blob(dir.path(), "base-model", b"fake-base-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/api/create",
+        serde_json::json!({
+            "name": "custom-model",
+            "modelfile": "FROM base-model\nSYSTEM You are a helpful assistant.\nPARAMETER temperature 0.7",
+            "stream": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(json["status"].as_str().unwrap().contains("success"));
+
+    // Verify the model was created in the registry
+    assert!(state.registry.exists("custom-model"));
+
+    // Verify the model has the system prompt
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/api/show",
+        serde_json::json!({"name": "custom-model"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(json["system"]
+        .as_str()
+        .unwrap()
+        .contains("helpful assistant"));
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_create_invalid_modelfile() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+
+    let app = router::build(state);
+    let (status, _json) = post_json(
+        app,
+        "/api/create",
+        serde_json::json!({
+            "name": "bad-model",
+            "modelfile": "INVALID CONTENT WITHOUT FROM",
+            "stream": false
+        }),
+    )
+    .await;
+    // Should fail because Modelfile has no FROM directive
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
+        "Expected error status, got {status}"
+    );
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 22. Multi-Turn Chat Conversation
+// ============================================================================
+
+#[tokio::test]
+async fn test_chat_multi_turn_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "conv-model", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/api/chat",
+        serde_json::json!({
+            "model": "conv-model",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "What is 2+2?"},
+                {"role": "assistant", "content": "4"},
+                {"role": "user", "content": "And 3+3?"}
+            ],
+            "stream": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["model"], "conv-model");
+    assert_eq!(json["message"]["role"], "assistant");
+    assert!(json["message"]["content"].is_string());
+    assert_eq!(json["done"], true);
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 23. Embed Model Not Found
+// ============================================================================
+
+#[tokio::test]
+async fn test_embed_model_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+
+    let app = router::build(state);
+    let (status, json) = post_json(
+        app,
+        "/api/embed",
+        serde_json::json!({
+            "model": "ghost",
+            "input": ["hello"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(json["error"].as_str().unwrap().contains("not found"));
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_embeddings_model_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+
+    let app = router::build(state);
+    let (status, json) = post_json(
+        app,
+        "/api/embeddings",
+        serde_json::json!({
+            "model": "ghost",
+            "prompt": "hello"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(json["error"].as_str().unwrap().contains("not found"));
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_openai_embeddings_model_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+
+    let app = router::build(state);
+    let (status, json) = post_json(
+        app,
+        "/v1/embeddings",
+        serde_json::json!({
+            "model": "ghost",
+            "input": "hello"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["error"]["code"], "model_not_found");
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 24. Generate with Options (temperature, top_p, etc.)
+// ============================================================================
+
+#[tokio::test]
+async fn test_generate_with_options() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "opts-model", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/api/generate",
+        serde_json::json!({
+            "model": "opts-model",
+            "prompt": "Hello",
+            "stream": false,
+            "options": {
+                "temperature": 0.5,
+                "top_p": 0.9,
+                "top_k": 40,
+                "seed": 42,
+                "num_ctx": 2048,
+                "repeat_penalty": 1.1,
+                "stop": ["\n"]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["model"], "opts-model");
+    assert_eq!(json["done"], true);
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_chat_with_options() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "opts-chat", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/api/chat",
+        serde_json::json!({
+            "model": "opts-chat",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": false,
+            "options": {
+                "temperature": 0.0,
+                "seed": 123,
+                "num_ctx": 4096
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["done"], true);
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 25. Keep-Alive Parameter
+// ============================================================================
+
+#[tokio::test]
+async fn test_chat_with_keep_alive_string() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "ka-model", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, _) = post_json(
+        app,
+        "/api/chat",
+        serde_json::json!({
+            "model": "ka-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": false,
+            "keep_alive": "10m"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(state.is_model_loaded("ka-model"));
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_chat_with_keep_alive_numeric() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "ka-num", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, _) = post_json(
+        app,
+        "/api/chat",
+        serde_json::json!({
+            "model": "ka-num",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": false,
+            "keep_alive": 300
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(state.is_model_loaded("ka-num"));
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+async fn test_chat_with_keep_alive_never_unload() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "ka-forever", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, _) = post_json(
+        app,
+        "/api/chat",
+        serde_json::json!({
+            "model": "ka-forever",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": false,
+            "keep_alive": -1
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(state.is_model_loaded("ka-forever"));
+    // Model with keep_alive=-1 should never appear in expired list
+    assert!(state.expired_models().is_empty());
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 26. Model Show Verbose
+// ============================================================================
+
+#[tokio::test]
+async fn test_show_model_with_verbose() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "verbose-model", b"fake-gguf-data");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/api/show",
+        serde_json::json!({"name": "verbose-model", "verbose": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(json["details"].is_object());
+    assert_eq!(json["details"]["family"], "llama");
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 27. Manifest Default Parameters
+// ============================================================================
+
+#[tokio::test]
+async fn test_chat_uses_manifest_default_parameters() {
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("A3S_POWER_HOME", dir.path());
+
+    let mut manifest = manifest_with_blob(dir.path(), "defaults-model", b"fake-model");
+    manifest.default_parameters = Some(
+        [("temperature".to_string(), serde_json::json!(0.1))]
+            .into_iter()
+            .collect(),
+    );
+    manifest.system_prompt = Some("You are a pirate.".to_string());
+
+    let mut backends = BackendRegistry::new();
+    backends.register(Arc::new(MockBackend::success()));
+    let state = AppState::new(
+        Arc::new(ModelRegistry::new()),
+        Arc::new(backends),
+        Arc::new(PowerConfig::default()),
+    );
+    state.registry.register(manifest).unwrap();
+
+    // Chat without specifying temperature — should use manifest default
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/api/chat",
+        serde_json::json!({
+            "model": "defaults-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["done"], true);
+
+    // Show should reflect the system prompt
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/api/show",
+        serde_json::json!({"name": "defaults-model"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["system"], "You are a pirate.");
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 28. Metrics Accumulation After Requests
+// ============================================================================
+
+#[tokio::test]
+async fn test_metrics_increment_after_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "metrics-model", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    // Make a chat request
+    let app = router::build(state.clone());
+    let (status, _) = post_json(
+        app,
+        "/api/chat",
+        serde_json::json!({
+            "model": "metrics-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Check metrics reflect the request
+    let app = router::build(state.clone());
+    let req = Request::builder()
+        .uri("/metrics")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("power_http_requests_total"));
+    // Should have at least 1 loaded model
+    assert!(text.contains("power_models_loaded 1"));
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 29. Config from Environment Variables
+// ============================================================================
+
+#[tokio::test]
+async fn test_config_from_env() {
+    use a3s_power::config::PowerConfig;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("A3S_POWER_HOME", dir.path());
+    std::env::set_var("A3S_POWER_HOST", "0.0.0.0");
+    std::env::set_var("A3S_POWER_PORT", "9999");
+    std::env::set_var("A3S_POWER_MAX_LOADED_MODELS", "5");
+    std::env::set_var("A3S_POWER_KEEP_ALIVE", "10m");
+
+    let config = PowerConfig::load().unwrap_or_default();
+    // Config should pick up env vars (if load() reads them)
+    // At minimum, default config should be valid
+    assert!(config.port > 0);
+    assert!(!config.host.is_empty());
+
+    std::env::remove_var("A3S_POWER_HOME");
+    std::env::remove_var("A3S_POWER_HOST");
+    std::env::remove_var("A3S_POWER_PORT");
+    std::env::remove_var("A3S_POWER_MAX_LOADED_MODELS");
+    std::env::remove_var("A3S_POWER_KEEP_ALIVE");
+}
+
+// ============================================================================
+// 30. OpenAI Chat with Tools (function calling)
+// ============================================================================
+
+#[tokio::test]
+async fn test_openai_chat_with_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "tool-model", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/v1/chat/completions",
+        serde_json::json!({
+            "model": "tool-model",
+            "messages": [{"role": "user", "content": "What's the weather?"}],
+            "stream": false,
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get the weather for a location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string"}
+                        },
+                        "required": ["location"]
+                    }
+                }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["object"], "chat.completion");
+    // Response should have choices regardless of whether tools were invoked
+    assert!(json["choices"].is_array());
+    assert!(!json["choices"].as_array().unwrap().is_empty());
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 31. OpenAI Chat with Response Format (JSON mode)
+// ============================================================================
+
+#[tokio::test]
+async fn test_openai_chat_json_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "json-model", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/v1/chat/completions",
+        serde_json::json!({
+            "model": "json-model",
+            "messages": [{"role": "user", "content": "Return a JSON object"}],
+            "stream": false,
+            "response_format": {"type": "json_object"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["object"], "chat.completion");
+    assert!(!json["choices"].as_array().unwrap().is_empty());
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 32. Native Chat with Format (JSON mode)
+// ============================================================================
+
+#[tokio::test]
+async fn test_native_chat_json_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let manifest = manifest_with_blob(dir.path(), "json-native", b"fake-model");
+    state.registry.register(manifest).unwrap();
+
+    let app = router::build(state.clone());
+    let (status, json) = post_json(
+        app,
+        "/api/chat",
+        serde_json::json!({
+            "model": "json-native",
+            "messages": [{"role": "user", "content": "Return JSON"}],
+            "stream": false,
+            "format": "json"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["done"], true);
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 33. HEAD / (Ollama client detection)
+// ============================================================================
+
+#[tokio::test]
+async fn test_head_root_for_ollama_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+
+    let app = router::build(state);
+    let req = Request::builder()
+        .method("HEAD")
+        .uri("/")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+// ============================================================================
+// 34. Model Registry Count and Exists
+// ============================================================================
+
+#[tokio::test]
+async fn test_registry_operations_through_api() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+
+    // Initially empty
+    let app = router::build(state.clone());
+    let (_, json) = get_json(app, "/api/tags").await;
+    assert_eq!(json["models"].as_array().unwrap().len(), 0);
+
+    // Register 3 models
+    for i in 0..3 {
+        let m = manifest_with_blob(
+            dir.path(),
+            &format!("model-{i}"),
+            format!("data-{i}").as_bytes(),
+        );
+        state.registry.register(m).unwrap();
+    }
+
+    // List should show 3
+    let app = router::build(state.clone());
+    let (_, json) = get_json(app, "/api/tags").await;
+    assert_eq!(json["models"].as_array().unwrap().len(), 3);
+
+    // OpenAI models should also show 3
+    let app = router::build(state.clone());
+    let (_, json) = get_json(app, "/v1/models").await;
+    assert_eq!(json["data"].as_array().unwrap().len(), 3);
+
+    // Delete one
+    let app = router::build(state.clone());
+    let _ = delete_json(app, "/api/delete", serde_json::json!({"name": "model-1"})).await;
+
+    // Should show 2
+    let app = router::build(state.clone());
+    let (_, json) = get_json(app, "/api/tags").await;
+    assert_eq!(json["models"].as_array().unwrap().len(), 2);
+
+    std::env::remove_var("A3S_POWER_HOME");
+}

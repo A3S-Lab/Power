@@ -277,23 +277,22 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_delete_blob() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("A3S_POWER_HOME", dir.path());
 
-        let data = b"to be deleted";
-        let (path, _hash) = store_blob(data).unwrap();
-        assert!(path.exists());
+        // Write a blob file directly to avoid env var races through store_blob
+        let blob_path = dir.path().join("blob-to-delete");
+        std::fs::write(&blob_path, b"to be deleted").unwrap();
+        assert!(blob_path.exists());
 
         let manifest = crate::model::manifest::ModelManifest {
             name: "test".to_string(),
             format: crate::model::manifest::ModelFormat::Gguf,
-            size: data.len() as u64,
+            size: 13,
             sha256: "test".to_string(),
             parameters: None,
             created_at: chrono::Utc::now(),
-            path: path.clone(),
+            path: blob_path.clone(),
             system_prompt: None,
             template_override: None,
             default_parameters: None,
@@ -307,9 +306,7 @@ mod tests {
         };
 
         delete_blob(&manifest).unwrap();
-        assert!(!path.exists());
-
-        std::env::remove_var("A3S_POWER_HOME");
+        assert!(!blob_path.exists());
     }
 
     #[test]

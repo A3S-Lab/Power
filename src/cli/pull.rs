@@ -7,9 +7,19 @@ use crate::model::resolve;
 
 /// Execute the `pull` command: download a model by name or URL.
 pub async fn execute(model: &str, registry: &ModelRegistry, insecure: bool) -> Result<()> {
+    // Check if model exists AND its blob file is present on disk
     if registry.exists(model) {
-        println!("Model '{model}' already exists locally.");
-        return Ok(());
+        let blob_ok = registry
+            .get(model)
+            .ok()
+            .map(|m| m.path.exists())
+            .unwrap_or(false);
+        if blob_ok {
+            println!("Model '{model}' already exists locally.");
+            return Ok(());
+        }
+        // Manifest exists but blob is missing — re-pull
+        tracing::warn!(model = model, "Manifest exists but blob file is missing, re-pulling");
     }
 
     // Determine display name
