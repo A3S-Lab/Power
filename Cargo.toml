@@ -1,6 +1,6 @@
 [package]
 name = "a3s-power"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["A3S Lab"]
 license = "MIT"
@@ -45,7 +45,7 @@ async-trait = "0.1"
 futures = "0.3"
 
 # Self-update
-a3s-updater = { version = "0.1", path = "../updater" }
+a3s-updater = "0.1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
