@@ -202,7 +202,9 @@ pub async fn handler(
                                     }
                                     // Collect token IDs for context return
                                     if let Some(tid) = c.token_id {
-                                        context_clone.lock().unwrap().push(tid);
+                                        if let Ok(mut ctx) = context_clone.lock() {
+                                            ctx.push(tid);
+                                        }
                                     }
                                 }
                                 if let Some(pt) = c.prompt_tokens {
@@ -232,12 +234,13 @@ pub async fn handler(
                                         None
                                     },
                                     context: if c.done {
-                                        let ctx = context_clone.lock().unwrap();
-                                        if ctx.is_empty() {
-                                            None
-                                        } else {
-                                            Some(ctx.clone())
-                                        }
+                                        context_clone.lock().ok().and_then(|ctx| {
+                                            if ctx.is_empty() {
+                                                None
+                                            } else {
+                                                Some(ctx.clone())
+                                            }
+                                        })
                                     } else {
                                         None
                                     },

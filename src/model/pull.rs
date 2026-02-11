@@ -10,7 +10,9 @@ pub type ProgressCallback = Box<dyn Fn(u64, u64) + Send + Sync>;
 
 /// Build a reqwest client, optionally disabling TLS certificate verification.
 fn build_http_client(insecure: bool) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder();
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(300));
     if insecure {
         builder = builder.danger_accept_invalid_certs(true);
         tracing::warn!("TLS certificate verification disabled (insecure mode)");
@@ -51,8 +53,17 @@ pub async fn pull_model(
 
     let (partial_path, file_size) = download_with_resume(&name, &url, progress, insecure).await?;
 
-    // Store blob using streaming hash — rename temp file instead of reading into memory
-    let (blob_path, sha256) = storage::store_blob_from_temp(&partial_path)?;
+    // Store blob using streaming hash — rename temp file instead of reading into memory.
+    // Run in spawn_blocking since SHA-256 computation on large files is CPU-intensive.
+    let partial_path_clone = partial_path.clone();
+    let (blob_path, sha256) =
+        tokio::task::spawn_blocking(move || storage::store_blob_from_temp(&partial_path_clone))
+            .await
+            .map_err(|e| {
+                PowerError::Io(std::io::Error::other(format!(
+                    "Blob store task failed: {e}"
+                )))
+            })??;
     let format = detect_format(&name, &blob_path);
 
     let manifest = match source {

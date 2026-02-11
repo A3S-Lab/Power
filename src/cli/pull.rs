@@ -19,7 +19,10 @@ pub async fn execute(model: &str, registry: &ModelRegistry, insecure: bool) -> R
             return Ok(());
         }
         // Manifest exists but blob is missing — re-pull
-        tracing::warn!(model = model, "Manifest exists but blob file is missing, re-pulling");
+        tracing::warn!(
+            model = model,
+            "Manifest exists but blob file is missing, re-pulling"
+        );
     }
 
     // Determine display name

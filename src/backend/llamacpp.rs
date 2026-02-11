@@ -145,9 +145,14 @@ impl Backend for LlamaCppBackend {
 
         tracing::info!(model = %manifest.name, path = %manifest.path.display(), "Loading model");
 
-        // Ensure the backend is initialized (first call wins, subsequent calls are no-ops)
-        self.llama_backend
-            .get_or_init(|| LlamaBackend::init().expect("Failed to initialize llama.cpp backend"));
+        // Ensure the backend is initialized (first call wins, subsequent calls are no-ops).
+        // We pre-check initialization to avoid panicking inside get_or_init.
+        if self.llama_backend.get().is_none() {
+            let backend = LlamaBackend::init().map_err(|e| {
+                PowerError::InferenceFailed(format!("Failed to initialize llama.cpp backend: {e}"))
+            })?;
+            let _ = self.llama_backend.set(backend); // Ignore if another thread won the race
+        }
 
         let gpu_layers = self.config.gpu.gpu_layers;
         let main_gpu = self.config.gpu.main_gpu;
@@ -287,11 +292,22 @@ impl Backend for LlamaCppBackend {
                 .unwrap_or((ChatTemplateKind::Phi, None, None, 2048))
         };
 
-        let prompt = chat_template::format_chat_prompt(
-            &request.messages,
-            &template,
-            raw_template.as_deref(),
-        );
+        // Render chat template in a blocking task to avoid blocking the async executor.
+        // Some GGUF models carry complex Jinja2 templates that can be slow to render.
+        let messages_clone = request.messages.clone();
+        let raw_template_clone = raw_template.clone();
+        let template_clone = template.clone();
+        let prompt = tokio::task::spawn_blocking(move || {
+            chat_template::format_chat_prompt(
+                &messages_clone,
+                &template_clone,
+                raw_template_clone.as_deref(),
+            )
+        })
+        .await
+        .map_err(|e| {
+            PowerError::InferenceFailed(format!("Chat template rendering task failed: {e}"))
+        })?;
 
         // Check if images are present in the request
         let has_images = request.messages.iter().any(|m| {
@@ -317,11 +333,7 @@ impl Backend for LlamaCppBackend {
                 .iter()
                 .flat_map(|m| {
                     // Collect from Ollama-native `images` field
-                    let ollama_imgs = m
-                        .images
-                        .as_ref()
-                        .map(|imgs| imgs.clone())
-                        .unwrap_or_default();
+                    let ollama_imgs = m.images.clone().unwrap_or_default();
                     // Collect from OpenAI image_url content parts (extract base64 data URIs)
                     let openai_imgs: Vec<String> = match &m.content {
                         super::types::MessageContent::Parts(parts) => parts
@@ -399,13 +411,15 @@ impl Backend for LlamaCppBackend {
             chunk_result.map(|chunk| {
                 // Accumulate text for tool call detection
                 if has_tools && !chunk.text.is_empty() {
-                    text_clone.lock().unwrap().push_str(&chunk.text);
+                    if let Ok(mut t) = text_clone.lock() {
+                        t.push_str(&chunk.text);
+                    }
                 }
 
                 // On the final chunk, try to parse tool calls from accumulated text
                 let tool_calls = if chunk.done && has_tools {
-                    let full_text = text_clone.lock().unwrap();
-                    super::tool_parser::parse_tool_calls(&full_text)
+                    let full_text = text_clone.lock().ok();
+                    full_text.and_then(|t| super::tool_parser::parse_tool_calls(&t))
                 } else {
                     None
                 };
@@ -646,7 +660,7 @@ impl Backend for LlamaCppBackend {
                     let eta = mirostat_eta.unwrap_or(0.1);
                     samplers.push(LlamaSampler::temp(temperature));
                     samplers.push(LlamaSampler::mirostat(
-                        model_arc.n_vocab() as i32,
+                        model_arc.n_vocab(),
                         seed,
                         tau,
                         eta,
@@ -835,7 +849,11 @@ impl Backend for LlamaCppBackend {
         if needs_reload {
             let (path, chat_template, raw_template, lora_adapter, projector_path) = {
                 let models = self.models.read().await;
-                let m = models.get(model_name).unwrap();
+                let m = models.get(model_name).ok_or_else(|| {
+                    PowerError::InferenceFailed(format!(
+                        "Model '{model_name}' was unloaded during embed reload"
+                    ))
+                })?;
                 (
                     m.path.clone(),
                     m.chat_template.clone(),
@@ -887,7 +905,15 @@ impl Backend for LlamaCppBackend {
 
         let model_arc = {
             let models = self.models.read().await;
-            models.get(model_name).unwrap().model.clone()
+            models
+                .get(model_name)
+                .ok_or_else(|| {
+                    PowerError::InferenceFailed(format!(
+                        "Model '{model_name}' was unloaded during embed"
+                    ))
+                })?
+                .model
+                .clone()
         };
 
         let input = request.input.clone();

@@ -14,6 +14,24 @@ struct LoadedModelEntry {
     keep_alive: Duration,
 }
 
+/// Read from a potentially poisoned RwLock, recovering from poison.
+/// Short-held std::sync::RwLock is correct here (no await across lock),
+/// but we must handle poison to prevent cascade crashes.
+fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|poisoned| {
+        tracing::warn!("RwLock was poisoned, recovering read guard");
+        poisoned.into_inner()
+    })
+}
+
+/// Write to a potentially poisoned RwLock, recovering from poison.
+fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|poisoned| {
+        tracing::warn!("RwLock was poisoned, recovering write guard");
+        poisoned.into_inner()
+    })
+}
+
 /// Shared application state accessible to all HTTP handlers.
 #[derive(Clone)]
 pub struct AppState {
@@ -48,18 +66,18 @@ impl AppState {
 
     /// Whether the given model is currently loaded.
     pub fn is_model_loaded(&self, name: &str) -> bool {
-        self.loaded_models.read().unwrap().contains_key(name)
+        read_lock(&self.loaded_models).contains_key(name)
     }
 
     /// Number of models currently loaded.
     pub fn loaded_model_count(&self) -> usize {
-        self.loaded_models.read().unwrap().len()
+        read_lock(&self.loaded_models).len()
     }
 
     /// Record that a model has been loaded with the default keep-alive duration from config.
     pub fn mark_loaded(&self, name: &str) {
         let keep_alive = crate::config::parse_keep_alive(&self.config.keep_alive);
-        self.loaded_models.write().unwrap().insert(
+        write_lock(&self.loaded_models).insert(
             name.to_string(),
             LoadedModelEntry {
                 last_used: Instant::now(),
@@ -70,7 +88,7 @@ impl AppState {
 
     /// Record that a model has been loaded with a specific keep-alive duration.
     pub fn mark_loaded_with_keep_alive(&self, name: &str, keep_alive: Duration) {
-        self.loaded_models.write().unwrap().insert(
+        write_lock(&self.loaded_models).insert(
             name.to_string(),
             LoadedModelEntry {
                 last_used: Instant::now(),
@@ -81,21 +99,19 @@ impl AppState {
 
     /// Record that a model has been unloaded.
     pub fn mark_unloaded(&self, name: &str) {
-        self.loaded_models.write().unwrap().remove(name);
+        write_lock(&self.loaded_models).remove(name);
     }
 
     /// Update the last-used time for a loaded model.
     pub fn touch_model(&self, name: &str) {
-        if let Some(entry) = self.loaded_models.write().unwrap().get_mut(name) {
+        if let Some(entry) = write_lock(&self.loaded_models).get_mut(name) {
             entry.last_used = Instant::now();
         }
     }
 
     /// Return the name of the least-recently-used loaded model, if any.
     pub fn lru_model(&self) -> Option<String> {
-        self.loaded_models
-            .read()
-            .unwrap()
+        read_lock(&self.loaded_models)
             .iter()
             .min_by_key(|(_, entry)| entry.last_used)
             .map(|(name, _)| name.clone())
@@ -104,9 +120,7 @@ impl AppState {
     /// Return the name of the least-recently-used model whose keep-alive has expired.
     /// Models with `keep_alive == Duration::MAX` are never evicted.
     pub fn evictable_lru_model(&self) -> Option<String> {
-        self.loaded_models
-            .read()
-            .unwrap()
+        read_lock(&self.loaded_models)
             .iter()
             .filter(|(_, entry)| {
                 entry.keep_alive != Duration::MAX && entry.last_used.elapsed() >= entry.keep_alive
@@ -122,14 +136,12 @@ impl AppState {
 
     /// Return the names of all currently loaded models.
     pub fn loaded_model_names(&self) -> Vec<String> {
-        self.loaded_models.read().unwrap().keys().cloned().collect()
+        read_lock(&self.loaded_models).keys().cloned().collect()
     }
     /// Return all models whose keep-alive has expired (eligible for background unloading).
     /// Models with `keep_alive == Duration::MAX` are never expired.
     pub fn expired_models(&self) -> Vec<String> {
-        self.loaded_models
-            .read()
-            .unwrap()
+        read_lock(&self.loaded_models)
             .iter()
             .filter(|(_, entry)| {
                 entry.keep_alive != Duration::MAX
@@ -143,7 +155,7 @@ impl AppState {
     /// Return the expiry timestamp for a loaded model.
     /// Returns `None` if the model is not loaded or has infinite keep-alive.
     pub fn model_expires_at(&self, name: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-        let models = self.loaded_models.read().unwrap();
+        let models = read_lock(&self.loaded_models);
         models.get(name).and_then(|entry| {
             if entry.keep_alive == Duration::MAX {
                 None

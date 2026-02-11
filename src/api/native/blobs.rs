@@ -17,7 +17,7 @@ pub async fn check_handler(
     let blob_path = dirs::blobs_dir().join(format!("sha256-{}", hash));
 
     if blob_path.exists() {
-        match std::fs::metadata(&blob_path) {
+        match tokio::fs::metadata(&blob_path).await {
             Ok(meta) => (
                 StatusCode::OK,
                 [(header::CONTENT_LENGTH, meta.len().to_string())],

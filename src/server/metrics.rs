@@ -11,6 +11,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::server::state::AppState;
 
+/// Maximum number of duration/usage samples to keep per vector.
+/// Prevents unbounded memory growth on long-running servers.
+const MAX_SAMPLES: usize = 10_000;
+
+/// Read from a potentially poisoned RwLock, recovering from poison.
+fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|poisoned| {
+        tracing::warn!("Metrics RwLock was poisoned, recovering read guard");
+        poisoned.into_inner()
+    })
+}
+
+/// Write to a potentially poisoned RwLock, recovering from poison.
+fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|poisoned| {
+        tracing::warn!("Metrics RwLock was poisoned, recovering write guard");
+        poisoned.into_inner()
+    })
+}
+
+/// Push to a Vec with a cap, dropping oldest entries when full.
+fn capped_push<T>(vec: &mut Vec<T>, item: T) {
+    if vec.len() >= MAX_SAMPLES {
+        vec.remove(0);
+    }
+    vec.push(item);
+}
+
 /// Key for tracking HTTP request counts by method, path, and status.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct RequestKey {
@@ -141,7 +169,7 @@ impl Metrics {
 
         // Increment counter
         {
-            let mut requests = self.http_requests.write().unwrap();
+            let mut requests = write_lock(&self.http_requests);
             if let Some(entry) = requests.iter_mut().find(|(k, _)| *k == key) {
                 entry.1 += 1;
             } else {
@@ -151,22 +179,28 @@ impl Metrics {
 
         // Record duration
         {
-            let mut durations = self.http_durations.write().unwrap();
-            durations.push(RequestDuration {
-                method: method.to_string(),
-                path: normalize_path(path),
-                duration_secs,
-            });
+            let mut durations = write_lock(&self.http_durations);
+            capped_push(
+                &mut durations,
+                RequestDuration {
+                    method: method.to_string(),
+                    path: normalize_path(path),
+                    duration_secs,
+                },
+            );
         }
     }
 
     /// Record a model load duration.
     pub fn record_model_load(&self, model: &str, duration_secs: f64) {
-        let mut durations = self.model_load_durations.write().unwrap();
-        durations.push(ModelLoadDuration {
-            model: model.to_string(),
-            duration_secs,
-        });
+        let mut durations = write_lock(&self.model_load_durations);
+        capped_push(
+            &mut durations,
+            ModelLoadDuration {
+                model: model.to_string(),
+                duration_secs,
+            },
+        );
     }
 
     /// Record inference tokens.
@@ -175,7 +209,7 @@ impl Metrics {
             model: model.to_string(),
             token_type: token_type.to_string(),
         };
-        let mut tokens = self.inference_tokens.write().unwrap();
+        let mut tokens = write_lock(&self.inference_tokens);
         if let Some(entry) = tokens.iter_mut().find(|(k, _)| *k == key) {
             entry.1 += count;
         } else {
@@ -185,27 +219,33 @@ impl Metrics {
 
     /// Record an inference duration for a model.
     pub fn record_inference_duration(&self, model: &str, duration_secs: f64) {
-        let mut durations = self.inference_durations.write().unwrap();
-        durations.push(InferenceDuration {
-            model: model.to_string(),
-            duration_secs,
-        });
+        let mut durations = write_lock(&self.inference_durations);
+        capped_push(
+            &mut durations,
+            InferenceDuration {
+                model: model.to_string(),
+                duration_secs,
+            },
+        );
     }
 
     /// Record time-to-first-token for a model.
     pub fn record_ttft(&self, model: &str, ttft_secs: f64) {
-        let mut entries = self.ttft_entries.write().unwrap();
-        entries.push(TtftEntry {
-            model: model.to_string(),
-            ttft_secs,
-        });
+        let mut entries = write_lock(&self.ttft_entries);
+        capped_push(
+            &mut entries,
+            TtftEntry {
+                model: model.to_string(),
+                ttft_secs,
+            },
+        );
     }
 
     /// Record a complete inference usage record for the /v1/usage endpoint.
     pub fn record_usage(&self, record: UsageRecord) {
         // Accumulate cost by model
         {
-            let mut costs = self.cost_dollars.write().unwrap();
+            let mut costs = write_lock(&self.cost_dollars);
             if let Some(entry) = costs.iter_mut().find(|(m, _)| *m == record.model) {
                 entry.1 += record.cost_dollars;
             } else {
@@ -214,8 +254,8 @@ impl Metrics {
         }
         // Store the full record
         {
-            let mut records = self.usage_records.write().unwrap();
-            records.push(record);
+            let mut records = write_lock(&self.usage_records);
+            capped_push(&mut records, record);
         }
     }
 
@@ -226,7 +266,7 @@ impl Metrics {
 
     /// Set the estimated memory usage for a model.
     pub fn set_model_memory(&self, model: &str, bytes: u64) {
-        let mut mem = self.model_memory_bytes.write().unwrap();
+        let mut mem = write_lock(&self.model_memory_bytes);
         if let Some(entry) = mem.iter_mut().find(|(m, _)| m == model) {
             entry.1 = bytes;
         } else {
@@ -236,13 +276,13 @@ impl Metrics {
 
     /// Remove memory tracking for an unloaded model.
     pub fn remove_model_memory(&self, model: &str) {
-        let mut mem = self.model_memory_bytes.write().unwrap();
+        let mut mem = write_lock(&self.model_memory_bytes);
         mem.retain(|(m, _)| m != model);
     }
 
     /// Set GPU memory usage for a device.
     pub fn set_gpu_memory(&self, device: &str, bytes: u64) {
-        let mut mem = self.gpu_memory_bytes.write().unwrap();
+        let mut mem = write_lock(&self.gpu_memory_bytes);
         if let Some(entry) = mem.iter_mut().find(|(d, _)| d == device) {
             entry.1 = bytes;
         } else {
@@ -252,7 +292,7 @@ impl Metrics {
 
     /// Set GPU utilization for a device (0.0 - 1.0).
     pub fn set_gpu_utilization(&self, device: &str, utilization: f64) {
-        let mut util = self.gpu_utilization.write().unwrap();
+        let mut util = write_lock(&self.gpu_utilization);
         if let Some(entry) = util.iter_mut().find(|(d, _)| d == device) {
             entry.1 = utilization;
         } else {
@@ -267,7 +307,7 @@ impl Metrics {
         end: Option<chrono::DateTime<chrono::Utc>>,
         model: Option<&str>,
     ) -> Vec<UsageRecord> {
-        let records = self.usage_records.read().unwrap();
+        let records = read_lock(&self.usage_records);
         records
             .iter()
             .filter(|r| {
@@ -300,7 +340,7 @@ impl Metrics {
         output.push_str("# HELP power_http_requests_total Total number of HTTP requests.\n");
         output.push_str("# TYPE power_http_requests_total counter\n");
         {
-            let requests = self.http_requests.read().unwrap();
+            let requests = read_lock(&self.http_requests);
             for (key, count) in requests.iter() {
                 output.push_str(&format!(
                     "power_http_requests_total{{method=\"{}\",path=\"{}\",status=\"{}\"}} {}\n",
@@ -315,7 +355,7 @@ impl Metrics {
         );
         output.push_str("# TYPE power_http_request_duration_seconds summary\n");
         {
-            let durations = self.http_durations.read().unwrap();
+            let durations = read_lock(&self.http_durations);
             // Aggregate by method+path: count and sum
             let mut aggregated: Vec<(String, String, u64, f64)> = Vec::new();
             for d in durations.iter() {
@@ -346,7 +386,7 @@ impl Metrics {
             .push_str("# HELP power_model_load_duration_seconds Model load duration in seconds.\n");
         output.push_str("# TYPE power_model_load_duration_seconds summary\n");
         {
-            let durations = self.model_load_durations.read().unwrap();
+            let durations = read_lock(&self.model_load_durations);
             let mut aggregated: Vec<(String, u64, f64)> = Vec::new();
             for d in durations.iter() {
                 if let Some(entry) = aggregated.iter_mut().find(|(m, _, _)| *m == d.model) {
@@ -380,7 +420,7 @@ impl Metrics {
         output.push_str("# HELP power_inference_tokens_total Total inference tokens processed.\n");
         output.push_str("# TYPE power_inference_tokens_total counter\n");
         {
-            let tokens = self.inference_tokens.read().unwrap();
+            let tokens = read_lock(&self.inference_tokens);
             for (key, count) in tokens.iter() {
                 output.push_str(&format!(
                     "power_inference_tokens_total{{model=\"{}\",type=\"{}\"}} {}\n",
@@ -393,7 +433,7 @@ impl Metrics {
         output.push_str("# HELP power_inference_duration_seconds Inference duration in seconds.\n");
         output.push_str("# TYPE power_inference_duration_seconds summary\n");
         {
-            let durations = self.inference_durations.read().unwrap();
+            let durations = read_lock(&self.inference_durations);
             let mut aggregated: Vec<(String, u64, f64)> = Vec::new();
             for d in durations.iter() {
                 if let Some(entry) = aggregated.iter_mut().find(|(m, _, _)| *m == d.model) {
@@ -419,7 +459,7 @@ impl Metrics {
         output.push_str("# HELP power_ttft_seconds Time to first token in seconds.\n");
         output.push_str("# TYPE power_ttft_seconds summary\n");
         {
-            let entries = self.ttft_entries.read().unwrap();
+            let entries = read_lock(&self.ttft_entries);
             let mut aggregated: Vec<(String, u64, f64)> = Vec::new();
             for e in entries.iter() {
                 if let Some(entry) = aggregated.iter_mut().find(|(m, _, _)| *m == e.model) {
@@ -447,7 +487,7 @@ impl Metrics {
         );
         output.push_str("# TYPE power_cost_dollars counter\n");
         {
-            let costs = self.cost_dollars.read().unwrap();
+            let costs = read_lock(&self.cost_dollars);
             for (model, total) in costs.iter() {
                 output.push_str(&format!(
                     "power_cost_dollars{{model=\"{}\"}} {:.6}\n",
@@ -469,7 +509,7 @@ impl Metrics {
             .push_str("# HELP power_model_memory_bytes Estimated memory usage per loaded model.\n");
         output.push_str("# TYPE power_model_memory_bytes gauge\n");
         {
-            let mem = self.model_memory_bytes.read().unwrap();
+            let mem = read_lock(&self.model_memory_bytes);
             for (model, bytes) in mem.iter() {
                 output.push_str(&format!(
                     "power_model_memory_bytes{{model=\"{}\"}} {}\n",
@@ -482,7 +522,7 @@ impl Metrics {
         output.push_str("# HELP power_gpu_memory_bytes GPU memory usage in bytes.\n");
         output.push_str("# TYPE power_gpu_memory_bytes gauge\n");
         {
-            let mem = self.gpu_memory_bytes.read().unwrap();
+            let mem = read_lock(&self.gpu_memory_bytes);
             for (device, bytes) in mem.iter() {
                 output.push_str(&format!(
                     "power_gpu_memory_bytes{{device=\"{}\"}} {}\n",
@@ -495,7 +535,7 @@ impl Metrics {
         output.push_str("# HELP power_gpu_utilization GPU compute utilization (0.0-1.0).\n");
         output.push_str("# TYPE power_gpu_utilization gauge\n");
         {
-            let util = self.gpu_utilization.read().unwrap();
+            let util = read_lock(&self.gpu_utilization);
             for (device, pct) in util.iter() {
                 output.push_str(&format!(
                     "power_gpu_utilization{{device=\"{}\"}} {:.6}\n",

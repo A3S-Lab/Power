@@ -67,7 +67,7 @@ pub async fn handler(
                 )
                     .into_response();
             }
-            let file_size = match std::fs::metadata(&gguf_path) {
+            let file_size = match tokio::fs::metadata(&gguf_path).await {
                 Ok(m) => m.len(),
                 Err(e) => {
                     return (
@@ -79,14 +79,27 @@ pub async fn handler(
                         .into_response();
                 }
             };
-            let (blob_path, sha256) = match crate::model::storage::store_blob_from_path(&gguf_path)
+            let gguf_path_clone = gguf_path.clone();
+            let (blob_path, sha256) = match tokio::task::spawn_blocking(move || {
+                crate::model::storage::store_blob_from_path(&gguf_path_clone)
+            })
+            .await
             {
-                Ok(p) => p,
-                Err(e) => {
+                Ok(Ok(p)) => p,
+                Ok(Err(e)) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({
                             "error": format!("Failed to store blob: {e}")
+                        })),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": format!("Blob store task failed: {e}")
                         })),
                     )
                         .into_response();

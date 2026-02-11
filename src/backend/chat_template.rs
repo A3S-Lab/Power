@@ -1,5 +1,24 @@
 use super::types::ChatMessage;
 
+/// HuggingFace-compatible `raise_exception` function for Jinja2 templates.
+///
+/// Many GGUF models (Llama 3.x, Qwen, etc.) use `raise_exception("message")` in their
+/// chat templates to signal unsupported message roles or invalid configurations.
+fn raise_exception(msg: String) -> Result<String, minijinja::Error> {
+    Err(minijinja::Error::new(
+        minijinja::ErrorKind::InvalidOperation,
+        format!("template error: {msg}"),
+    ))
+}
+
+/// HuggingFace-compatible `strftime_now` function for Jinja2 templates.
+///
+/// Some models (e.g., Llama 3.2) embed the current date/time in the system prompt
+/// via `strftime_now("%d %b %Y")`. Returns the formatted current local time.
+fn strftime_now(fmt: String) -> String {
+    chrono::Local::now().format(&fmt).to_string()
+}
+
 /// Recognized chat template formats for prompt construction.
 ///
 /// Used as fallback when no raw Jinja2 template string is available.
@@ -40,7 +59,16 @@ pub fn render_jinja(
     messages: &[ChatMessage],
     add_generation_prompt: bool,
 ) -> Option<String> {
-    let env = minijinja::Environment::new();
+    let mut env = minijinja::Environment::new();
+    // Limit recursion depth to prevent pathological templates from hanging
+    env.set_recursion_limit(64);
+    // Enable fuel to cap total template operations and prevent infinite loops
+    env.set_fuel(Some(50_000));
+
+    // Register HuggingFace-compatible custom functions used by many GGUF templates
+    // (e.g., Llama 3.x, Qwen, etc.)
+    env.add_function("raise_exception", raise_exception);
+    env.add_function("strftime_now", strftime_now);
 
     // Build messages as simple Value objects for the template
     let msg_values: Vec<minijinja::Value> = messages
@@ -472,5 +500,92 @@ mod tests {
         let result = render_jinja(template, &msgs, false);
         assert!(result.is_some());
         assert!(result.unwrap().contains("Describe this"));
+    }
+
+    // ========================================================================
+    // HuggingFace custom function tests (raise_exception, strftime_now)
+    // ========================================================================
+
+    #[test]
+    fn test_render_jinja_raise_exception_returns_none() {
+        // Llama 3.x templates use raise_exception for unsupported roles
+        let template = "{% if messages[0].role == 'bad' %}{{ raise_exception('Unsupported role') }}{% endif %}OK";
+        let msgs = vec![ChatMessage {
+            role: "bad".to_string(),
+            content: MessageContent::Text("hi".to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images: None,
+        }];
+        // raise_exception should cause render to fail gracefully
+        let result = render_jinja(template, &msgs, false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_render_jinja_raise_exception_not_triggered() {
+        let template =
+            "{% if messages[0].role == 'bad' %}{{ raise_exception('fail') }}{% endif %}OK";
+        let msgs = sample_messages();
+        // raise_exception not triggered, should render fine
+        let result = render_jinja(template, &msgs, false);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "OK");
+    }
+
+    #[test]
+    fn test_render_jinja_strftime_now() {
+        // Llama 3.2 embeds current date in system prompt
+        let template = "Today is {{ strftime_now('%Y') }}.";
+        let msgs: Vec<ChatMessage> = vec![];
+        let result = render_jinja(template, &msgs, false);
+        assert!(result.is_some());
+        let rendered = result.unwrap();
+        // Should contain a 4-digit year
+        assert!(rendered.starts_with("Today is 20"));
+        assert!(rendered.ends_with('.'));
+    }
+
+    #[test]
+    fn test_render_jinja_llama32_style_template() {
+        // Simplified Llama 3.2 template that uses both custom functions
+        let template = concat!(
+            "{{ bos_token }}",
+            "{% for message in messages %}",
+            "{% if message.role == 'system' %}",
+            "<|start_header_id|>system<|end_header_id|>\n\n",
+            "Cutting Knowledge Date: December 2023\n",
+            "Today Date: {{ strftime_now('%d %b %Y') }}\n\n",
+            "{{ message.content }}<|eot_id|>",
+            "{% elif message.role == 'user' %}",
+            "<|start_header_id|>user<|end_header_id|>\n\n",
+            "{{ message.content }}<|eot_id|>",
+            "{% endif %}",
+            "{% endfor %}",
+            "{% if add_generation_prompt %}",
+            "<|start_header_id|>assistant<|end_header_id|>\n\n",
+            "{% endif %}",
+        );
+        let msgs = sample_messages();
+        let result = render_jinja(template, &msgs, true);
+        assert!(result.is_some());
+        let rendered = result.unwrap();
+        assert!(rendered.starts_with("<s>"));
+        assert!(rendered.contains("Cutting Knowledge Date: December 2023"));
+        assert!(rendered.contains("Today Date:"));
+        assert!(rendered.contains("You are helpful."));
+        assert!(rendered.contains("Hello"));
+        assert!(rendered.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
+    }
+
+    #[test]
+    fn test_render_jinja_fuel_limit_prevents_hang() {
+        // A template with an excessive loop should be stopped by the fuel limit
+        let template = "{% for i in range(999999) %}x{% endfor %}";
+        let msgs: Vec<ChatMessage> = vec![];
+        let result = render_jinja(template, &msgs, false);
+        // Should return None because fuel is exhausted, not hang
+        assert!(result.is_none());
     }
 }
