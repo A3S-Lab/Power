@@ -49,7 +49,7 @@ a3s-power serve
 - **CLI Model Management**: Pull, list, show, delete, and push models from the command line
 - **Ollama Registry Integration**: Pull any model from `registry.ollama.ai` by name (`llama3.2:3b`) — primary resolution source with built-in registry and HuggingFace fallback
 - **Interactive Chat**: Multi-turn conversation with streaming token output
-- **Vision/Multimodal Support**: Accept image URLs in chat messages (OpenAI-compatible `content` array format)
+- **Vision/Multimodal Support**: Accept base64 images (Ollama `images` field) and image URLs (OpenAI `content` array format); projector auto-downloaded from Ollama registry; image processing requires vision model with projector (e.g. llava)
 - **Tool/Function Calling**: Structured tool definitions, tool choice, and tool call responses (OpenAI-compatible)
 - **JSON Schema Structured Output**: Constrain model output to match JSON Schema via GBNF grammar generation — supports `"json"`, `{"type":"json_object"}`, or full JSON Schema objects
 - **Chat Template Auto-Detection**: Detects ChatML, Llama, Phi, and Generic templates from GGUF metadata
@@ -81,9 +81,45 @@ a3s-power serve
 - **Health Check**: `GET /health` endpoint with uptime, version, and loaded model count
 - **Model Auto-Loading**: Models are automatically loaded on first inference request with LRU eviction
 - **TOML Configuration**: User-configurable host, port, GPU settings, keep_alive, and storage settings
-- **Ollama Environment Variables**: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_GPU` for drop-in compatibility
+- **Ollama Environment Variables**: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_GPU`, `OLLAMA_NUM_PARALLEL`, `OLLAMA_DEBUG`, `OLLAMA_ORIGINS`, `OLLAMA_FLASH_ATTENTION`, `OLLAMA_TMPDIR`, `OLLAMA_NOPRUNE`, `OLLAMA_SCHED_SPREAD` for drop-in compatibility
 - **Download Resumption**: Interrupted model downloads resume automatically via HTTP Range requests
 - **Async-First**: Built on Tokio for high-performance async operations
+
+## Ollama Compatibility Status
+
+### ✅ Fully Aligned
+
+| Category | Status |
+|----------|--------|
+| Native API (14 endpoints) | All `/api/*` endpoints implemented with matching request/response schemas |
+| OpenAI API (4+1 endpoints) | `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`, `/v1/usage` |
+| CLI commands (12) | `run`, `pull`, `list/ls`, `show`, `delete/rm`, `serve`, `create`, `push`, `cp`, `ps`, `stop`, `help` |
+| Streaming | NDJSON for native API, SSE for OpenAI API |
+| Modelfile | `FROM`, `PARAMETER`, `SYSTEM`, `TEMPLATE`, `ADAPTER`, `LICENSE`, `MESSAGE` + heredoc |
+| Sampling parameters | temperature, top_p, top_k, min_p, repeat_penalty, frequency/presence_penalty, seed, mirostat, tfs_z, typical_p |
+| Runtime options | num_ctx, num_predict, num_batch, num_thread, num_gpu, main_gpu, use_mmap, use_mlock, numa, flash_attention |
+| Keep-alive | String + numeric, per-request + global config, "0"/"−1" special values |
+| Environment variables | All 12 `OLLAMA_*` variables supported |
+| Tool/Function calling | Both native and OpenAI format, XML/Mistral/JSON parsing |
+| JSON structured output | `"json"`, `{"type":"json_object"}`, full JSON Schema → GBNF grammar |
+| Ollama registry | Pull from `registry.ollama.ai` with template/system/params/license extraction |
+| KV cache reuse | Prefix matching across multi-turn requests |
+| LoRA adapters | `ADAPTER` directive, loaded at inference |
+| GPU auto-detection | Metal + CUDA, auto `gpu_layers`, multi-GPU |
+| Blob management | HEAD/POST/GET/DELETE `/api/blobs/:digest` |
+| Context return | `/api/generate` returns `context` token array |
+
+### 🔴 Remaining Gaps
+
+| Gap | Severity | Description |
+|-----|----------|-------------|
+| Thinking mode | Critical | `think` parameter for reasoning models (DeepSeek-R1, QwQ) — not yet supported |
+| Vision image processing | Important | Types and projector plumbing exist, but URL-based image fetching not wired in llama.cpp backend |
+| Re-quantization | Important | `create --quantize` accepted but no-op — actual GGUF quantization not implemented |
+| Registry push (OCI) | Important | Push to `registry.ollama.ai` not supported — only custom destination URLs |
+| `num_parallel` wiring | Moderate | Config exists but unclear if wired to llama.cpp `n_parallel` context param |
+| SafeTensors import | Nice-to-have | `ModelFormat::SafeTensors` enum exists but no backend supports it |
+| Digest-based model refs | Nice-to-have | `@sha256:...` model references not supported |
 
 ## Quality Metrics
 
@@ -854,6 +890,18 @@ Complete remaining Ollama feature gaps — `help` subcommand, blob pruning, GPU 
 - [x] **`OLLAMA_NOPRUNE`**: Disable automatic blob pruning (`"1"` or `"true"`)
 - [x] **`OLLAMA_SCHED_SPREAD`**: Spread model layers across all available GPUs (`"1"` or `"true"`)
 - [x] 861 comprehensive unit tests
+
+### Phase 15: Remaining Ollama Gaps 🚧
+
+Close the last compatibility gaps for full Ollama drop-in replacement:
+
+- [ ] **Thinking Mode**: `think` parameter for reasoning models (DeepSeek-R1, QwQ) — return `<think>` blocks in response, support `think: true` in `/api/chat` and `/api/generate`
+- [ ] **Vision Image URL Fetching**: Wire URL-based image fetching in llama.cpp backend (currently logs warning and returns `None`)
+- [ ] **Re-quantization**: Integrate llama.cpp quantization for `create --quantize` (currently accepted but no-op)
+- [ ] **Registry Push (OCI Auth)**: Implement OCI push protocol to `registry.ollama.ai` with authentication
+- [ ] **`num_parallel` Wiring**: Wire `num_parallel` config to llama.cpp `n_parallel` context parameter for concurrent request slots
+- [ ] **SafeTensors Import**: Convert SafeTensors → GGUF during `create` for HuggingFace model compatibility
+- [ ] **Digest-based Model Refs**: Support `@sha256:...` model references in CLI and API
 
 ## License
 
