@@ -45,7 +45,7 @@ async-trait = "0.1"
 futures = "0.3"
 
 # Self-update
-a3s-updater = "0.1"
+a3s-updater = { version = "0.2", path = "../updater" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
