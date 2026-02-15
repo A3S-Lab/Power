@@ -25,7 +25,13 @@ pub fn blobs_dir() -> PathBuf {
 }
 
 /// Returns the path to the user configuration file.
+///
+/// Checks for `.hcl` first, then falls back to `.toml`.
 pub fn config_path() -> PathBuf {
+    let hcl_path = power_home().join("config.hcl");
+    if hcl_path.exists() {
+        return hcl_path;
+    }
     power_home().join("config.toml")
 }
 

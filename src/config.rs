@@ -188,7 +188,15 @@ impl PowerConfig {
                     e
                 ))
             })?;
-            toml::from_str(&content)?
+            match path.extension().and_then(|ext| ext.to_str()) {
+                Some("hcl") => hcl::from_str(&content).map_err(|e| {
+                    crate::error::PowerError::Config(format!(
+                        "Failed to parse HCL config: {}",
+                        e
+                    ))
+                })?,
+                _ => toml::from_str(&content)?,
+            }
         } else {
             Self::default()
         };
@@ -820,5 +828,65 @@ mod tests {
         let config = PowerConfig::default();
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(!serialized.contains("tensor_split"));
+    }
+
+    #[test]
+    fn test_config_deserialize_hcl() {
+        let hcl_str = r#"
+            host = "0.0.0.0"
+            port = 8080
+            max_loaded_models = 3
+        "#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.port, 8080);
+        assert_eq!(config.max_loaded_models, 3);
+    }
+
+    #[test]
+    fn test_config_hcl_with_gpu() {
+        let hcl_str = r#"
+            host = "127.0.0.1"
+            port = 11434
+
+            gpu {
+                gpu_layers = 99
+                main_gpu   = 1
+            }
+        "#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(config.gpu.gpu_layers, 99);
+        assert_eq!(config.gpu.main_gpu, 1);
+    }
+
+    #[test]
+    fn test_config_hcl_invalid() {
+        let result: std::result::Result<PowerConfig, _> = hcl::from_str("{{{{ invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_config_hcl_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(
+            &hcl_path,
+            r#"
+                host = "0.0.0.0"
+                port = 9090
+                max_loaded_models = 2
+            "#,
+        )
+        .unwrap();
+
+        let config = PowerConfig::load().unwrap();
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.port, 9090);
+        assert_eq!(config.max_loaded_models, 2);
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 }
