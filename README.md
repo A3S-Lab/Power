@@ -378,7 +378,8 @@ pub trait Backend: Send + Sync {
 ### Homebrew (macOS)
 
 ```bash
-brew install a3s-lab/tap/a3s-power
+brew tap a3s-lab/tap https://github.com/A3S-Lab/homebrew-tap
+brew install a3s-power
 ```
 
 ### Cargo (cross-platform)
