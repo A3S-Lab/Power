@@ -1,14 +1,14 @@
 [package]
 name = "a3s-power"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
 authors = ["A3S Lab"]
 license = "MIT"
 repository = "https://github.com/A3S-Lab/Power"
-description = "A3S Power - Local model management and serving with OpenAI-compatible API"
+description = "A3S Power — Privacy-preserving LLM inference for TEE environments"
 readme = "README.md"
-keywords = ["llm", "inference", "ollama", "openai", "gguf"]
-categories = ["command-line-utilities", "web-programming::http-server"]
+keywords = ["llm", "inference", "tee", "privacy", "gguf"]
+categories = ["web-programming::http-server"]
 
 [lib]
 name = "a3s_power"
@@ -19,8 +19,12 @@ name = "a3s-power"
 path = "src/main.rs"
 
 [features]
-default = ["llamacpp"]
+default = ["mistralrs"]
 llamacpp = ["dep:llama-cpp-2", "dep:encoding_rs"]
+mistralrs = ["dep:mistralrs"]
+tls = ["dep:axum-server", "dep:rcgen", "dep:time"]
+# vsock = Linux-only; requires AF_VSOCK kernel support (a3s-box MicroVMs)
+vsock = ["dep:tokio-vsock"]
 
 [dependencies]
 # Async runtime
@@ -30,7 +34,6 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
 hcl-rs = "0.18"
 
 # Error handling
@@ -45,23 +48,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 futures = "0.3"
 
-# Self-update
-a3s-updater = { version = "0.2", path = "../updater" }
-
-# CLI
-clap = { version = "4", features = ["derive"] }
-
 # HTTP server
 axum = { version = "0.7", features = ["macros"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
-
-# HTTP client (for model downloads, rustls for cross-compilation)
-reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
-
-# Progress reporting
-indicatif = "0.17"
 
 # Async channels for streaming
 tokio-util = { version = "0.7", features = ["io"] }
@@ -78,8 +69,18 @@ dirs = "5"
 # SHA256 for model integrity
 sha2 = "0.10"
 
+# Memory zeroing for TEE privacy
+zeroize = { version = "1", features = ["derive"] }
+
+# Encrypted model loading (AES-256-GCM)
+aes-gcm = "0.10"
+rand = "0.8"
+
 # Chat template rendering (Jinja2-compatible)
 minijinja = { version = "2", features = ["fuel"] }
+
+# ioctl for TEE attestation (SEV-SNP /dev/sev-guest)
+nix = { version = "0.29", features = ["ioctl"] }
 
 # llama.cpp backend (optional, requires C++ toolchain)
 llama-cpp-2 = { version = "0.1", optional = true }
@@ -87,7 +88,22 @@ llama-cpp-2 = { version = "0.1", optional = true }
 # UTF-8 decoding for llama.cpp token_to_piece (re-exported by llama-cpp-2)
 encoding_rs = { version = "0.8", optional = true }
 
+# mistral.rs backend — pure Rust LLM inference (optional, default)
+mistralrs = { version = "0.7", optional = true }
+
+# TLS transport (optional, requires `tls` feature)
+axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
+rcgen = { version = "0.13", optional = true }
+time = { version = "0.3", optional = true }
+
+# Vsock transport (optional, requires `vsock` feature; Linux only)
+tokio-vsock = { version = "0.7", features = ["axum08"], optional = true }
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
 serial_test = "3"
+a3s-box-sdk = { path = "../box/src/sdk" }
+
+[[example]]
+name = "box_integration"
