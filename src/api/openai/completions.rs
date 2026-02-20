@@ -97,13 +97,21 @@ pub async fn handler(
         repeat_last_n: None,
         penalize_newline: None,
         num_batch: None,
-        num_thread: None,
+        num_thread: state.config.num_thread,
         num_thread_batch: None,
-        flash_attention: None,
+        flash_attention: if state.config.flash_attention {
+            Some(true)
+        } else {
+            None
+        },
         num_gpu: None,
         main_gpu: None,
         use_mmap: None,
-        use_mlock: None,
+        use_mlock: if state.config.use_mlock {
+            Some(true)
+        } else {
+            None
+        },
         suffix: None,
         context: None,
     };
@@ -176,6 +184,7 @@ pub async fn handler(
                                     completion_tokens: 0,
                                     total_tokens: 0,
                                 },
+                                system_fingerprint: None,
                             };
                             serde_json::to_string(&resp).unwrap_or_default()
                         }
@@ -230,10 +239,8 @@ pub async fn handler(
                 // an async closure so they execute after sse_stream is fully consumed.
                 let usage_event = if suppress {
                     futures::stream::once(async move {
-                        let eval_count2 =
-                            eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
-                        let pt2 =
-                            prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
+                        let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
+                        let pt2 = prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
                         let rp = super::round_tokens(pt2);
                         let rc = super::round_tokens(eval_count2);
                         let resp = CompletionResponse {
@@ -247,6 +254,7 @@ pub async fn handler(
                                 completion_tokens: rc,
                                 total_tokens: rp + rc,
                             },
+                            system_fingerprint: None,
                         };
                         let data = serde_json::to_string(&resp).unwrap_or_default();
                         Ok::<_, Infallible>(Event::default().data(data))
@@ -329,6 +337,7 @@ pub async fn handler(
                         completion_tokens: reported_completion,
                         total_tokens: reported_prompt + reported_completion,
                     },
+                    system_fingerprint: Some("fp_a3s_power".to_string()),
                 };
 
                 // Privacy: zeroize inference buffers in TEE mode

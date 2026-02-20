@@ -106,6 +106,9 @@ pub struct ChatCompletionResponse {
     pub model: String,
     pub choices: Vec<ChatChoice>,
     pub usage: Usage,
+    /// Server-side determinism fingerprint (model + sampling config hash).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_fingerprint: Option<String>,
 }
 
 /// A single choice in a chat completion response.
@@ -187,6 +190,9 @@ pub struct CompletionResponse {
     pub model: String,
     pub choices: Vec<CompletionChoice>,
     pub usage: Usage,
+    /// Server-side determinism fingerprint (model + sampling config hash).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_fingerprint: Option<String>,
 }
 
 /// A single choice in a completion response.
@@ -209,6 +215,9 @@ pub struct EmbeddingRequest {
     /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,
+    /// Output format: "float" (default) or "base64".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding_format: Option<String>,
 }
 
 /// Input to embedding endpoint - single string or array of strings.
@@ -270,6 +279,12 @@ pub struct ModelInfo {
     pub object: String,
     pub created: i64,
     pub owned_by: String,
+    /// The model this is a fine-tuned version of (null for base models).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// The parent model (null if not applicable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 // ============================================================================
@@ -399,6 +414,7 @@ mod tests {
                 completion_tokens: 3,
                 total_tokens: 8,
             },
+            system_fingerprint: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("chatcmpl-123"));
@@ -474,6 +490,8 @@ mod tests {
                 object: "model".to_string(),
                 created: 1700000000,
                 owned_by: "local".to_string(),
+                root: None,
+                parent: None,
             }],
         };
         let json = serde_json::to_string(&list).unwrap();

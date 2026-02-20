@@ -129,13 +129,21 @@ pub async fn handler(
         repeat_last_n: None,
         penalize_newline: None,
         num_batch: None,
-        num_thread: None,
+        num_thread: state.config.num_thread,
         num_thread_batch: None,
-        flash_attention: None,
+        flash_attention: if state.config.flash_attention {
+            Some(true)
+        } else {
+            None
+        },
         num_gpu: None,
         main_gpu: None,
         use_mmap: None,
-        use_mlock: None,
+        use_mlock: if state.config.use_mlock {
+            Some(true)
+        } else {
+            None
+        },
     };
 
     let is_stream = request.stream.unwrap_or(false);
@@ -252,8 +260,7 @@ pub async fn handler(
                 // stream is fully consumed (counters have final values at that point).
                 let usage_event = if suppress {
                     futures::stream::once(async move {
-                        let eval_count2 =
-                            eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
+                        let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
                         let prompt_tokens2 =
                             prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
                         let rp = super::round_tokens(prompt_tokens2);
@@ -414,6 +421,7 @@ pub async fn handler(
                         completion_tokens: reported_completion,
                         total_tokens: reported_prompt + reported_completion,
                     },
+                    system_fingerprint: Some("fp_a3s_power".to_string()),
                 };
 
                 // Privacy: zeroize inference buffers in TEE mode

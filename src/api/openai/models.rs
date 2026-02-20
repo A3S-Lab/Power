@@ -19,6 +19,8 @@ pub async fn list_handler(State(state): State<AppState>) -> impl IntoResponse {
                     object: "model".to_string(),
                     created: m.created_at.timestamp(),
                     owned_by: "local".to_string(),
+                    root: None,
+                    parent: None,
                 })
                 .collect();
 
@@ -53,6 +55,8 @@ pub async fn get_handler(
             object: "model".to_string(),
             created: m.created_at.timestamp(),
             owned_by: "local".to_string(),
+            root: None,
+            parent: None,
         })
         .into_response(),
         Err(_) => (
@@ -116,6 +120,9 @@ pub struct RegisterModelRequest {
     pub name: String,
     /// Absolute path to the model file on disk.
     pub path: String,
+    /// Model format: "gguf" (default) or "safetensors".
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 /// Response body for POST /v1/models.
@@ -168,9 +175,14 @@ pub async fn register_handler(
         }
     };
 
+    let format = match req.format.as_deref().unwrap_or("gguf") {
+        "safetensors" => ModelFormat::SafeTensors,
+        _ => ModelFormat::Gguf,
+    };
+
     let manifest = ModelManifest {
         name: req.name.clone(),
-        format: ModelFormat::Gguf,
+        format,
         size,
         sha256,
         parameters: None,
@@ -550,5 +562,39 @@ mod tests {
             resp.status() == StatusCode::NOT_IMPLEMENTED
                 || resp.status() == StatusCode::BAD_GATEWAY
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_register_model_safetensors_format() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let model_file = dir.path().join("model.safetensors");
+        std::fs::write(&model_file, b"fake safetensors weights").unwrap();
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state.clone());
+        let body = serde_json::json!({
+            "name": "my-safetensors",
+            "path": model_file.to_str().unwrap(),
+            "format": "safetensors"
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/models")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let manifest = state.registry.get("my-safetensors").unwrap();
+        assert_eq!(
+            manifest.format,
+            crate::model::manifest::ModelFormat::SafeTensors
+        );
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 }

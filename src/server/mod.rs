@@ -120,10 +120,10 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
             .audit_log_path
             .clone()
             .unwrap_or_else(|| dirs::power_home().join("audit.jsonl"));
-        match audit::JsonLinesAuditLogger::open(log_path.clone()) {
+        match audit::AsyncJsonLinesAuditLogger::open(log_path.clone()) {
             Ok(logger) => {
                 app_state = app_state.with_audit(Arc::new(logger));
-                tracing::info!(path = %log_path.display(), "Audit logging enabled");
+                tracing::info!(path = %log_path.display(), "Audit logging enabled (async)");
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to open audit log, audit logging disabled");
@@ -164,6 +164,10 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
     tracing::info!("Server listening on {bind_addr}");
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("Shutdown signal received, draining connections");
+        })
         .await
         .map_err(|e| PowerError::Server(format!("Server error: {e}")))?;
 
@@ -202,7 +206,7 @@ async fn spawn_tls_server(
         None
     };
 
-    let cert = crate::tee::cert::CertManager::generate(attestation.as_ref())
+    let cert = crate::tee::cert::CertManager::generate(attestation.as_ref(), &config.tls_sans)
         .map_err(|e| PowerError::Server(format!("TLS certificate generation failed: {e}")))?;
 
     let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem(

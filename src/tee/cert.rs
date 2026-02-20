@@ -40,7 +40,13 @@ impl CertManager {
     /// certificate as extension OID 1.3.6.1.4.1.56560.1.1. Clients can parse
     /// this extension to verify the server is running inside a genuine TEE
     /// before trusting inference results.
-    pub fn generate(attestation: Option<&AttestationReport>) -> Result<Self> {
+    ///
+    /// `extra_sans` adds additional DNS names or IP addresses to the certificate's
+    /// Subject Alternative Names beyond the always-included localhost entries.
+    pub fn generate(
+        attestation: Option<&AttestationReport>,
+        extra_sans: &[String],
+    ) -> Result<Self> {
         let key_pair = KeyPair::generate()
             .map_err(|e| PowerError::Config(format!("TLS key pair generation failed: {e}")))?;
 
@@ -55,11 +61,21 @@ impl CertManager {
 
         let localhost_dns = Ia5String::try_from("localhost".to_string())
             .map_err(|e| PowerError::Config(format!("Invalid SAN DNS name: {e}")))?;
-        params.subject_alt_names = vec![
+        let mut sans = vec![
             SanType::DnsName(localhost_dns),
             SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
             SanType::IpAddress(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
         ];
+        for san in extra_sans {
+            if let Ok(ip) = san.parse::<std::net::IpAddr>() {
+                sans.push(SanType::IpAddress(ip));
+            } else if let Ok(dns) = Ia5String::try_from(san.clone()) {
+                sans.push(SanType::DnsName(dns));
+            } else {
+                tracing::warn!(san = %san, "Skipping invalid TLS SAN entry");
+            }
+        }
+        params.subject_alt_names = sans;
 
         if let Some(report) = attestation {
             let json_bytes = serde_json::to_vec(report).map_err(|e| {
@@ -105,9 +121,11 @@ mod tests {
 
     fn make_simulated_report() -> AttestationReport {
         AttestationReport {
+            version: "1.0".to_string(),
             tee_type: TeeType::Simulated,
             report_data: vec![0xAA; 64],
             measurement: vec![0xBB; 48],
+            raw_report: None,
             timestamp: chrono::Utc::now(),
             nonce: None,
         }
@@ -115,22 +133,22 @@ mod tests {
 
     #[test]
     fn test_cert_generates_without_attestation() {
-        let mgr = CertManager::generate(None).unwrap();
+        let mgr = CertManager::generate(None, &[]).unwrap();
         assert!(mgr.cert_pem().starts_with("-----BEGIN CERTIFICATE-----"));
         assert!(mgr.cert_pem().contains("-----END CERTIFICATE-----"));
     }
 
     #[test]
     fn test_key_pem_is_valid_pem() {
-        let mgr = CertManager::generate(None).unwrap();
+        let mgr = CertManager::generate(None, &[]).unwrap();
         assert!(mgr.key_pem().contains("PRIVATE KEY"));
         assert!(!mgr.key_pem().is_empty());
     }
 
     #[test]
     fn test_each_cert_has_unique_key() {
-        let mgr1 = CertManager::generate(None).unwrap();
-        let mgr2 = CertManager::generate(None).unwrap();
+        let mgr1 = CertManager::generate(None, &[]).unwrap();
+        let mgr2 = CertManager::generate(None, &[]).unwrap();
         // Fresh ECDSA key per call — keys must differ
         assert_ne!(mgr1.key_pem(), mgr2.key_pem());
     }
@@ -138,7 +156,7 @@ mod tests {
     #[test]
     fn test_cert_with_attestation_embeds_report() {
         let report = make_simulated_report();
-        let mgr = CertManager::generate(Some(&report)).unwrap();
+        let mgr = CertManager::generate(Some(&report), &[]).unwrap();
         // Certificate is still valid PEM
         assert!(mgr.cert_pem().starts_with("-----BEGIN CERTIFICATE-----"));
         // Key is present
@@ -149,13 +167,35 @@ mod tests {
     fn test_cert_with_nonce_in_attestation() {
         let mut report = make_simulated_report();
         report.nonce = Some(vec![0x01, 0x02, 0x03]);
-        let mgr = CertManager::generate(Some(&report)).unwrap();
+        let mgr = CertManager::generate(Some(&report), &[]).unwrap();
         assert!(mgr.cert_pem().starts_with("-----BEGIN CERTIFICATE-----"));
     }
 
     #[test]
     fn test_cert_pem_and_key_pem_are_different() {
-        let mgr = CertManager::generate(None).unwrap();
+        let mgr = CertManager::generate(None, &[]).unwrap();
         assert_ne!(mgr.cert_pem(), mgr.key_pem());
+    }
+
+    #[test]
+    fn test_cert_with_extra_dns_san() {
+        let sans = vec!["myserver.internal".to_string()];
+        let mgr = CertManager::generate(None, &sans).unwrap();
+        assert!(mgr.cert_pem().starts_with("-----BEGIN CERTIFICATE-----"));
+    }
+
+    #[test]
+    fn test_cert_with_extra_ip_san() {
+        let sans = vec!["10.0.0.1".to_string()];
+        let mgr = CertManager::generate(None, &sans).unwrap();
+        assert!(mgr.cert_pem().starts_with("-----BEGIN CERTIFICATE-----"));
+    }
+
+    #[test]
+    fn test_cert_with_invalid_san_is_skipped() {
+        // Invalid SAN entries should not cause generation to fail
+        let sans = vec!["not a valid san !!!".to_string()];
+        let mgr = CertManager::generate(None, &sans).unwrap();
+        assert!(mgr.cert_pem().starts_with("-----BEGIN CERTIFICATE-----"));
     }
 }

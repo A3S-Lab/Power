@@ -4,7 +4,7 @@
 //! from leaking through log output in TEE environments, and memory zeroing
 //! to ensure sensitive data is cleared after use.
 
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Trait for privacy providers that control log redaction behavior.
 pub trait PrivacyProvider: Send + Sync {
@@ -180,9 +180,12 @@ impl SensitiveString {
         &self.inner
     }
 
-    pub fn into_inner(mut self) -> String {
-        // Take the string out so Drop doesn't zeroize it
-        std::mem::take(&mut self.inner)
+    /// Consume the wrapper and return the inner string in a `Zeroizing` container.
+    ///
+    /// The returned `Zeroizing<String>` will overwrite its memory when dropped,
+    /// ensuring the sensitive data is cleared even after being extracted.
+    pub fn into_inner(mut self) -> Zeroizing<String> {
+        Zeroizing::new(std::mem::take(&mut self.inner))
     }
 }
 
@@ -347,7 +350,17 @@ mod tests {
     fn test_sensitive_string_into_inner() {
         let s = SensitiveString::new("keep me".to_string());
         let inner = s.into_inner();
-        assert_eq!(inner, "keep me");
+        // Zeroizing<String> derefs to str, so comparison works directly
+        assert_eq!(*inner, "keep me");
+    }
+
+    #[test]
+    fn test_sensitive_string_into_inner_is_zeroizing() {
+        let s = SensitiveString::new("zeroized on drop".to_string());
+        let inner = s.into_inner();
+        assert_eq!(inner.as_str(), "zeroized on drop");
+        // inner is Zeroizing<String> — it will zero memory on drop
+        drop(inner);
     }
 
     #[test]

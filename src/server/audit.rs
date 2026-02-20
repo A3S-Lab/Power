@@ -143,6 +143,56 @@ impl AuditLogger for NoopAuditLogger {
     fn log(&self, _event: &AuditEvent) {}
 }
 
+/// Writes audit events to a file asynchronously via a background task.
+///
+/// File I/O is offloaded to a dedicated Tokio task so `log()` never blocks
+/// the calling async worker. Uses an unbounded channel so callers never block.
+pub struct AsyncJsonLinesAuditLogger {
+    sender: tokio::sync::mpsc::UnboundedSender<String>,
+    path: PathBuf,
+}
+
+impl AsyncJsonLinesAuditLogger {
+    /// Open or create the audit log file and spawn the background writer task.
+    pub fn open(path: PathBuf) -> std::io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut async_file = tokio::fs::File::from_std(file);
+            while let Some(line) = rx.recv().await {
+                let _ = async_file.write_all(line.as_bytes()).await;
+                let _ = async_file.write_all(b"\n").await;
+                let _ = async_file.flush().await;
+            }
+        });
+
+        Ok(Self { sender: tx, path })
+    }
+
+    /// Return the path to the audit log file.
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+}
+
+impl AuditLogger for AsyncJsonLinesAuditLogger {
+    fn log(&self, event: &AuditEvent) {
+        if let Ok(line) = serde_json::to_string(event) {
+            // send() is non-blocking — never blocks the async runtime
+            let _ = self.sender.send(line);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +309,46 @@ mod tests {
         logger.log(&AuditEvent::success(
             "req-1", None, "chat", None, None, None,
         ));
+    }
+
+    #[tokio::test]
+    async fn test_async_json_lines_logger_writes_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("async_audit.jsonl");
+
+        let logger = AsyncJsonLinesAuditLogger::open(log_path.clone()).unwrap();
+
+        let event = AuditEvent::success(
+            "req-async",
+            None,
+            "chat",
+            Some("llama3".to_string()),
+            Some(100),
+            Some(10),
+        );
+        logger.log(&event);
+
+        // Give the background task time to flush
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let file = std::fs::File::open(&log_path).unwrap();
+        let lines: Vec<String> = std::io::BufReader::new(file)
+            .lines()
+            .map(|l| l.unwrap())
+            .collect();
+
+        assert_eq!(lines.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(parsed["request_id"], "req-async");
+        assert_eq!(parsed["action"], "chat");
+    }
+
+    #[tokio::test]
+    async fn test_async_json_lines_logger_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("path_test.jsonl");
+        let logger = AsyncJsonLinesAuditLogger::open(log_path.clone()).unwrap();
+        assert_eq!(logger.path(), &log_path);
     }
 
     #[test]

@@ -30,6 +30,9 @@ impl std::fmt::Display for TeeType {
 /// Remote attestation report from the TEE hardware.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationReport {
+    /// Report format version (current: "1.0").
+    #[serde(default = "default_report_version")]
+    pub version: String,
     pub tee_type: TeeType,
     /// Raw report data from the TEE hardware (includes nonce when provided).
     #[serde(with = "hex_bytes")]
@@ -52,6 +55,10 @@ pub struct AttestationReport {
         with = "hex_bytes_opt"
     )]
     pub nonce: Option<Vec<u8>>,
+}
+
+fn default_report_version() -> String {
+    "1.0".to_string()
 }
 
 /// Trait for TEE attestation providers.
@@ -212,6 +219,7 @@ async fn read_sev_snp_report(nonce: Option<&[u8]>) -> crate::error::Result<Attes
 
         tracing::info!("SEV-SNP attestation report generated successfully");
         Ok(AttestationReport {
+            version: default_report_version(),
             tee_type: TeeType::SevSnp,
             report_data,
             measurement,
@@ -248,6 +256,7 @@ async fn read_tdx_report(nonce: Option<&[u8]>) -> crate::error::Result<Attestati
 
         tracing::info!("TDX attestation report generated successfully");
         Ok(AttestationReport {
+            version: default_report_version(),
             tee_type: TeeType::Tdx,
             report_data,
             measurement,
@@ -269,6 +278,7 @@ async fn read_tdx_report(nonce: Option<&[u8]>) -> crate::error::Result<Attestati
 /// Generate a simulated attestation report for development.
 fn simulated_report(nonce: Option<&[u8]>) -> AttestationReport {
     AttestationReport {
+        version: default_report_version(),
         tee_type: TeeType::Simulated,
         report_data: embed_nonce(nonce, 0xAA),
         measurement: vec![0xBB; 48],
@@ -678,6 +688,22 @@ mod tests {
         assert!(json.contains("\"nonce\":\"010203\""));
         let parsed: AttestationReport = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.nonce, Some(nonce));
+    }
+
+    #[test]
+    fn test_attestation_report_version_field() {
+        let report = simulated_report(None);
+        assert_eq!(report.version, "1.0");
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"version\":\"1.0\""));
+    }
+
+    #[test]
+    fn test_attestation_report_version_default_on_deserialize() {
+        // When version is missing in JSON (old format), it defaults to "1.0"
+        let json = r#"{"tee_type":"simulated","report_data":"aabb","measurement":"ccdd","timestamp":"2024-01-01T00:00:00Z"}"#;
+        let report: AttestationReport = serde_json::from_str(json).unwrap();
+        assert_eq!(report.version, "1.0");
     }
 
     #[test]

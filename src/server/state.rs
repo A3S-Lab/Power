@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -128,30 +129,43 @@ impl AppState {
     /// Record that a model has been loaded with the default keep-alive duration from config.
     pub fn mark_loaded(&self, name: &str) {
         let keep_alive = crate::config::parse_keep_alive(&self.config.keep_alive);
-        write_lock(&self.loaded_models).insert(
-            name.to_string(),
-            LoadedModelEntry {
-                last_used: Instant::now(),
-                keep_alive,
-            },
-        );
+        let was_absent = write_lock(&self.loaded_models)
+            .insert(
+                name.to_string(),
+                LoadedModelEntry {
+                    last_used: Instant::now(),
+                    keep_alive,
+                },
+            )
+            .is_none();
+        if was_absent {
+            self.metrics.models_loaded.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Record that a model has been loaded with a specific keep-alive duration.
     pub fn mark_loaded_with_keep_alive(&self, name: &str, keep_alive: Duration) {
-        write_lock(&self.loaded_models).insert(
-            name.to_string(),
-            LoadedModelEntry {
-                last_used: Instant::now(),
-                keep_alive,
-            },
-        );
+        let was_absent = write_lock(&self.loaded_models)
+            .insert(
+                name.to_string(),
+                LoadedModelEntry {
+                    last_used: Instant::now(),
+                    keep_alive,
+                },
+            )
+            .is_none();
+        if was_absent {
+            self.metrics.models_loaded.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Record that a model has been unloaded.
     /// Also removes any decrypted model handle, triggering secure wipe.
     pub fn mark_unloaded(&self, name: &str) {
-        write_lock(&self.loaded_models).remove(name);
+        let was_present = write_lock(&self.loaded_models).remove(name).is_some();
+        if was_present {
+            self.metrics.models_loaded.fetch_sub(1, Ordering::Relaxed);
+        }
         if let Some(dec) = write_lock(&self.decrypted_models).remove(name) {
             tracing::info!(model = %name, "Cleaning up decrypted model file");
             drop(dec); // triggers DecryptedModel::drop → zero-fill + delete
@@ -509,6 +523,75 @@ mod tests {
         assert!(
             !dec_path.exists(),
             "Decrypted file should be wiped on unload"
+        );
+    }
+
+    #[test]
+    fn test_models_loaded_gauge_increments_on_load() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        assert_eq!(
+            state
+                .metrics
+                .models_loaded
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        state.mark_loaded("model-a");
+        assert_eq!(
+            state
+                .metrics
+                .models_loaded
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        state.mark_loaded("model-b");
+        assert_eq!(
+            state
+                .metrics
+                .models_loaded
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        // Re-inserting the same model does not double-count
+        state.mark_loaded("model-a");
+        assert_eq!(
+            state
+                .metrics
+                .models_loaded
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn test_models_loaded_gauge_decrements_on_unload() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        state.mark_loaded("model-a");
+        state.mark_loaded("model-b");
+        state.mark_unloaded("model-a");
+        assert_eq!(
+            state
+                .metrics
+                .models_loaded
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        // Unloading a model that was never loaded should not wrap around
+        state.mark_unloaded("never-loaded");
+        assert_eq!(
+            state
+                .metrics
+                .models_loaded
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
         );
     }
 

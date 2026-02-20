@@ -95,6 +95,12 @@ pub struct PowerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_port: Option<u16>,
 
+    /// Additional Subject Alternative Names for the TLS certificate.
+    /// Each entry is a DNS name (e.g. "myserver.internal") or IP address (e.g. "10.0.0.1").
+    /// "localhost" and 127.0.0.1 are always included.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tls_sans: Vec<String>,
+
     /// Embed a TEE attestation report in the TLS certificate (RA-TLS).
     /// Requires `tls_port` to be set and `tee_mode` to be enabled.
     #[serde(default)]
@@ -258,6 +264,7 @@ impl Default for PowerConfig {
             model_hashes: HashMap::new(),
             model_key_source: None,
             tls_port: None,
+            tls_sans: Vec::new(),
             ra_tls: false,
             vsock_port: None,
             api_keys: Vec::new(),
@@ -316,9 +323,18 @@ impl PowerConfig {
         let ka = self.keep_alive.trim();
         let parseable = ka == "0"
             || ka == "-1"
-            || ka.strip_suffix('s').and_then(|n| n.parse::<u64>().ok()).is_some()
-            || ka.strip_suffix('m').and_then(|n| n.parse::<u64>().ok()).is_some()
-            || ka.strip_suffix('h').and_then(|n| n.parse::<u64>().ok()).is_some()
+            || ka
+                .strip_suffix('s')
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some()
+            || ka
+                .strip_suffix('m')
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some()
+            || ka
+                .strip_suffix('h')
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some()
             || ka.parse::<u64>().is_ok();
         if !parseable {
             tracing::warn!(
@@ -649,6 +665,7 @@ mod tests {
             model_hashes: HashMap::new(),
             model_key_source: None,
             tls_port: None,
+            tls_sans: Vec::new(),
             ra_tls: false,
             vsock_port: None,
             api_keys: Vec::new(),
@@ -1230,6 +1247,19 @@ mod tests {
         assert!(hcl.contains("audit_log = true"));
         assert!(hcl.contains("model_signing_key"));
         assert!(hcl.contains("pubkey123"));
+    }
+
+    #[test]
+    fn test_tls_sans_defaults_to_empty() {
+        let config = PowerConfig::default();
+        assert!(config.tls_sans.is_empty());
+    }
+
+    #[test]
+    fn test_tls_sans_from_hcl() {
+        let hcl_str = r#"tls_sans = ["myserver.internal", "10.0.0.1"]"#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(config.tls_sans, vec!["myserver.internal", "10.0.0.1"]);
     }
 
     // --- validate() tests ---
