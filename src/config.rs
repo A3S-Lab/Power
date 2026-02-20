@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -24,7 +25,7 @@ pub struct GpuConfig {
     pub tensor_split: Vec<f32>,
 }
 
-/// User-configurable settings for the Power server and CLI.
+/// User-configurable settings for the Power server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerConfig {
     /// Host address for the HTTP server (default: 127.0.0.1)
@@ -69,22 +70,111 @@ pub struct PowerConfig {
     #[serde(default = "default_num_parallel")]
     pub num_parallel: usize,
 
-    /// Custom CORS origins (comma-separated). Empty = permissive.
+    /// Enable TEE mode: model integrity verification, log redaction,
+    /// memory zeroing after inference (default: false).
     #[serde(default)]
-    pub origins: Vec<String>,
+    pub tee_mode: bool,
 
-    /// Custom temporary directory for downloads and scratch files.
+    /// Redact inference content from logs (default: true when tee_mode is enabled).
     #[serde(default)]
-    pub tmpdir: Option<PathBuf>,
+    pub redact_logs: bool,
 
-    /// Disable automatic pruning of unused blobs (default: false).
-    #[serde(default)]
-    pub noprune: bool,
+    /// Expected SHA-256 hashes for model integrity verification.
+    /// Key: model name, Value: expected SHA-256 hash.
+    /// Only checked when tee_mode is enabled.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub model_hashes: HashMap<String, String>,
 
-    /// Spread model layers across all available GPUs (default: false).
-    /// When true, distributes layers evenly instead of filling one GPU first.
+    /// Source of the AES-256-GCM key for encrypted model loading.
+    /// If set, models with `.enc` extension are decrypted at load time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_key_source: Option<crate::tee::encrypted_model::KeySource>,
+
+    /// Port for the TLS (HTTPS) server. When set, a TLS server is started
+    /// alongside the plain HTTP server. Requires the `tls` feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_port: Option<u16>,
+
+    /// Embed a TEE attestation report in the TLS certificate (RA-TLS).
+    /// Requires `tls_port` to be set and `tee_mode` to be enabled.
     #[serde(default)]
-    pub sched_spread: bool,
+    pub ra_tls: bool,
+
+    /// Vsock port for guest-host communication inside a3s-box MicroVMs.
+    /// When set, a vsock server is started alongside the plain HTTP server.
+    /// Requires the `vsock` feature and Linux with AF_VSOCK kernel support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vsock_port: Option<u32>,
+
+    /// API keys for authentication. When non-empty, all /v1/* endpoints
+    /// require a valid `Authorization: Bearer <key>` header.
+    /// Keys are SHA-256 hashes of the actual tokens for secure storage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_keys: Vec<String>,
+
+    // --- TEE Policy ---
+    /// Allowed TEE types. Default: all types allowed.
+    /// Set to ["sev-snp", "tdx"] to reject simulated TEE in production.
+    /// Overridden by A3S_POWER_TEE_STRICT=1 (removes "simulated").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tee_types: Vec<String>,
+
+    /// Expected measurements per TEE type (hex-encoded).
+    /// When set, attestation reports must match the expected measurement.
+    /// Key: tee type (e.g., "sev-snp"), Value: hex measurement string.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub expected_measurements: HashMap<String, String>,
+
+    // --- Audit Logging ---
+    /// Enable structured audit logging. Default: false.
+    #[serde(default)]
+    pub audit_log: bool,
+
+    /// Path to audit log file. Default: $A3S_POWER_HOME/audit.jsonl.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_log_path: Option<std::path::PathBuf>,
+
+    // --- Model Signing ---
+    /// Ed25519 public key for model signature verification (hex-encoded, 32 bytes).
+    /// When set, all models must have a corresponding .sig file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_signing_key: Option<String>,
+
+    // --- Key Provider ---
+    /// Key provider type. "static" (default) uses model_key_source.
+    /// "rotating" uses key_rotation_sources for zero-downtime key rotation.
+    #[serde(default = "default_key_provider")]
+    pub key_provider: String,
+
+    /// For the rotating key provider: list of key sources in rotation order.
+    /// The first source is active initially; rotate_key() advances to the next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_rotation_sources: Vec<crate::tee::encrypted_model::KeySource>,
+
+    // --- In-Memory Decryption ---
+    /// Decrypt encrypted models entirely in RAM (mlock) instead of writing a temp file.
+    /// Default: true when tee_mode is enabled. Prevents plaintext from touching disk.
+    #[serde(default)]
+    pub in_memory_decrypt: bool,
+
+    // --- Token Metrics Side-Channel Mitigation ---
+    /// Round token counts in responses to the nearest 10.
+    /// Prevents exact token-count side-channel inference. Default: false.
+    #[serde(default)]
+    pub suppress_token_metrics: bool,
+
+    // --- Rate Limiting ---
+    /// Max requests per second for /v1/* endpoints. 0 = unlimited (default).
+    #[serde(default)]
+    pub rate_limit_rps: u64,
+
+    /// Max concurrent requests for /v1/* endpoints. 0 = unlimited (default).
+    #[serde(default)]
+    pub max_concurrent_requests: u64,
+}
+
+fn default_key_provider() -> String {
+    "static".to_string()
 }
 
 fn default_keep_alive() -> String {
@@ -112,7 +202,6 @@ pub fn parse_keep_alive(s: &str) -> std::time::Duration {
         return std::time::Duration::MAX;
     }
 
-    // Try to parse as number + suffix
     if let Some(num_str) = s.strip_suffix('s') {
         if let Ok(n) = num_str.parse::<u64>() {
             return std::time::Duration::from_secs(n);
@@ -163,21 +252,34 @@ impl Default for PowerConfig {
             num_thread: None,
             flash_attention: false,
             num_parallel: default_num_parallel(),
-            origins: Vec::new(),
-            tmpdir: None,
-            noprune: false,
-            sched_spread: false,
+            tee_mode: false,
+            redact_logs: false,
+            model_hashes: HashMap::new(),
+            model_key_source: None,
+            tls_port: None,
+            ra_tls: false,
+            vsock_port: None,
+            api_keys: Vec::new(),
+            allowed_tee_types: Vec::new(),
+            expected_measurements: HashMap::new(),
+            audit_log: false,
+            audit_log_path: None,
+            model_signing_key: None,
+            key_provider: default_key_provider(),
+            key_rotation_sources: Vec::new(),
+            in_memory_decrypt: false,
+            suppress_token_metrics: false,
+            rate_limit_rps: 0,
+            max_concurrent_requests: 0,
         }
     }
 }
 
 impl PowerConfig {
-    /// Load configuration from the default config file path.
+    /// Load configuration from the default config file path (HCL format).
     /// Returns default config if the file does not exist.
     ///
-    /// After loading from file, applies Ollama-compatible environment variable
-    /// overrides: `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`,
-    /// `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_NUM_GPU`.
+    /// After loading from file, applies `A3S_POWER_*` environment variable overrides.
     pub fn load() -> Result<Self> {
         let path = dirs::config_path();
         let mut config = if path.exists() {
@@ -188,15 +290,13 @@ impl PowerConfig {
                     e
                 ))
             })?;
-            match path.extension().and_then(|ext| ext.to_str()) {
-                Some("hcl") => hcl::from_str(&content).map_err(|e| {
-                    crate::error::PowerError::Config(format!(
-                        "Failed to parse HCL config: {}",
-                        e
-                    ))
-                })?,
-                _ => toml::from_str(&content)?,
-            }
+            hcl::from_str(&content).map_err(|e| {
+                crate::error::PowerError::HclDe(format!(
+                    "Failed to parse HCL config {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?
         } else {
             Self::default()
         };
@@ -205,125 +305,225 @@ impl PowerConfig {
         Ok(config)
     }
 
-    /// Apply Ollama-compatible environment variable overrides.
-    ///
-    /// Supported variables:
-    /// - `OLLAMA_HOST` — `"host:port"` or `"host"` (overrides both host and port)
-    /// - `OLLAMA_MODELS` — model storage directory
-    /// - `OLLAMA_KEEP_ALIVE` — default keep-alive duration (e.g. `"5m"`, `"-1"`)
-    /// - `OLLAMA_MAX_LOADED_MODELS` — maximum concurrent loaded models
-    /// - `OLLAMA_NUM_GPU` — number of GPU layers to offload (-1 = all)
-    /// - `OLLAMA_NUM_PARALLEL` — number of parallel request slots
-    /// - `OLLAMA_DEBUG` — enable debug logging (`"1"` or `"true"`)
-    /// - `OLLAMA_ORIGINS` — comma-separated CORS origins
-    /// - `OLLAMA_FLASH_ATTENTION` — enable flash attention (`"1"` or `"true"`)
-    /// - `OLLAMA_TMPDIR` — custom temporary directory
-    /// - `OLLAMA_NOPRUNE` — disable automatic blob pruning (`"1"` or `"true"`)
-    /// - `OLLAMA_SCHED_SPREAD` — spread layers across GPUs (`"1"` or `"true"`)
+    /// Apply `A3S_POWER_*` environment variable overrides.
     fn apply_env_overrides(&mut self) {
-        if let Ok(host_str) = std::env::var("OLLAMA_HOST") {
-            // OLLAMA_HOST can be "host:port" or just "host"
-            if let Some((host, port_str)) = host_str.rsplit_once(':') {
-                if let Ok(port) = port_str.parse::<u16>() {
-                    // Strip scheme prefix if present (e.g. "http://0.0.0.0")
-                    let host = host
-                        .strip_prefix("http://")
-                        .or_else(|| host.strip_prefix("https://"))
-                        .unwrap_or(host);
-                    self.host = host.to_string();
-                    self.port = port;
-                } else {
-                    // No valid port — treat entire string as host
-                    let host = host_str
-                        .strip_prefix("http://")
-                        .or_else(|| host_str.strip_prefix("https://"))
-                        .unwrap_or(&host_str);
-                    self.host = host.to_string();
-                }
-            } else {
-                let host = host_str
-                    .strip_prefix("http://")
-                    .or_else(|| host_str.strip_prefix("https://"))
-                    .unwrap_or(&host_str);
-                self.host = host.to_string();
+        if let Ok(host) = std::env::var("A3S_POWER_HOST") {
+            self.host = host;
+        }
+
+        if let Ok(port_str) = std::env::var("A3S_POWER_PORT") {
+            if let Ok(port) = port_str.parse::<u16>() {
+                self.port = port;
             }
         }
 
-        if let Ok(models_dir) = std::env::var("OLLAMA_MODELS") {
-            self.data_dir = std::path::PathBuf::from(models_dir);
+        if let Ok(data_dir) = std::env::var("A3S_POWER_DATA_DIR") {
+            self.data_dir = PathBuf::from(data_dir);
         }
 
-        if let Ok(keep_alive) = std::env::var("OLLAMA_KEEP_ALIVE") {
-            self.keep_alive = keep_alive;
-        }
-
-        if let Ok(max_str) = std::env::var("OLLAMA_MAX_LOADED_MODELS") {
+        if let Ok(max_str) = std::env::var("A3S_POWER_MAX_MODELS") {
             if let Ok(max) = max_str.parse::<usize>() {
                 self.max_loaded_models = max;
             }
         }
 
-        if let Ok(gpu_str) = std::env::var("OLLAMA_NUM_GPU") {
+        if let Ok(keep_alive) = std::env::var("A3S_POWER_KEEP_ALIVE") {
+            self.keep_alive = keep_alive;
+        }
+
+        if let Ok(gpu_str) = std::env::var("A3S_POWER_GPU_LAYERS") {
             if let Ok(gpu) = gpu_str.parse::<i32>() {
                 self.gpu.gpu_layers = gpu;
             }
         }
 
-        if let Ok(par_str) = std::env::var("OLLAMA_NUM_PARALLEL") {
-            if let Ok(par) = par_str.parse::<usize>() {
-                self.num_parallel = par;
+        if let Ok(tee_str) = std::env::var("A3S_POWER_TEE_MODE") {
+            if tee_str == "1" || tee_str.eq_ignore_ascii_case("true") {
+                self.tee_mode = true;
             }
         }
 
-        if let Ok(debug_str) = std::env::var("OLLAMA_DEBUG") {
-            if debug_str == "1" || debug_str.eq_ignore_ascii_case("true") {
-                // Set RUST_LOG to debug if not already set, so tracing picks it up.
-                if std::env::var("RUST_LOG").is_err() {
-                    std::env::set_var("RUST_LOG", "debug");
-                }
+        if let Ok(redact_str) = std::env::var("A3S_POWER_REDACT_LOGS") {
+            if redact_str == "1" || redact_str.eq_ignore_ascii_case("true") {
+                self.redact_logs = true;
             }
         }
 
-        if let Ok(origins_str) = std::env::var("OLLAMA_ORIGINS") {
-            self.origins = origins_str
+        // When TEE mode is enabled, default redact_logs to true unless explicitly disabled
+        if self.tee_mode && std::env::var("A3S_POWER_REDACT_LOGS").is_err() && !self.redact_logs {
+            self.redact_logs = true;
+        }
+
+        if let Ok(tls_port_str) = std::env::var("A3S_POWER_TLS_PORT") {
+            if let Ok(port) = tls_port_str.parse::<u16>() {
+                self.tls_port = Some(port);
+            }
+        }
+
+        if let Ok(ra_tls_str) = std::env::var("A3S_POWER_RA_TLS") {
+            if ra_tls_str == "1" || ra_tls_str.eq_ignore_ascii_case("true") {
+                self.ra_tls = true;
+            }
+        }
+
+        if let Ok(vsock_str) = std::env::var("A3S_POWER_VSOCK_PORT") {
+            if let Ok(port) = vsock_str.parse::<u32>() {
+                self.vsock_port = Some(port);
+            }
+        }
+
+        if let Ok(keys_str) = std::env::var("A3S_POWER_API_KEYS") {
+            let keys: Vec<String> = keys_str
                 .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
-        }
-
-        if let Ok(fa_str) = std::env::var("OLLAMA_FLASH_ATTENTION") {
-            if fa_str == "1" || fa_str.eq_ignore_ascii_case("true") {
-                self.flash_attention = true;
+            if !keys.is_empty() {
+                self.api_keys = keys;
             }
         }
 
-        if let Ok(tmpdir) = std::env::var("OLLAMA_TMPDIR") {
-            self.tmpdir = Some(std::path::PathBuf::from(tmpdir));
-        }
-
-        if let Ok(noprune_str) = std::env::var("OLLAMA_NOPRUNE") {
-            if noprune_str == "1" || noprune_str.eq_ignore_ascii_case("true") {
-                self.noprune = true;
+        // A3S_POWER_TEE_STRICT=1 removes "simulated" from allowed TEE types
+        if std::env::var("A3S_POWER_TEE_STRICT").as_deref() == Ok("1") {
+            if self.allowed_tee_types.is_empty() {
+                // Default to all hardware types when strict mode is enabled
+                self.allowed_tee_types = vec!["sev-snp".to_string(), "tdx".to_string()];
+            } else {
+                self.allowed_tee_types.retain(|t| t != "simulated");
             }
         }
 
-        if let Ok(spread_str) = std::env::var("OLLAMA_SCHED_SPREAD") {
-            if spread_str == "1" || spread_str.eq_ignore_ascii_case("true") {
-                self.sched_spread = true;
-            }
+        if std::env::var("A3S_POWER_AUDIT_LOG").as_deref() == Ok("1") {
+            self.audit_log = true;
         }
     }
 
-    /// Save the current configuration to the default config file path.
+    /// Save the current configuration to the default config file path (HCL format).
     pub fn save(&self) -> Result<()> {
         let path = dirs::config_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let content = toml::to_string_pretty(self)?;
+        let content = self.to_hcl();
         std::fs::write(&path, content)?;
         Ok(())
+    }
+
+    /// Serialize the config to HCL format.
+    fn to_hcl(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("host = \"{}\"\n", self.host));
+        out.push_str(&format!("port = {}\n", self.port));
+        out.push_str(&format!("data_dir = \"{}\"\n", self.data_dir.display()));
+        out.push_str(&format!("max_loaded_models = {}\n", self.max_loaded_models));
+        out.push_str(&format!("keep_alive = \"{}\"\n", self.keep_alive));
+        out.push_str(&format!("use_mlock = {}\n", self.use_mlock));
+        if let Some(nt) = self.num_thread {
+            out.push_str(&format!("num_thread = {}\n", nt));
+        }
+        out.push_str(&format!("flash_attention = {}\n", self.flash_attention));
+        out.push_str(&format!("num_parallel = {}\n", self.num_parallel));
+        out.push_str(&format!("tee_mode = {}\n", self.tee_mode));
+        out.push_str(&format!("redact_logs = {}\n", self.redact_logs));
+
+        // GPU block
+        out.push_str("\ngpu {\n");
+        out.push_str(&format!("  gpu_layers = {}\n", self.gpu.gpu_layers));
+        out.push_str(&format!("  main_gpu = {}\n", self.gpu.main_gpu));
+        if !self.gpu.tensor_split.is_empty() {
+            let splits: Vec<String> = self
+                .gpu
+                .tensor_split
+                .iter()
+                .map(|v| v.to_string())
+                .collect();
+            out.push_str(&format!("  tensor_split = [{}]\n", splits.join(", ")));
+        }
+        out.push_str("}\n");
+
+        // Model hashes
+        if !self.model_hashes.is_empty() {
+            out.push_str("\nmodel_hashes = {\n");
+            for (name, hash) in &self.model_hashes {
+                out.push_str(&format!("  \"{}\" = \"{}\"\n", name, hash));
+            }
+            out.push_str("}\n");
+        }
+
+        // TLS settings
+        if let Some(tls_port) = self.tls_port {
+            out.push_str(&format!("tls_port = {}\n", tls_port));
+        }
+        if self.ra_tls {
+            out.push_str(&format!("ra_tls = {}\n", self.ra_tls));
+        }
+
+        // Vsock transport
+        if let Some(vsock_port) = self.vsock_port {
+            out.push_str(&format!("vsock_port = {}\n", vsock_port));
+        }
+
+        // API keys
+        if !self.api_keys.is_empty() {
+            let keys: Vec<String> = self.api_keys.iter().map(|k| format!("\"{}\"", k)).collect();
+            out.push_str(&format!("api_keys = [{}]\n", keys.join(", ")));
+        }
+
+        // TEE policy
+        if !self.allowed_tee_types.is_empty() {
+            let types: Vec<String> = self
+                .allowed_tee_types
+                .iter()
+                .map(|t| format!("\"{}\"", t))
+                .collect();
+            out.push_str(&format!("allowed_tee_types = [{}]\n", types.join(", ")));
+        }
+        if !self.expected_measurements.is_empty() {
+            out.push_str("expected_measurements = {\n");
+            for (k, v) in &self.expected_measurements {
+                out.push_str(&format!("  {} = \"{}\"\n", k, v));
+            }
+            out.push_str("}\n");
+        }
+
+        // Audit logging
+        if self.audit_log {
+            out.push_str("audit_log = true\n");
+        }
+        if let Some(ref path) = self.audit_log_path {
+            out.push_str(&format!("audit_log_path = \"{}\"\n", path.display()));
+        }
+
+        // Model signing
+        if let Some(ref key) = self.model_signing_key {
+            out.push_str(&format!("model_signing_key = \"{}\"\n", key));
+        }
+
+        // Key provider
+        if self.key_provider != "static" {
+            out.push_str(&format!("key_provider = \"{}\"\n", self.key_provider));
+        }
+
+        // Rate limiting
+        if self.rate_limit_rps > 0 {
+            out.push_str(&format!("rate_limit_rps = {}\n", self.rate_limit_rps));
+        }
+        if self.max_concurrent_requests > 0 {
+            out.push_str(&format!(
+                "max_concurrent_requests = {}\n",
+                self.max_concurrent_requests
+            ));
+        }
+
+        // TEE in-memory decryption / token metrics
+        if self.in_memory_decrypt {
+            out.push_str("in_memory_decrypt = true\n");
+        }
+        if self.suppress_token_metrics {
+            out.push_str("suppress_token_metrics = true\n");
+        }
+
+        out
     }
 
     /// Returns the server bind address string (e.g., "127.0.0.1:11434").
@@ -343,6 +543,9 @@ mod tests {
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 11434);
         assert_eq!(config.max_loaded_models, 1);
+        assert!(!config.tee_mode);
+        assert!(!config.redact_logs);
+        assert!(config.model_hashes.is_empty());
     }
 
     #[test]
@@ -352,24 +555,25 @@ mod tests {
     }
 
     #[test]
-    fn test_config_deserialize() {
-        let toml_str = r#"
+    fn test_config_deserialize_hcl() {
+        let hcl_str = r#"
             host = "0.0.0.0"
             port = 8080
             max_loaded_models = 3
         "#;
-        let config: PowerConfig = toml::from_str(toml_str).unwrap();
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 8080);
         assert_eq!(config.max_loaded_models, 3);
     }
 
     #[test]
-    fn test_config_serialize() {
+    fn test_config_serialize_hcl() {
         let config = PowerConfig::default();
-        let serialized = toml::to_string_pretty(&config).unwrap();
+        let serialized = config.to_hcl();
         assert!(serialized.contains("host"));
         assert!(serialized.contains("port"));
+        assert!(serialized.contains("gpu {"));
     }
 
     #[test]
@@ -389,10 +593,25 @@ mod tests {
             num_thread: None,
             flash_attention: false,
             num_parallel: 4,
-            origins: vec!["http://localhost:3000".to_string()],
-            tmpdir: None,
-            noprune: false,
-            sched_spread: false,
+            tee_mode: true,
+            redact_logs: true,
+            model_hashes: HashMap::new(),
+            model_key_source: None,
+            tls_port: None,
+            ra_tls: false,
+            vsock_port: None,
+            api_keys: Vec::new(),
+            allowed_tee_types: Vec::new(),
+            expected_measurements: HashMap::new(),
+            audit_log: false,
+            audit_log_path: None,
+            model_signing_key: None,
+            key_provider: "static".to_string(),
+            key_rotation_sources: Vec::new(),
+            in_memory_decrypt: false,
+            suppress_token_metrics: false,
+            rate_limit_rps: 0,
+            max_concurrent_requests: 0,
         };
         config.save().unwrap();
 
@@ -401,7 +620,8 @@ mod tests {
         assert_eq!(loaded.port, 9999);
         assert_eq!(loaded.max_loaded_models, 5);
         assert_eq!(loaded.num_parallel, 4);
-        assert_eq!(loaded.origins, vec!["http://localhost:3000"]);
+        assert!(loaded.tee_mode);
+        assert!(loaded.redact_logs);
 
         std::env::remove_var("A3S_POWER_HOME");
     }
@@ -414,27 +634,28 @@ mod tests {
     }
 
     #[test]
-    fn test_gpu_config_deserialize() {
-        let toml_str = r#"
+    fn test_gpu_config_deserialize_hcl() {
+        let hcl_str = r#"
             host = "127.0.0.1"
             port = 11434
 
-            [gpu]
-            gpu_layers = -1
-            main_gpu = 1
+            gpu {
+                gpu_layers = -1
+                main_gpu = 1
+            }
         "#;
-        let config: PowerConfig = toml::from_str(toml_str).unwrap();
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
         assert_eq!(config.gpu.gpu_layers, -1);
         assert_eq!(config.gpu.main_gpu, 1);
     }
 
     #[test]
     fn test_gpu_config_missing_uses_defaults() {
-        let toml_str = r#"
+        let hcl_str = r#"
             host = "127.0.0.1"
             port = 11434
         "#;
-        let config: PowerConfig = toml::from_str(toml_str).unwrap();
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
         assert_eq!(config.gpu.gpu_layers, 0);
         assert_eq!(config.gpu.main_gpu, 0);
     }
@@ -447,52 +668,37 @@ mod tests {
 
     #[test]
     fn test_parse_keep_alive_minutes() {
-        assert_eq!(
-            super::parse_keep_alive("5m"),
-            std::time::Duration::from_secs(300)
-        );
+        assert_eq!(parse_keep_alive("5m"), std::time::Duration::from_secs(300));
     }
 
     #[test]
     fn test_parse_keep_alive_hours() {
-        assert_eq!(
-            super::parse_keep_alive("1h"),
-            std::time::Duration::from_secs(3600)
-        );
+        assert_eq!(parse_keep_alive("1h"), std::time::Duration::from_secs(3600));
     }
 
     #[test]
     fn test_parse_keep_alive_seconds() {
-        assert_eq!(
-            super::parse_keep_alive("30s"),
-            std::time::Duration::from_secs(30)
-        );
+        assert_eq!(parse_keep_alive("30s"), std::time::Duration::from_secs(30));
     }
 
     #[test]
     fn test_parse_keep_alive_zero() {
-        assert_eq!(super::parse_keep_alive("0"), std::time::Duration::ZERO);
+        assert_eq!(parse_keep_alive("0"), std::time::Duration::ZERO);
     }
 
     #[test]
     fn test_parse_keep_alive_never() {
-        assert_eq!(super::parse_keep_alive("-1"), std::time::Duration::MAX);
+        assert_eq!(parse_keep_alive("-1"), std::time::Duration::MAX);
     }
 
     #[test]
     fn test_parse_keep_alive_raw_number() {
-        assert_eq!(
-            super::parse_keep_alive("120"),
-            std::time::Duration::from_secs(120)
-        );
+        assert_eq!(parse_keep_alive("120"), std::time::Duration::from_secs(120));
     }
 
     #[test]
     fn test_parse_keep_alive_invalid_defaults() {
-        assert_eq!(
-            super::parse_keep_alive("abc"),
-            std::time::Duration::from_secs(300)
-        );
+        assert_eq!(parse_keep_alive("abc"), std::time::Duration::from_secs(300));
     }
 
     // ---------------------------------------------------------------
@@ -501,99 +707,96 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_env_ollama_host_with_port() {
-        std::env::set_var("OLLAMA_HOST", "0.0.0.0:8080");
+    fn test_env_a3s_power_host() {
+        std::env::set_var("A3S_POWER_HOST", "0.0.0.0");
         let mut config = PowerConfig::default();
         config.apply_env_overrides();
         assert_eq!(config.host, "0.0.0.0");
+        std::env::remove_var("A3S_POWER_HOST");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_port() {
+        std::env::set_var("A3S_POWER_PORT", "8080");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
         assert_eq!(config.port, 8080);
-        std::env::remove_var("OLLAMA_HOST");
+        std::env::remove_var("A3S_POWER_PORT");
     }
 
     #[test]
     #[serial]
-    fn test_env_ollama_host_without_port() {
-        std::env::set_var("OLLAMA_HOST", "192.168.1.1");
+    fn test_env_a3s_power_data_dir() {
+        std::env::set_var("A3S_POWER_DATA_DIR", "/tmp/my-models");
         let mut config = PowerConfig::default();
         config.apply_env_overrides();
-        assert_eq!(config.host, "192.168.1.1");
-        assert_eq!(config.port, 11434); // port unchanged
-        std::env::remove_var("OLLAMA_HOST");
+        assert_eq!(config.data_dir, PathBuf::from("/tmp/my-models"));
+        std::env::remove_var("A3S_POWER_DATA_DIR");
     }
 
     #[test]
     #[serial]
-    fn test_env_ollama_host_with_scheme() {
-        std::env::set_var("OLLAMA_HOST", "http://0.0.0.0:9999");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(config.host, "0.0.0.0");
-        assert_eq!(config.port, 9999);
-        std::env::remove_var("OLLAMA_HOST");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_host_scheme_no_port() {
-        std::env::set_var("OLLAMA_HOST", "http://myhost");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(config.host, "myhost");
-        assert_eq!(config.port, 11434);
-        std::env::remove_var("OLLAMA_HOST");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_models() {
-        std::env::set_var("OLLAMA_MODELS", "/tmp/my-models");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(config.data_dir, std::path::PathBuf::from("/tmp/my-models"));
-        std::env::remove_var("OLLAMA_MODELS");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_keep_alive() {
-        std::env::set_var("OLLAMA_KEEP_ALIVE", "10m");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(config.keep_alive, "10m");
-        std::env::remove_var("OLLAMA_KEEP_ALIVE");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_max_loaded_models() {
-        std::env::set_var("OLLAMA_MAX_LOADED_MODELS", "4");
+    fn test_env_a3s_power_max_models() {
+        std::env::set_var("A3S_POWER_MAX_MODELS", "4");
         let mut config = PowerConfig::default();
         config.apply_env_overrides();
         assert_eq!(config.max_loaded_models, 4);
-        std::env::remove_var("OLLAMA_MAX_LOADED_MODELS");
+        std::env::remove_var("A3S_POWER_MAX_MODELS");
     }
 
     #[test]
     #[serial]
-    fn test_env_ollama_num_gpu() {
-        std::env::set_var("OLLAMA_NUM_GPU", "-1");
+    fn test_env_a3s_power_keep_alive() {
+        std::env::set_var("A3S_POWER_KEEP_ALIVE", "10m");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(config.keep_alive, "10m");
+        std::env::remove_var("A3S_POWER_KEEP_ALIVE");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_gpu_layers() {
+        std::env::set_var("A3S_POWER_GPU_LAYERS", "-1");
         let mut config = PowerConfig::default();
         config.apply_env_overrides();
         assert_eq!(config.gpu.gpu_layers, -1);
-        std::env::remove_var("OLLAMA_NUM_GPU");
+        std::env::remove_var("A3S_POWER_GPU_LAYERS");
     }
 
     #[test]
     #[serial]
-    fn test_env_ollama_invalid_values_ignored() {
-        std::env::set_var("OLLAMA_MAX_LOADED_MODELS", "not-a-number");
-        std::env::set_var("OLLAMA_NUM_GPU", "abc");
+    fn test_env_a3s_power_tee_mode() {
+        std::env::set_var("A3S_POWER_TEE_MODE", "true");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.tee_mode);
+        assert!(config.redact_logs); // auto-enabled when tee_mode
+        std::env::remove_var("A3S_POWER_TEE_MODE");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_redact_logs() {
+        std::env::set_var("A3S_POWER_REDACT_LOGS", "1");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.redact_logs);
+        std::env::remove_var("A3S_POWER_REDACT_LOGS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_invalid_values_ignored() {
+        std::env::set_var("A3S_POWER_MAX_MODELS", "not-a-number");
+        std::env::set_var("A3S_POWER_GPU_LAYERS", "abc");
         let mut config = PowerConfig::default();
         config.apply_env_overrides();
         assert_eq!(config.max_loaded_models, 1); // unchanged
         assert_eq!(config.gpu.gpu_layers, 0); // unchanged
-        std::env::remove_var("OLLAMA_MAX_LOADED_MODELS");
-        std::env::remove_var("OLLAMA_NUM_GPU");
+        std::env::remove_var("A3S_POWER_MAX_MODELS");
+        std::env::remove_var("A3S_POWER_GPU_LAYERS");
     }
 
     #[test]
@@ -603,204 +806,25 @@ mod tests {
         assert!(config.num_thread.is_none());
         assert!(!config.flash_attention);
         assert_eq!(config.num_parallel, 1);
-        assert!(config.origins.is_empty());
-        assert!(config.tmpdir.is_none());
-        assert!(!config.noprune);
-        assert!(!config.sched_spread);
     }
 
     #[test]
-    #[serial]
-    fn test_config_new_fields_from_toml() {
-        let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("A3S_POWER_HOME", dir.path());
+    fn test_config_tee_fields_from_hcl() {
+        let hcl_str = r#"
+            tee_mode = true
+            redact_logs = true
 
-        let toml = r#"
-            use_mlock = true
-            flash_attention = true
-            num_thread = 8
+            model_hashes = {
+                "llama3" = "sha256:abc123"
+            }
         "#;
-        let config: PowerConfig = toml::from_str(toml).unwrap();
-        assert!(config.use_mlock);
-        assert!(config.flash_attention);
-        assert_eq!(config.num_thread, Some(8));
-
-        std::env::remove_var("A3S_POWER_HOME");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_num_parallel() {
-        std::env::set_var("OLLAMA_NUM_PARALLEL", "8");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(config.num_parallel, 8);
-        std::env::remove_var("OLLAMA_NUM_PARALLEL");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_num_parallel_invalid_ignored() {
-        std::env::set_var("OLLAMA_NUM_PARALLEL", "abc");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(config.num_parallel, 1); // unchanged
-        std::env::remove_var("OLLAMA_NUM_PARALLEL");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_debug_sets_rust_log() {
-        std::env::remove_var("RUST_LOG");
-        std::env::set_var("OLLAMA_DEBUG", "1");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(std::env::var("RUST_LOG").unwrap(), "debug");
-        std::env::remove_var("OLLAMA_DEBUG");
-        std::env::remove_var("RUST_LOG");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_debug_true_string() {
-        std::env::remove_var("RUST_LOG");
-        std::env::set_var("OLLAMA_DEBUG", "true");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(std::env::var("RUST_LOG").unwrap(), "debug");
-        std::env::remove_var("OLLAMA_DEBUG");
-        std::env::remove_var("RUST_LOG");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_debug_does_not_override_existing_rust_log() {
-        std::env::set_var("RUST_LOG", "trace");
-        std::env::set_var("OLLAMA_DEBUG", "1");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(std::env::var("RUST_LOG").unwrap(), "trace"); // unchanged
-        std::env::remove_var("OLLAMA_DEBUG");
-        std::env::remove_var("RUST_LOG");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_origins() {
-        std::env::set_var(
-            "OLLAMA_ORIGINS",
-            "http://localhost:3000,https://example.com",
-        );
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert!(config.tee_mode);
+        assert!(config.redact_logs);
         assert_eq!(
-            config.origins,
-            vec!["http://localhost:3000", "https://example.com"]
+            config.model_hashes.get("llama3"),
+            Some(&"sha256:abc123".to_string())
         );
-        std::env::remove_var("OLLAMA_ORIGINS");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_origins_trims_whitespace() {
-        std::env::set_var("OLLAMA_ORIGINS", " http://a.com , http://b.com ");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(config.origins, vec!["http://a.com", "http://b.com"]);
-        std::env::remove_var("OLLAMA_ORIGINS");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_flash_attention() {
-        std::env::set_var("OLLAMA_FLASH_ATTENTION", "1");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert!(config.flash_attention);
-        std::env::remove_var("OLLAMA_FLASH_ATTENTION");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_flash_attention_false_ignored() {
-        std::env::set_var("OLLAMA_FLASH_ATTENTION", "0");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert!(!config.flash_attention); // unchanged
-        std::env::remove_var("OLLAMA_FLASH_ATTENTION");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_tmpdir() {
-        std::env::set_var("OLLAMA_TMPDIR", "/tmp/ollama-scratch");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert_eq!(
-            config.tmpdir,
-            Some(std::path::PathBuf::from("/tmp/ollama-scratch"))
-        );
-        std::env::remove_var("OLLAMA_TMPDIR");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_noprune() {
-        std::env::set_var("OLLAMA_NOPRUNE", "1");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert!(config.noprune);
-        std::env::remove_var("OLLAMA_NOPRUNE");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_noprune_true_string() {
-        std::env::set_var("OLLAMA_NOPRUNE", "true");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert!(config.noprune);
-        std::env::remove_var("OLLAMA_NOPRUNE");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_noprune_false_ignored() {
-        std::env::set_var("OLLAMA_NOPRUNE", "0");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert!(!config.noprune); // unchanged
-        std::env::remove_var("OLLAMA_NOPRUNE");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_sched_spread() {
-        std::env::set_var("OLLAMA_SCHED_SPREAD", "1");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert!(config.sched_spread);
-        std::env::remove_var("OLLAMA_SCHED_SPREAD");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_sched_spread_true_string() {
-        std::env::set_var("OLLAMA_SCHED_SPREAD", "true");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert!(config.sched_spread);
-        std::env::remove_var("OLLAMA_SCHED_SPREAD");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_ollama_sched_spread_false_ignored() {
-        std::env::set_var("OLLAMA_SCHED_SPREAD", "0");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides();
-        assert!(!config.sched_spread); // unchanged
-        std::env::remove_var("OLLAMA_SCHED_SPREAD");
     }
 
     #[test]
@@ -810,59 +834,171 @@ mod tests {
     }
 
     #[test]
-    fn test_gpu_config_tensor_split_from_toml() {
-        let toml_str = r#"
+    fn test_gpu_config_tensor_split_from_hcl() {
+        let hcl_str = r#"
             host = "127.0.0.1"
             port = 11434
 
-            [gpu]
-            gpu_layers = -1
-            tensor_split = [0.5, 0.5]
+            gpu {
+                gpu_layers = -1
+                tensor_split = [0.5, 0.5]
+            }
         "#;
-        let config: PowerConfig = toml::from_str(toml_str).unwrap();
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
         assert_eq!(config.gpu.tensor_split, vec![0.5, 0.5]);
     }
 
     #[test]
     fn test_gpu_config_tensor_split_serialization_skips_empty() {
         let config = PowerConfig::default();
-        let serialized = toml::to_string_pretty(&config).unwrap();
+        let serialized = config.to_hcl();
         assert!(!serialized.contains("tensor_split"));
-    }
-
-    #[test]
-    fn test_config_deserialize_hcl() {
-        let hcl_str = r#"
-            host = "0.0.0.0"
-            port = 8080
-            max_loaded_models = 3
-        "#;
-        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
-        assert_eq!(config.host, "0.0.0.0");
-        assert_eq!(config.port, 8080);
-        assert_eq!(config.max_loaded_models, 3);
-    }
-
-    #[test]
-    fn test_config_hcl_with_gpu() {
-        let hcl_str = r#"
-            host = "127.0.0.1"
-            port = 11434
-
-            gpu {
-                gpu_layers = 99
-                main_gpu   = 1
-            }
-        "#;
-        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
-        assert_eq!(config.gpu.gpu_layers, 99);
-        assert_eq!(config.gpu.main_gpu, 1);
     }
 
     #[test]
     fn test_config_hcl_invalid() {
         let result: std::result::Result<PowerConfig, _> = hcl::from_str("{{{{ invalid");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tls_port_defaults_to_none() {
+        let config = PowerConfig::default();
+        assert!(config.tls_port.is_none());
+    }
+
+    #[test]
+    fn test_ra_tls_defaults_to_false() {
+        let config = PowerConfig::default();
+        assert!(!config.ra_tls);
+    }
+
+    #[test]
+    fn test_tls_port_from_hcl() {
+        let hcl_str = r#"tls_port = 8443"#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(config.tls_port, Some(8443));
+    }
+
+    #[test]
+    fn test_ra_tls_from_hcl() {
+        let hcl_str = r#"ra_tls = true"#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert!(config.ra_tls);
+    }
+
+    #[test]
+    fn test_tls_port_not_serialized_when_none() {
+        let config = PowerConfig::default();
+        let serialized = config.to_hcl();
+        assert!(!serialized.contains("tls_port"));
+    }
+
+    #[test]
+    fn test_ra_tls_not_serialized_when_false() {
+        let config = PowerConfig::default();
+        let serialized = config.to_hcl();
+        assert!(!serialized.contains("ra_tls"));
+    }
+
+    #[test]
+    fn test_tls_port_serialized_when_set() {
+        let config = PowerConfig {
+            tls_port: Some(8443),
+            ..Default::default()
+        };
+        let serialized = config.to_hcl();
+        assert!(serialized.contains("tls_port = 8443"));
+    }
+
+    #[test]
+    fn test_ra_tls_serialized_when_true() {
+        let config = PowerConfig {
+            ra_tls: true,
+            ..Default::default()
+        };
+        let serialized = config.to_hcl();
+        assert!(serialized.contains("ra_tls = true"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_tls_port() {
+        std::env::set_var("A3S_POWER_TLS_PORT", "8443");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(config.tls_port, Some(8443));
+        std::env::remove_var("A3S_POWER_TLS_PORT");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_ra_tls() {
+        std::env::set_var("A3S_POWER_RA_TLS", "true");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.ra_tls);
+        std::env::remove_var("A3S_POWER_RA_TLS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_tls_port_invalid_ignored() {
+        std::env::set_var("A3S_POWER_TLS_PORT", "not-a-port");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.tls_port.is_none());
+        std::env::remove_var("A3S_POWER_TLS_PORT");
+    }
+
+    #[test]
+    fn test_vsock_port_defaults_to_none() {
+        let config = PowerConfig::default();
+        assert!(config.vsock_port.is_none());
+    }
+
+    #[test]
+    fn test_vsock_port_from_hcl() {
+        let hcl_str = r#"vsock_port = 11434"#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(config.vsock_port, Some(11434));
+    }
+
+    #[test]
+    fn test_vsock_port_not_serialized_when_none() {
+        let config = PowerConfig::default();
+        let serialized = config.to_hcl();
+        assert!(!serialized.contains("vsock_port"));
+    }
+
+    #[test]
+    fn test_vsock_port_serialized_when_set() {
+        let config = PowerConfig {
+            vsock_port: Some(11434),
+            ..Default::default()
+        };
+        let serialized = config.to_hcl();
+        assert!(serialized.contains("vsock_port = 11434"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_vsock_port() {
+        std::env::set_var("A3S_POWER_VSOCK_PORT", "11434");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(config.vsock_port, Some(11434));
+        std::env::remove_var("A3S_POWER_VSOCK_PORT");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_vsock_port_invalid_ignored() {
+        std::env::set_var("A3S_POWER_VSOCK_PORT", "not-a-port");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.vsock_port.is_none());
+        std::env::remove_var("A3S_POWER_VSOCK_PORT");
     }
 
     #[test]
@@ -888,5 +1024,160 @@ mod tests {
         assert_eq!(config.max_loaded_models, 2);
 
         std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    fn test_api_keys_defaults_to_empty() {
+        let config = PowerConfig::default();
+        assert!(config.api_keys.is_empty());
+    }
+
+    #[test]
+    fn test_api_keys_from_hcl() {
+        let hcl_str = r#"api_keys = ["sha256hash1", "sha256hash2"]"#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(config.api_keys, vec!["sha256hash1", "sha256hash2"]);
+    }
+
+    #[test]
+    fn test_api_keys_not_serialized_when_empty() {
+        let config = PowerConfig::default();
+        let serialized = config.to_hcl();
+        assert!(!serialized.contains("api_keys"));
+    }
+
+    #[test]
+    fn test_api_keys_serialized_when_set() {
+        let config = PowerConfig {
+            api_keys: vec!["key1".to_string(), "key2".to_string()],
+            ..Default::default()
+        };
+        let serialized = config.to_hcl();
+        assert!(serialized.contains("api_keys"));
+        assert!(serialized.contains("key1"));
+        assert!(serialized.contains("key2"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_api_keys() {
+        std::env::set_var("A3S_POWER_API_KEYS", "key_a,key_b,key_c");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(config.api_keys, vec!["key_a", "key_b", "key_c"]);
+        std::env::remove_var("A3S_POWER_API_KEYS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_api_keys_trims_whitespace() {
+        std::env::set_var("A3S_POWER_API_KEYS", " key_a , key_b ");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(config.api_keys, vec!["key_a", "key_b"]);
+        std::env::remove_var("A3S_POWER_API_KEYS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_api_keys_empty_ignored() {
+        std::env::set_var("A3S_POWER_API_KEYS", "");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.api_keys.is_empty());
+        std::env::remove_var("A3S_POWER_API_KEYS");
+    }
+
+    #[test]
+    fn test_allowed_tee_types_defaults_to_empty() {
+        let config = PowerConfig::default();
+        assert!(config.allowed_tee_types.is_empty());
+    }
+
+    #[test]
+    fn test_allowed_tee_types_from_hcl() {
+        let hcl_str = r#"allowed_tee_types = ["sev-snp", "tdx"]"#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(config.allowed_tee_types, vec!["sev-snp", "tdx"]);
+    }
+
+    #[test]
+    #[serial]
+    fn test_tee_strict_env_removes_simulated() {
+        std::env::set_var("A3S_POWER_TEE_STRICT", "1");
+        let mut config = PowerConfig {
+            allowed_tee_types: vec![
+                "sev-snp".to_string(),
+                "simulated".to_string(),
+                "tdx".to_string(),
+            ],
+            ..Default::default()
+        };
+        config.apply_env_overrides();
+        assert!(!config.allowed_tee_types.contains(&"simulated".to_string()));
+        assert!(config.allowed_tee_types.contains(&"sev-snp".to_string()));
+        std::env::remove_var("A3S_POWER_TEE_STRICT");
+    }
+
+    #[test]
+    #[serial]
+    fn test_tee_strict_env_sets_hardware_defaults_when_empty() {
+        std::env::set_var("A3S_POWER_TEE_STRICT", "1");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.allowed_tee_types.contains(&"sev-snp".to_string()));
+        assert!(config.allowed_tee_types.contains(&"tdx".to_string()));
+        assert!(!config.allowed_tee_types.contains(&"simulated".to_string()));
+        std::env::remove_var("A3S_POWER_TEE_STRICT");
+    }
+
+    #[test]
+    fn test_audit_log_defaults_to_false() {
+        let config = PowerConfig::default();
+        assert!(!config.audit_log);
+    }
+
+    #[test]
+    #[serial]
+    fn test_audit_log_env_override() {
+        std::env::set_var("A3S_POWER_AUDIT_LOG", "1");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.audit_log);
+        std::env::remove_var("A3S_POWER_AUDIT_LOG");
+    }
+
+    #[test]
+    fn test_model_signing_key_defaults_to_none() {
+        let config = PowerConfig::default();
+        assert!(config.model_signing_key.is_none());
+    }
+
+    #[test]
+    fn test_model_signing_key_from_hcl() {
+        let hcl_str = r#"model_signing_key = "aabbccdd""#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(config.model_signing_key.as_deref(), Some("aabbccdd"));
+    }
+
+    #[test]
+    fn test_to_hcl_includes_policy_fields_when_set() {
+        let mut measurements = HashMap::new();
+        measurements.insert("sev-snp".to_string(), "deadbeef".to_string());
+        let config = PowerConfig {
+            allowed_tee_types: vec!["sev-snp".to_string()],
+            expected_measurements: measurements,
+            audit_log: true,
+            model_signing_key: Some("pubkey123".to_string()),
+            ..Default::default()
+        };
+        let hcl = config.to_hcl();
+        assert!(hcl.contains("allowed_tee_types"));
+        assert!(hcl.contains("sev-snp"));
+        assert!(hcl.contains("expected_measurements"));
+        assert!(hcl.contains("deadbeef"));
+        assert!(hcl.contains("audit_log = true"));
+        assert!(hcl.contains("model_signing_key"));
+        assert!(hcl.contains("pubkey123"));
     }
 }

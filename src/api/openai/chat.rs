@@ -5,6 +5,7 @@ use axum::Json;
 use futures::StreamExt;
 use std::convert::Infallible;
 use std::time::Instant;
+use zeroize::Zeroize;
 
 use super::openai_error;
 use crate::api::types::{
@@ -12,6 +13,8 @@ use crate::api::types::{
     ChatCompletionResponse, ChatDelta, Usage,
 };
 use crate::backend::types::{ChatMessage, ChatRequest, MessageContent};
+use crate::server::audit::AuditEvent;
+use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 
 /// POST /v1/chat/completions - OpenAI-compatible chat completion.
@@ -21,6 +24,18 @@ pub async fn handler(
 ) -> impl IntoResponse {
     let model_name = request.model.clone();
     let request_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+
+    // Build request context for isolation and audit tracking
+    let ctx = RequestContext::new(None);
+    state.metrics.increment_active_requests();
+
+    // Privacy: redact inference content from logs
+    if state.should_redact() {
+        let sanitized = state.sanitize_log(&format!("chat request model={model_name}"));
+        tracing::debug!("{sanitized}");
+    } else {
+        tracing::debug!(model = %model_name, "Chat completion request");
+    }
 
     let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
@@ -149,8 +164,12 @@ pub async fn handler(
                 let ttft_clone = ttft_recorded.clone();
                 let metrics = state.metrics.clone();
                 let metrics_done = state.metrics.clone();
+                let metrics_cleanup = state.metrics.clone();
                 let model_for_metrics = model_name.clone();
                 let model_for_done = model_name.clone();
+                let model_for_cleanup = model_name.clone();
+                let backend_cleanup = backend.clone();
+                let ctx_cleanup = ctx.clone();
 
                 let content_stream = stream.map(move |chunk| {
                     let event_data = match chunk {
@@ -212,15 +231,14 @@ pub async fn handler(
                     metrics_done.record_inference_duration(&model_for_done, duration);
                     metrics_done.record_tokens(&model_for_done, "input", prompt_tokens as u64);
                     metrics_done.record_tokens(&model_for_done, "output", eval_count as u64);
-                    metrics_done.record_usage(crate::server::metrics::UsageRecord {
-                        timestamp: chrono::Utc::now(),
-                        model: model_for_done.clone(),
-                        prompt_tokens,
-                        completion_tokens: eval_count,
-                        total_tokens: prompt_tokens + eval_count,
-                        duration_secs: duration,
-                        cost_dollars: 0.0,
-                    });
+
+                    // Request isolation: clean up backend resources
+                    backend_cleanup
+                        .cleanup_request(&model_for_cleanup, &ctx_cleanup)
+                        .await
+                        .ok();
+                    metrics_cleanup.decrement_active_requests();
+
                     Ok::<_, Infallible>(Event::default().data("[DONE]"))
                 });
 
@@ -280,28 +298,17 @@ pub async fn handler(
                 state
                     .metrics
                     .record_tokens(&model_name, "output", completion_tokens as u64);
-                state
-                    .metrics
-                    .record_usage(crate::server::metrics::UsageRecord {
-                        timestamp: chrono::Utc::now(),
-                        model: model_name.clone(),
-                        prompt_tokens,
-                        completion_tokens,
-                        total_tokens: prompt_tokens + completion_tokens,
-                        duration_secs: total_duration_secs,
-                        cost_dollars: 0.0,
-                    });
 
-                Json(ChatCompletionResponse {
+                let response = ChatCompletionResponse {
                     id: request_id,
                     object: "chat.completion".to_string(),
                     created: chrono::Utc::now().timestamp(),
-                    model: model_name,
+                    model: model_name.clone(),
                     choices: vec![ChatChoice {
                         index: 0,
                         message: ChatCompletionMessage {
                             role: "assistant".to_string(),
-                            content: MessageContent::Text(full_content),
+                            content: MessageContent::Text(full_content.clone()),
                             name: None,
                             tool_calls: None,
                             tool_call_id: None,
@@ -309,7 +316,7 @@ pub async fn handler(
                             thinking: if full_thinking.is_empty() {
                                 None
                             } else {
-                                Some(full_thinking)
+                                Some(full_thinking.clone())
                             },
                         },
                         finish_reason: Some(finish_reason),
@@ -319,11 +326,46 @@ pub async fn handler(
                         completion_tokens,
                         total_tokens: prompt_tokens + completion_tokens,
                     },
-                })
-                .into_response()
+                };
+
+                // Privacy: zeroize inference buffers in TEE mode
+                if state.should_redact() {
+                    full_content.zeroize();
+                    full_thinking.zeroize();
+                }
+
+                // Request isolation: clean up backend resources
+                backend.cleanup_request(&model_name, &ctx).await.ok();
+                state.metrics.decrement_active_requests();
+
+                // Audit: log successful inference
+                if let Some(ref audit) = state.audit {
+                    audit.log(&AuditEvent::success(
+                        &ctx.request_id,
+                        ctx.auth_id.clone(),
+                        "chat",
+                        Some(model_name.clone()),
+                        Some(ctx.elapsed().as_millis() as u64),
+                        Some(completion_tokens as u64),
+                    ));
+                }
+
+                Json(response).into_response()
             }
         }
-        Err(e) => openai_error("server_error", &e.to_string()).into_response(),
+        Err(e) => {
+            state.metrics.decrement_active_requests();
+            if let Some(ref audit) = state.audit {
+                audit.log(&AuditEvent::failure(
+                    &ctx.request_id,
+                    ctx.auth_id.clone(),
+                    "chat",
+                    Some(model_name.clone()),
+                    e.to_string(),
+                ));
+            }
+            openai_error("server_error", &e.to_string()).into_response()
+        }
     }
 }
 

@@ -6,8 +6,10 @@ use crate::config::parse_keep_alive;
 use crate::error::Result;
 use crate::model::manifest::ModelManifest;
 use crate::server::state::AppState;
+use crate::tee::encrypted_model::{load_key, DecryptedModel};
 
 /// Result of an ensure_loaded call, including load timing.
+#[derive(Debug)]
 pub struct LoadResult {
     /// Time spent loading the model. Zero if the model was already loaded (cache hit).
     pub load_duration: Duration,
@@ -85,7 +87,29 @@ pub async fn ensure_loaded_with_keep_alive(
         }
     }
 
-    backend.load(manifest).await?;
+    // Decrypt encrypted models (.enc) if key source is configured
+    let is_encrypted = manifest.path.extension().map_or(false, |ext| ext == "enc");
+    let load_manifest;
+    if is_encrypted {
+        let key_source = state.config.model_key_source.as_ref().ok_or_else(|| {
+            crate::error::PowerError::Config(format!(
+                "Model '{}' is encrypted (.enc) but no model_key_source configured",
+                model_name
+            ))
+        })?;
+        let key = load_key(key_source)?;
+        tracing::info!(model = %model_name, "Decrypting encrypted model");
+        let decrypted = DecryptedModel::decrypt(&manifest.path, &key)?;
+        let mut m = manifest.clone();
+        m.path = decrypted.path.clone();
+        state.store_decrypted(model_name, decrypted);
+        state.metrics.increment_tee_model_decryption();
+        load_manifest = m;
+    } else {
+        load_manifest = manifest.clone();
+    }
+
+    backend.load(&load_manifest).await?;
     let load_duration = load_start.elapsed();
 
     // Record model load duration and estimated memory (file size as proxy)
@@ -166,6 +190,7 @@ mod tests {
         }
     }
 
+    #[cfg(any(feature = "mistralrs", feature = "llamacpp"))]
     #[tokio::test]
     async fn test_ensure_loaded_skips_when_already_loaded() {
         let state = test_state();
@@ -182,6 +207,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[cfg(any(feature = "mistralrs", feature = "llamacpp"))]
     #[tokio::test]
     async fn test_ensure_loaded_attempts_load_when_not_loaded() {
         let state = test_state();
@@ -323,5 +349,107 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.load_duration, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_encrypted_model_no_key_source_fails() {
+        let state = test_state_with_mock(MockBackend::success());
+        // Create a manifest pointing to a .enc file but no key source configured
+        let mut manifest = sample_manifest("enc-model");
+        manifest.path = std::path::PathBuf::from("/tmp/fake-model.gguf.enc");
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        let result = ensure_loaded(&state, "enc-model", &manifest, &backend).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("model_key_source"));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_encrypted_model_decrypts_and_loads() {
+        use crate::tee::encrypted_model::{encrypt_model_file, KeySource};
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a fake model file and encrypt it
+        let plain_path = dir.path().join("model.gguf");
+        std::fs::write(&plain_path, b"fake model weights").unwrap();
+        let mut key = [0u8; 32];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+
+        // Write key file
+        let key_hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        let key_path = dir.path().join("model.key");
+        std::fs::write(&key_path, &key_hex).unwrap();
+
+        // Create state with key source configured
+        let config = Arc::new(PowerConfig {
+            model_key_source: Some(KeySource::File(key_path)),
+            ..Default::default()
+        });
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(MockBackend::success()));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+
+        let mut manifest = sample_manifest("enc-model");
+        manifest.path = enc_path;
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        let result = ensure_loaded(&state, "enc-model", &manifest, &backend).await;
+        assert!(result.is_ok());
+        assert!(state.is_model_loaded("enc-model"));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_encrypted_model_cleanup_on_unload() {
+        use crate::tee::encrypted_model::{encrypt_model_file, KeySource};
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create and encrypt a fake model
+        let plain_path = dir.path().join("model.gguf");
+        std::fs::write(&plain_path, b"fake model weights for cleanup test").unwrap();
+        let mut key = [0u8; 32];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+
+        let key_hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        let key_path = dir.path().join("model.key");
+        std::fs::write(&key_path, &key_hex).unwrap();
+
+        let config = Arc::new(PowerConfig {
+            model_key_source: Some(KeySource::File(key_path)),
+            ..Default::default()
+        });
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(MockBackend::success()));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+
+        let mut manifest = sample_manifest("cleanup-model");
+        manifest.path = enc_path.clone();
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        ensure_loaded(&state, "cleanup-model", &manifest, &backend)
+            .await
+            .unwrap();
+
+        // The .dec file should exist while model is loaded
+        let dec_path = enc_path.with_extension("dec");
+        assert!(
+            dec_path.exists(),
+            "Decrypted file should exist while loaded"
+        );
+
+        // Unload triggers secure wipe
+        state.mark_unloaded("cleanup-model");
+        assert!(
+            !dec_path.exists(),
+            "Decrypted file should be wiped on unload"
+        );
     }
 }

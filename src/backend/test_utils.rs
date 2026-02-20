@@ -1,4 +1,5 @@
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,6 +14,7 @@ use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest, ModelParameters};
 use crate::model::registry::ModelRegistry;
+use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 
 /// A mock backend for testing handlers without real inference.
@@ -20,6 +22,8 @@ pub struct MockBackend {
     load_succeeds: bool,
     /// When true, chat() emits chunks simulating `<think>reasoning</think>answer`.
     emit_thinking: bool,
+    /// Counter for cleanup_request calls (for test verification).
+    pub cleanup_count: Arc<AtomicU32>,
 }
 
 impl MockBackend {
@@ -28,6 +32,7 @@ impl MockBackend {
         Self {
             load_succeeds: true,
             emit_thinking: false,
+            cleanup_count: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -36,6 +41,7 @@ impl MockBackend {
         Self {
             load_succeeds: false,
             emit_thinking: false,
+            cleanup_count: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -44,6 +50,7 @@ impl MockBackend {
         Self {
             load_succeeds: true,
             emit_thinking: true,
+            cleanup_count: Arc::new(AtomicU32::new(0)),
         }
     }
 }
@@ -163,6 +170,11 @@ impl Backend for MockBackend {
     ) -> Result<EmbeddingResponse> {
         let embeddings = request.input.iter().map(|_| vec![0.1, 0.2, 0.3]).collect();
         Ok(EmbeddingResponse { embeddings })
+    }
+
+    async fn cleanup_request(&self, _model_name: &str, _ctx: &RequestContext) -> Result<()> {
+        self.cleanup_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 }
 

@@ -7,29 +7,13 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
 
+use crate::server::lock::{read_lock, write_lock};
 use crate::server::state::AppState;
 
-/// Maximum number of duration/usage samples to keep per vector.
+/// Maximum number of duration samples to keep per vector.
 /// Prevents unbounded memory growth on long-running servers.
 const MAX_SAMPLES: usize = 10_000;
-
-/// Read from a potentially poisoned RwLock, recovering from poison.
-fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    lock.read().unwrap_or_else(|poisoned| {
-        tracing::warn!("Metrics RwLock was poisoned, recovering read guard");
-        poisoned.into_inner()
-    })
-}
-
-/// Write to a potentially poisoned RwLock, recovering from poison.
-fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
-    lock.write().unwrap_or_else(|poisoned| {
-        tracing::warn!("Metrics RwLock was poisoned, recovering write guard");
-        poisoned.into_inner()
-    })
-}
 
 /// Push to a Vec with a cap, dropping oldest entries when full.
 fn capped_push<T>(vec: &mut Vec<T>, item: T) {
@@ -83,19 +67,7 @@ struct TtftEntry {
     ttft_secs: f64,
 }
 
-/// A single inference usage record for cost tracking and the /v1/usage endpoint.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UsageRecord {
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub model: String,
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
-    pub duration_secs: f64,
-    pub cost_dollars: f64,
-}
-
-/// Prometheus metrics collector with Phase 6 observability support.
+/// Prometheus metrics collector.
 pub struct Metrics {
     // --- Existing metrics ---
     /// HTTP request counts by (method, path, status).
@@ -115,13 +87,7 @@ pub struct Metrics {
     /// Per-model time-to-first-token samples.
     ttft_entries: RwLock<Vec<TtftEntry>>,
 
-    // --- Phase 6: Cost tracking ---
-    /// Per-call usage records for the /v1/usage endpoint.
-    usage_records: RwLock<Vec<UsageRecord>>,
-    /// Cumulative cost by model (for Prometheus counter).
-    cost_dollars: RwLock<Vec<(String, f64)>>,
-
-    // --- Phase 6: Model lifecycle ---
+    // --- Model lifecycle ---
     /// Total number of model evictions.
     model_evictions: AtomicU64,
     /// Per-model estimated memory usage in bytes.
@@ -132,6 +98,22 @@ pub struct Metrics {
     gpu_memory_bytes: RwLock<Vec<(String, u64)>>,
     /// Per-device GPU utilization (0.0 - 1.0).
     gpu_utilization: RwLock<Vec<(String, f64)>>,
+
+    // --- TEE metrics ---
+    /// Total attestation reports generated.
+    tee_attestations: AtomicU64,
+    /// Total encrypted model decryptions performed.
+    tee_model_decryptions: AtomicU64,
+    /// Total log redaction calls (privacy provider active).
+    tee_redactions: AtomicU64,
+
+    // --- Auth metrics ---
+    /// Total authentication failures.
+    auth_failures: AtomicU64,
+
+    // --- Request isolation metrics ---
+    /// Number of currently active inference requests.
+    active_requests: AtomicU64,
 }
 
 impl Default for Metrics {
@@ -150,12 +132,15 @@ impl Metrics {
             inference_tokens: RwLock::new(Vec::new()),
             inference_durations: RwLock::new(Vec::new()),
             ttft_entries: RwLock::new(Vec::new()),
-            usage_records: RwLock::new(Vec::new()),
-            cost_dollars: RwLock::new(Vec::new()),
             model_evictions: AtomicU64::new(0),
             model_memory_bytes: RwLock::new(Vec::new()),
             gpu_memory_bytes: RwLock::new(Vec::new()),
             gpu_utilization: RwLock::new(Vec::new()),
+            tee_attestations: AtomicU64::new(0),
+            tee_model_decryptions: AtomicU64::new(0),
+            tee_redactions: AtomicU64::new(0),
+            auth_failures: AtomicU64::new(0),
+            active_requests: AtomicU64::new(0),
         }
     }
 
@@ -241,24 +226,6 @@ impl Metrics {
         );
     }
 
-    /// Record a complete inference usage record for the /v1/usage endpoint.
-    pub fn record_usage(&self, record: UsageRecord) {
-        // Accumulate cost by model
-        {
-            let mut costs = write_lock(&self.cost_dollars);
-            if let Some(entry) = costs.iter_mut().find(|(m, _)| *m == record.model) {
-                entry.1 += record.cost_dollars;
-            } else {
-                costs.push((record.model.clone(), record.cost_dollars));
-            }
-        }
-        // Store the full record
-        {
-            let mut records = write_lock(&self.usage_records);
-            capped_push(&mut records, record);
-        }
-    }
-
     /// Increment the model eviction counter.
     pub fn increment_evictions(&self) {
         self.model_evictions.fetch_add(1, Ordering::Relaxed);
@@ -300,36 +267,34 @@ impl Metrics {
         }
     }
 
-    /// Return a snapshot of all usage records, optionally filtered by date range and model.
-    pub fn query_usage(
-        &self,
-        start: Option<chrono::DateTime<chrono::Utc>>,
-        end: Option<chrono::DateTime<chrono::Utc>>,
-        model: Option<&str>,
-    ) -> Vec<UsageRecord> {
-        let records = read_lock(&self.usage_records);
-        records
-            .iter()
-            .filter(|r| {
-                if let Some(s) = start {
-                    if r.timestamp < s {
-                        return false;
-                    }
-                }
-                if let Some(e) = end {
-                    if r.timestamp > e {
-                        return false;
-                    }
-                }
-                if let Some(m) = model {
-                    if r.model != m {
-                        return false;
-                    }
-                }
-                true
-            })
-            .cloned()
-            .collect()
+    /// Increment the TEE attestation report counter.
+    pub fn increment_tee_attestation(&self) {
+        self.tee_attestations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the encrypted model decryption counter.
+    pub fn increment_tee_model_decryption(&self) {
+        self.tee_model_decryptions.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the privacy redaction call counter.
+    pub fn increment_tee_redaction(&self) {
+        self.tee_redactions.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the authentication failure counter.
+    pub fn increment_auth_failure(&self) {
+        self.auth_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the active requests gauge (call at request start).
+    pub fn increment_active_requests(&self) {
+        self.active_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement the active requests gauge (call at request end).
+    pub fn decrement_active_requests(&self) {
+        self.active_requests.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// Render all metrics in Prometheus text exposition format.
@@ -481,21 +446,6 @@ impl Metrics {
             }
         }
 
-        // power_cost_dollars
-        output.push_str(
-            "# HELP power_cost_dollars Estimated cumulative inference cost in dollars.\n",
-        );
-        output.push_str("# TYPE power_cost_dollars counter\n");
-        {
-            let costs = read_lock(&self.cost_dollars);
-            for (model, total) in costs.iter() {
-                output.push_str(&format!(
-                    "power_cost_dollars{{model=\"{}\"}} {:.6}\n",
-                    model, total
-                ));
-            }
-        }
-
         // power_model_evictions_total
         output.push_str("# HELP power_model_evictions_total Total number of model evictions.\n");
         output.push_str("# TYPE power_model_evictions_total counter\n");
@@ -543,6 +493,52 @@ impl Metrics {
                 ));
             }
         }
+
+        // power_tee_attestations_total
+        output.push_str(
+            "# HELP power_tee_attestations_total Total TEE attestation reports generated.\n",
+        );
+        output.push_str("# TYPE power_tee_attestations_total counter\n");
+        output.push_str(&format!(
+            "power_tee_attestations_total {}\n",
+            self.tee_attestations.load(Ordering::Relaxed)
+        ));
+
+        // power_tee_model_decryptions_total
+        output.push_str(
+            "# HELP power_tee_model_decryptions_total Total encrypted model decryptions.\n",
+        );
+        output.push_str("# TYPE power_tee_model_decryptions_total counter\n");
+        output.push_str(&format!(
+            "power_tee_model_decryptions_total {}\n",
+            self.tee_model_decryptions.load(Ordering::Relaxed)
+        ));
+
+        // power_tee_redactions_total
+        output.push_str("# HELP power_tee_redactions_total Total privacy redaction calls.\n");
+        output.push_str("# TYPE power_tee_redactions_total counter\n");
+        output.push_str(&format!(
+            "power_tee_redactions_total {}\n",
+            self.tee_redactions.load(Ordering::Relaxed)
+        ));
+
+        // power_auth_failures_total
+        output.push_str("# HELP power_auth_failures_total Total authentication failures.\n");
+        output.push_str("# TYPE power_auth_failures_total counter\n");
+        output.push_str(&format!(
+            "power_auth_failures_total {}\n",
+            self.auth_failures.load(Ordering::Relaxed)
+        ));
+
+        // power_active_requests
+        output.push_str(
+            "# HELP power_active_requests Number of currently active inference requests.\n",
+        );
+        output.push_str("# TYPE power_active_requests gauge\n");
+        output.push_str(&format!(
+            "power_active_requests {}\n",
+            self.active_requests.load(Ordering::Relaxed)
+        ));
 
         output
     }
@@ -715,92 +711,6 @@ mod tests {
     }
 
     #[test]
-    fn test_record_usage_and_cost() {
-        let metrics = Metrics::new();
-        let record = UsageRecord {
-            timestamp: chrono::Utc::now(),
-            model: "llama3".to_string(),
-            prompt_tokens: 100,
-            completion_tokens: 50,
-            total_tokens: 150,
-            duration_secs: 1.5,
-            cost_dollars: 0.0,
-        };
-        metrics.record_usage(record);
-
-        let output = metrics.render();
-        assert!(output.contains("power_cost_dollars{model=\"llama3\"} 0.000000"));
-
-        let records = metrics.query_usage(None, None, None);
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].model, "llama3");
-        assert_eq!(records[0].total_tokens, 150);
-    }
-
-    #[test]
-    fn test_query_usage_with_model_filter() {
-        let metrics = Metrics::new();
-        let now = chrono::Utc::now();
-        metrics.record_usage(UsageRecord {
-            timestamp: now,
-            model: "llama3".to_string(),
-            prompt_tokens: 100,
-            completion_tokens: 50,
-            total_tokens: 150,
-            duration_secs: 1.0,
-            cost_dollars: 0.0,
-        });
-        metrics.record_usage(UsageRecord {
-            timestamp: now,
-            model: "qwen".to_string(),
-            prompt_tokens: 200,
-            completion_tokens: 100,
-            total_tokens: 300,
-            duration_secs: 2.0,
-            cost_dollars: 0.0,
-        });
-
-        let llama_records = metrics.query_usage(None, None, Some("llama3"));
-        assert_eq!(llama_records.len(), 1);
-        assert_eq!(llama_records[0].model, "llama3");
-
-        let all_records = metrics.query_usage(None, None, None);
-        assert_eq!(all_records.len(), 2);
-    }
-
-    #[test]
-    fn test_query_usage_with_date_filter() {
-        let metrics = Metrics::new();
-        let early = chrono::Utc::now() - chrono::Duration::hours(2);
-        let mid = chrono::Utc::now() - chrono::Duration::hours(1);
-        let late = chrono::Utc::now();
-
-        metrics.record_usage(UsageRecord {
-            timestamp: early,
-            model: "llama3".to_string(),
-            prompt_tokens: 10,
-            completion_tokens: 5,
-            total_tokens: 15,
-            duration_secs: 0.5,
-            cost_dollars: 0.0,
-        });
-        metrics.record_usage(UsageRecord {
-            timestamp: late,
-            model: "llama3".to_string(),
-            prompt_tokens: 20,
-            completion_tokens: 10,
-            total_tokens: 30,
-            duration_secs: 1.0,
-            cost_dollars: 0.0,
-        });
-
-        // Filter: only records after mid
-        let recent = metrics.query_usage(Some(mid), None, None);
-        assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].total_tokens, 30);
-    }
-
-    #[test]
     fn test_increment_evictions() {
         let metrics = Metrics::new();
         assert_eq!(metrics.model_evictions.load(Ordering::Relaxed), 0);
@@ -870,34 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cost_accumulates_across_records() {
-        let metrics = Metrics::new();
-        let now = chrono::Utc::now();
-        metrics.record_usage(UsageRecord {
-            timestamp: now,
-            model: "llama3".to_string(),
-            prompt_tokens: 100,
-            completion_tokens: 50,
-            total_tokens: 150,
-            duration_secs: 1.0,
-            cost_dollars: 0.01,
-        });
-        metrics.record_usage(UsageRecord {
-            timestamp: now,
-            model: "llama3".to_string(),
-            prompt_tokens: 200,
-            completion_tokens: 100,
-            total_tokens: 300,
-            duration_secs: 2.0,
-            cost_dollars: 0.02,
-        });
-
-        let output = metrics.render();
-        assert!(output.contains("power_cost_dollars{model=\"llama3\"} 0.030000"));
-    }
-
-    #[test]
-    fn test_render_includes_all_phase6_sections() {
+    fn test_render_includes_all_metric_sections() {
         let metrics = Metrics::new();
         let output = metrics.render();
 
@@ -906,8 +789,6 @@ mod tests {
         assert!(output.contains("# TYPE power_inference_duration_seconds summary"));
         assert!(output.contains("# HELP power_ttft_seconds"));
         assert!(output.contains("# TYPE power_ttft_seconds summary"));
-        assert!(output.contains("# HELP power_cost_dollars"));
-        assert!(output.contains("# TYPE power_cost_dollars counter"));
         assert!(output.contains("# HELP power_model_evictions_total"));
         assert!(output.contains("# TYPE power_model_evictions_total counter"));
         assert!(output.contains("# HELP power_model_memory_bytes"));
@@ -916,5 +797,112 @@ mod tests {
         assert!(output.contains("# TYPE power_gpu_memory_bytes gauge"));
         assert!(output.contains("# HELP power_gpu_utilization"));
         assert!(output.contains("# TYPE power_gpu_utilization gauge"));
+    }
+
+    // --- TEE metrics tests ---
+
+    #[test]
+    fn test_tee_counters_start_at_zero() {
+        let metrics = Metrics::new();
+        assert_eq!(metrics.tee_attestations.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.tee_model_decryptions.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.tee_redactions.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_increment_tee_attestation() {
+        let metrics = Metrics::new();
+        metrics.increment_tee_attestation();
+        metrics.increment_tee_attestation();
+        assert_eq!(metrics.tee_attestations.load(Ordering::Relaxed), 2);
+
+        let output = metrics.render();
+        assert!(output.contains("power_tee_attestations_total 2"));
+    }
+
+    #[test]
+    fn test_increment_tee_model_decryption() {
+        let metrics = Metrics::new();
+        metrics.increment_tee_model_decryption();
+        assert_eq!(metrics.tee_model_decryptions.load(Ordering::Relaxed), 1);
+
+        let output = metrics.render();
+        assert!(output.contains("power_tee_model_decryptions_total 1"));
+    }
+
+    #[test]
+    fn test_increment_tee_redaction() {
+        let metrics = Metrics::new();
+        metrics.increment_tee_redaction();
+        metrics.increment_tee_redaction();
+        metrics.increment_tee_redaction();
+        assert_eq!(metrics.tee_redactions.load(Ordering::Relaxed), 3);
+
+        let output = metrics.render();
+        assert!(output.contains("power_tee_redactions_total 3"));
+    }
+
+    #[test]
+    fn test_render_includes_tee_metric_sections() {
+        let metrics = Metrics::new();
+        let output = metrics.render();
+
+        assert!(output.contains("# HELP power_tee_attestations_total"));
+        assert!(output.contains("# TYPE power_tee_attestations_total counter"));
+        assert!(output.contains("power_tee_attestations_total 0"));
+        assert!(output.contains("# HELP power_tee_model_decryptions_total"));
+        assert!(output.contains("# TYPE power_tee_model_decryptions_total counter"));
+        assert!(output.contains("power_tee_model_decryptions_total 0"));
+        assert!(output.contains("# HELP power_tee_redactions_total"));
+        assert!(output.contains("# TYPE power_tee_redactions_total counter"));
+        assert!(output.contains("power_tee_redactions_total 0"));
+    }
+
+    // --- Auth & request isolation metrics tests ---
+
+    #[test]
+    fn test_auth_failures_start_at_zero() {
+        let metrics = Metrics::new();
+        assert_eq!(metrics.auth_failures.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_increment_auth_failure() {
+        let metrics = Metrics::new();
+        metrics.increment_auth_failure();
+        metrics.increment_auth_failure();
+        assert_eq!(metrics.auth_failures.load(Ordering::Relaxed), 2);
+
+        let output = metrics.render();
+        assert!(output.contains("power_auth_failures_total 2"));
+    }
+
+    #[test]
+    fn test_active_requests_gauge() {
+        let metrics = Metrics::new();
+        assert_eq!(metrics.active_requests.load(Ordering::Relaxed), 0);
+
+        metrics.increment_active_requests();
+        metrics.increment_active_requests();
+        assert_eq!(metrics.active_requests.load(Ordering::Relaxed), 2);
+
+        metrics.decrement_active_requests();
+        assert_eq!(metrics.active_requests.load(Ordering::Relaxed), 1);
+
+        let output = metrics.render();
+        assert!(output.contains("power_active_requests 1"));
+    }
+
+    #[test]
+    fn test_render_includes_auth_and_request_metrics() {
+        let metrics = Metrics::new();
+        let output = metrics.render();
+
+        assert!(output.contains("# HELP power_auth_failures_total"));
+        assert!(output.contains("# TYPE power_auth_failures_total counter"));
+        assert!(output.contains("power_auth_failures_total 0"));
+        assert!(output.contains("# HELP power_active_requests"));
+        assert!(output.contains("# TYPE power_active_requests gauge"));
+        assert!(output.contains("power_active_requests 0"));
     }
 }

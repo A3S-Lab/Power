@@ -1,63 +1,166 @@
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::{Request, StatusCode};
 use axum::middleware;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use super::state::AppState;
 use crate::api;
-use crate::server::metrics;
+use crate::server::{auth, metrics};
 
-/// GET / - Root health check (Ollama-compatible).
-///
-/// Many Ollama clients (Open WebUI, LangChain, Continue.dev) probe this
-/// endpoint to detect if the server is running.
-async fn root_handler() -> &'static str {
-    "Ollama is running"
+/// Shared state for the rate limiter middleware.
+#[derive(Clone)]
+struct RateLimiter {
+    /// Max requests per second.
+    rps: u64,
+    /// Max concurrent requests (0 = unlimited).
+    max_concurrent: u64,
+    inner: Arc<Mutex<RateLimiterInner>>,
 }
 
-/// Build a CORS layer from configured origins.
-///
-/// If `origins` is empty, returns a permissive CORS layer (allow all).
-/// Otherwise, restricts to the specified origins.
-fn build_cors_layer(origins: &[String]) -> CorsLayer {
-    if origins.is_empty() {
-        return CorsLayer::permissive();
+struct RateLimiterInner {
+    /// Token bucket: tokens available.
+    tokens: f64,
+    /// Last refill time.
+    last_refill: Instant,
+    /// Current concurrent request count.
+    concurrent: u64,
+}
+
+impl RateLimiter {
+    fn new(rps: u64, max_concurrent: u64) -> Self {
+        Self {
+            rps,
+            max_concurrent,
+            inner: Arc::new(Mutex::new(RateLimiterInner {
+                tokens: rps as f64,
+                last_refill: Instant::now(),
+                concurrent: 0,
+            })),
+        }
     }
 
-    use axum::http::HeaderValue;
-    let allowed: Vec<HeaderValue> = origins
-        .iter()
-        .filter_map(|o| o.parse::<HeaderValue>().ok())
-        .collect();
+    /// Try to acquire a request slot. Returns false if rate or concurrency limit exceeded.
+    fn try_acquire(&self) -> bool {
+        let mut inner = self.inner.lock().unwrap();
 
-    if allowed.is_empty() {
-        return CorsLayer::permissive();
+        // Refill tokens based on elapsed time
+        if self.rps > 0 {
+            let now = Instant::now();
+            let elapsed = now.duration_since(inner.last_refill).as_secs_f64();
+            inner.tokens = (inner.tokens + elapsed * self.rps as f64).min(self.rps as f64);
+            inner.last_refill = now;
+
+            if inner.tokens < 1.0 {
+                return false;
+            }
+            inner.tokens -= 1.0;
+        }
+
+        // Check concurrency limit
+        if self.max_concurrent > 0 && inner.concurrent >= self.max_concurrent {
+            return false;
+        }
+        inner.concurrent += 1;
+        true
     }
 
-    CorsLayer::new()
-        .allow_origin(allowed)
-        .allow_methods(tower_http::cors::Any)
-        .allow_headers(tower_http::cors::Any)
+    /// Release a concurrent request slot.
+    fn release(&self) {
+        if self.max_concurrent > 0 {
+            let mut inner = self.inner.lock().unwrap();
+            inner.concurrent = inner.concurrent.saturating_sub(1);
+        }
+    }
+}
+
+/// Middleware that enforces rate and concurrency limits.
+async fn rate_limit_middleware(
+    State(limiter): State<RateLimiter>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if !limiter.try_acquire() {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(serde_json::json!({
+                "error": {
+                    "message": "Too many requests",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded"
+                }
+            })),
+        )
+            .into_response();
+    }
+    let response = next.run(request).await;
+    limiter.release();
+    response
 }
 
 /// Build the complete axum Router with all API routes.
 pub fn build(state: AppState) -> Router {
-    let cors = build_cors_layer(&state.config.origins);
+    let rate_limit_rps = state.config.rate_limit_rps;
+    let max_concurrent = state.config.max_concurrent_requests;
 
-    Router::new()
-        .route("/", get(root_handler).head(root_handler))
+    // Apply auth middleware only to /v1/* routes
+    let v1_routes = api::openai::routes().layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::middleware,
+    ));
+
+    let mut router = Router::new()
         .route("/health", get(api::health::handler))
         .route("/metrics", get(metrics::handler))
-        .nest("/api", api::native::routes())
-        .nest("/v1", api::openai::routes())
-        .layer(cors)
+        .nest("/v1", v1_routes)
+        .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             metrics::middleware,
         ))
-        .with_state(state)
+        .layer(middleware::from_fn(request_id_middleware))
+        .with_state(state);
+
+    // Apply rate/concurrency limiting as outermost middleware when configured
+    if rate_limit_rps > 0 || max_concurrent > 0 {
+        let limiter = RateLimiter::new(rate_limit_rps, max_concurrent);
+        router = router.layer(middleware::from_fn_with_state(
+            limiter,
+            rate_limit_middleware,
+        ));
+    }
+
+    router
+}
+
+/// Middleware that ensures every request has an `X-Request-ID`.
+///
+/// If the client sends an `X-Request-ID` header, it is preserved.
+/// Otherwise, a new UUID v4 is generated. The ID is added to the
+/// response headers for traceability.
+async fn request_id_middleware(request: Request<Body>, next: Next) -> Response {
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let mut response = next.run(request).await;
+
+    if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+
+    response
 }
 
 #[cfg(test)]
@@ -66,6 +169,7 @@ mod tests {
     use crate::backend::BackendRegistry;
     use crate::config::PowerConfig;
     use crate::model::registry::ModelRegistry;
+    use crate::server::auth::ApiKeyAuth;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use std::sync::Arc;
@@ -79,28 +183,9 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn test_root_returns_ollama_is_running() {
-        let app = build(test_state());
-        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert_eq!(&body[..], b"Ollama is running");
-    }
-
-    #[tokio::test]
-    async fn test_root_head_returns_ok() {
-        let app = build(test_state());
-        let req = Request::builder()
-            .method("HEAD")
-            .uri("/")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+    fn test_state_with_auth() -> AppState {
+        let auth = ApiKeyAuth::new(&["test-secret-key".to_string()]);
+        test_state().with_auth(Arc::new(auth))
     }
 
     #[tokio::test]
@@ -108,17 +193,6 @@ mod tests {
         let app = build(test_state());
         let req = Request::builder()
             .uri("/v1/models")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_api_tags_returns_ok() {
-        let app = build(test_state());
-        let req = Request::builder()
-            .uri("/api/tags")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -192,65 +266,123 @@ mod tests {
         assert!(text.contains("power_models_loaded"));
     }
 
-    #[test]
-    fn test_build_cors_layer_empty_origins() {
-        // Empty origins should return permissive CORS
-        let _cors = build_cors_layer(&[]);
-        // No panic = success
-    }
-
-    #[test]
-    fn test_build_cors_layer_with_origins() {
-        let origins = vec!["http://localhost:3000".to_string()];
-        let _cors = build_cors_layer(&origins);
-    }
-
-    #[test]
-    fn test_build_cors_layer_invalid_origins() {
-        // Invalid origins should fall back to permissive
-        let origins = vec!["\0invalid".to_string()];
-        let _cors = build_cors_layer(&origins);
-    }
+    // --- Auth middleware tests ---
 
     #[tokio::test]
-    async fn test_api_version_returns_ok() {
+    async fn test_no_auth_configured_allows_all() {
         let app = build(test_state());
         let req = Request::builder()
-            .uri("/api/version")
+            .uri("/v1/models")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_valid_bearer_token_passes() {
+        let app = build(test_state_with_auth());
+        let req = Request::builder()
+            .uri("/v1/models")
+            .header("authorization", "Bearer test-secret-key")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_bearer_token_rejected() {
+        let app = build(test_state_with_auth());
+        let req = Request::builder()
+            .uri("/v1/models")
+            .header("authorization", "Bearer wrong-key")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_missing_auth_header_rejected() {
+        let app = build(test_state_with_auth());
+        let req = Request::builder()
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint_no_auth_required() {
+        let app = build(test_state_with_auth());
+        let req = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint_no_auth_required() {
+        let app = build(test_state_with_auth());
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_auth_failure_returns_openai_error_format() {
+        let app = build(test_state_with_auth());
+        let req = Request::builder()
+            .uri("/v1/models")
+            .header("authorization", "Bearer bad-key")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["version"].is_string());
+        assert_eq!(json["error"]["code"], "unauthorized");
+        assert!(json["error"]["message"].as_str().is_some());
     }
 
+    // --- Request ID middleware tests ---
+
     #[tokio::test]
-    async fn test_api_ps_returns_ok() {
+    async fn test_response_has_request_id_header() {
         let app = build(test_state());
         let req = Request::builder()
-            .uri("/api/ps")
+            .uri("/health")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().contains_key("x-request-id"));
     }
 
     #[tokio::test]
-    async fn test_cors_headers_present() {
+    async fn test_client_request_id_preserved() {
         let app = build(test_state());
         let req = Request::builder()
-            .method("OPTIONS")
-            .uri("/")
-            .header("origin", "http://localhost:3000")
-            .header("access-control-request-method", "GET")
+            .uri("/health")
+            .header("x-request-id", "my-custom-id-123")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        // CORS preflight should return 200
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("x-request-id")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "my-custom-id-123"
+        );
     }
 }

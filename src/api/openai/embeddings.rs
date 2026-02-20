@@ -3,6 +3,8 @@ use axum::response::IntoResponse;
 use axum::Json;
 
 use crate::api::types::{EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage};
+use crate::server::audit::AuditEvent;
+use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 
 /// POST /v1/embeddings - OpenAI-compatible embedding generation.
@@ -11,6 +13,10 @@ pub async fn handler(
     Json(request): Json<EmbeddingRequest>,
 ) -> impl IntoResponse {
     let model_name = request.model.clone();
+
+    // Build request context for isolation and audit tracking
+    let ctx = RequestContext::new(None);
+    state.metrics.increment_active_requests();
 
     let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
@@ -71,6 +77,22 @@ pub async fn handler(
                 })
                 .collect();
 
+            // Request isolation: clean up backend resources
+            backend.cleanup_request(&model_name, &ctx).await.ok();
+            state.metrics.decrement_active_requests();
+
+            // Audit: log successful embedding
+            if let Some(ref audit) = state.audit {
+                audit.log(&AuditEvent::success(
+                    &ctx.request_id,
+                    ctx.auth_id.clone(),
+                    "embedding",
+                    Some(model_name.clone()),
+                    Some(ctx.elapsed().as_millis() as u64),
+                    None,
+                ));
+            }
+
             Json(EmbeddingResponse {
                 object: "list".to_string(),
                 data,
@@ -82,14 +104,26 @@ pub async fn handler(
             })
             .into_response()
         }
-        Err(e) => Json(serde_json::json!({
-            "error": {
-                "message": e.to_string(),
-                "type": "server_error",
-                "code": "inference_failed"
+        Err(e) => {
+            state.metrics.decrement_active_requests();
+            if let Some(ref audit) = state.audit {
+                audit.log(&AuditEvent::failure(
+                    &ctx.request_id,
+                    ctx.auth_id.clone(),
+                    "embedding",
+                    Some(model_name.clone()),
+                    e.to_string(),
+                ));
             }
-        }))
-        .into_response(),
+            Json(serde_json::json!({
+                "error": {
+                    "message": e.to_string(),
+                    "type": "server_error",
+                    "code": "inference_failed"
+                }
+            }))
+            .into_response()
+        }
     }
 }
 

@@ -6,12 +6,6 @@ pub enum PowerError {
     #[error("Backend not available: {0}")]
     BackendNotAvailable(String),
 
-    #[error("Download failed for {model}: {source}")]
-    DownloadFailed {
-        model: String,
-        source: reqwest::Error,
-    },
-
     #[error("Inference failed: {0}")]
     InferenceFailed(String),
 
@@ -30,20 +24,24 @@ pub enum PowerError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    #[error("TOML deserialization error: {0}")]
-    TomlDe(#[from] toml::de::Error),
+    #[error("HCL deserialization error: {0}")]
+    HclDe(String),
 
-    #[error("TOML serialization error: {0}")]
-    TomlSer(#[from] toml::ser::Error),
+    #[error("Integrity check failed for model {model}: expected {expected}, got {actual}")]
+    IntegrityCheckFailed {
+        model: String,
+        expected: String,
+        actual: String,
+    },
 
-    #[error("Upload failed: {0}")]
-    UploadFailed(String),
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
 
-    #[error("Invalid digest: {0}")]
-    InvalidDigest(String),
+    #[error("TEE policy violation: {0}")]
+    PolicyViolation(String),
 
-    #[error("Blob not found: {0}")]
-    BlobNotFound(String),
+    #[error("Signature verification failed for model {model}: {reason}")]
+    SignatureVerificationFailed { model: String, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, PowerError>;
@@ -59,9 +57,14 @@ impl From<PowerError> for axum::response::Response {
                 (StatusCode::SERVICE_UNAVAILABLE, err.to_string())
             }
             PowerError::InvalidFormat(_) => (StatusCode::BAD_REQUEST, err.to_string()),
-            PowerError::InvalidDigest(_) => (StatusCode::BAD_REQUEST, err.to_string()),
-            PowerError::BlobNotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
-            PowerError::UploadFailed(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+            PowerError::IntegrityCheckFailed { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
+            PowerError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, err.to_string()),
+            PowerError::PolicyViolation(_) => (StatusCode::FORBIDDEN, err.to_string()),
+            PowerError::SignatureVerificationFailed { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
             _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         };
 
@@ -106,8 +109,8 @@ mod tests {
 
     #[test]
     fn test_config_error_display() {
-        let err = PowerError::Config("invalid toml".to_string());
-        assert_eq!(err.to_string(), "Configuration error: invalid toml");
+        let err = PowerError::Config("invalid config".to_string());
+        assert_eq!(err.to_string(), "Configuration error: invalid config");
     }
 
     #[test]
@@ -165,49 +168,85 @@ mod tests {
     }
 
     #[test]
-    fn test_upload_failed_display() {
-        let err = PowerError::UploadFailed("connection refused".to_string());
-        assert_eq!(err.to_string(), "Upload failed: connection refused");
+    fn test_integrity_check_failed_display() {
+        let err = PowerError::IntegrityCheckFailed {
+            model: "llama3".to_string(),
+            expected: "sha256:aaa".to_string(),
+            actual: "sha256:bbb".to_string(),
+        };
+        assert!(err.to_string().contains("llama3"));
+        assert!(err.to_string().contains("sha256:aaa"));
+        assert!(err.to_string().contains("sha256:bbb"));
     }
 
     #[test]
-    fn test_invalid_digest_display() {
-        let err = PowerError::InvalidDigest("bad hash".to_string());
-        assert_eq!(err.to_string(), "Invalid digest: bad hash");
-    }
-
-    #[test]
-    fn test_blob_not_found_display() {
-        let err = PowerError::BlobNotFound("sha256:abc".to_string());
-        assert_eq!(err.to_string(), "Blob not found: sha256:abc");
-    }
-
-    #[test]
-    fn test_error_to_response_invalid_digest() {
+    fn test_error_to_response_integrity_check_failed() {
         use axum::http::StatusCode;
         use axum::response::Response;
 
-        let err = PowerError::InvalidDigest("bad".to_string());
+        let err = PowerError::IntegrityCheckFailed {
+            model: "test".to_string(),
+            expected: "a".to_string(),
+            actual: "b".to_string(),
+        };
         let resp: Response = err.into();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]
-    fn test_error_to_response_blob_not_found() {
+    fn test_unauthorized_display() {
+        let err = PowerError::Unauthorized("invalid token".to_string());
+        assert_eq!(err.to_string(), "Unauthorized: invalid token");
+    }
+
+    #[test]
+    fn test_error_to_response_unauthorized() {
         use axum::http::StatusCode;
         use axum::response::Response;
 
-        let err = PowerError::BlobNotFound("sha256:abc".to_string());
+        let err = PowerError::Unauthorized("bad key".to_string());
         let resp: Response = err.into();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
-    fn test_error_to_response_upload_failed() {
+    fn test_policy_violation_display() {
+        let err = PowerError::PolicyViolation("simulated TEE not allowed".to_string());
+        assert_eq!(
+            err.to_string(),
+            "TEE policy violation: simulated TEE not allowed"
+        );
+    }
+
+    #[test]
+    fn test_error_to_response_policy_violation() {
         use axum::http::StatusCode;
         use axum::response::Response;
 
-        let err = PowerError::UploadFailed("timeout".to_string());
+        let err = PowerError::PolicyViolation("rejected".to_string());
+        let resp: Response = err.into();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_signature_verification_failed_display() {
+        let err = PowerError::SignatureVerificationFailed {
+            model: "llama3".to_string(),
+            reason: "invalid signature".to_string(),
+        };
+        assert!(err.to_string().contains("llama3"));
+        assert!(err.to_string().contains("invalid signature"));
+    }
+
+    #[test]
+    fn test_error_to_response_signature_failed() {
+        use axum::http::StatusCode;
+        use axum::response::Response;
+
+        let err = PowerError::SignatureVerificationFailed {
+            model: "test".to_string(),
+            reason: "bad sig".to_string(),
+        };
         let resp: Response = err.into();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }

@@ -164,7 +164,6 @@ impl Backend for LlamaCppBackend {
         let gpu_layers = self.config.gpu.gpu_layers;
         let main_gpu = self.config.gpu.main_gpu;
         let use_mlock = self.config.use_mlock;
-        let sched_spread = self.config.sched_spread;
         let has_tensor_split = !self.config.gpu.tensor_split.is_empty();
 
         let path = manifest.path.clone();
@@ -184,7 +183,7 @@ impl Backend for LlamaCppBackend {
             if use_mlock {
                 p = p.with_use_mlock(true);
             }
-            if has_tensor_split || sched_spread {
+            if has_tensor_split {
                 use llama_cpp_2::model::params::LlamaSplitMode;
                 p = p.with_split_mode(LlamaSplitMode::Layer);
                 tracing::info!("Multi-GPU layer splitting enabled");

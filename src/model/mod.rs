@@ -1,9 +1,4 @@
 pub mod gguf;
 pub mod manifest;
-pub mod modelfile;
-pub mod ollama_registry;
-pub mod pull;
-pub mod push;
 pub mod registry;
-pub mod resolve;
 pub mod storage;

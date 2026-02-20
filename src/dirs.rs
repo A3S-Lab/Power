@@ -24,15 +24,9 @@ pub fn blobs_dir() -> PathBuf {
     power_home().join("models").join("blobs")
 }
 
-/// Returns the path to the user configuration file.
-///
-/// Checks for `.hcl` first, then falls back to `.toml`.
+/// Returns the path to the user configuration file (HCL format).
 pub fn config_path() -> PathBuf {
-    let hcl_path = power_home().join("config.hcl");
-    if hcl_path.exists() {
-        return hcl_path;
-    }
-    power_home().join("config.toml")
+    power_home().join("config.hcl")
 }
 
 /// Ensure all required directories exist.
@@ -87,7 +81,7 @@ mod tests {
     #[serial]
     fn test_config_path() {
         std::env::set_var("A3S_POWER_HOME", "/tmp/test-power");
-        assert_eq!(config_path(), PathBuf::from("/tmp/test-power/config.toml"));
+        assert_eq!(config_path(), PathBuf::from("/tmp/test-power/config.hcl"));
         std::env::remove_var("A3S_POWER_HOME");
     }
 

@@ -5,31 +5,20 @@ use std::time::{Duration, Instant};
 use crate::backend::BackendRegistry;
 use crate::config::PowerConfig;
 use crate::model::registry::ModelRegistry;
+use crate::server::audit::AuditLogger;
+use crate::server::auth::AuthProvider;
+use crate::server::lock::{read_lock, write_lock};
 use crate::server::metrics::Metrics;
+use crate::tee::attestation::TeeProvider;
+use crate::tee::encrypted_model::DecryptedModel;
+use crate::tee::key_provider::KeyProvider;
+use crate::tee::privacy::PrivacyProvider;
 
 /// Tracks a loaded model's last-used time and keep-alive duration for LRU eviction.
 #[derive(Debug, Clone)]
 struct LoadedModelEntry {
     last_used: Instant,
     keep_alive: Duration,
-}
-
-/// Read from a potentially poisoned RwLock, recovering from poison.
-/// Short-held std::sync::RwLock is correct here (no await across lock),
-/// but we must handle poison to prevent cascade crashes.
-fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    lock.read().unwrap_or_else(|poisoned| {
-        tracing::warn!("RwLock was poisoned, recovering read guard");
-        poisoned.into_inner()
-    })
-}
-
-/// Write to a potentially poisoned RwLock, recovering from poison.
-fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
-    lock.write().unwrap_or_else(|poisoned| {
-        tracing::warn!("RwLock was poisoned, recovering write guard");
-        poisoned.into_inner()
-    })
 }
 
 /// Shared application state accessible to all HTTP handlers.
@@ -39,8 +28,15 @@ pub struct AppState {
     pub backends: Arc<BackendRegistry>,
     pub config: Arc<PowerConfig>,
     pub metrics: Arc<Metrics>,
+    pub tee_provider: Option<Arc<dyn TeeProvider>>,
+    pub privacy: Option<Arc<dyn PrivacyProvider>>,
+    pub auth: Option<Arc<dyn AuthProvider>>,
+    pub audit: Option<Arc<dyn AuditLogger>>,
+    pub key_provider: Option<Arc<dyn KeyProvider>>,
     start_time: Instant,
     loaded_models: Arc<RwLock<HashMap<String, LoadedModelEntry>>>,
+    /// RAII handles for decrypted model files. Dropping triggers secure wipe + delete.
+    decrypted_models: Arc<RwLock<HashMap<String, DecryptedModel>>>,
 }
 
 impl AppState {
@@ -54,8 +50,60 @@ impl AppState {
             backends,
             config,
             metrics: Arc::new(Metrics::new()),
+            tee_provider: None,
+            privacy: None,
+            auth: None,
+            audit: None,
+            key_provider: None,
             start_time: Instant::now(),
             loaded_models: Arc::new(RwLock::new(HashMap::new())),
+            decrypted_models: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Set the TEE provider for attestation.
+    pub fn with_tee_provider(mut self, provider: Arc<dyn TeeProvider>) -> Self {
+        self.tee_provider = Some(provider);
+        self
+    }
+
+    /// Set the privacy provider for log redaction and memory zeroing.
+    pub fn with_privacy(mut self, provider: Arc<dyn PrivacyProvider>) -> Self {
+        self.privacy = Some(provider);
+        self
+    }
+
+    /// Set the authentication provider for API key validation.
+    pub fn with_auth(mut self, provider: Arc<dyn AuthProvider>) -> Self {
+        self.auth = Some(provider);
+        self
+    }
+
+    /// Set the audit logger for structured audit events.
+    pub fn with_audit(mut self, logger: Arc<dyn AuditLogger>) -> Self {
+        self.audit = Some(logger);
+        self
+    }
+
+    /// Set the key provider for model decryption key management.
+    pub fn with_key_provider(mut self, provider: Arc<dyn KeyProvider>) -> Self {
+        self.key_provider = Some(provider);
+        self
+    }
+
+    /// Whether privacy redaction is active.
+    pub fn should_redact(&self) -> bool {
+        self.privacy.as_ref().map_or(false, |p| p.should_redact())
+    }
+
+    /// Sanitize a log message through the privacy provider.
+    pub fn sanitize_log(&self, msg: &str) -> String {
+        match &self.privacy {
+            Some(p) => {
+                self.metrics.increment_tee_redaction();
+                p.sanitize_log(msg)
+            }
+            None => msg.to_string(),
         }
     }
 
@@ -98,8 +146,18 @@ impl AppState {
     }
 
     /// Record that a model has been unloaded.
+    /// Also removes any decrypted model handle, triggering secure wipe.
     pub fn mark_unloaded(&self, name: &str) {
         write_lock(&self.loaded_models).remove(name);
+        if let Some(dec) = write_lock(&self.decrypted_models).remove(name) {
+            tracing::info!(model = %name, "Cleaning up decrypted model file");
+            drop(dec); // triggers DecryptedModel::drop → zero-fill + delete
+        }
+    }
+
+    /// Store a decrypted model handle for RAII cleanup on unload.
+    pub fn store_decrypted(&self, name: &str, handle: DecryptedModel) {
+        write_lock(&self.decrypted_models).insert(name.to_string(), handle);
     }
 
     /// Update the last-used time for a loaded model.
@@ -400,5 +458,38 @@ mod tests {
         // Wait for full expiry
         std::thread::sleep(Duration::from_millis(25));
         assert_eq!(state.expired_models(), vec!["model-a"]);
+    }
+
+    #[test]
+    fn test_store_decrypted_and_cleanup_on_unload() {
+        use crate::tee::encrypted_model::{encrypt_model_file, DecryptedModel};
+
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        std::fs::write(&plain_path, b"test data for decrypted cleanup").unwrap();
+
+        let mut key = [0u8; 32];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+        let decrypted = DecryptedModel::decrypt(&enc_path, &key).unwrap();
+        let dec_path = decrypted.path.clone();
+
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        state.mark_loaded("enc-model");
+        state.store_decrypted("enc-model", decrypted);
+        assert!(dec_path.exists());
+
+        // Unloading should trigger DecryptedModel drop → secure wipe
+        state.mark_unloaded("enc-model");
+        assert!(
+            !dec_path.exists(),
+            "Decrypted file should be wiped on unload"
+        );
     }
 }

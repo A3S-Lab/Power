@@ -39,14 +39,7 @@ fn build_power_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let target = "aarch64-unknown-linux-musl";
 
     let status = Command::new("cargo")
-        .args([
-            "build",
-            "--release",
-            "-p",
-            "a3s-power",
-            "--target",
-            target,
-        ])
+        .args(["build", "--release", "-p", "a3s-power", "--target", target])
         .status()?;
 
     if !status.success() {
@@ -84,15 +77,12 @@ fn build_power_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
     }
 
     // Try workspace root (two levels up from crates/power/).
-    let workspace_binary = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|root| {
-            root.join("target")
-                .join(target)
-                .join("release")
-                .join("a3s-power")
-        });
+    let workspace_binary = manifest_dir.parent().and_then(|p| p.parent()).map(|root| {
+        root.join("target")
+            .join(target)
+            .join("release")
+            .join("a3s-power")
+    });
 
     if let Some(ref path) = workspace_binary {
         if path.exists() {
@@ -181,7 +171,8 @@ async fn install_http_helper(
         return Err(format!(
             "Failed to install HTTP helper (attempt {}): exit={} stderr={}",
             attempt, result.exit_code, result.stderr
-        ).into());
+        )
+        .into());
     }
 
     Err("Failed to install HTTP helper after 3 retries".into())
@@ -232,9 +223,7 @@ async fn http_request(
             "curl -s -w '\\nHTTP_STATUS=%{{http_code}}' -X {method} -H 'Content-Type: application/json' -d '{escaped}' '{url}'"
         )
     } else {
-        format!(
-            "curl -s -w '\\nHTTP_STATUS=%{{http_code}}' '{url}'"
-        )
+        format!("curl -s -w '\\nHTTP_STATUS=%{{http_code}}' '{url}'")
     };
 
     // Retry up to 8 times for transient guest agent errors or vsock contention.
@@ -247,7 +236,8 @@ async fn http_request(
         let result = sandbox.exec("/bin/sh", &["-c", &cmd]).await?;
 
         // Check for guest agent transient error.
-        if result.stderr.contains("No child process") || result.stdout.contains("No child process") {
+        if result.stderr.contains("No child process") || result.stdout.contains("No child process")
+        {
             last_err = format!("stderr={} stdout={}", result.stderr, result.stdout);
             continue;
         }
@@ -278,9 +268,7 @@ async fn http_request(
         return http_request_wget(sandbox, method, path, body).await;
     }
 
-    Err(format!(
-        "HTTP request failed after 8 retries for {method} {path}: {last_err}"
-    ).into())
+    Err(format!("HTTP request failed after 8 retries for {method} {path}: {last_err}").into())
 }
 
 /// HTTP request with a custom timeout (in seconds) for slow operations like inference.
@@ -299,9 +287,7 @@ async fn http_request_with_timeout(
             "curl -s -m {timeout_secs} -w '\\nHTTP_STATUS=%{{http_code}}' -X {method} -H 'Content-Type: application/json' -d '{escaped}' '{url}'"
         )
     } else {
-        format!(
-            "curl -s -m {timeout_secs} -w '\\nHTTP_STATUS=%{{http_code}}' '{url}'"
-        )
+        format!("curl -s -m {timeout_secs} -w '\\nHTTP_STATUS=%{{http_code}}' '{url}'")
     };
 
     let mut last_err = String::new();
@@ -312,7 +298,8 @@ async fn http_request_with_timeout(
 
         let result = sandbox.exec("/bin/sh", &["-c", &cmd]).await?;
 
-        if result.stderr.contains("No child process") || result.stdout.contains("No child process") {
+        if result.stderr.contains("No child process") || result.stdout.contains("No child process")
+        {
             last_err = format!("stderr={} stdout={}", result.stderr, result.stdout);
             continue;
         }
@@ -339,7 +326,10 @@ async fn http_request_with_timeout(
         }
 
         // Non-empty but no HTTP_STATUS marker — unexpected.
-        last_err = format!("curl output missing HTTP_STATUS marker: {}", output.chars().take(200).collect::<String>());
+        last_err = format!(
+            "curl output missing HTTP_STATUS marker: {}",
+            output.chars().take(200).collect::<String>()
+        );
         continue;
     }
 
@@ -360,7 +350,10 @@ async fn http_request_wget(
         let escaped = content.replace('\'', "'\\''");
         for _ in 0..3 {
             let wr = sandbox
-                .exec("/bin/sh", &["-c", &format!("printf '%s' '{escaped}' > /tmp/post_body")])
+                .exec(
+                    "/bin/sh",
+                    &["-c", &format!("printf '%s' '{escaped}' > /tmp/post_body")],
+                )
                 .await?;
             if !wr.stderr.contains("No child process") {
                 break;
@@ -380,7 +373,8 @@ async fn http_request_wget(
 
         let result = sandbox.exec("/bin/sh", &["-c", &cmd]).await?;
 
-        if result.stderr.contains("No child process") || result.stdout.contains("No child process") {
+        if result.stderr.contains("No child process") || result.stdout.contains("No child process")
+        {
             last_err = format!("stderr={} stdout={}", result.stderr, result.stdout);
             continue;
         }
@@ -403,12 +397,14 @@ async fn http_request_wget(
         return Err(format!(
             "Unexpected httpreq output for {method} {path}\nexit_code: {}\nstdout: {}\nstderr: {}",
             result.exit_code, result.stdout, result.stderr
-        ).into());
+        )
+        .into());
     }
 
-    Err(format!(
-        "HTTP request (wget) failed after 5 retries for {method} {path}: {last_err}"
-    ).into())
+    Err(
+        format!("HTTP request (wget) failed after 5 retries for {method} {path}: {last_err}")
+            .into(),
+    )
 }
 
 /// Poll `GET /health` until Power responds with 200, or timeout.
@@ -423,8 +419,12 @@ async fn wait_for_ready(
     loop {
         if start.elapsed() > timeout {
             // Debug: check if the process is running at all
-            let ps = sandbox.exec("/bin/sh", &["-c", "ps aux 2>/dev/null || ps"]).await;
-            let ps_output = ps.map(|r| r.stdout).unwrap_or_else(|e| format!("ps failed: {e}"));
+            let ps = sandbox
+                .exec("/bin/sh", &["-c", "ps aux 2>/dev/null || ps"])
+                .await;
+            let ps_output = ps
+                .map(|r| r.stdout)
+                .unwrap_or_else(|e| format!("ps failed: {e}"));
             return Err(format!(
                 "a3s-power did not become ready within {}s (after {attempts} attempts)\nProcesses:\n{ps_output}",
                 timeout.as_secs()
@@ -497,7 +497,8 @@ async fn run_tests(
     // Test 3: Chat completions with unknown model → 200 with error body
     {
         let chat_body = r#"{"model":"nonexistent","messages":[{"role":"user","content":"hi"}]}"#;
-        let (status, body) = http_request(sandbox, "POST", "/v1/chat/completions", Some(chat_body)).await?;
+        let (status, body) =
+            http_request(sandbox, "POST", "/v1/chat/completions", Some(chat_body)).await?;
         assert_eq!(
             status, 200,
             "POST /v1/chat/completions expected 200, got {status}"
@@ -513,7 +514,8 @@ async fn run_tests(
     // Test 4: Completions with unknown model → 200 with error body
     {
         let completions_body = r#"{"model":"nonexistent","prompt":"hello"}"#;
-        let (status, body) = http_request(sandbox, "POST", "/v1/completions", Some(completions_body)).await?;
+        let (status, body) =
+            http_request(sandbox, "POST", "/v1/completions", Some(completions_body)).await?;
         assert_eq!(
             status, 200,
             "POST /v1/completions expected 200, got {status}"
@@ -541,10 +543,7 @@ async fn run_tests(
     // Test 6: Unknown route → 404
     {
         let (status, _) = http_request(sandbox, "GET", "/nonexistent", None).await?;
-        assert_eq!(
-            status, 404,
-            "GET /nonexistent expected 404, got {status}"
-        );
+        assert_eq!(status, 404, "GET /nonexistent expected 404, got {status}");
         println!("  ✓ GET /nonexistent → {status}");
         passed += 1;
     }
@@ -556,8 +555,13 @@ async fn run_tests(
             r#"{{"model":"{MODEL_NAME}","messages":[{{"role":"user","content":"What is 2+2? Answer with just the number."}}],"max_tokens":32}}"#
         );
         let (status, body) = http_request_with_timeout(
-            sandbox, "POST", "/v1/chat/completions", Some(&chat_body), 120,
-        ).await?;
+            sandbox,
+            "POST",
+            "/v1/chat/completions",
+            Some(&chat_body),
+            120,
+        )
+        .await?;
         assert_eq!(
             status, 200,
             "POST /v1/chat/completions (real model) expected 200, got {status}"
@@ -677,7 +681,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
         let cp = sandbox
-            .exec("/bin/sh", &["-c", "cp /opt/bin/a3s-power /tmp/a3s-power && chmod +x /tmp/a3s-power"])
+            .exec(
+                "/bin/sh",
+                &[
+                    "-c",
+                    "cp /opt/bin/a3s-power /tmp/a3s-power && chmod +x /tmp/a3s-power",
+                ],
+            )
             .await?;
         if !cp.stderr.contains("No child process") && cp.exit_code == 0 {
             break;
@@ -705,7 +715,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  curl installed");
             break;
         }
-        eprintln!("  apk failed (attempt {attempt}): {}", install.stdout.trim());
+        eprintln!(
+            "  apk failed (attempt {attempt}): {}",
+            install.stdout.trim()
+        );
     }
     if !curl_installed {
         println!("  Warning: curl not available, falling back to wget");
@@ -741,13 +754,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Verify the manifest was written.
         let verify = sandbox
-            .exec("/bin/sh", &["-c", "cat /tmp/power-home/models/manifests/*.json | head -c 200"])
+            .exec(
+                "/bin/sh",
+                &[
+                    "-c",
+                    "cat /tmp/power-home/models/manifests/*.json | head -c 200",
+                ],
+            )
             .await?;
-        println!("  Manifest: {}", verify.stdout.trim().chars().take(120).collect::<String>());
+        println!(
+            "  Manifest: {}",
+            verify.stdout.trim().chars().take(120).collect::<String>()
+        );
 
         // Verify the model file is accessible.
         let check_model = sandbox
-            .exec("/bin/sh", &["-c", &format!("ls -lh {guest_model_path} 2>&1")])
+            .exec(
+                "/bin/sh",
+                &["-c", &format!("ls -lh {guest_model_path} 2>&1")],
+            )
             .await?;
         println!("  Model: {}", check_model.stdout.trim());
     } else {
@@ -768,9 +793,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        let start = sandbox
-            .exec("/bin/sh", &["-c", start_cmd])
-            .await?;
+        let start = sandbox.exec("/bin/sh", &["-c", start_cmd]).await?;
         if !start.stderr.contains("No child process") {
             break;
         }
@@ -786,7 +809,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify Power is running and check its log.
     let log_result = sandbox
-        .exec("/bin/sh", &["-c", "cat /tmp/power.log 2>/dev/null | head -10"])
+        .exec(
+            "/bin/sh",
+            &["-c", "cat /tmp/power.log 2>/dev/null | head -10"],
+        )
         .await?;
     let log_trimmed = log_result.stdout.trim();
     if log_trimmed.contains("Server listening") {
@@ -797,10 +823,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .exec("/bin/sh", &["-c", "ps 2>/dev/null || true"])
             .await?;
         if !log_trimmed.is_empty() {
-            println!("  Power log: {}", log_trimmed.chars().take(300).collect::<String>());
+            println!(
+                "  Power log: {}",
+                log_trimmed.chars().take(300).collect::<String>()
+            );
         }
         // Don't fail here — wait_for_ready will handle the timeout.
-        eprintln!("  Process list: {}", ps_result.stdout.trim().chars().take(200).collect::<String>());
+        eprintln!(
+            "  Process list: {}",
+            ps_result
+                .stdout
+                .trim()
+                .chars()
+                .take(200)
+                .collect::<String>()
+        );
     }
 
     if has_model && log_trimmed.contains("Loaded model registry") {
@@ -810,7 +847,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for Power to be ready.
     if let Err(e) = wait_for_ready(&sandbox, Duration::from_secs(60)).await {
         let log = sandbox
-            .exec("/bin/sh", &["-c", "cat /tmp/power.log 2>/dev/null | tail -30"])
+            .exec(
+                "/bin/sh",
+                &["-c", "cat /tmp/power.log 2>/dev/null | tail -30"],
+            )
             .await
             .map(|r| r.stdout)
             .unwrap_or_default();
@@ -844,7 +884,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("\nTest failed: {e}");
             // Dump power log on failure for debugging.
             let log = sandbox
-                .exec("/bin/sh", &["-c", "cat /tmp/power.log 2>/dev/null | tail -30"])
+                .exec(
+                    "/bin/sh",
+                    &["-c", "cat /tmp/power.log 2>/dev/null | tail -30"],
+                )
                 .await
                 .map(|r| r.stdout)
                 .unwrap_or_default();
@@ -876,7 +919,8 @@ async fn exec_retry(
             return Err(format!(
                 "Command failed after 3 attempts: {cmd}\nexit={} stdout={} stderr={}",
                 result.exit_code, result.stdout, result.stderr
-            ).into());
+            )
+            .into());
         }
     }
     Err("Command failed after 3 retries (No child process)".into())
