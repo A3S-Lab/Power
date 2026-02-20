@@ -48,10 +48,18 @@ impl RateLimiter {
     }
 
     /// Try to acquire a request slot. Returns false if rate or concurrency limit exceeded.
+    ///
+    /// Concurrency is checked before consuming a token so that requests rejected
+    /// by the concurrency limit do not silently drain the rate-limit bucket.
     fn try_acquire(&self) -> bool {
         let mut inner = self.inner.lock().unwrap();
 
-        // Refill tokens based on elapsed time
+        // Check concurrency limit first — no token consumed if concurrency is at capacity.
+        if self.max_concurrent > 0 && inner.concurrent >= self.max_concurrent {
+            return false;
+        }
+
+        // Refill and consume from the token bucket.
         if self.rps > 0 {
             let now = Instant::now();
             let elapsed = now.duration_since(inner.last_refill).as_secs_f64();
@@ -64,10 +72,6 @@ impl RateLimiter {
             inner.tokens -= 1.0;
         }
 
-        // Check concurrency limit
-        if self.max_concurrent > 0 && inner.concurrent >= self.max_concurrent {
-            return false;
-        }
         inner.concurrent += 1;
         true
     }
@@ -384,5 +388,55 @@ mod tests {
                 .unwrap(),
             "my-custom-id-123"
         );
+    }
+
+    // --- RateLimiter unit tests ---
+
+    #[test]
+    fn test_rate_limiter_allows_within_limit() {
+        let limiter = RateLimiter::new(10, 0);
+        assert!(limiter.try_acquire());
+        limiter.release();
+    }
+
+    #[test]
+    fn test_rate_limiter_concurrency_limit_does_not_consume_token() {
+        // Set max_concurrent=1, rps=2 (so bucket starts with 2 tokens).
+        let limiter = RateLimiter::new(2, 1);
+        // First acquire: takes a token and increments concurrent.
+        assert!(limiter.try_acquire());
+        // At max concurrency — should reject WITHOUT consuming another token.
+        assert!(!limiter.try_acquire());
+        // Token bucket should still have 1 token (not 0).
+        {
+            let inner = limiter.inner.lock().unwrap();
+            assert!(
+                inner.tokens >= 1.0,
+                "concurrency rejection must not consume a rate-limit token"
+            );
+        }
+        // After release, a new acquire should succeed.
+        limiter.release();
+        assert!(limiter.try_acquire());
+        limiter.release();
+    }
+
+    #[test]
+    fn test_rate_limiter_token_bucket_exhausted() {
+        // 1 RPS, no concurrency limit.
+        let limiter = RateLimiter::new(1, 0);
+        assert!(limiter.try_acquire()); // uses the 1 token
+        limiter.release();
+        // Bucket is empty — second acquire should fail.
+        assert!(!limiter.try_acquire());
+    }
+
+    #[test]
+    fn test_rate_limiter_no_limits_always_allows() {
+        let limiter = RateLimiter::new(0, 0);
+        for _ in 0..100 {
+            assert!(limiter.try_acquire());
+            limiter.release();
+        }
     }
 }

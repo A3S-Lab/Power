@@ -87,21 +87,23 @@ const SENSITIVE_ERROR_PREFIXES: &[&str] = &["prompt:", "content:", "message:", "
 
 /// Redact sensitive JSON field values from a log message.
 ///
-/// Replaces the value of any sensitive key with `[REDACTED]`.
-/// Handles both string values and non-string values (numbers, booleans, objects).
+/// Replaces the value of every occurrence of any sensitive key with `[REDACTED]`.
+/// Handles string values; non-string values (numbers, booleans) are left as-is
+/// since they do not contain verbatim prompt text.
 fn redact_content(msg: &str) -> String {
     let mut result = msg.to_string();
     for key in SENSITIVE_KEYS {
         let pattern = format!("\"{}\":", key);
-        if let Some(start) = result.find(&pattern) {
+        // Loop to replace all occurrences (multi-turn messages have repeated keys).
+        let mut search_from = 0;
+        while let Some(rel) = result[search_from..].find(&pattern) {
+            let start = search_from + rel;
             let after_key = start + pattern.len();
-            // Skip optional whitespace
             let trimmed = result[after_key..].trim_start();
             let ws_len = result[after_key..].len() - trimmed.len();
             let value_start = after_key + ws_len;
 
             if result.as_bytes().get(value_start) == Some(&b'"') {
-                // String value: find closing quote (skip escaped quotes)
                 let content_start = value_start + 1;
                 let mut i = content_start;
                 let bytes = result.as_bytes();
@@ -112,13 +114,20 @@ fn redact_content(msg: &str) -> String {
                     i += 1;
                 }
                 if i < bytes.len() {
-                    result = format!(
+                    let replacement = format!(
                         "{}\"[REDACTED]\"{}",
                         &result[..value_start],
                         &result[i + 1..]
                     );
+                    // Advance past the newly inserted [REDACTED] so the next iteration
+                    // does not re-examine the same position.
+                    search_from = value_start + "\"[REDACTED]\"".len();
+                    result = replacement;
+                    continue;
                 }
             }
+            // Non-string value or malformed: advance past this key and try next.
+            search_from = after_key;
         }
     }
     result
@@ -239,6 +248,23 @@ mod tests {
         let output = redact_content(input);
         assert!(!output.contains("tell me a secret"));
         assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_redact_content_multiple_occurrences() {
+        // Multi-turn messages have multiple "content" fields; all must be redacted.
+        let input = r#"[{"role":"user","content":"first secret"},{"role":"assistant","content":"second secret"}]"#;
+        let output = redact_content(input);
+        assert!(
+            !output.contains("first secret"),
+            "first occurrence should be redacted"
+        );
+        assert!(
+            !output.contains("second secret"),
+            "second occurrence should be redacted"
+        );
+        let count = output.matches("[REDACTED]").count();
+        assert_eq!(count, 2, "both content fields must be redacted");
     }
 
     #[test]

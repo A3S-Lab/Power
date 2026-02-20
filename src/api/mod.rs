@@ -1,7 +1,6 @@
 pub mod autoload;
 pub mod health;
 pub mod openai;
-pub mod sse;
 pub mod types;
 
 /// Format a UTC timestamp in RFC 3339 format.

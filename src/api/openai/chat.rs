@@ -70,7 +70,10 @@ pub async fn handler(
     .await
     {
         Ok(r) => r,
-        Err(e) => return openai_error("model_load_failed", &e.to_string()).into_response(),
+        Err(e) => {
+            state.metrics.decrement_active_requests();
+            return openai_error("model_load_failed", &e.to_string()).into_response();
+        }
     };
     let unload_after_use = load_result.unload_after_use;
 
@@ -244,32 +247,33 @@ pub async fn handler(
                     Ok::<_, Infallible>(Event::default().data(event_data))
                 });
 
-                // Emit a final usage chunk before [DONE] when suppress_token_metrics is active,
-                // so clients receive rounded counts instead of exact values.
+                // Emit a final usage chunk before [DONE] when suppress_token_metrics is active.
+                // Reads are deferred into an async closure so they execute after the content
+                // stream is fully consumed (counters have final values at that point).
                 let usage_event = if suppress {
-                    let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
-                    let prompt_tokens2 =
-                        prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
-                    let rp = super::round_tokens(prompt_tokens2);
-                    let rc = super::round_tokens(eval_count2);
-                    let usage_chunk = ChatCompletionChunk {
-                        id: id_for_done,
-                        object: "chat.completion.chunk".to_string(),
-                        created,
-                        model: model_for_done2,
-                        choices: vec![],
-                    };
-                    // Attach usage as extra field via serde_json
-                    let mut val = serde_json::to_value(&usage_chunk).unwrap_or_default();
-                    val["usage"] = serde_json::json!({
-                        "prompt_tokens": rp,
-                        "completion_tokens": rc,
-                        "total_tokens": rp + rc
-                    });
-                    let data = serde_json::to_string(&val).unwrap_or_default();
-                    futures::stream::once(futures::future::ready(Ok::<_, Infallible>(
-                        Event::default().data(data),
-                    )))
+                    futures::stream::once(async move {
+                        let eval_count2 =
+                            eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
+                        let prompt_tokens2 =
+                            prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
+                        let rp = super::round_tokens(prompt_tokens2);
+                        let rc = super::round_tokens(eval_count2);
+                        let usage_chunk = ChatCompletionChunk {
+                            id: id_for_done,
+                            object: "chat.completion.chunk".to_string(),
+                            created,
+                            model: model_for_done2,
+                            choices: vec![],
+                        };
+                        let mut val = serde_json::to_value(&usage_chunk).unwrap_or_default();
+                        val["usage"] = serde_json::json!({
+                            "prompt_tokens": rp,
+                            "completion_tokens": rc,
+                            "total_tokens": rp + rc
+                        });
+                        let data = serde_json::to_string(&val).unwrap_or_default();
+                        Ok::<_, Infallible>(Event::default().data(data))
+                    })
                     .left_stream()
                 } else {
                     futures::stream::empty().right_stream()
@@ -605,7 +609,7 @@ mod tests {
         let state = test_state_with_mock(MockBackend::load_fails());
         state.registry.register(sample_manifest("test")).unwrap();
 
-        let app = router::build(state);
+        let app = router::build(state.clone());
         let req = Request::builder()
             .method("POST")
             .uri("/v1/chat/completions")
@@ -624,6 +628,8 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("mock load failure"));
+        // active_requests must return to zero after load failure
+        assert_eq!(state.metrics.active_requests(), 0);
 
         std::env::remove_var("A3S_POWER_HOME");
     }

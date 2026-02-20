@@ -472,7 +472,7 @@ mod tests {
         std::fs::write(&model_file, b"fake weights").unwrap();
 
         let state = test_state_with_mock(MockBackend::success());
-        let app = router::build(state);
+        let app = router::build(state.clone());
         let body = serde_json::json!({
             "name": "local-model",
             "path": model_file.to_str().unwrap()
@@ -491,6 +491,18 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["id"], "local-model");
         assert_eq!(json["object"], "model");
+
+        // Verify SHA-256 was computed and stored (non-empty hash in the registry)
+        let manifest = state.registry.get("local-model").unwrap();
+        assert!(
+            !manifest.sha256.is_empty(),
+            "register_handler must compute and store SHA-256"
+        );
+        assert_eq!(
+            manifest.sha256.len(),
+            64,
+            "SHA-256 hex string must be 64 characters"
+        );
 
         std::env::remove_var("A3S_POWER_HOME");
     }

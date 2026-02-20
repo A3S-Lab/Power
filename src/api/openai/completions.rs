@@ -65,7 +65,10 @@ pub async fn handler(
     .await
     {
         Ok(r) => r,
-        Err(e) => return openai_error("model_load_failed", &e.to_string()).into_response(),
+        Err(e) => {
+            state.metrics.decrement_active_requests();
+            return openai_error("model_load_failed", &e.to_string()).into_response();
+        }
     };
     let unload_after_use = load_result.unload_after_use;
 
@@ -516,7 +519,7 @@ mod tests {
         let state = test_state_with_mock(MockBackend::load_fails());
         state.registry.register(sample_manifest("test")).unwrap();
 
-        let app = router::build(state);
+        let app = router::build(state.clone());
         let req = Request::builder()
             .method("POST")
             .uri("/v1/completions")
@@ -533,6 +536,8 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("mock load failure"));
+        // active_requests must return to zero after load failure
+        assert_eq!(state.metrics.active_requests(), 0);
 
         std::env::remove_var("A3S_POWER_HOME");
     }
