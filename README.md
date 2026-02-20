@@ -250,6 +250,7 @@ gpu {
 | `tee_mode` | `false` | Enable TEE: attestation, integrity checks, log redaction |
 | `redact_logs` | `false` | Redact inference content from logs |
 | `model_hashes` | `{}` | Expected SHA-256 hashes for model verification |
+| `model_signing_key` | `null` | Ed25519 public key (hex) for verifying model `.sig` signatures |
 | `gpu.gpu_layers` | `0` | GPU layer offloading (`-1` = all) |
 | `gpu.main_gpu` | `0` | Primary GPU index |
 | `model_key_source` | `null` | Decryption key for `.enc` model files: `{ file = "/path/to/key.hex" }` or `{ env = "MY_KEY_VAR" }` |
@@ -520,7 +521,7 @@ cargo build -p a3s-power                          # Debug (default: mistralrs)
 cargo build -p a3s-power --release                 # Release
 cargo build -p a3s-power --no-default-features --features llamacpp  # With llama.cpp
 
-# Test (669+ tests)
+# Test (671+ tests)
 cargo test -p a3s-power --lib -- --test-threads=1
 cargo test -p a3s-power --test integration
 
