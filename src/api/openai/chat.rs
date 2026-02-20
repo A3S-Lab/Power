@@ -144,9 +144,16 @@ pub async fn handler(
         } else {
             None
         },
+        num_parallel: Some(state.config.num_parallel as u32),
     };
 
     let is_stream = request.stream.unwrap_or(false);
+    let include_usage_chunk = state.suppress_token_metrics()
+        || request
+            .stream_options
+            .as_ref()
+            .map(|o| o.include_usage)
+            .unwrap_or(false);
 
     match backend.chat(&model_name, backend_request).await {
         Ok(stream) => {
@@ -201,7 +208,6 @@ pub async fn handler(
                 let state_cleanup = state.clone();
                 let model_for_unload = model_name.clone();
 
-                let suppress = state.suppress_token_metrics();
                 let id_for_done = id.clone();
                 let model_for_done2 = model.clone();
                 let content_stream = stream.map(move |chunk| {
@@ -255,10 +261,11 @@ pub async fn handler(
                     Ok::<_, Infallible>(Event::default().data(event_data))
                 });
 
-                // Emit a final usage chunk before [DONE] when suppress_token_metrics is active.
+                // Emit a final usage chunk before [DONE] when either suppress_token_metrics is
+                // active (TEE privacy mode) or the client set stream_options.include_usage.
                 // Reads are deferred into an async closure so they execute after the content
                 // stream is fully consumed (counters have final values at that point).
-                let usage_event = if suppress {
+                let usage_event = if include_usage_chunk {
                     futures::stream::once(async move {
                         let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
                         let prompt_tokens2 =
@@ -915,6 +922,37 @@ mod tests {
             .to_string();
         // Non-streaming should return JSON, not SSE
         assert!(content_type.contains("application/json"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_streaming_with_include_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8_lossy(&body);
+        // The SSE stream should contain a usage chunk before [DONE]
+        assert!(body_str.contains("\"usage\""), "expected usage chunk in SSE stream");
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 
     #[test]

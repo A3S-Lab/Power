@@ -1176,6 +1176,7 @@ mod tests {
             main_gpu: None,
             use_mmap: None,
             use_mlock: None,
+            num_parallel: None,
         };
         let result = backend.chat("test", request).await;
         assert!(result.is_err());
@@ -1217,6 +1218,7 @@ mod tests {
             main_gpu: None,
             use_mmap: None,
             use_mlock: None,
+            num_parallel: None,
             suffix: None,
             context: None,
         };

@@ -10,6 +10,14 @@ use crate::backend::types::FunctionCall;
 // OpenAI-compatible types
 // ============================================================================
 
+/// Options controlling streaming behaviour.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StreamOptions {
+    /// When true, a final chunk with a `usage` field is emitted before `[DONE]`.
+    #[serde(default)]
+    pub include_usage: bool,
+}
+
 /// OpenAI-compatible chat completion request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
@@ -25,6 +33,9 @@ pub struct ChatCompletionRequest {
     pub stop: Option<Vec<String>>,
     #[serde(default)]
     pub stream: Option<bool>,
+    /// Streaming-specific options (only meaningful when `stream = true`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
     #[serde(default)]
     pub frequency_penalty: Option<f32>,
     #[serde(default)]
@@ -170,6 +181,9 @@ pub struct CompletionRequest {
     pub stop: Option<Vec<String>>,
     #[serde(default)]
     pub stream: Option<bool>,
+    /// Streaming-specific options (only meaningful when `stream = true`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
     #[serde(default)]
     pub frequency_penalty: Option<f32>,
     #[serde(default)]
@@ -719,5 +733,61 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("thinking"));
+    }
+
+    #[test]
+    fn test_stream_options_deserialize_include_usage() {
+        let json = r#"{"include_usage": true}"#;
+        let opts: StreamOptions = serde_json::from_str(json).unwrap();
+        assert!(opts.include_usage);
+    }
+
+    #[test]
+    fn test_stream_options_defaults_include_usage_false() {
+        let json = r#"{}"#;
+        let opts: StreamOptions = serde_json::from_str(json).unwrap();
+        assert!(!opts.include_usage);
+    }
+
+    #[test]
+    fn test_chat_request_with_stream_options() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+            "stream_options": {"include_usage": true}
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.stream, Some(true));
+        let opts = req.stream_options.unwrap();
+        assert!(opts.include_usage);
+    }
+
+    #[test]
+    fn test_chat_request_stream_options_absent_by_default() {
+        let json = r#"{"model": "m", "messages": []}"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert!(req.stream_options.is_none());
+    }
+
+    #[test]
+    fn test_completion_request_with_stream_options() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "hello",
+            "stream": true,
+            "stream_options": {"include_usage": true}
+        }"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.stream, Some(true));
+        let opts = req.stream_options.unwrap();
+        assert!(opts.include_usage);
+    }
+
+    #[test]
+    fn test_completion_request_stream_options_absent_by_default() {
+        let json = r#"{"model": "m", "prompt": "hi"}"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        assert!(req.stream_options.is_none());
     }
 }

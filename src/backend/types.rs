@@ -213,6 +213,9 @@ pub struct ChatRequest {
     /// Whether to lock model in memory.
     #[serde(default)]
     pub use_mlock: Option<bool>,
+    /// Number of parallel decode slots (concurrent inference sequences). 1 = serial.
+    #[serde(default)]
+    pub num_parallel: Option<u32>,
 }
 
 /// A streamed chunk from a chat completion.
@@ -317,6 +320,9 @@ pub struct CompletionRequest {
     /// Whether to lock model in memory.
     #[serde(default)]
     pub use_mlock: Option<bool>,
+    /// Number of parallel decode slots (concurrent inference sequences). 1 = serial.
+    #[serde(default)]
+    pub num_parallel: Option<u32>,
     /// Suffix for fill-in-the-middle completion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suffix: Option<String>,
@@ -658,5 +664,33 @@ mod tests {
         assert_eq!(msg.role, "tool");
         assert_eq!(msg.tool_call_id.as_deref(), Some("call_1"));
         assert_eq!(msg.content.text(), "72°F and sunny");
+    }
+
+    #[test]
+    fn test_chat_request_num_parallel_defaults_to_none() {
+        let json = r#"{"messages": []}"#;
+        let req: ChatRequest = serde_json::from_str(json).unwrap();
+        assert!(req.num_parallel.is_none());
+    }
+
+    #[test]
+    fn test_chat_request_num_parallel_parsed() {
+        let json = r#"{"messages": [], "num_parallel": 4}"#;
+        let req: ChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.num_parallel, Some(4));
+    }
+
+    #[test]
+    fn test_completion_request_num_parallel_defaults_to_none() {
+        let json = r#"{"prompt": "hi"}"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        assert!(req.num_parallel.is_none());
+    }
+
+    #[test]
+    fn test_completion_request_num_parallel_parsed() {
+        let json = r#"{"prompt": "hi", "num_parallel": 2}"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.num_parallel, Some(2));
     }
 }

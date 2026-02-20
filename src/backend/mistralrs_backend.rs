@@ -329,6 +329,7 @@ impl Backend for MistralRsBackend {
             main_gpu: request.main_gpu,
             use_mmap: request.use_mmap,
             use_mlock: request.use_mlock,
+            num_parallel: request.num_parallel,
         };
 
         // Get the chat stream and map ChatResponseChunk -> CompletionResponseChunk
@@ -352,7 +353,7 @@ impl Backend for MistralRsBackend {
     async fn embed(
         &self,
         model_name: &str,
-        request: EmbeddingRequest,
+        _request: EmbeddingRequest,
     ) -> Result<EmbeddingResponse> {
         // For embeddings, mistralrs uses a separate EmbeddingModelBuilder.
         // Since our Backend trait loads models via `load()` which uses GgufModelBuilder,

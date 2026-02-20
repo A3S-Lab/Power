@@ -23,6 +23,12 @@ pub async fn handler(
     let model_name = request.model.clone();
     let request_id = format!("cmpl-{}", uuid::Uuid::new_v4());
     let is_stream = request.stream.unwrap_or(false);
+    let include_usage_chunk = state.suppress_token_metrics()
+        || request
+            .stream_options
+            .as_ref()
+            .map(|o| o.include_usage)
+            .unwrap_or(false);
 
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
@@ -112,6 +118,7 @@ pub async fn handler(
         } else {
             None
         },
+        num_parallel: Some(state.config.num_parallel as u32),
         suffix: None,
         context: None,
     };
@@ -141,7 +148,6 @@ pub async fn handler(
                 let model_for_cleanup = model_name.clone();
                 let backend_cleanup = backend.clone();
                 let ctx_cleanup = ctx.clone();
-                let suppress = state.suppress_token_metrics();
                 let id_for_usage = request_id.clone();
                 let model_for_usage = model_name.clone();
                 let audit_stream = state.audit.clone();
@@ -235,9 +241,10 @@ pub async fn handler(
                 });
 
                 // Emit a final usage chunk with rounded token counts before [DONE]
-                // when suppress_token_metrics is active. Reads are deferred into
-                // an async closure so they execute after sse_stream is fully consumed.
-                let usage_event = if suppress {
+                // when suppress_token_metrics is active or stream_options.include_usage is set.
+                // Reads are deferred into an async closure so they execute after sse_stream
+                // is fully consumed (counters have final values at that point).
+                let usage_event = if include_usage_chunk {
                     futures::stream::once(async move {
                         let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
                         let pt2 = prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);

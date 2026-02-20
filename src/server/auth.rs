@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 
 use sha2::{Digest, Sha256};
 
-use crate::server::audit::{AuditEvent, AuditLogger};
+use crate::server::audit::AuditEvent;
 use crate::server::state::AppState;
 
 /// Trait for authentication providers.

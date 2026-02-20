@@ -280,6 +280,7 @@ mod tests {
             main_gpu: None,
             use_mmap: None,
             use_mlock: None,
+            num_parallel: None,
         };
         let mut stream = mock.chat("test", request).await.unwrap();
         let first = stream.next().await.unwrap().unwrap();
@@ -326,6 +327,7 @@ mod tests {
             main_gpu: None,
             use_mmap: None,
             use_mlock: None,
+            num_parallel: None,
         };
         let mut stream = mock.chat("test", request).await.unwrap();
 
