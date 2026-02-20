@@ -43,6 +43,7 @@ pub async fn handler(
     let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
         Err(_) => {
+            state.metrics.decrement_active_requests();
             return openai_error(
                 "model_not_found",
                 &format!("model '{model_name}' not found"),
@@ -54,6 +55,7 @@ pub async fn handler(
     let backend = match state.backends.find_for_format(&manifest.format) {
         Ok(b) => b,
         Err(e) => {
+            state.metrics.decrement_active_requests();
             return openai_error("server_error", &e.to_string()).into_response();
         }
     };
@@ -913,5 +915,48 @@ mod tests {
         assert_eq!(super::super::round_tokens(100), 100);
         assert_eq!(super::super::round_tokens(1234), 1230);
         assert_eq!(super::super::round_tokens(1235), 1240);
+    }
+
+    #[tokio::test]
+    async fn test_active_requests_decremented_on_model_not_found() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"nonexistent","messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+        let _ = app.oneshot(req).await.unwrap();
+        assert_eq!(state.metrics.active_requests(), 0);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_keep_alive_zero_unloads_after_inference() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":false,"keep_alive":"0"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Model should be unloaded after inference when keep_alive=0
+        assert!(!state.is_model_loaded("test"));
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 }

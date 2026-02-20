@@ -182,6 +182,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_verify_model_integrity_pass() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = make_manifest(dir.path(), "test", b"model-data");
@@ -190,6 +191,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_verify_model_integrity_fail() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = make_manifest(dir.path(), "test", b"model-data");
@@ -212,6 +214,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_verify_all_models_pass() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = make_manifest(dir.path(), "test-model", b"model-data");
@@ -228,6 +231,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_verify_all_models_fail_wrong_hash() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = make_manifest(dir.path(), "test-model", b"model-data");

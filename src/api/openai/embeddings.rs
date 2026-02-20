@@ -23,6 +23,7 @@ pub async fn handler(
     let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
         Err(_) => {
+            state.metrics.decrement_active_requests();
             return Json(serde_json::json!({
                 "error": {
                     "message": format!("model '{}' not found", model_name),
@@ -37,6 +38,7 @@ pub async fn handler(
     let backend = match state.backends.find_for_format(&manifest.format) {
         Ok(b) => b,
         Err(e) => {
+            state.metrics.decrement_active_requests();
             return Json(serde_json::json!({
                 "error": {
                     "message": e.to_string(),

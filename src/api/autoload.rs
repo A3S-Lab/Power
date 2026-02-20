@@ -42,9 +42,12 @@ pub async fn ensure_loaded_with_keep_alive(
 ) -> Result<LoadResult> {
     if state.is_model_loaded(model_name) {
         state.touch_model(model_name);
+        let unload_after_use = keep_alive
+            .map(|ka| parse_keep_alive(ka) == Duration::ZERO)
+            .unwrap_or(false);
         return Ok(LoadResult {
             load_duration: Duration::ZERO,
-            unload_after_use: false,
+            unload_after_use,
         });
     }
 

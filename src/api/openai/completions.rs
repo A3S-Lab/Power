@@ -38,6 +38,7 @@ pub async fn handler(
     let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
         Err(_) => {
+            state.metrics.decrement_active_requests();
             return openai_error(
                 "model_not_found",
                 &format!("model '{model_name}' not found"),
@@ -49,6 +50,7 @@ pub async fn handler(
     let backend = match state.backends.find_for_format(&manifest.format) {
         Ok(b) => b,
         Err(e) => {
+            state.metrics.decrement_active_requests();
             return openai_error("server_error", &e.to_string()).into_response();
         }
     };

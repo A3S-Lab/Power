@@ -297,6 +297,11 @@ impl Metrics {
         self.active_requests.fetch_sub(1, Ordering::Relaxed);
     }
 
+    /// Return the current number of active inference requests.
+    pub fn active_requests(&self) -> u64 {
+        self.active_requests.load(Ordering::Relaxed)
+    }
+
     /// Render all metrics in Prometheus text exposition format.
     pub fn render(&self) -> String {
         let mut output = String::new();
