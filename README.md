@@ -48,9 +48,12 @@ Power is built to run inside [a3s-box](https://github.com/A3S-Lab/Box) MicroVMs 
 - **TEE-Aware Runtime**: Auto-detects AMD SEV-SNP (`/dev/sev-guest`) and Intel TDX (`/dev/tdx_guest`) at startup; simulated mode for development (`A3S_TEE_SIMULATE=1`)
 - **Remote Attestation**: `TeeProvider` trait with `AttestationReport` generation — cryptographic proof that inference runs in a genuine TEE; AMD SEV-SNP uses real `/dev/sev-guest` ioctl (`SNP_GET_REPORT`), Intel TDX uses real `/dev/tdx-guest` ioctl (`TDX_CMD_GET_REPORT0`); full raw reports included for client verification
 - **Model Integrity Verification**: SHA-256 hash verification of all model files at startup against configured expected hashes; fails fast on tampering
-- **Log Redaction**: `PrivacyProvider` trait automatically strips inference content (`"content"`, `"prompt"`, `"text"` fields) from all log output in TEE mode
+- **Deep Log Redaction**: `PrivacyProvider` trait strips inference content from all log output in TEE mode — covers 10 sensitive JSON keys (`"content"`, `"prompt"`, `"text"`, `"arguments"`, `"input"`, `"delta"`, `"system"`, `"message"`, `"query"`, `"instruction"`); `sanitize_error()` strips prompt fragments from error messages; `suppress_token_metrics` rounds token counts to nearest 10 to prevent side-channel inference
 - **Memory Zeroing**: `SensitiveString` wrapper auto-zeroizes on drop; `zeroize_string()` / `zeroize_bytes()` utilities for clearing inference buffers via `zeroize` crate
-- **Encrypted Model Loading**: AES-256-GCM encryption/decryption of model files; `DecryptedModel` RAII wrapper securely wipes temp files on drop; key from file or env var
+- **Encrypted Model Loading**: AES-256-GCM encryption/decryption of model files; `DecryptedModel` RAII wrapper securely wipes temp files on drop; `MemoryDecryptedModel` decrypts entirely in RAM with `mlock` (never touches disk); key from file or env var
+- **KeyProvider Trait**: Abstract key loading for HSM integration and zero-downtime key rotation; `StaticKeyProvider` wraps existing file/env key source; `RotatingKeyProvider` holds multiple keys and advances on `rotate_key()` — deploy new key, rotate, remove old
+- **Rate Limiting**: Token-bucket rate limiter middleware (`rate_limit_rps`) and concurrency cap (`max_concurrent_requests`) applied to all `/v1/*` endpoints; returns `429 Too Many Requests` with OpenAI-style error body
+- **Model-Attestation Binding**: `GET /v1/attestation?model=<name>` embeds the model's SHA-256 hash into `report_data` alongside the nonce — layout `[nonce(32)][model_sha256(32)]` — cryptographically tying the attestation to the specific model being served
 - **Health + TEE Status**: `GET /health` reports TEE type, attestation status, and model verification state
 - **OpenAI-Compatible API**: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings` — works with any OpenAI SDK
 - **Pure Rust Inference (default)**: GGUF model inference via `mistralrs` (built on candle) — no C++ dependency, ideal for TEE auditing
@@ -142,6 +145,11 @@ pub trait TeeProvider: Send + Sync {
     /// Generate attestation report. Optional nonce is bound into report_data
     /// to prevent replay attacks.
     async fn attestation_report(&self, nonce: Option<&[u8]>) -> Result<AttestationReport>;
+    /// Generate attestation report bound to a specific model hash.
+    /// report_data layout: [nonce(32 bytes)][model_sha256(32 bytes)]
+    async fn attestation_report_with_model(
+        &self, nonce: Option<&[u8]>, model_hash: Option<&[u8]>
+    ) -> Result<AttestationReport>;
     fn is_tee_environment(&self) -> bool;
     fn tee_type(&self) -> TeeType;  // SevSnp | Tdx | Simulated | None
 }
@@ -150,6 +158,15 @@ pub trait TeeProvider: Send + Sync {
 pub trait PrivacyProvider: Send + Sync {
     fn should_redact(&self) -> bool;
     fn sanitize_log(&self, msg: &str) -> String;
+    fn sanitize_error(&self, err: &str) -> String;
+    fn should_suppress_token_metrics(&self) -> bool;
+}
+
+/// Model decryption key provider.
+pub trait KeyProvider: Send + Sync {
+    async fn get_key(&self) -> Result<[u8; 32]>;
+    async fn rotate_key(&self) -> Result<[u8; 32]>;  // default: Err (not supported)
+    fn provider_name(&self) -> &str;
 }
 ```
 
@@ -236,6 +253,12 @@ gpu {
 | `gpu.gpu_layers` | `0` | GPU layer offloading (`-1` = all) |
 | `gpu.main_gpu` | `0` | Primary GPU index |
 | `model_key_source` | `null` | Decryption key for `.enc` model files: `{ file = "/path/to/key.hex" }` or `{ env = "MY_KEY_VAR" }` |
+| `key_provider` | `"static"` | Key provider type: `"static"` (uses `model_key_source`) or `"rotating"` (uses `key_rotation_sources`) |
+| `key_rotation_sources` | `[]` | For rotating provider: list of key sources in rotation order |
+| `in_memory_decrypt` | `false` | Decrypt `.enc` models entirely in RAM with `mlock` (never writes plaintext to disk) |
+| `suppress_token_metrics` | `false` | Round token counts in responses to nearest 10 (prevents exact token-count side-channel) |
+| `rate_limit_rps` | `0` | Max requests per second for `/v1/*` endpoints (`0` = unlimited) |
+| `max_concurrent_requests` | `0` | Max concurrent requests for `/v1/*` endpoints (`0` = unlimited) |
 | `tls_port` | `null` | TLS server port; when set, a TLS server starts in parallel (`tls` feature required) |
 | `ra_tls` | `false` | Embed TEE attestation in TLS cert (RA-TLS); requires `tls_port` + `tee_mode` |
 | `vsock_port` | `null` | Vsock port for guest-host communication (`vsock` feature, Linux only) |
@@ -316,7 +339,9 @@ When `redact_logs = true`, the `PrivacyProvider` automatically strips inference 
 {"content": "[REDACTED]", "model": "llama3"}
 ```
 
-Redacted fields: `"content"`, `"prompt"`, `"text"` — covering chat messages, completion requests, and responses.
+Redacted JSON keys: `"content"`, `"prompt"`, `"text"`, `"arguments"`, `"input"`, `"delta"`, `"system"`, `"message"`, `"query"`, `"instruction"` — covering chat messages, tool call arguments, streaming deltas, system prompts, and completion requests.
+
+Error messages that echo prompt content are also sanitized via `sanitize_error()`. When `suppress_token_metrics = true`, token counts in responses are rounded to the nearest 10 to prevent exact token-count side-channel inference.
 
 ## API Reference
 
@@ -335,7 +360,7 @@ Redacted fields: `"content"`, `"prompt"`, `"text"` — covering chat messages, c
 | `POST` | `/v1/completions` | Text completion (streaming/non-streaming) |
 | `GET` | `/v1/models` | List available models |
 | `POST` | `/v1/embeddings` | Generate embeddings |
-| `GET` | `/v1/attestation` | TEE attestation report (returns 503 if TEE not enabled); optional `?nonce=<hex>` binds client nonce to prevent replay |
+| `GET` | `/v1/attestation` | TEE attestation report (returns 503 if TEE not enabled); optional `?nonce=<hex>` binds client nonce; optional `?model=<name>` binds model SHA-256 into `report_data` |
 
 ### Examples
 
@@ -495,7 +520,7 @@ cargo build -p a3s-power                          # Debug (default: mistralrs)
 cargo build -p a3s-power --release                 # Release
 cargo build -p a3s-power --no-default-features --features llamacpp  # With llama.cpp
 
-# Test (554+ tests)
+# Test (656+ tests)
 cargo test -p a3s-power --lib -- --test-threads=1
 cargo test -p a3s-power --test integration
 
@@ -525,11 +550,13 @@ power/
     │
     ├── tee/                 # TEE privacy protection layer
     │   ├── mod.rs           # Module entry
-    │   ├── attestation.rs   # TeeProvider trait + remote attestation
+    │   ├── attestation.rs   # TeeProvider trait + remote attestation + build_report_data
     │   ├── cert.rs          # CertManager: RA-TLS cert generation (feature: tls)
-    │   ├── encrypted_model.rs # AES-256-GCM model encryption/decryption
+    │   ├── encrypted_model.rs # AES-256-GCM model encryption/decryption + MemoryDecryptedModel
+    │   ├── key_provider.rs  # KeyProvider trait + StaticKeyProvider + RotatingKeyProvider
     │   ├── model_seal.rs    # Model integrity verification (SHA-256)
-    │   └── privacy.rs       # PrivacyProvider + log redaction + memory zeroing
+    │   ├── policy.rs        # TEE policy enforcement
+    │   └── privacy.rs       # PrivacyProvider + deep log redaction + memory zeroing
     │
     ├── backend/             # Inference engines
     │   ├── mod.rs           # Backend trait + BackendRegistry
@@ -551,11 +578,14 @@ power/
     │   └── gguf.rs          # GGUF metadata parser
     │
     ├── server/              # HTTP server
-    │   ├── mod.rs           # Server startup + TEE init + keep_alive reaper
-    │   ├── state.rs         # Shared AppState with LRU tracking
-    │   ├── router.rs        # Axum router (/health, /metrics, /v1/*)
+    │   ├── mod.rs           # Server startup + TEE init + key provider init + keep_alive reaper
+    │   ├── state.rs         # Shared AppState with LRU tracking + key_provider field
+    │   ├── router.rs        # Axum router + rate limiting middleware
     │   ├── lock.rs          # Shared RwLock helpers (read_lock/write_lock)
     │   ├── metrics.rs       # Prometheus metrics
+    │   ├── auth.rs          # API key authentication
+    │   ├── audit.rs         # Structured audit logging (JSONL)
+    │   ├── request_context.rs # Request-scoped context (ID, timing)
     │   └── vsock.rs         # Vsock transport (feature: vsock, Linux only)
     │
     └── api/                 # HTTP API handlers
@@ -569,7 +599,8 @@ power/
             ├── chat.rs      # POST /v1/chat/completions
             ├── completions.rs # POST /v1/completions
             ├── models.rs    # GET /v1/models
-            └── embeddings.rs # POST /v1/embeddings
+            ├── embeddings.rs # POST /v1/embeddings
+            └── attestation.rs # GET /v1/attestation (nonce + model binding)
 ```
 
 ## A3S Ecosystem
@@ -626,6 +657,12 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 - [x] Vsock transport — `vsock` feature (Linux only): AF_VSOCK server for a3s-box MicroVM guest-host HTTP communication; uses same axum router as TCP; no network config required inside the VM
 - [x] SEV-SNP ioctl — real `/dev/sev-guest` ioctl (`SNP_GET_REPORT`) for hardware attestation reports; extracts `report_data` (64 bytes) and `measurement` (48 bytes) from firmware response; full raw report included for client-side verification
 - [x] TDX ioctl — real `/dev/tdx-guest` ioctl (`TDX_CMD_GET_REPORT0`) for hardware attestation reports; extracts `reportdata` (64 bytes) and `mrtd` (48 bytes) from TDREPORT; supports both `/dev/tdx-guest` and `/dev/tdx_guest` device paths
+- [x] KeyProvider trait — `StaticKeyProvider` (wraps file/env key source) + `RotatingKeyProvider` (multiple keys, zero-downtime rotation via `rotate_key()`); initialized on server startup; `AppState.key_provider` field
+- [x] Deep log redaction — `PrivacyProvider` covers 10 sensitive JSON keys; `sanitize_error()` strips prompt fragments from error messages
+- [x] Token metric suppression — `suppress_token_metrics` config rounds token counts to nearest 10 to prevent side-channel inference
+- [x] In-memory decryption config — `in_memory_decrypt` field; `MemoryDecryptedModel` decrypts into `mlock`-pinned RAM, never writes plaintext to disk
+- [x] Rate limiting — token-bucket middleware (`rate_limit_rps`) + concurrency cap (`max_concurrent_requests`) on `/v1/*`; returns `429` with OpenAI-style error
+- [x] Model-attestation binding — `build_report_data(nonce, model_hash)` layout `[nonce(32)][sha256(32)]`; `TeeProvider::attestation_report_with_model()` default impl; `GET /v1/attestation?model=<name>` ties attestation to specific model
 
 ## License
 
