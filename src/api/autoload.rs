@@ -13,6 +13,10 @@ use crate::tee::encrypted_model::{load_key, DecryptedModel, MemoryDecryptedModel
 pub struct LoadResult {
     /// Time spent loading the model. Zero if the model was already loaded (cache hit).
     pub load_duration: Duration,
+    /// If true, the caller should unload the model after inference completes.
+    /// This is set when `keep_alive = "0"` — the model should be evicted
+    /// immediately after the current request finishes, not before it runs.
+    pub unload_after_use: bool,
 }
 
 /// Ensure a model is loaded before inference.
@@ -28,7 +32,6 @@ pub async fn ensure_loaded(
 ) -> Result<LoadResult> {
     ensure_loaded_with_keep_alive(state, model_name, manifest, backend, None).await
 }
-
 /// Ensure a model is loaded with an optional per-request keep-alive override.
 pub async fn ensure_loaded_with_keep_alive(
     state: &AppState,
@@ -41,6 +44,7 @@ pub async fn ensure_loaded_with_keep_alive(
         state.touch_model(model_name);
         return Ok(LoadResult {
             load_duration: Duration::ZERO,
+            unload_after_use: false,
         });
     }
 
@@ -174,19 +178,20 @@ pub async fn ensure_loaded_with_keep_alive(
         Some(ka) => {
             let duration = parse_keep_alive(ka);
             state.mark_loaded_with_keep_alive(model_name, duration);
-
-            // If keep_alive is "0", immediately schedule unload after request
-            if duration == Duration::ZERO {
-                backend.unload(model_name).await?;
-                state.mark_unloaded(model_name);
-            }
+            let unload_after_use = duration == Duration::ZERO;
+            Ok(LoadResult {
+                load_duration,
+                unload_after_use,
+            })
         }
         None => {
             state.mark_loaded(model_name);
+            Ok(LoadResult {
+                load_duration,
+                unload_after_use: false,
+            })
         }
     }
-
-    Ok(LoadResult { load_duration })
 }
 
 /// Format bytes as a human-readable string for log messages.
@@ -371,7 +376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ensure_loaded_with_keep_alive_zero_unloads_immediately() {
+    async fn test_ensure_loaded_with_keep_alive_zero_unloads_after_use() {
         let state = test_state_with_mock(MockBackend::success());
         let manifest = sample_manifest("zero-model");
         let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
@@ -380,8 +385,10 @@ mod tests {
             ensure_loaded_with_keep_alive(&state, "zero-model", &manifest, &backend, Some("0"))
                 .await;
         assert!(result.is_ok());
-        // keep_alive=0 should immediately unload
-        assert!(!state.is_model_loaded("zero-model"));
+        // keep_alive=0 means unload AFTER inference, not before — model stays loaded here
+        assert!(state.is_model_loaded("zero-model"));
+        // The caller is responsible for unloading after inference
+        assert!(result.unwrap().unload_after_use);
     }
 
     #[tokio::test]

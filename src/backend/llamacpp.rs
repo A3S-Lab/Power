@@ -529,9 +529,13 @@ impl Backend for LlamaCppBackend {
             }
         };
         let num_batch = request.num_batch;
-        let num_thread = request.num_thread;
+        // Per-request num_thread overrides config default; fall back to config if not set
+        let num_thread = request.num_thread.or(self.config.num_thread);
         let num_thread_batch = request.num_thread_batch;
-        let flash_attention = request.flash_attention.unwrap_or(false);
+        // Per-request flash_attention overrides config default
+        let flash_attention = request
+            .flash_attention
+            .unwrap_or(self.config.flash_attention);
         let mirostat = request.mirostat;
         let mirostat_tau = request.mirostat_tau;
         let mirostat_eta = request.mirostat_eta;

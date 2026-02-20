@@ -53,7 +53,7 @@ pub async fn handler(
         }
     };
 
-    if let Err(e) = crate::api::autoload::ensure_loaded_with_keep_alive(
+    let load_result = match crate::api::autoload::ensure_loaded_with_keep_alive(
         &state,
         &model_name,
         &manifest,
@@ -62,8 +62,10 @@ pub async fn handler(
     )
     .await
     {
-        return openai_error("server_error", &e.to_string()).into_response();
-    }
+        Ok(r) => r,
+        Err(e) => return openai_error("server_error", &e.to_string()).into_response(),
+    };
+    let unload_after_use = load_result.unload_after_use;
 
     let backend_request = crate::backend::types::CompletionRequest {
         prompt: request.prompt,
@@ -131,6 +133,8 @@ pub async fn handler(
                 let model_for_usage = model_name.clone();
                 let audit_stream = state.audit.clone();
                 let ctx_audit = ctx.clone();
+                let state_cleanup = state.clone();
+                let model_for_unload = model_name.clone();
 
                 let sse_stream = stream.map(move |chunk| {
                     let data = match chunk {
@@ -194,6 +198,12 @@ pub async fn handler(
                         .await
                         .ok();
                     metrics_cleanup.decrement_active_requests();
+
+                    // Unload model if keep_alive=0 (after inference, not before)
+                    if unload_after_use {
+                        let _ = backend_cleanup.unload(&model_for_unload).await;
+                        state_cleanup.mark_unloaded(&model_for_unload);
+                    }
 
                     // Audit: log successful streaming inference
                     if let Some(ref audit) = audit_stream {
@@ -321,6 +331,12 @@ pub async fn handler(
                 // Request isolation: clean up backend resources
                 backend.cleanup_request(&model_name, &ctx).await.ok();
                 state.metrics.decrement_active_requests();
+
+                // Unload model if keep_alive=0 (after inference, not before)
+                if unload_after_use {
+                    let _ = backend.unload(&model_name).await;
+                    state.mark_unloaded(&model_name);
+                }
 
                 // Audit: log successful inference
                 if let Some(ref audit) = state.audit {
