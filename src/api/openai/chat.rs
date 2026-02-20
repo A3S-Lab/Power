@@ -58,8 +58,14 @@ pub async fn handler(
         }
     };
 
-    if let Err(e) =
-        crate::api::autoload::ensure_loaded(&state, &model_name, &manifest, &backend).await
+    if let Err(e) = crate::api::autoload::ensure_loaded_with_keep_alive(
+        &state,
+        &model_name,
+        &manifest,
+        &backend,
+        request.keep_alive.as_deref(),
+    )
+    .await
     {
         return openai_error("server_error", &e.to_string()).into_response();
     }

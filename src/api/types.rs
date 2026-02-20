@@ -41,6 +41,10 @@ pub struct ChatCompletionRequest {
     /// Accepted for API compatibility; the model decides based on its training.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
+    /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
+    /// Overrides the server default for this request only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_alive: Option<String>,
 }
 
 /// Structured output format specifier.
@@ -169,6 +173,9 @@ pub struct CompletionRequest {
     pub presence_penalty: Option<f32>,
     #[serde(default)]
     pub seed: Option<i64>,
+    /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_alive: Option<String>,
 }
 
 /// OpenAI-compatible text completion response.

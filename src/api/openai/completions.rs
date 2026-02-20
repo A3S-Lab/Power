@@ -53,8 +53,14 @@ pub async fn handler(
         }
     };
 
-    if let Err(e) =
-        crate::api::autoload::ensure_loaded(&state, &model_name, &manifest, &backend).await
+    if let Err(e) = crate::api::autoload::ensure_loaded_with_keep_alive(
+        &state,
+        &model_name,
+        &manifest,
+        &backend,
+        request.keep_alive.as_deref(),
+    )
+    .await
     {
         return openai_error("server_error", &e.to_string()).into_response();
     }
@@ -126,86 +132,83 @@ pub async fn handler(
                 let audit_stream = state.audit.clone();
                 let ctx_audit = ctx.clone();
 
-                let sse_stream = stream
-                    .map(move |chunk| {
-                        let data = match chunk {
-                            Ok(c) => {
-                                if !c.done {
-                                    counter_clone
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    if !ttft_clone.swap(true, std::sync::atomic::Ordering::Relaxed)
-                                    {
-                                        metrics.record_ttft(
-                                            &model_for_metrics,
-                                            start.elapsed().as_secs_f64(),
-                                        );
-                                    }
+                let sse_stream = stream.map(move |chunk| {
+                    let data = match chunk {
+                        Ok(c) => {
+                            if !c.done {
+                                counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if !ttft_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                                    metrics.record_ttft(
+                                        &model_for_metrics,
+                                        start.elapsed().as_secs_f64(),
+                                    );
                                 }
-                                if let Some(pt) = c.prompt_tokens {
-                                    prompt_tokens_clone
-                                        .store(pt, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                let finish_reason = if c.done {
-                                    Some(c.done_reason.unwrap_or_else(|| "stop".to_string()))
-                                } else {
-                                    None
-                                };
-                                let resp = CompletionResponse {
-                                    id: id.clone(),
-                                    object: "text_completion".to_string(),
-                                    created,
-                                    model: model.clone(),
-                                    choices: vec![CompletionChoice {
-                                        index: 0,
-                                        text: c.text,
-                                        finish_reason,
-                                    }],
-                                    usage: Usage {
-                                        prompt_tokens: c.prompt_tokens.unwrap_or(0),
-                                        completion_tokens: 0,
-                                        total_tokens: 0,
-                                    },
-                                };
-                                serde_json::to_string(&resp).unwrap_or_default()
                             }
-                            Err(e) => serde_json::to_string(&serde_json::json!({
-                                "error": { "message": e.to_string() }
-                            }))
-                            .unwrap_or_default(),
-                        };
-                        Ok::<_, Infallible>(Event::default().data(data))
-                    })
-                    .chain(futures::stream::once(async move {
-                        // Record final metrics when stream completes
-                        let duration = start.elapsed().as_secs_f64();
-                        let eval_count = eval_counter.load(std::sync::atomic::Ordering::Relaxed);
-                        let prompt_tokens =
-                            prompt_tokens_shared.load(std::sync::atomic::Ordering::Relaxed);
-                        metrics_done.record_inference_duration(&model_for_done, duration);
-                        metrics_done.record_tokens(&model_for_done, "input", prompt_tokens as u64);
-                        metrics_done.record_tokens(&model_for_done, "output", eval_count as u64);
-
-                        // Request isolation: clean up backend resources
-                        backend_cleanup
-                            .cleanup_request(&model_for_cleanup, &ctx_cleanup)
-                            .await
-                            .ok();
-                        metrics_cleanup.decrement_active_requests();
-
-                        // Audit: log successful streaming inference
-                        if let Some(ref audit) = audit_stream {
-                            audit.log(&AuditEvent::success(
-                                &ctx_audit.request_id,
-                                ctx_audit.auth_id.clone(),
-                                "completion",
-                                Some(model_for_cleanup.clone()),
-                                Some(ctx_audit.elapsed().as_millis() as u64),
-                                Some(eval_count as u64),
-                            ));
+                            if let Some(pt) = c.prompt_tokens {
+                                prompt_tokens_clone.store(pt, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            let finish_reason = if c.done {
+                                Some(c.done_reason.unwrap_or_else(|| "stop".to_string()))
+                            } else {
+                                None
+                            };
+                            let resp = CompletionResponse {
+                                id: id.clone(),
+                                object: "text_completion".to_string(),
+                                created,
+                                model: model.clone(),
+                                choices: vec![CompletionChoice {
+                                    index: 0,
+                                    text: c.text,
+                                    finish_reason,
+                                }],
+                                usage: Usage {
+                                    prompt_tokens: c.prompt_tokens.unwrap_or(0),
+                                    completion_tokens: 0,
+                                    total_tokens: 0,
+                                },
+                            };
+                            serde_json::to_string(&resp).unwrap_or_default()
                         }
+                        Err(e) => serde_json::to_string(&serde_json::json!({
+                            "error": { "message": e.to_string() }
+                        }))
+                        .unwrap_or_default(),
+                    };
+                    Ok::<_, Infallible>(Event::default().data(data))
+                });
 
-                        Ok(Event::default().data("[DONE]"))
-                    }));
+                let done_event = futures::stream::once(async move {
+                    // Record final metrics when stream completes
+                    let duration = start.elapsed().as_secs_f64();
+                    let eval_count = eval_counter.load(std::sync::atomic::Ordering::Relaxed);
+                    let prompt_tokens =
+                        prompt_tokens_shared.load(std::sync::atomic::Ordering::Relaxed);
+                    metrics_done.record_inference_duration(&model_for_done, duration);
+                    metrics_done.record_tokens(&model_for_done, "input", prompt_tokens as u64);
+                    metrics_done.record_tokens(&model_for_done, "output", eval_count as u64);
+
+                    // Request isolation: clean up backend resources
+                    backend_cleanup
+                        .cleanup_request(&model_for_cleanup, &ctx_cleanup)
+                        .await
+                        .ok();
+                    metrics_cleanup.decrement_active_requests();
+
+                    // Audit: log successful streaming inference
+                    if let Some(ref audit) = audit_stream {
+                        audit.log(&AuditEvent::success(
+                            &ctx_audit.request_id,
+                            ctx_audit.auth_id.clone(),
+                            "completion",
+                            Some(model_for_cleanup.clone()),
+                            Some(ctx_audit.elapsed().as_millis() as u64),
+                            Some(eval_count as u64),
+                        ));
+                    }
+
+                    Ok(Event::default().data("[DONE]"))
+                });
 
                 // Emit a final usage chunk with rounded token counts before [DONE]
                 // when suppress_token_metrics is active.
@@ -235,7 +238,7 @@ pub async fn handler(
                     futures::stream::empty().right_stream()
                 };
 
-                Sse::new(sse_stream.chain(usage_event))
+                Sse::new(sse_stream.chain(usage_event).chain(done_event))
                     .keep_alive(KeepAlive::default())
                     .into_response()
             } else {

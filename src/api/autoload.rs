@@ -131,6 +131,36 @@ pub async fn ensure_loaded_with_keep_alive(
         load_manifest = manifest.clone();
     }
 
+    // Re-verify model integrity if a hash is configured for this model.
+    // This catches models added after startup (e.g. via pull) that were
+    // never checked at boot time.
+    if let Some(expected_hash) = state.config.model_hashes.get(model_name) {
+        let ok = crate::tee::model_seal::verify_model_integrity(&load_manifest.path, expected_hash)
+            .map_err(|e| {
+                crate::error::PowerError::Config(format!(
+                    "Integrity check failed for model '{model_name}': {e}"
+                ))
+            })?;
+        if !ok {
+            return Err(crate::error::PowerError::Config(format!(
+                "Model '{model_name}' failed SHA-256 integrity check"
+            )));
+        }
+        tracing::debug!(model = %model_name, "Model integrity verified");
+    }
+
+    // Re-verify model signature if a signing key is configured.
+    if let Some(ref signing_key) = state.config.model_signing_key {
+        crate::tee::model_seal::verify_model_signature(&load_manifest.path, signing_key).map_err(
+            |e| {
+                crate::error::PowerError::Config(format!(
+                    "Signature verification failed for model '{model_name}': {e}"
+                ))
+            },
+        )?;
+        tracing::debug!(model = %model_name, "Model signature verified");
+    }
+
     backend.load(&load_manifest).await?;
     let load_duration = load_start.elapsed();
 

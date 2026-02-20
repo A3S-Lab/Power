@@ -247,10 +247,14 @@ fn spawn_keep_alive_reaper(state: state::AppState) {
 
             let expired = state.expired_models();
             for model_name in expired {
-                if let Ok(backend) = state
-                    .backends
-                    .find_for_format(&crate::model::manifest::ModelFormat::Gguf)
-                {
+                // Look up the model's actual format to find the right backend.
+                let format = state
+                    .registry
+                    .get(&model_name)
+                    .map(|m| m.format.clone())
+                    .unwrap_or(crate::model::manifest::ModelFormat::Gguf);
+
+                if let Ok(backend) = state.backends.find_for_format(&format) {
                     if let Err(e) = backend.unload(&model_name).await {
                         tracing::warn!(
                             model = %model_name,
