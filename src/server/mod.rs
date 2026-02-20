@@ -47,6 +47,21 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
         policy.validate_tee_type(tee_type)?;
         tracing::info!("TEE policy validation passed");
 
+        // Validate measurement against expected values if configured
+        if !config.expected_measurements.is_empty() {
+            match provider.attestation_report(None).await {
+                Ok(report) => {
+                    policy.validate_measurement(tee_type, &report.measurement)?;
+                    tracing::info!("TEE measurement validation passed");
+                }
+                Err(e) => {
+                    return Err(PowerError::Config(format!(
+                        "Failed to get attestation report for measurement validation: {e}"
+                    )));
+                }
+            }
+        }
+
         // Verify model integrity against configured hashes
         if !config.model_hashes.is_empty() {
             let verified = tee::model_seal::verify_all_models(&registry, &config.model_hashes)?;

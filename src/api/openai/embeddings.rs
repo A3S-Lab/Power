@@ -4,18 +4,20 @@ use axum::Json;
 
 use crate::api::types::{EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage};
 use crate::server::audit::AuditEvent;
+use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 
 /// POST /v1/embeddings - OpenAI-compatible embedding generation.
 pub async fn handler(
     State(state): State<AppState>,
+    auth_id: Option<axum::Extension<AuthId>>,
     Json(request): Json<EmbeddingRequest>,
 ) -> impl IntoResponse {
     let model_name = request.model.clone();
 
     // Build request context for isolation and audit tracking
-    let ctx = RequestContext::new(None);
+    let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
     state.metrics.increment_active_requests();
 
     let manifest = match state.registry.get(&model_name) {
@@ -98,8 +100,8 @@ pub async fn handler(
                 data,
                 model: model_name,
                 usage: EmbeddingUsage {
-                    prompt_tokens: 0,
-                    total_tokens: 0,
+                    prompt_tokens: input_texts.len() as u32,
+                    total_tokens: input_texts.len() as u32,
                 },
             })
             .into_response()

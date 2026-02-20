@@ -38,6 +38,11 @@ pub fn openai_error(code: &str, message: &str) -> Json<serde_json::Value> {
     }))
 }
 
+/// Round a token count to the nearest 10 for side-channel mitigation.
+pub(super) fn round_tokens(n: u32) -> u32 {
+    ((n + 5) / 10) * 10
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

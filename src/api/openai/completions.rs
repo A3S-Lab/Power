@@ -10,17 +10,14 @@ use zeroize::Zeroize;
 use super::openai_error;
 use crate::api::types::{CompletionChoice, CompletionRequest, CompletionResponse, Usage};
 use crate::server::audit::AuditEvent;
+use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
-
-/// Round a token count to the nearest 10 for side-channel mitigation.
-fn round_tokens(n: u32) -> u32 {
-    ((n + 5) / 10) * 10
-}
 
 /// POST /v1/completions - OpenAI-compatible text completion.
 pub async fn handler(
     State(state): State<AppState>,
+    auth_id: Option<axum::Extension<AuthId>>,
     Json(request): Json<CompletionRequest>,
 ) -> impl IntoResponse {
     let model_name = request.model.clone();
@@ -28,7 +25,7 @@ pub async fn handler(
     let is_stream = request.stream.unwrap_or(false);
 
     // Build request context for isolation and audit tracking
-    let ctx = RequestContext::new(None);
+    let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
     state.metrics.increment_active_requests();
 
     // Privacy: redact inference content from logs
@@ -126,6 +123,8 @@ pub async fn handler(
                 let suppress = state.suppress_token_metrics();
                 let id_for_usage = request_id.clone();
                 let model_for_usage = model_name.clone();
+                let audit_stream = state.audit.clone();
+                let ctx_audit = ctx.clone();
 
                 let sse_stream = stream
                     .map(move |chunk| {
@@ -193,6 +192,18 @@ pub async fn handler(
                             .ok();
                         metrics_cleanup.decrement_active_requests();
 
+                        // Audit: log successful streaming inference
+                        if let Some(ref audit) = audit_stream {
+                            audit.log(&AuditEvent::success(
+                                &ctx_audit.request_id,
+                                ctx_audit.auth_id.clone(),
+                                "completion",
+                                Some(model_for_cleanup.clone()),
+                                Some(ctx_audit.elapsed().as_millis() as u64),
+                                Some(eval_count as u64),
+                            ));
+                        }
+
                         Ok(Event::default().data("[DONE]"))
                     }));
 
@@ -201,8 +212,8 @@ pub async fn handler(
                 let usage_event = if suppress {
                     let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
                     let pt2 = prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
-                    let rp = round_tokens(pt2);
-                    let rc = round_tokens(eval_count2);
+                    let rp = super::round_tokens(pt2);
+                    let rc = super::round_tokens(eval_count2);
                     let resp = CompletionResponse {
                         id: id_for_usage,
                         object: "text_completion".to_string(),
@@ -224,7 +235,7 @@ pub async fn handler(
                     futures::stream::empty().right_stream()
                 };
 
-                Sse::new(usage_event.chain(sse_stream))
+                Sse::new(sse_stream.chain(usage_event))
                     .keep_alive(KeepAlive::default())
                     .into_response()
             } else {
@@ -263,7 +274,6 @@ pub async fn handler(
 
                 let total_duration_secs = start.elapsed().as_secs_f64();
 
-                // Record Phase 6 metrics
                 state
                     .metrics
                     .record_inference_duration(&model_name, total_duration_secs);
@@ -275,7 +285,10 @@ pub async fn handler(
                     .record_tokens(&model_name, "output", completion_tokens as u64);
 
                 let (reported_prompt, reported_completion) = if state.suppress_token_metrics() {
-                    (round_tokens(prompt_tokens), round_tokens(completion_tokens))
+                    (
+                        super::round_tokens(prompt_tokens),
+                        super::round_tokens(completion_tokens),
+                    )
                 } else {
                     (prompt_tokens, completion_tokens)
                 };

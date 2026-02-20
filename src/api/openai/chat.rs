@@ -14,24 +14,22 @@ use crate::api::types::{
 };
 use crate::backend::types::{ChatMessage, ChatRequest, MessageContent};
 use crate::server::audit::AuditEvent;
+use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 
 /// POST /v1/chat/completions - OpenAI-compatible chat completion.
-/// Round a token count to the nearest 10 for side-channel mitigation.
-fn round_tokens(n: u32) -> u32 {
-    ((n + 5) / 10) * 10
-}
 
 pub async fn handler(
     State(state): State<AppState>,
+    auth_id: Option<axum::Extension<AuthId>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
     let model_name = request.model.clone();
     let request_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
 
     // Build request context for isolation and audit tracking
-    let ctx = RequestContext::new(None);
+    let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
     state.metrics.increment_active_requests();
 
     // Privacy: redact inference content from logs
@@ -177,6 +175,8 @@ pub async fn handler(
                 let model_for_cleanup = model_name.clone();
                 let backend_cleanup = backend.clone();
                 let ctx_cleanup = ctx.clone();
+                let audit_stream = state.audit.clone();
+                let ctx_audit = ctx.clone();
 
                 let suppress = state.suppress_token_metrics();
                 let id_for_done = id.clone();
@@ -238,8 +238,8 @@ pub async fn handler(
                     let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
                     let prompt_tokens2 =
                         prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
-                    let rp = round_tokens(prompt_tokens2);
-                    let rc = round_tokens(eval_count2);
+                    let rp = super::round_tokens(prompt_tokens2);
+                    let rc = super::round_tokens(eval_count2);
                     let usage_chunk = ChatCompletionChunk {
                         id: id_for_done,
                         object: "chat.completion.chunk".to_string(),
@@ -279,6 +279,18 @@ pub async fn handler(
                         .await
                         .ok();
                     metrics_cleanup.decrement_active_requests();
+
+                    // Audit: log successful streaming inference
+                    if let Some(ref audit) = audit_stream {
+                        audit.log(&AuditEvent::success(
+                            &ctx_audit.request_id,
+                            ctx_audit.auth_id.clone(),
+                            "chat",
+                            Some(model_for_cleanup.clone()),
+                            Some(ctx_audit.elapsed().as_millis() as u64),
+                            Some(eval_count as u64),
+                        ));
+                    }
 
                     Ok::<_, Infallible>(Event::default().data("[DONE]"))
                 });
@@ -332,7 +344,6 @@ pub async fn handler(
 
                 let total_duration_secs = start.elapsed().as_secs_f64();
 
-                // Record Phase 6 metrics
                 state
                     .metrics
                     .record_inference_duration(&model_name, total_duration_secs);
@@ -346,7 +357,10 @@ pub async fn handler(
                 // Round token counts to nearest 10 when suppress_token_metrics is enabled
                 // to prevent exact token-count side-channel inference.
                 let (reported_prompt, reported_completion) = if state.suppress_token_metrics() {
-                    (round_tokens(prompt_tokens), round_tokens(completion_tokens))
+                    (
+                        super::round_tokens(prompt_tokens),
+                        super::round_tokens(completion_tokens),
+                    )
                 } else {
                     (prompt_tokens, completion_tokens)
                 };
@@ -865,17 +879,17 @@ mod tests {
 
     #[test]
     fn test_round_tokens_rounds_to_nearest_10() {
-        assert_eq!(super::round_tokens(0), 0);
-        assert_eq!(super::round_tokens(1), 0);
-        assert_eq!(super::round_tokens(4), 0);
-        assert_eq!(super::round_tokens(5), 10);
-        assert_eq!(super::round_tokens(9), 10);
-        assert_eq!(super::round_tokens(10), 10);
-        assert_eq!(super::round_tokens(14), 10);
-        assert_eq!(super::round_tokens(15), 20);
-        assert_eq!(super::round_tokens(99), 100);
-        assert_eq!(super::round_tokens(100), 100);
-        assert_eq!(super::round_tokens(1234), 1230);
-        assert_eq!(super::round_tokens(1235), 1240);
+        assert_eq!(super::super::round_tokens(0), 0);
+        assert_eq!(super::super::round_tokens(1), 0);
+        assert_eq!(super::super::round_tokens(4), 0);
+        assert_eq!(super::super::round_tokens(5), 10);
+        assert_eq!(super::super::round_tokens(9), 10);
+        assert_eq!(super::super::round_tokens(10), 10);
+        assert_eq!(super::super::round_tokens(14), 10);
+        assert_eq!(super::super::round_tokens(15), 20);
+        assert_eq!(super::super::round_tokens(99), 100);
+        assert_eq!(super::super::round_tokens(100), 100);
+        assert_eq!(super::super::round_tokens(1234), 1230);
+        assert_eq!(super::super::round_tokens(1235), 1240);
     }
 }
