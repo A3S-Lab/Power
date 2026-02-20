@@ -56,7 +56,7 @@ pub async fn handler(
         Ok(b) => b,
         Err(e) => {
             state.metrics.decrement_active_requests();
-            return openai_error("server_error", &e.to_string()).into_response();
+            return openai_error("backend_unavailable", &e.to_string()).into_response();
         }
     };
 
@@ -70,7 +70,7 @@ pub async fn handler(
     .await
     {
         Ok(r) => r,
-        Err(e) => return openai_error("server_error", &e.to_string()).into_response(),
+        Err(e) => return openai_error("model_load_failed", &e.to_string()).into_response(),
     };
     let unload_after_use = load_result.unload_after_use;
 
@@ -482,7 +482,7 @@ mod tests {
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -515,6 +515,7 @@ mod tests {
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -614,6 +615,7 @@ mod tests {
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -955,6 +957,37 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         // Model should be unloaded after inference when keep_alive=0
+        assert!(!state.is_model_loaded("test"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_keep_alive_zero_streaming_unloads_after_inference() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true,"keep_alive":"0"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Consume the full SSE stream so the done_event fires
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        // Model should be unloaded after the stream is fully consumed
         assert!(!state.is_model_loaded("test"));
 
         std::env::remove_var("A3S_POWER_HOME");

@@ -51,7 +51,7 @@ pub async fn handler(
         Ok(b) => b,
         Err(e) => {
             state.metrics.decrement_active_requests();
-            return openai_error("server_error", &e.to_string()).into_response();
+            return openai_error("backend_unavailable", &e.to_string()).into_response();
         }
     };
 
@@ -65,7 +65,7 @@ pub async fn handler(
     .await
     {
         Ok(r) => r,
-        Err(e) => return openai_error("server_error", &e.to_string()).into_response(),
+        Err(e) => return openai_error("model_load_failed", &e.to_string()).into_response(),
     };
     let unload_after_use = load_result.unload_after_use;
 
@@ -392,6 +392,7 @@ mod tests {
             .body(Body::from(r#"{"model":"nonexistent","prompt":"hi"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -422,6 +423,7 @@ mod tests {
             .body(Body::from(r#"{"model":"st-model","prompt":"hi"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -519,6 +521,7 @@ mod tests {
             .body(Body::from(r#"{"model":"test","prompt":"hi"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();

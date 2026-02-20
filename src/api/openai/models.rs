@@ -76,12 +76,14 @@ pub async fn delete_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    // Unload from backend if currently loaded
+    // Unload from backend if currently loaded, using the model's actual format.
     if state.is_model_loaded(&name) {
-        if let Ok(backend) = state
-            .backends
-            .find_for_format(&crate::model::manifest::ModelFormat::Gguf)
-        {
+        let format = state
+            .registry
+            .get(&name)
+            .map(|m| m.format.clone())
+            .unwrap_or(ModelFormat::Gguf);
+        if let Ok(backend) = state.backends.find_for_format(&format) {
             let _ = backend.unload(&name).await;
         }
         state.mark_unloaded(&name);
@@ -148,11 +150,29 @@ pub async fn register_handler(
 
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
+    // Compute SHA-256 at registration time so integrity checks work in TEE mode.
+    let sha256 = match crate::model::storage::compute_sha256_file(&path) {
+        Ok(h) => h,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!("failed to hash model file: {e}"),
+                        "type": "server_error",
+                        "code": "hash_failed"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
     let manifest = ModelManifest {
         name: req.name.clone(),
         format: ModelFormat::Gguf,
         size,
-        sha256: String::new(),
+        sha256,
         parameters: None,
         created_at: chrono::Utc::now(),
         path,
@@ -229,7 +249,11 @@ pub async fn pull_handler(
             Ok(manifest) => {
                 let name = manifest.name.clone();
                 let created = manifest.created_at.timestamp();
-                // Register the pulled manifest (ignore duplicate errors on force).
+                // On force re-pull, remove the stale entry first so the new
+                // manifest replaces it rather than being silently dropped.
+                if req.force {
+                    let _ = state.registry.remove(&name);
+                }
                 let _ = state.registry.register(manifest);
                 (
                     StatusCode::OK,

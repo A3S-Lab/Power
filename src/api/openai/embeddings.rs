@@ -2,6 +2,7 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::Json;
 
+use super::openai_error;
 use crate::api::types::{EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage};
 use crate::server::audit::AuditEvent;
 use crate::server::auth::AuthId;
@@ -24,13 +25,10 @@ pub async fn handler(
         Ok(m) => m,
         Err(_) => {
             state.metrics.decrement_active_requests();
-            return Json(serde_json::json!({
-                "error": {
-                    "message": format!("model '{}' not found", model_name),
-                    "type": "invalid_request_error",
-                    "code": "model_not_found"
-                }
-            }))
+            return openai_error(
+                "model_not_found",
+                &format!("model '{model_name}' not found"),
+            )
             .into_response();
         }
     };
@@ -39,14 +37,7 @@ pub async fn handler(
         Ok(b) => b,
         Err(e) => {
             state.metrics.decrement_active_requests();
-            return Json(serde_json::json!({
-                "error": {
-                    "message": e.to_string(),
-                    "type": "server_error",
-                    "code": "backend_unavailable"
-                }
-            }))
-            .into_response();
+            return openai_error("backend_unavailable", &e.to_string()).into_response();
         }
     };
 
@@ -61,14 +52,8 @@ pub async fn handler(
     {
         Ok(r) => r,
         Err(e) => {
-            return Json(serde_json::json!({
-                "error": {
-                    "message": e.to_string(),
-                    "type": "server_error",
-                    "code": "model_load_failed"
-                }
-            }))
-            .into_response();
+            state.metrics.decrement_active_requests();
+            return openai_error("model_load_failed", &e.to_string()).into_response();
         }
     };
     let unload_after_use = load_result.unload_after_use;
@@ -135,14 +120,7 @@ pub async fn handler(
                     e.to_string(),
                 ));
             }
-            Json(serde_json::json!({
-                "error": {
-                    "message": e.to_string(),
-                    "type": "server_error",
-                    "code": "inference_failed"
-                }
-            }))
-            .into_response()
+            openai_error("inference_failed", &e.to_string()).into_response()
         }
     }
 }
@@ -168,6 +146,7 @@ mod tests {
             .body(Body::from(r#"{"model":"nonexistent","input":"hello"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -197,6 +176,7 @@ mod tests {
             .body(Body::from(r#"{"model":"st-model","input":"hello"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();

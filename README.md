@@ -359,8 +359,12 @@ Error messages that echo prompt content are also sanitized via `sanitize_error()
 |--------|------|-------------|
 | `POST` | `/v1/chat/completions` | Chat completion (streaming/non-streaming, vision, tools, thinking) |
 | `POST` | `/v1/completions` | Text completion (streaming/non-streaming) |
-| `GET` | `/v1/models` | List available models |
 | `POST` | `/v1/embeddings` | Generate embeddings |
+| `GET` | `/v1/models` | List all registered models |
+| `GET` | `/v1/models/:name` | Get a single model by name |
+| `POST` | `/v1/models` | Register a local model file (`name`, `path` body fields) |
+| `DELETE` | `/v1/models/:name` | Unload and deregister a model |
+| `POST` | `/v1/models/pull` | Pull a model from a remote registry (`name`, `force` body fields) |
 | `GET` | `/v1/attestation` | TEE attestation report (returns 503 if TEE not enabled); optional `?nonce=<hex>` binds client nonce; optional `?model=<name>` binds model SHA-256 into `report_data` |
 
 ### Examples
@@ -521,7 +525,7 @@ cargo build -p a3s-power                          # Debug (default: mistralrs)
 cargo build -p a3s-power --release                 # Release
 cargo build -p a3s-power --no-default-features --features llamacpp  # With llama.cpp
 
-# Test (671+ tests)
+# Test (673+ tests)
 cargo test -p a3s-power --lib -- --test-threads=1
 cargo test -p a3s-power --test integration
 

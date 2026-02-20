@@ -72,7 +72,7 @@ pub trait Backend: Send + Sync {
     ///
     /// Default: not supported. Backends that can fetch models should override this.
     async fn pull(&self, name: &str) -> Result<ModelManifest> {
-        Err(PowerError::Config(format!(
+        Err(PowerError::BackendNotAvailable(format!(
             "backend '{}' does not support model pull (requested: '{name}')",
             self.name()
         )))
