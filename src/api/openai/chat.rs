@@ -162,9 +162,11 @@ pub async fn handler(
 
                 let eval_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
                 let counter_clone = eval_counter.clone();
+                let eval_counter2 = eval_counter.clone();
                 let prompt_tokens_shared =
                     std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
                 let prompt_tokens_clone = prompt_tokens_shared.clone();
+                let prompt_tokens_shared2 = prompt_tokens_shared.clone();
                 let ttft_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let ttft_clone = ttft_recorded.clone();
                 let metrics = state.metrics.clone();
@@ -176,6 +178,9 @@ pub async fn handler(
                 let backend_cleanup = backend.clone();
                 let ctx_cleanup = ctx.clone();
 
+                let suppress = state.suppress_token_metrics();
+                let id_for_done = id.clone();
+                let model_for_done2 = model.clone();
                 let content_stream = stream.map(move |chunk| {
                     let event_data = match chunk {
                         Ok(c) => {
@@ -227,6 +232,37 @@ pub async fn handler(
                     Ok::<_, Infallible>(Event::default().data(event_data))
                 });
 
+                // Emit a final usage chunk before [DONE] when suppress_token_metrics is active,
+                // so clients receive rounded counts instead of exact values.
+                let usage_event = if suppress {
+                    let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
+                    let prompt_tokens2 =
+                        prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
+                    let rp = round_tokens(prompt_tokens2);
+                    let rc = round_tokens(eval_count2);
+                    let usage_chunk = ChatCompletionChunk {
+                        id: id_for_done,
+                        object: "chat.completion.chunk".to_string(),
+                        created,
+                        model: model_for_done2,
+                        choices: vec![],
+                    };
+                    // Attach usage as extra field via serde_json
+                    let mut val = serde_json::to_value(&usage_chunk).unwrap_or_default();
+                    val["usage"] = serde_json::json!({
+                        "prompt_tokens": rp,
+                        "completion_tokens": rc,
+                        "total_tokens": rp + rc
+                    });
+                    let data = serde_json::to_string(&val).unwrap_or_default();
+                    futures::stream::once(futures::future::ready(Ok::<_, Infallible>(
+                        Event::default().data(data),
+                    )))
+                    .left_stream()
+                } else {
+                    futures::stream::empty().right_stream()
+                };
+
                 let done_event = futures::stream::once(async move {
                     // Record final metrics when stream completes
                     let duration = start.elapsed().as_secs_f64();
@@ -247,7 +283,10 @@ pub async fn handler(
                     Ok::<_, Infallible>(Event::default().data("[DONE]"))
                 });
 
-                let full_stream = first_event.chain(content_stream).chain(done_event);
+                let full_stream = first_event
+                    .chain(content_stream)
+                    .chain(usage_event)
+                    .chain(done_event);
 
                 Sse::new(full_stream)
                     .keep_alive(KeepAlive::default())

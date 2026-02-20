@@ -14,7 +14,15 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/chat/completions", post(chat::handler))
         .route("/completions", post(completions::handler))
-        .route("/models", get(models::handler))
+        .route(
+            "/models",
+            get(models::list_handler).post(models::register_handler),
+        )
+        .route("/models/pull", post(models::pull_handler))
+        .route(
+            "/models/:name",
+            get(models::get_handler).delete(models::delete_handler),
+        )
         .route("/embeddings", post(embeddings::handler))
         .route("/attestation", get(attestation::handler))
 }

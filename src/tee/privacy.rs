@@ -21,6 +21,7 @@ pub trait PrivacyProvider: Send + Sync {
 /// Default privacy provider controlled by config.
 pub struct DefaultPrivacyProvider {
     redact: bool,
+    suppress_tokens: bool,
 }
 
 impl DefaultPrivacyProvider {
@@ -28,7 +29,16 @@ impl DefaultPrivacyProvider {
         if redact {
             tracing::info!("Privacy: log redaction enabled");
         }
-        Self { redact }
+        Self {
+            redact,
+            suppress_tokens: redact,
+        }
+    }
+
+    /// Override token-metric suppression independently of log redaction.
+    pub fn with_suppress_token_metrics(mut self, suppress: bool) -> Self {
+        self.suppress_tokens = suppress;
+        self
     }
 }
 
@@ -52,7 +62,7 @@ impl PrivacyProvider for DefaultPrivacyProvider {
     }
 
     fn should_suppress_token_metrics(&self) -> bool {
-        self.redact
+        self.suppress_tokens
     }
 }
 
@@ -438,6 +448,22 @@ mod tests {
     #[test]
     fn test_default_privacy_provider_no_suppress_when_not_redacting() {
         let provider = DefaultPrivacyProvider::new(false);
+        assert!(!provider.should_suppress_token_metrics());
+    }
+
+    #[test]
+    fn test_with_suppress_token_metrics_independent_of_redact() {
+        // suppress_tokens can be enabled without enabling log redaction
+        let provider = DefaultPrivacyProvider::new(false).with_suppress_token_metrics(true);
+        assert!(!provider.should_redact());
+        assert!(provider.should_suppress_token_metrics());
+    }
+
+    #[test]
+    fn test_with_suppress_token_metrics_can_disable_when_redacting() {
+        // suppress_tokens can be disabled even when redact is on
+        let provider = DefaultPrivacyProvider::new(true).with_suppress_token_metrics(false);
+        assert!(provider.should_redact());
         assert!(!provider.should_suppress_token_metrics());
     }
 }

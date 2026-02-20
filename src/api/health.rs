@@ -14,6 +14,8 @@ pub struct TeeStatus {
     #[serde(rename = "type")]
     pub tee_type: TeeType,
     pub models_verified: bool,
+    /// Whether hardware attestation reports can be generated.
+    pub attestation_available: bool,
 }
 
 /// Response body for GET /health.
@@ -29,10 +31,15 @@ pub struct HealthResponse {
 
 /// GET /health — server health check.
 pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
-    let tee = state.tee_provider.as_ref().map(|provider| TeeStatus {
-        enabled: true,
-        tee_type: provider.tee_type(),
-        models_verified: !state.config.model_hashes.is_empty(),
+    let tee = state.tee_provider.as_ref().map(|provider| {
+        let tee_type = provider.tee_type();
+        let attestation_available = matches!(tee_type, TeeType::SevSnp | TeeType::Tdx);
+        TeeStatus {
+            enabled: true,
+            tee_type,
+            models_verified: !state.config.model_hashes.is_empty(),
+            attestation_available,
+        }
     });
 
     let resp = HealthResponse {
@@ -174,6 +181,7 @@ mod tests {
                 enabled: true,
                 tee_type: TeeType::Simulated,
                 models_verified: true,
+                attestation_available: false,
             }),
         };
         let json = serde_json::to_string(&resp).unwrap();
@@ -189,9 +197,24 @@ mod tests {
             enabled: true,
             tee_type: TeeType::SevSnp,
             models_verified: false,
+            attestation_available: true,
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"type\":\"sev-snp\""));
         assert!(json.contains("\"models_verified\":false"));
+        assert!(json.contains("\"attestation_available\":true"));
+    }
+
+    #[tokio::test]
+    async fn test_health_tee_simulated_attestation_not_available() {
+        let state = test_state_tee();
+        let resp = handler(State(state)).await.into_response();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
+        let tee = health.tee.unwrap();
+        // Simulated TEE does not provide real attestation
+        assert!(!tee.attestation_available);
     }
 }

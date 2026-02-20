@@ -67,6 +67,16 @@ pub trait Backend: Send + Sync {
     async fn cleanup_request(&self, _model_name: &str, _ctx: &RequestContext) -> Result<()> {
         Ok(())
     }
+
+    /// Pull (download) a model by name from a remote registry.
+    ///
+    /// Default: not supported. Backends that can fetch models should override this.
+    async fn pull(&self, name: &str) -> Result<ModelManifest> {
+        Err(PowerError::Config(format!(
+            "backend '{}' does not support model pull (requested: '{name}')",
+            self.name()
+        )))
+    }
 }
 
 /// Registry of available inference backends.

@@ -64,6 +64,12 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
         None
     };
 
+    // Auto-enable in-memory decryption in TEE mode for maximum security
+    if config.tee_mode && !config.in_memory_decrypt {
+        tracing::info!("TEE mode: auto-enabling in_memory_decrypt");
+        config.in_memory_decrypt = true;
+    }
+
     let bind_addr = config.bind_address();
     let config = Arc::new(config);
 
@@ -78,9 +84,10 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
     if let Some(provider) = tee_provider {
         app_state = app_state.with_tee_provider(provider);
     }
-    if config.tee_mode || config.redact_logs {
-        let privacy =
-            tee::privacy::DefaultPrivacyProvider::new(config.redact_logs || config.tee_mode);
+    if config.tee_mode || config.redact_logs || config.suppress_token_metrics {
+        let redact = config.redact_logs || config.tee_mode;
+        let privacy = tee::privacy::DefaultPrivacyProvider::new(redact)
+            .with_suppress_token_metrics(config.suppress_token_metrics || redact);
         app_state = app_state.with_privacy(Arc::new(privacy));
     }
 
