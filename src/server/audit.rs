@@ -87,6 +87,14 @@ impl AuditEvent {
 pub trait AuditLogger: Send + Sync {
     /// Record an audit event.
     fn log(&self, event: &AuditEvent);
+
+    /// Flush any buffered events to the underlying sink.
+    ///
+    /// Called during graceful shutdown to ensure no events are lost.
+    /// Default implementation is a no-op for loggers that write synchronously.
+    fn flush(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// Writes audit events as JSON Lines to a file.
@@ -148,8 +156,14 @@ impl AuditLogger for NoopAuditLogger {
 /// File I/O is offloaded to a dedicated Tokio task so `log()` never blocks
 /// the calling async worker. Uses an unbounded channel so callers never block.
 pub struct AsyncJsonLinesAuditLogger {
-    sender: tokio::sync::mpsc::UnboundedSender<String>,
+    sender: tokio::sync::mpsc::UnboundedSender<AsyncAuditMsg>,
     path: PathBuf,
+}
+
+/// Messages sent to the background writer task.
+enum AsyncAuditMsg {
+    Line(String),
+    Flush(tokio::sync::oneshot::Sender<()>),
 }
 
 impl AsyncJsonLinesAuditLogger {
@@ -163,15 +177,23 @@ impl AsyncJsonLinesAuditLogger {
             .append(true)
             .open(&path)?;
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AsyncAuditMsg>();
 
         tokio::spawn(async move {
             use tokio::io::AsyncWriteExt;
             let mut async_file = tokio::fs::File::from_std(file);
-            while let Some(line) = rx.recv().await {
-                let _ = async_file.write_all(line.as_bytes()).await;
-                let _ = async_file.write_all(b"\n").await;
-                let _ = async_file.flush().await;
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    AsyncAuditMsg::Line(line) => {
+                        let _ = async_file.write_all(line.as_bytes()).await;
+                        let _ = async_file.write_all(b"\n").await;
+                        let _ = async_file.flush().await;
+                    }
+                    AsyncAuditMsg::Flush(reply) => {
+                        let _ = async_file.flush().await;
+                        let _ = reply.send(());
+                    }
+                }
             }
         });
 
@@ -187,9 +209,20 @@ impl AsyncJsonLinesAuditLogger {
 impl AuditLogger for AsyncJsonLinesAuditLogger {
     fn log(&self, event: &AuditEvent) {
         if let Ok(line) = serde_json::to_string(event) {
-            // send() is non-blocking — never blocks the async runtime
-            let _ = self.sender.send(line);
+            let _ = self.sender.send(AsyncAuditMsg::Line(line));
         }
+    }
+
+    fn flush(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<()>> + Send + '_>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.sender.send(AsyncAuditMsg::Flush(tx));
+        Box::pin(async move {
+            rx.await.map_err(|_| {
+                crate::error::PowerError::Server(
+                    "Audit logger background task exited before flush completed".to_string(),
+                )
+            })
+        })
     }
 }
 
@@ -358,5 +391,37 @@ mod tests {
         let after = Utc::now();
         assert!(event.timestamp >= before);
         assert!(event.timestamp <= after);
+    }
+
+    #[tokio::test]
+    async fn test_async_logger_flush_waits_for_pending_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("flush_test.jsonl");
+        let logger = AsyncJsonLinesAuditLogger::open(log_path.clone()).unwrap();
+
+        for i in 0..10 {
+            let event = AuditEvent::success(
+                &format!("req-{i}"),
+                None,
+                "chat",
+                Some("model".to_string()),
+                None,
+                None,
+            );
+            logger.log(&event);
+        }
+
+        // flush() must wait until all 10 events are written
+        logger.flush().await.unwrap();
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 10, "expected 10 lines after flush, got {}", lines.len());
+    }
+
+    #[tokio::test]
+    async fn test_noop_logger_flush_is_ok() {
+        let logger = NoopAuditLogger;
+        assert!(logger.flush().await.is_ok());
     }
 }

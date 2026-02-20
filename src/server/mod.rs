@@ -143,6 +143,7 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
     // Spawn background keep_alive reaper task
     spawn_keep_alive_reaper(app_state.clone());
 
+    let app_state_for_shutdown = app_state.clone();
     let app = router::build(app_state.clone());
 
     // Start TLS server in a background task if configured.
@@ -164,10 +165,7 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
     tracing::info!("Server listening on {bind_addr}");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-            tracing::info!("Shutdown signal received, draining connections");
-        })
+        .with_graceful_shutdown(shutdown_signal(app_state_for_shutdown))
         .await
         .map_err(|e| PowerError::Server(format!("Server error: {e}")))?;
 
@@ -237,6 +235,65 @@ async fn spawn_tls_server(
     });
 
     Ok(())
+}
+
+/// Wait for SIGTERM or Ctrl-C, then perform graceful shutdown cleanup.
+///
+/// Cleanup order (TEE security requirements):
+/// 1. Unload all loaded models — triggers RAII zeroize of decrypted weights
+/// 2. Flush audit log — ensures no events are lost on shutdown
+async fn shutdown_signal(state: state::AppState) {
+    // Wait for either SIGTERM (systemd/Kubernetes) or Ctrl-C
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+        tokio::select! {
+            _ = sigterm.recv() => {
+                tracing::info!("SIGTERM received, starting graceful shutdown");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Ctrl-C received, starting graceful shutdown");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("Ctrl-C received, starting graceful shutdown");
+    }
+
+    // Unload all models to trigger RAII cleanup (zeroize decrypted weights)
+    let loaded = state.loaded_model_names();
+    if !loaded.is_empty() {
+        tracing::info!(count = loaded.len(), "Unloading all models before shutdown");
+        for model_name in &loaded {
+            let format = state
+                .registry
+                .get(model_name)
+                .map(|m| m.format.clone())
+                .unwrap_or(crate::model::manifest::ModelFormat::Gguf);
+            if let Ok(backend) = state.backends.find_for_format(&format) {
+                if let Err(e) = backend.unload(model_name).await {
+                    tracing::warn!(model = %model_name, "Failed to unload model on shutdown: {e}");
+                }
+            }
+            state.mark_unloaded(model_name);
+            tracing::info!(model = %model_name, "Model unloaded on shutdown");
+        }
+    }
+
+    // Flush audit log to ensure no events are lost
+    if let Some(ref audit) = state.audit {
+        if let Err(e) = audit.flush().await {
+            tracing::warn!("Failed to flush audit log on shutdown: {e}");
+        } else {
+            tracing::info!("Audit log flushed");
+        }
+    }
+
+    tracing::info!("Graceful shutdown complete");
 }
 
 /// Spawn a background task that periodically checks for models whose keep_alive
