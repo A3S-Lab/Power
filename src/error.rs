@@ -42,6 +42,9 @@ pub enum PowerError {
 
     #[error("Signature verification failed for model {model}: {reason}")]
     SignatureVerificationFailed { model: String, reason: String },
+
+    #[error("Attestation verification failed: {0}")]
+    AttestationVerificationFailed(String),
 }
 
 pub type Result<T> = std::result::Result<T, PowerError>;

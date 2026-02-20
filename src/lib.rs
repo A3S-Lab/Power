@@ -6,3 +6,4 @@ pub mod error;
 pub mod model;
 pub mod server;
 pub mod tee;
+pub mod verify;

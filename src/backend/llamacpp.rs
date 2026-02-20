@@ -31,6 +31,7 @@ use super::Backend;
 /// Matches Ollama's default. Using the model's full `n_ctx_train` (e.g. 128K for
 /// llama3.2) would allocate a massive KV cache that can OOM on machines with
 /// limited memory. Users can override with `--num-ctx` or the `num_ctx` API field.
+#[allow(dead_code)]
 const DEFAULT_CTX_SIZE: u32 = 2048;
 
 /// Whether a model was loaded for inference or embedding.

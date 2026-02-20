@@ -670,6 +670,7 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 - [x] Rate limiting — token-bucket middleware (`rate_limit_rps`) + concurrency cap (`max_concurrent_requests`) on `/v1/*`; returns `429` with OpenAI-style error
 - [x] Model-attestation binding — `build_report_data(nonce, model_hash)` layout `[nonce(32)][sha256(32)]`; `TeeProvider::attestation_report_with_model()` default impl; `GET /v1/attestation?model=<name>` ties attestation to specific model
 - [x] Embedding model support — `ModelFormat::HuggingFace` variant; `MistralRsBackend` loads HF embedding models via `EmbeddingModelBuilder` with local path; `POST /v1/embeddings` fully functional; register with `format=huggingface`
+- [x] Client attestation verification SDK — `verify` module with `verify_report()`, `verify_nonce_binding()`, `verify_model_hash_binding()`, `verify_measurement()`; `HardwareVerifier` trait for pluggable hardware signature verification; `a3s-power-verify` CLI binary
 
 ## License
 
