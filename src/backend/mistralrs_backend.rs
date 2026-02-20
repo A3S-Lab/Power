@@ -25,6 +25,9 @@ use super::Backend;
 pub struct MistralRsBackend {
     #[cfg(feature = "mistralrs")]
     models: tokio::sync::RwLock<std::collections::HashMap<String, LoadedModel>>,
+    /// Embedding models loaded via EmbeddingModelBuilder (HuggingFace format).
+    #[cfg(feature = "mistralrs")]
+    embedding_models: tokio::sync::RwLock<std::collections::HashMap<String, Arc<mistralrs::Model>>>,
     #[allow(dead_code)]
     config: Arc<PowerConfig>,
 }
@@ -43,6 +46,8 @@ impl MistralRsBackend {
         Self {
             #[cfg(feature = "mistralrs")]
             models: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            #[cfg(feature = "mistralrs")]
+            embedding_models: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             config,
         }
     }
@@ -60,11 +65,16 @@ impl Backend for MistralRsBackend {
     }
 
     fn supports(&self, format: &ModelFormat) -> bool {
-        matches!(format, ModelFormat::Gguf)
+        matches!(format, ModelFormat::Gguf | ModelFormat::HuggingFace)
     }
 
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {
         tracing::info!(model = %manifest.name, path = %manifest.path.display(), "Loading model via mistral.rs");
+
+        // HuggingFace embedding models use a separate builder and map.
+        if manifest.format == ModelFormat::HuggingFace {
+            return self.load_embedding_model(manifest).await;
+        }
 
         // Extract the directory and filename from the manifest path
         let model_dir = manifest
@@ -136,6 +146,9 @@ impl Backend for MistralRsBackend {
     async fn unload(&self, model_name: &str) -> Result<()> {
         if self.models.write().await.remove(model_name).is_some() {
             tracing::info!(model = model_name, "Model unloaded");
+        }
+        if self.embedding_models.write().await.remove(model_name).is_some() {
+            tracing::info!(model = model_name, "Embedding model unloaded");
         }
         Ok(())
     }
@@ -353,31 +366,70 @@ impl Backend for MistralRsBackend {
     async fn embed(
         &self,
         model_name: &str,
-        _request: EmbeddingRequest,
+        request: EmbeddingRequest,
     ) -> Result<EmbeddingResponse> {
-        // For embeddings, mistralrs uses a separate EmbeddingModelBuilder.
-        // Since our Backend trait loads models via `load()` which uses GgufModelBuilder,
-        // we need to send an embedding request through the loaded model's runner.
-        // However, mistralrs's high-level Model API doesn't directly expose embedding
-        // for GGUF text models. We'll use the lower-level request API.
-        let _model = {
-            let models = self.models.read().await;
+        use mistralrs::EmbeddingRequestBuilder;
+
+        if request.input.is_empty() {
+            return Ok(EmbeddingResponse { embeddings: vec![] });
+        }
+
+        let model = {
+            let models = self.embedding_models.read().await;
             models
                 .get(model_name)
-                .map(|m| Arc::clone(&m.model))
+                .map(|m| Arc::clone(m))
                 .ok_or_else(|| {
-                    PowerError::InferenceFailed(format!("Model '{model_name}' not loaded"))
+                    PowerError::InferenceFailed(format!(
+                        "Embedding model '{model_name}' not loaded. \
+                         Register it with format=huggingface and load it first."
+                    ))
                 })?
         };
 
-        // For now, embeddings through GGUF text models are not directly supported
-        // by mistralrs's high-level API. Users should use a dedicated embedding model.
-        // This matches the reality that most GGUF models are text generation models.
-        Err(PowerError::InferenceFailed(
-            "Embedding generation via GGUF models is not yet supported with the mistral.rs backend. \
-             Use a dedicated embedding model or enable the `llamacpp` feature for embedding support."
-                .to_string(),
-        ))
+        let embeddings = model
+            .generate_embeddings(
+                EmbeddingRequestBuilder::new().add_prompts(request.input.iter().map(|s| s.as_str())),
+            )
+            .await
+            .map_err(|e| PowerError::InferenceFailed(format!("Embedding generation failed: {e}")))?;
+
+        Ok(EmbeddingResponse { embeddings })
+    }
+}
+
+// Private helpers for the mistralrs backend (not part of the Backend trait).
+#[cfg(feature = "mistralrs")]
+impl MistralRsBackend {
+    /// Load a HuggingFace embedding model via EmbeddingModelBuilder.
+    ///
+    /// `manifest.path` must point to the local model directory containing
+    /// `config.json`, `tokenizer.json`, and safetensors weight files.
+    async fn load_embedding_model(&self, manifest: &ModelManifest) -> Result<()> {
+        let model_id = manifest.name.clone();
+
+        let mut builder = mistralrs::EmbeddingModelBuilder::new(&model_id)
+            .with_token_source(mistralrs::TokenSource::None)
+            .from_hf_cache_path(manifest.path.clone());
+
+        if self.config.gpu.gpu_layers == 0 {
+            builder = builder.with_force_cpu();
+        }
+
+        let model = builder.build().await.map_err(|e| {
+            PowerError::InferenceFailed(format!(
+                "Failed to load embedding model '{}' via mistral.rs: {e}",
+                manifest.name
+            ))
+        })?;
+
+        self.embedding_models
+            .write()
+            .await
+            .insert(manifest.name.clone(), Arc::new(model));
+
+        tracing::info!(model = %manifest.name, "Embedding model loaded successfully via mistral.rs");
+        Ok(())
     }
 }
 
@@ -635,5 +687,49 @@ mod tests {
         };
         let result = backend.embed("test", request).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_supports_huggingface() {
+        let backend = MistralRsBackend::new(test_config());
+        assert!(backend.supports(&ModelFormat::HuggingFace));
+    }
+
+    #[tokio::test]
+    async fn test_embed_empty_input_returns_empty() {
+        // Without a loaded embedding model, embed() should fail with "not loaded".
+        // But with empty input it should short-circuit before the model lookup.
+        // This test verifies the empty-input fast path.
+        #[cfg(feature = "mistralrs")]
+        {
+            let backend = MistralRsBackend::new(test_config());
+            let request = EmbeddingRequest { input: vec![] };
+            let result = backend.embed("any-model", request).await;
+            assert!(result.is_ok());
+            assert!(result.unwrap().embeddings.is_empty());
+        }
+        #[cfg(not(feature = "mistralrs"))]
+        {
+            // Stub always returns BackendNotAvailable
+            let backend = MistralRsBackend::new(test_config());
+            let request = EmbeddingRequest { input: vec![] };
+            let result = backend.embed("any-model", request).await;
+            assert!(result.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_embed_model_not_loaded_returns_error() {
+        #[cfg(feature = "mistralrs")]
+        {
+            let backend = MistralRsBackend::new(test_config());
+            let request = EmbeddingRequest {
+                input: vec!["hello".to_string()],
+            };
+            let result = backend.embed("nonexistent-embedding-model", request).await;
+            assert!(result.is_err());
+            let msg = result.unwrap_err().to_string();
+            assert!(msg.contains("not loaded"), "error: {msg}");
+        }
     }
 }

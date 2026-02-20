@@ -141,12 +141,18 @@ pub async fn register_handler(
 ) -> impl IntoResponse {
     let path = std::path::PathBuf::from(&req.path);
 
+    let format = match req.format.as_deref().unwrap_or("gguf") {
+        "safetensors" => ModelFormat::SafeTensors,
+        "huggingface" => ModelFormat::HuggingFace,
+        _ => ModelFormat::Gguf,
+    };
+
     if !path.exists() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": {
-                    "message": format!("file not found: {}", req.path),
+                    "message": format!("path not found: {}", req.path),
                     "type": "invalid_request_error",
                     "code": "file_not_found"
                 }
@@ -155,29 +161,43 @@ pub async fn register_handler(
             .into_response();
     }
 
-    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-
-    // Compute SHA-256 at registration time so integrity checks work in TEE mode.
-    let sha256 = match crate::model::storage::compute_sha256_file(&path) {
-        Ok(h) => h,
-        Err(e) => {
+    // HuggingFace models are directories; skip SHA-256 (no single file to hash).
+    // For file-based formats, compute SHA-256 for TEE integrity checks.
+    let (size, sha256) = if format == ModelFormat::HuggingFace {
+        if !path.is_dir() {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "error": {
-                        "message": format!("failed to hash model file: {e}"),
-                        "type": "server_error",
-                        "code": "hash_failed"
+                        "message": format!("huggingface model path must be a directory: {}", req.path),
+                        "type": "invalid_request_error",
+                        "code": "not_a_directory"
                     }
                 })),
             )
                 .into_response();
         }
-    };
-
-    let format = match req.format.as_deref().unwrap_or("gguf") {
-        "safetensors" => ModelFormat::SafeTensors,
-        _ => ModelFormat::Gguf,
+        let size = dir_size(&path);
+        (size, String::new())
+    } else {
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let sha256 = match crate::model::storage::compute_sha256_file(&path) {
+            Ok(h) => h,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": format!("failed to hash model file: {e}"),
+                            "type": "server_error",
+                            "code": "hash_failed"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        (size, sha256)
     };
 
     let manifest = ModelManifest {
@@ -223,6 +243,24 @@ pub async fn register_handler(
         )
             .into_response(),
     }
+}
+
+/// Compute total size of a directory by summing all file sizes.
+fn dir_size(path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                dir_size(&p)
+            } else {
+                std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
+            }
+        })
+        .sum()
 }
 
 /// Request body for POST /v1/models/pull.
@@ -594,6 +632,79 @@ mod tests {
             manifest.format,
             crate::model::manifest::ModelFormat::SafeTensors
         );
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_register_model_huggingface_format() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // HuggingFace models are directories
+        let model_dir = dir.path().join("my-embedding-model");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("config.json"), b"{}").unwrap();
+        std::fs::write(model_dir.join("tokenizer.json"), b"{}").unwrap();
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state.clone());
+        let body = serde_json::json!({
+            "name": "my-embedding",
+            "path": model_dir.to_str().unwrap(),
+            "format": "huggingface"
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/models")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let manifest = state.registry.get("my-embedding").unwrap();
+        assert_eq!(
+            manifest.format,
+            crate::model::manifest::ModelFormat::HuggingFace
+        );
+        // SHA-256 is empty for directory-based models
+        assert!(manifest.sha256.is_empty());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_register_model_huggingface_requires_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // Pass a file path instead of a directory
+        let file_path = dir.path().join("model.bin");
+        std::fs::write(&file_path, b"weights").unwrap();
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let body = serde_json::json!({
+            "name": "bad-embedding",
+            "path": file_path.to_str().unwrap(),
+            "format": "huggingface"
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/models")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "not_a_directory");
 
         std::env::remove_var("A3S_POWER_HOME");
     }

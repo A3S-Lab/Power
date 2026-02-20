@@ -57,6 +57,7 @@ Power is built to run inside [a3s-box](https://github.com/A3S-Lab/Box) MicroVMs 
 - **Health + TEE Status**: `GET /health` reports TEE type, attestation status, and model verification state
 - **OpenAI-Compatible API**: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings` — works with any OpenAI SDK
 - **Pure Rust Inference (default)**: GGUF model inference via `mistralrs` (built on candle) — no C++ dependency, ideal for TEE auditing
+- **Embedding Models**: HuggingFace-format embedding models (e.g. Qwen3-Embedding, GTE, NomicBert) loaded via `EmbeddingModelBuilder`; register with `format=huggingface`, call `POST /v1/embeddings`; empty-input fast path returns immediately
 - **llama.cpp Backend (optional)**: GGUF inference via `llama-cpp-2` Rust bindings (feature-gated, requires C++ toolchain)
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Chat Template Engine**: Jinja2-compatible template rendering via `minijinja` (Llama 3, ChatML, Phi, Gemma, custom)
@@ -668,6 +669,7 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 - [x] In-memory decryption config — `in_memory_decrypt` field; `MemoryDecryptedModel` decrypts into `mlock`-pinned RAM, never writes plaintext to disk
 - [x] Rate limiting — token-bucket middleware (`rate_limit_rps`) + concurrency cap (`max_concurrent_requests`) on `/v1/*`; returns `429` with OpenAI-style error
 - [x] Model-attestation binding — `build_report_data(nonce, model_hash)` layout `[nonce(32)][sha256(32)]`; `TeeProvider::attestation_report_with_model()` default impl; `GET /v1/attestation?model=<name>` ties attestation to specific model
+- [x] Embedding model support — `ModelFormat::HuggingFace` variant; `MistralRsBackend` loads HF embedding models via `EmbeddingModelBuilder` with local path; `POST /v1/embeddings` fully functional; register with `format=huggingface`
 
 ## License
 

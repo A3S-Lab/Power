@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 

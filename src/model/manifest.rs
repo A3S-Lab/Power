@@ -81,6 +81,10 @@ pub struct ManifestMessage {
 pub enum ModelFormat {
     Gguf,
     SafeTensors,
+    /// HuggingFace-format model directory (safetensors weights + tokenizer + config).
+    /// Used for embedding models loaded via `EmbeddingModelBuilder`.
+    /// `ModelManifest::path` points to the local model directory.
+    HuggingFace,
 }
 
 impl std::fmt::Display for ModelFormat {
@@ -88,6 +92,7 @@ impl std::fmt::Display for ModelFormat {
         match self {
             ModelFormat::Gguf => write!(f, "GGUF"),
             ModelFormat::SafeTensors => write!(f, "SafeTensors"),
+            ModelFormat::HuggingFace => write!(f, "HuggingFace"),
         }
     }
 }
@@ -209,6 +214,7 @@ mod tests {
     fn test_model_format_display() {
         assert_eq!(ModelFormat::Gguf.to_string(), "GGUF");
         assert_eq!(ModelFormat::SafeTensors.to_string(), "SafeTensors");
+        assert_eq!(ModelFormat::HuggingFace.to_string(), "HuggingFace");
     }
 
     #[test]
@@ -301,11 +307,15 @@ mod tests {
         assert_eq!(gguf_json, "\"gguf\"");
         let st_json = serde_json::to_string(&ModelFormat::SafeTensors).unwrap();
         assert_eq!(st_json, "\"safetensors\"");
+        let hf_json = serde_json::to_string(&ModelFormat::HuggingFace).unwrap();
+        assert_eq!(hf_json, "\"huggingface\"");
 
         let gguf: ModelFormat = serde_json::from_str("\"gguf\"").unwrap();
         assert_eq!(gguf, ModelFormat::Gguf);
         let st: ModelFormat = serde_json::from_str("\"safetensors\"").unwrap();
         assert_eq!(st, ModelFormat::SafeTensors);
+        let hf: ModelFormat = serde_json::from_str("\"huggingface\"").unwrap();
+        assert_eq!(hf, ModelFormat::HuggingFace);
     }
 
     #[test]
