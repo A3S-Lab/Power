@@ -206,6 +206,9 @@ pub struct CompletionChoice {
 pub struct EmbeddingRequest {
     pub model: String,
     pub input: EmbeddingInput,
+    /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_alive: Option<String>,
 }
 
 /// Input to embedding endpoint - single string or array of strings.

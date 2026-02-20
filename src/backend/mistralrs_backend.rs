@@ -94,6 +94,17 @@ impl Backend for MistralRsBackend {
         // Build the GGUF model using mistralrs
         let mut builder = mistralrs::GgufModelBuilder::new(model_dir, vec![model_filename]);
 
+        // Warn about unsupported config fields for this backend
+        if self.config.num_parallel > 1 {
+            tracing::warn!(
+                num_parallel = self.config.num_parallel,
+                "num_parallel > 1 is not supported by the mistral.rs backend; ignored"
+            );
+        }
+        if self.config.num_thread.is_some() {
+            tracing::debug!("num_thread config is not applied at mistral.rs load time");
+        }
+
         // Apply chat template override if available
         if let Some(ref template) = manifest.template_override {
             builder = builder.with_chat_template(template.clone());

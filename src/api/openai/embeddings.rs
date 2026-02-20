@@ -48,18 +48,28 @@ pub async fn handler(
         }
     };
 
-    if let Err(e) =
-        crate::api::autoload::ensure_loaded(&state, &model_name, &manifest, &backend).await
+    let load_result = match crate::api::autoload::ensure_loaded_with_keep_alive(
+        &state,
+        &model_name,
+        &manifest,
+        &backend,
+        request.keep_alive.as_deref(),
+    )
+    .await
     {
-        return Json(serde_json::json!({
-            "error": {
-                "message": e.to_string(),
-                "type": "server_error",
-                "code": "model_load_failed"
-            }
-        }))
-        .into_response();
-    }
+        Ok(r) => r,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "error": {
+                    "message": e.to_string(),
+                    "type": "server_error",
+                    "code": "model_load_failed"
+                }
+            }))
+            .into_response();
+        }
+    };
+    let unload_after_use = load_result.unload_after_use;
 
     let input_texts = request.input.into_vec();
     let backend_request = crate::backend::types::EmbeddingRequest {
@@ -82,6 +92,12 @@ pub async fn handler(
             // Request isolation: clean up backend resources
             backend.cleanup_request(&model_name, &ctx).await.ok();
             state.metrics.decrement_active_requests();
+
+            // Unload model if keep_alive=0 (after inference, not before)
+            if unload_after_use {
+                let _ = backend.unload(&model_name).await;
+                state.mark_unloaded(&model_name);
+            }
 
             // Audit: log successful embedding
             if let Some(ref audit) = state.audit {

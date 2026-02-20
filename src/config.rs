@@ -135,8 +135,9 @@ pub struct PowerConfig {
     pub audit_log_path: Option<std::path::PathBuf>,
 
     // --- Model Signing ---
-    /// Ed25519 public key for model signature verification (hex-encoded, 32 bytes).
-    /// When set, all models must have a corresponding .sig file.
+    /// Ed25519 **verifying** (public) key for model signature verification (hex-encoded, 32 bytes).
+    /// Despite the field name, this is the public key used to *verify* signatures — not a private
+    /// signing key. When set, all models must have a corresponding `.sig` file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_signing_key: Option<String>,
 
