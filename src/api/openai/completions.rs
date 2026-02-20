@@ -223,28 +223,31 @@ pub async fn handler(
                 });
 
                 // Emit a final usage chunk with rounded token counts before [DONE]
-                // when suppress_token_metrics is active.
+                // when suppress_token_metrics is active. Reads are deferred into
+                // an async closure so they execute after sse_stream is fully consumed.
                 let usage_event = if suppress {
-                    let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
-                    let pt2 = prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
-                    let rp = super::round_tokens(pt2);
-                    let rc = super::round_tokens(eval_count2);
-                    let resp = CompletionResponse {
-                        id: id_for_usage,
-                        object: "text_completion".to_string(),
-                        created,
-                        model: model_for_usage,
-                        choices: vec![],
-                        usage: Usage {
-                            prompt_tokens: rp,
-                            completion_tokens: rc,
-                            total_tokens: rp + rc,
-                        },
-                    };
-                    let data = serde_json::to_string(&resp).unwrap_or_default();
-                    futures::stream::once(futures::future::ready(Ok::<_, Infallible>(
-                        Event::default().data(data),
-                    )))
+                    futures::stream::once(async move {
+                        let eval_count2 =
+                            eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
+                        let pt2 =
+                            prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
+                        let rp = super::round_tokens(pt2);
+                        let rc = super::round_tokens(eval_count2);
+                        let resp = CompletionResponse {
+                            id: id_for_usage,
+                            object: "text_completion".to_string(),
+                            created,
+                            model: model_for_usage,
+                            choices: vec![],
+                            usage: Usage {
+                                prompt_tokens: rp,
+                                completion_tokens: rc,
+                                total_tokens: rp + rc,
+                            },
+                        };
+                        let data = serde_json::to_string(&resp).unwrap_or_default();
+                        Ok::<_, Infallible>(Event::default().data(data))
+                    })
                     .left_stream()
                 } else {
                     futures::stream::empty().right_stream()

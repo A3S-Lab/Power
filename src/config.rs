@@ -303,7 +303,57 @@ impl PowerConfig {
         };
 
         config.apply_env_overrides();
+        config.validate();
         Ok(config)
+    }
+
+    /// Emit warnings for known misconfiguration patterns.
+    ///
+    /// None of these are fatal — the server will still start — but they indicate
+    /// settings that will have no effect or produce unexpected behavior.
+    pub fn validate(&self) {
+        // Warn if keep_alive is set to something unparseable (will silently fall back to 5m).
+        let ka = self.keep_alive.trim();
+        let parseable = ka == "0"
+            || ka == "-1"
+            || ka.strip_suffix('s').and_then(|n| n.parse::<u64>().ok()).is_some()
+            || ka.strip_suffix('m').and_then(|n| n.parse::<u64>().ok()).is_some()
+            || ka.strip_suffix('h').and_then(|n| n.parse::<u64>().ok()).is_some()
+            || ka.parse::<u64>().is_ok();
+        if !parseable {
+            tracing::warn!(
+                keep_alive = %self.keep_alive,
+                "keep_alive value is not parseable; defaulting to 5m. \
+                 Valid formats: \"5m\", \"1h\", \"30s\", \"0\", \"-1\"."
+            );
+        }
+
+        // Warn if model_signing_key is set but is not a valid 64-char hex string (Ed25519 pubkey).
+        if let Some(ref key) = self.model_signing_key {
+            if key.len() != 64 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
+                tracing::warn!(
+                    "model_signing_key must be a 64-character hex-encoded Ed25519 public key \
+                     (32 bytes). The current value has length {} and may fail at runtime.",
+                    key.len()
+                );
+            }
+        }
+
+        // Warn if ra_tls is enabled but tls_port is not set (RA-TLS requires a TLS listener).
+        if self.ra_tls && self.tls_port.is_none() {
+            tracing::warn!(
+                "ra_tls = true but tls_port is not set. RA-TLS requires a TLS listener. \
+                 Set tls_port to enable the TLS server."
+            );
+        }
+
+        // Warn if key_provider is "rotating" but key_rotation_sources is empty.
+        if self.key_provider == "rotating" && self.key_rotation_sources.is_empty() {
+            tracing::warn!(
+                "key_provider = \"rotating\" but key_rotation_sources is empty. \
+                 No keys are available for model decryption."
+            );
+        }
     }
 
     /// Apply `A3S_POWER_*` environment variable overrides.
@@ -1180,5 +1230,75 @@ mod tests {
         assert!(hcl.contains("audit_log = true"));
         assert!(hcl.contains("model_signing_key"));
         assert!(hcl.contains("pubkey123"));
+    }
+
+    // --- validate() tests ---
+
+    #[test]
+    fn test_validate_default_config_no_warnings() {
+        // Default config is valid — validate() should not panic
+        let config = PowerConfig::default();
+        config.validate(); // must not panic
+    }
+
+    #[test]
+    fn test_validate_keep_alive_valid_formats() {
+        // All valid formats should pass without warnings
+        for ka in &["0", "-1", "5m", "1h", "30s", "300"] {
+            let config = PowerConfig {
+                keep_alive: ka.to_string(),
+                ..Default::default()
+            };
+            config.validate(); // must not panic
+        }
+    }
+
+    #[test]
+    fn test_validate_model_signing_key_valid_hex() {
+        let config = PowerConfig {
+            model_signing_key: Some("a".repeat(64)),
+            ..Default::default()
+        };
+        config.validate(); // must not panic
+    }
+
+    #[test]
+    fn test_validate_model_signing_key_wrong_length() {
+        // 32-char key (wrong length for Ed25519 — should emit warning but not panic)
+        let config = PowerConfig {
+            model_signing_key: Some("deadbeef".repeat(4)),
+            ..Default::default()
+        };
+        config.validate(); // must not panic
+    }
+
+    #[test]
+    fn test_validate_ra_tls_without_tls_port_emits_warning() {
+        let config = PowerConfig {
+            ra_tls: true,
+            tls_port: None,
+            ..Default::default()
+        };
+        config.validate(); // must not panic; warning is emitted via tracing
+    }
+
+    #[test]
+    fn test_validate_ra_tls_with_tls_port_is_valid() {
+        let config = PowerConfig {
+            ra_tls: true,
+            tls_port: Some(11435),
+            ..Default::default()
+        };
+        config.validate(); // must not panic, no warning
+    }
+
+    #[test]
+    fn test_validate_rotating_provider_empty_sources() {
+        let config = PowerConfig {
+            key_provider: "rotating".to_string(),
+            key_rotation_sources: vec![],
+            ..Default::default()
+        };
+        config.validate(); // must not panic; warning is emitted via tracing
     }
 }

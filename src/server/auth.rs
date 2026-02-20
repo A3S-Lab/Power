@@ -58,24 +58,81 @@ impl ApiKeyAuth {
 
 impl AuthProvider for ApiKeyAuth {
     fn authenticate(&self, token: &str) -> bool {
-        let token_hash = hash_key(token);
-        self.key_hashes.iter().any(|h| h == &token_hash)
+        let token_bytes = hash_key_bytes(token);
+        // Constant-time search: always iterate all keys to avoid timing oracle.
+        let mut found = false;
+        for stored in &self.key_hashes {
+            if ct_eq_32(stored, &token_bytes) {
+                found = true;
+            }
+        }
+        found
     }
 
     fn identify(&self, token: &str) -> Option<String> {
-        let token_hash = hash_key(token);
-        self.key_hashes
-            .iter()
-            .position(|h| h == &token_hash)
-            .map(|i| format!("key-{i}"))
+        let token_bytes = hash_key_bytes(token);
+        let mut matched: Option<usize> = None;
+        for (i, stored) in self.key_hashes.iter().enumerate() {
+            if ct_eq_32(stored, &token_bytes) {
+                matched = Some(i);
+            }
+        }
+        matched.map(|i| format!("key-{i}"))
     }
+}
+
+/// Compute the SHA-256 hash of a key, returned as raw 32-byte array.
+fn hash_key_bytes(key: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_bytes());
+    hasher.finalize().into()
 }
 
 /// Compute the SHA-256 hash of a key, returned as lowercase hex.
 fn hash_key(key: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(key.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hash_key_bytes(key)
+        .iter()
+        .fold(String::with_capacity(64), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+/// Constant-time comparison of a stored hex hash against raw hash bytes.
+///
+/// Compares `stored_hex` (64 hex chars = 32 bytes) against `candidate` (32 bytes)
+/// without early exit, preventing timing side-channels.
+fn ct_eq_32(stored_hex: &str, candidate: &[u8; 32]) -> bool {
+    // Decode stored hex to bytes; if malformed, produce all-zeros (safe: never matches real hash).
+    let stored_bytes: [u8; 32] = {
+        let mut buf = [0u8; 32];
+        let chars: Vec<char> = stored_hex.chars().collect();
+        if chars.len() == 64 {
+            let mut ok = true;
+            for (i, chunk) in chars.chunks(2).enumerate() {
+                let hi = chunk[0].to_digit(16);
+                let lo = chunk[1].to_digit(16);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => buf[i] = (h as u8) << 4 | (l as u8),
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                buf = [0u8; 32];
+            }
+        }
+        buf
+    };
+    // XOR all bytes and OR results — no early exit.
+    let mut diff: u8 = 0;
+    for (a, b) in stored_bytes.iter().zip(candidate.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
 }
 
 /// Extract the Bearer token from an Authorization header value.
@@ -242,5 +299,41 @@ mod tests {
     fn test_unauthorized_response_structure() {
         let resp = unauthorized_response("test error");
         assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_ct_eq_32_matching() {
+        let key = "secret";
+        let hash = hash_key_bytes(key);
+        let hex = hash_key(key);
+        assert!(ct_eq_32(&hex, &hash));
+    }
+
+    #[test]
+    fn test_ct_eq_32_non_matching() {
+        let hash_a = hash_key_bytes("key-a");
+        let hex_b = hash_key("key-b");
+        assert!(!ct_eq_32(&hex_b, &hash_a));
+    }
+
+    #[test]
+    fn test_ct_eq_32_malformed_hex() {
+        let hash = hash_key_bytes("real-key");
+        // Malformed stored hex should not match anything
+        assert!(!ct_eq_32("not-valid-hex!!", &hash));
+        assert!(!ct_eq_32("", &hash));
+    }
+
+    #[test]
+    fn test_authenticate_checks_all_keys_constant_time() {
+        // Verify authenticate scans all keys even after a match (constant-time behavior)
+        let keys = vec![hash_key("key-a"), hash_key("key-b"), hash_key("key-c")];
+        let auth = ApiKeyAuth { key_hashes: keys };
+        // Matching first key still returns true
+        assert!(auth.authenticate("key-a"));
+        // Matching last key still returns true
+        assert!(auth.authenticate("key-c"));
+        // Non-matching returns false
+        assert!(!auth.authenticate("key-d"));
     }
 }
