@@ -18,6 +18,11 @@ use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 
 /// POST /v1/chat/completions - OpenAI-compatible chat completion.
+/// Round a token count to the nearest 10 for side-channel mitigation.
+fn round_tokens(n: u32) -> u32 {
+    ((n + 5) / 10) * 10
+}
+
 pub async fn handler(
     State(state): State<AppState>,
     Json(request): Json<ChatCompletionRequest>,
@@ -299,6 +304,14 @@ pub async fn handler(
                     .metrics
                     .record_tokens(&model_name, "output", completion_tokens as u64);
 
+                // Round token counts to nearest 10 when suppress_token_metrics is enabled
+                // to prevent exact token-count side-channel inference.
+                let (reported_prompt, reported_completion) = if state.suppress_token_metrics() {
+                    (round_tokens(prompt_tokens), round_tokens(completion_tokens))
+                } else {
+                    (prompt_tokens, completion_tokens)
+                };
+
                 let response = ChatCompletionResponse {
                     id: request_id,
                     object: "chat.completion".to_string(),
@@ -322,9 +335,9 @@ pub async fn handler(
                         finish_reason: Some(finish_reason),
                     }],
                     usage: Usage {
-                        prompt_tokens,
-                        completion_tokens,
-                        total_tokens: prompt_tokens + completion_tokens,
+                        prompt_tokens: reported_prompt,
+                        completion_tokens: reported_completion,
+                        total_tokens: reported_prompt + reported_completion,
                     },
                 };
 
@@ -809,5 +822,21 @@ mod tests {
             .to_string();
         // Non-streaming should return JSON, not SSE
         assert!(content_type.contains("application/json"));
+    }
+
+    #[test]
+    fn test_round_tokens_rounds_to_nearest_10() {
+        assert_eq!(super::round_tokens(0), 0);
+        assert_eq!(super::round_tokens(1), 0);
+        assert_eq!(super::round_tokens(4), 0);
+        assert_eq!(super::round_tokens(5), 10);
+        assert_eq!(super::round_tokens(9), 10);
+        assert_eq!(super::round_tokens(10), 10);
+        assert_eq!(super::round_tokens(14), 10);
+        assert_eq!(super::round_tokens(15), 20);
+        assert_eq!(super::round_tokens(99), 100);
+        assert_eq!(super::round_tokens(100), 100);
+        assert_eq!(super::round_tokens(1234), 1230);
+        assert_eq!(super::round_tokens(1235), 1240);
     }
 }

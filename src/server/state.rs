@@ -10,7 +10,7 @@ use crate::server::auth::AuthProvider;
 use crate::server::lock::{read_lock, write_lock};
 use crate::server::metrics::Metrics;
 use crate::tee::attestation::TeeProvider;
-use crate::tee::encrypted_model::DecryptedModel;
+use crate::tee::encrypted_model::{DecryptedModel, MemoryDecryptedModel};
 use crate::tee::key_provider::KeyProvider;
 use crate::tee::privacy::PrivacyProvider;
 
@@ -37,6 +37,8 @@ pub struct AppState {
     loaded_models: Arc<RwLock<HashMap<String, LoadedModelEntry>>>,
     /// RAII handles for decrypted model files. Dropping triggers secure wipe + delete.
     decrypted_models: Arc<RwLock<HashMap<String, DecryptedModel>>>,
+    /// RAII handles for in-memory decrypted models. Dropping triggers zeroize + munlock.
+    memory_decrypted_models: Arc<RwLock<HashMap<String, MemoryDecryptedModel>>>,
 }
 
 impl AppState {
@@ -58,6 +60,7 @@ impl AppState {
             start_time: Instant::now(),
             loaded_models: Arc::new(RwLock::new(HashMap::new())),
             decrypted_models: Arc::new(RwLock::new(HashMap::new())),
+            memory_decrypted_models: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -153,11 +156,27 @@ impl AppState {
             tracing::info!(model = %name, "Cleaning up decrypted model file");
             drop(dec); // triggers DecryptedModel::drop → zero-fill + delete
         }
+        if let Some(mem) = write_lock(&self.memory_decrypted_models).remove(name) {
+            tracing::info!(model = %name, "Cleaning up in-memory decrypted model");
+            drop(mem); // triggers MemoryDecryptedModel::drop → zeroize + munlock
+        }
     }
 
     /// Store a decrypted model handle for RAII cleanup on unload.
     pub fn store_decrypted(&self, name: &str, handle: DecryptedModel) {
         write_lock(&self.decrypted_models).insert(name.to_string(), handle);
+    }
+
+    /// Store an in-memory decrypted model handle for RAII cleanup on unload.
+    pub fn store_memory_decrypted(&self, name: &str, handle: MemoryDecryptedModel) {
+        write_lock(&self.memory_decrypted_models).insert(name.to_string(), handle);
+    }
+
+    /// Whether token counts in responses should be rounded (side-channel mitigation).
+    pub fn suppress_token_metrics(&self) -> bool {
+        self.privacy
+            .as_ref()
+            .map_or(false, |p| p.should_suppress_token_metrics())
     }
 
     /// Update the last-used time for a loaded model.
@@ -491,5 +510,56 @@ mod tests {
             !dec_path.exists(),
             "Decrypted file should be wiped on unload"
         );
+    }
+
+    #[test]
+    fn test_suppress_token_metrics_false_by_default() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        assert!(!state.suppress_token_metrics());
+    }
+
+    #[test]
+    fn test_suppress_token_metrics_true_when_privacy_redacts() {
+        use crate::tee::privacy::DefaultPrivacyProvider;
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        )
+        .with_privacy(Arc::new(DefaultPrivacyProvider::new(true)));
+        assert!(state.suppress_token_metrics());
+    }
+
+    #[test]
+    fn test_store_memory_decrypted_and_cleanup_on_unload() {
+        use crate::tee::encrypted_model::{encrypt_model_file, MemoryDecryptedModel};
+
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        std::fs::write(&plain_path, b"test data for memory decryption").unwrap();
+
+        let mut key = [0u8; 32];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+        let mem_model = MemoryDecryptedModel::decrypt(&enc_path, &key).unwrap();
+        assert!(!mem_model.is_empty());
+
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        state.mark_loaded("mem-model");
+        state.store_memory_decrypted("mem-model", mem_model);
+
+        // Unloading should trigger MemoryDecryptedModel drop → zeroize + munlock
+        state.mark_unloaded("mem-model");
+        assert!(!state.is_model_loaded("mem-model"));
     }
 }

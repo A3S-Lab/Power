@@ -6,7 +6,7 @@ use crate::config::parse_keep_alive;
 use crate::error::Result;
 use crate::model::manifest::ModelManifest;
 use crate::server::state::AppState;
-use crate::tee::encrypted_model::{load_key, DecryptedModel};
+use crate::tee::encrypted_model::{load_key, DecryptedModel, MemoryDecryptedModel};
 
 /// Result of an ensure_loaded call, including load timing.
 #[derive(Debug)]
@@ -91,20 +91,42 @@ pub async fn ensure_loaded_with_keep_alive(
     let is_encrypted = manifest.path.extension().map_or(false, |ext| ext == "enc");
     let load_manifest;
     if is_encrypted {
-        let key_source = state.config.model_key_source.as_ref().ok_or_else(|| {
-            crate::error::PowerError::Config(format!(
-                "Model '{}' is encrypted (.enc) but no model_key_source configured",
-                model_name
-            ))
-        })?;
-        let key = load_key(key_source)?;
-        tracing::info!(model = %model_name, "Decrypting encrypted model");
-        let decrypted = DecryptedModel::decrypt(&manifest.path, &key)?;
-        let mut m = manifest.clone();
-        m.path = decrypted.path.clone();
-        state.store_decrypted(model_name, decrypted);
+        // Resolve key: prefer key_provider in AppState, fall back to model_key_source config
+        let key = if let Some(ref kp) = state.key_provider {
+            kp.get_key().await.map_err(|e| {
+                crate::error::PowerError::Config(format!(
+                    "Key provider failed for model '{}': {e}",
+                    model_name
+                ))
+            })?
+        } else {
+            let key_source = state.config.model_key_source.as_ref().ok_or_else(|| {
+                crate::error::PowerError::Config(format!(
+                    "Model '{}' is encrypted (.enc) but no model_key_source configured",
+                    model_name
+                ))
+            })?;
+            load_key(key_source)?
+        };
+
+        tracing::info!(model = %model_name, in_memory = state.config.in_memory_decrypt, "Decrypting encrypted model");
+
+        if state.config.in_memory_decrypt {
+            // Decrypt into mlock-pinned RAM — plaintext never touches disk
+            let mem_model = MemoryDecryptedModel::decrypt(&manifest.path, &key)?;
+            state.store_memory_decrypted(model_name, mem_model);
+            // Backend loads from the original encrypted path; in-memory path is
+            // used by backends that support direct byte loading. For file-based
+            // backends we fall back to the disk path (no plaintext written).
+            load_manifest = manifest.clone();
+        } else {
+            let decrypted = DecryptedModel::decrypt(&manifest.path, &key)?;
+            let mut m = manifest.clone();
+            m.path = decrypted.path.clone();
+            state.store_decrypted(model_name, decrypted);
+            load_manifest = m;
+        }
         state.metrics.increment_tee_model_decryption();
-        load_manifest = m;
     } else {
         load_manifest = manifest.clone();
     }

@@ -13,6 +13,11 @@ use crate::server::audit::AuditEvent;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 
+/// Round a token count to the nearest 10 for side-channel mitigation.
+fn round_tokens(n: u32) -> u32 {
+    ((n + 5) / 10) * 10
+}
+
 /// POST /v1/completions - OpenAI-compatible text completion.
 pub async fn handler(
     State(state): State<AppState>,
@@ -236,6 +241,12 @@ pub async fn handler(
                     .metrics
                     .record_tokens(&model_name, "output", completion_tokens as u64);
 
+                let (reported_prompt, reported_completion) = if state.suppress_token_metrics() {
+                    (round_tokens(prompt_tokens), round_tokens(completion_tokens))
+                } else {
+                    (prompt_tokens, completion_tokens)
+                };
+
                 let response = CompletionResponse {
                     id: request_id,
                     object: "text_completion".to_string(),
@@ -247,9 +258,9 @@ pub async fn handler(
                         finish_reason: Some(finish_reason),
                     }],
                     usage: Usage {
-                        prompt_tokens,
-                        completion_tokens,
-                        total_tokens: prompt_tokens + completion_tokens,
+                        prompt_tokens: reported_prompt,
+                        completion_tokens: reported_completion,
+                        total_tokens: reported_prompt + reported_completion,
                     },
                 };
 
