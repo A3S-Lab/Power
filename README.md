@@ -57,6 +57,9 @@ Power is built to run inside [a3s-box](https://github.com/A3S-Lab/Box) MicroVMs 
 - **Health + TEE Status**: `GET /health` reports TEE type, attestation status, and model verification state
 - **OpenAI-Compatible API**: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings` — works with any OpenAI SDK
 - **Pure Rust Inference (default)**: GGUF model inference via `mistralrs` (built on candle) — no C++ dependency, ideal for TEE auditing
+- **SafeTensors Inference**: HuggingFace SafeTensors chat models loaded via `TextModelBuilder` with ISQ on-load quantization (default Q8_0); register with `format=safetensors`, configure ISQ via `default_parameters.isq` (e.g. `Q4K`, `Q6K`, `Q8_0`)
+- **Vision/Multimodal Inference**: Vision models (e.g. LLaVA, Phi-3-Vision) loaded via `VisionModelBuilder`; register with `format=vision`; pass base64-encoded images via `images` field or OpenAI-style `content` parts (`image_url`); ISQ quantization supported
+- **True Token-by-Token Streaming**: Chat completions use `stream_chat_request` for per-token SSE delivery; each `Response::Chunk` is forwarded immediately as it is generated
 - **Embedding Models**: HuggingFace-format embedding models (e.g. Qwen3-Embedding, GTE, NomicBert) loaded via `EmbeddingModelBuilder`; register with `format=huggingface`, call `POST /v1/embeddings`; empty-input fast path returns immediately
 - **llama.cpp Backend (optional)**: GGUF inference via `llama-cpp-2` Rust bindings (feature-gated, requires C++ toolchain)
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
@@ -365,7 +368,8 @@ Error messages that echo prompt content are also sanitized via `sanitize_error()
 | `GET` | `/v1/models/:name` | Get a single model by name |
 | `POST` | `/v1/models` | Register a local model file (`name`, `path` body fields) |
 | `DELETE` | `/v1/models/:name` | Unload and deregister a model |
-| `POST` | `/v1/models/pull` | Pull a model from a remote registry (`name`, `force` body fields) |
+| `POST` | `/v1/models/pull` | Pull a GGUF model from HuggingFace Hub (`name`, `force` body fields); streams SSE progress events; requires `hf` feature; concurrent pulls of the same model are deduplicated |
+| `GET` | `/v1/models/pull/:name/status` | Get persisted pull progress for a model (`status`, `completed`, `total`, `error`); requires `hf` feature |
 | `GET` | `/v1/attestation` | TEE attestation report (returns 503 if TEE not enabled); optional `?nonce=<hex>` binds client nonce; optional `?model=<name>` binds model SHA-256 into `report_data` |
 
 ### Examples
@@ -461,6 +465,42 @@ curl http://localhost:11434/v1/chat/completions \
 curl http://localhost:11434/v1/models
 ```
 
+#### Pull a Model from HuggingFace Hub
+
+Requires the `hf` feature (`cargo build --features hf`). Streams SSE progress:
+
+```bash
+# By quantization tag (resolves filename via HF API)
+curl -N http://localhost:11434/v1/models/pull \
+  -H "Content-Type: application/json" \
+  -d '{"name": "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M"}'
+
+# By exact filename
+curl -N http://localhost:11434/v1/models/pull \
+  -H "Content-Type: application/json" \
+  -d '{"name": "bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruct-Q4_K_M.gguf"}'
+
+# Private/gated model with HF token
+curl -N http://localhost:11434/v1/models/pull \
+  -H "Content-Type: application/json" \
+  -d '{"name": "meta-llama/Llama-3.1-8B-Instruct/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "token": "hf_..."}'
+
+# Force re-download
+curl -N http://localhost:11434/v1/models/pull \
+  -H "Content-Type: application/json" \
+  -d '{"name": "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M", "force": true}'
+```
+
+SSE response stream:
+```
+data: {"status":"resuming","offset":104857600,"total":2147483648}   ← if resuming
+data: {"status":"downloading","completed":209715200,"total":2147483648}
+data: {"status":"verifying"}
+data: {"status":"success","id":"bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M","object":"model","created":1234567890}
+```
+
+Interrupted downloads resume automatically on retry — the partial file is identified by a SHA-256 of the download URL and picked up via HTTP `Range` requests. Set `HF_TOKEN` env var as an alternative to passing `token` in the request body.
+
 #### Health Check (with TEE status)
 
 ```bash
@@ -526,7 +566,7 @@ cargo build -p a3s-power                          # Debug (default: mistralrs)
 cargo build -p a3s-power --release                 # Release
 cargo build -p a3s-power --no-default-features --features llamacpp  # With llama.cpp
 
-# Test (681+ tests)
+# Test (755+ tests)
 cargo test -p a3s-power --lib -- --test-threads=1
 cargo test -p a3s-power --test integration
 
@@ -670,8 +710,18 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 - [x] Rate limiting — token-bucket middleware (`rate_limit_rps`) + concurrency cap (`max_concurrent_requests`) on `/v1/*`; returns `429` with OpenAI-style error
 - [x] Model-attestation binding — `build_report_data(nonce, model_hash)` layout `[nonce(32)][sha256(32)]`; `TeeProvider::attestation_report_with_model()` default impl; `GET /v1/attestation?model=<name>` ties attestation to specific model
 - [x] Embedding model support — `ModelFormat::HuggingFace` variant; `MistralRsBackend` loads HF embedding models via `EmbeddingModelBuilder` with local path; `POST /v1/embeddings` fully functional; register with `format=huggingface`
+- [x] SafeTensors inference — `ModelFormat::SafeTensors` variant; `MistralRsBackend` loads local safetensors chat models via `TextModelBuilder` with ISQ on-load quantization; ISQ type configurable via `default_parameters.isq` (Q4_0, Q4K, Q6K, Q8_0, HQQ4, HQQ8, etc.); defaults to Q8_0; register with `format=safetensors`
 - [x] Client attestation verification SDK — `verify` module with `verify_report()`, `verify_nonce_binding()`, `verify_model_hash_binding()`, `verify_measurement()`; `HardwareVerifier` trait for pluggable hardware signature verification; `a3s-power-verify` CLI binary
 - [x] Graceful shutdown — SIGTERM + Ctrl-C handled via `shutdown_signal()`; unloads all models (triggers RAII zeroize of decrypted weights); flushes audit log via `AuditLogger::flush()` before exit; `AsyncJsonLinesAuditLogger` flush uses oneshot channel to wait for background writer to drain
+- [x] HuggingFace Hub model pull — `hf` feature: `POST /v1/models/pull` downloads GGUF models from HuggingFace Hub; supports `owner/repo:Q4_K_M` (resolves filename via HF API) and `owner/repo/file.gguf` (direct); streams SSE progress events (`resuming`, `downloading`, `verifying`, `success`); resume interrupted downloads via HTTP Range requests (deterministic partial filename = SHA-256 of URL); HF token auth for private/gated models via `token` request field or `HF_TOKEN` env var; stores in content-addressed blob store; SHA-256 verified; `force` flag for re-download
+- [x] Pull concurrent control — `Mutex<HashSet>` in `AppState` deduplicates concurrent pulls of the same model; returns `409 Conflict` if a pull is already in progress
+- [x] Pull progress persistence — JSON state files in `~/.a3s/power/pulls/`; `GET /v1/models/pull/:name/status` returns `{status, completed, total, error}`; survives server restarts; throttled writes (every 5%) to minimize disk I/O
+- [x] True token-by-token streaming — `stream_chat_request` replaces non-streaming path; each `Response::Chunk` forwarded immediately via mpsc channel; `Response::Done` sets `finish_reason`
+- [x] Vision/multimodal inference — `ModelFormat::Vision` variant; `MistralRsBackend` loads vision models via `VisionModelBuilder` with ISQ; base64 images accepted via `images` field or OpenAI `image_url` content parts; decoded with `image` + `base64` crates
+
+## Community
+
+Join us on [Discord](https://discord.gg/XVg6Hu6H) for questions, discussions, and updates.
 
 ## License
 
