@@ -47,17 +47,32 @@ pub fn build_tiny_gguf(path: &Path, cfg: &TinyModelConfig) {
     let mut tensor_defs: Vec<(&str, String, usize, usize)> = Vec::new();
 
     // Global tensors
-    tensor_defs.push(("global", "token_embd.weight".into(), cfg.vocab_size, cfg.n_embd));
+    tensor_defs.push((
+        "global",
+        "token_embd.weight".into(),
+        cfg.vocab_size,
+        cfg.n_embd,
+    ));
     tensor_defs.push(("global", "output_norm.weight".into(), 1, cfg.n_embd));
 
     // Per-layer tensors
     for l in 0..cfg.n_layers {
         let layer = |name: &str| format!("blk.{l}.{name}");
         tensor_defs.push(("layer", layer("attn_norm.weight"), 1, cfg.n_embd));
-        tensor_defs.push(("layer", layer("attn_q.weight"), cfg.n_heads * head_dim, cfg.n_embd));
+        tensor_defs.push((
+            "layer",
+            layer("attn_q.weight"),
+            cfg.n_heads * head_dim,
+            cfg.n_embd,
+        ));
         tensor_defs.push(("layer", layer("attn_k.weight"), kv_dim, cfg.n_embd));
         tensor_defs.push(("layer", layer("attn_v.weight"), kv_dim, cfg.n_embd));
-        tensor_defs.push(("layer", layer("attn_output.weight"), cfg.n_embd, cfg.n_heads * head_dim));
+        tensor_defs.push((
+            "layer",
+            layer("attn_output.weight"),
+            cfg.n_embd,
+            cfg.n_heads * head_dim,
+        ));
         tensor_defs.push(("layer", layer("ffn_norm.weight"), 1, cfg.n_embd));
         tensor_defs.push(("layer", layer("ffn_gate.weight"), cfg.n_ff, cfg.n_embd));
         tensor_defs.push(("layer", layer("ffn_up.weight"), cfg.n_ff, cfg.n_embd));
@@ -133,23 +148,48 @@ pub fn build_tiny_gguf(path: &Path, cfg: &TinyModelConfig) {
     }
 
     // Architecture
-    write_kv_string(&mut meta_buf, "general.architecture", "llama"); n_kv += 1;
-    write_kv_u32(&mut meta_buf, "llama.block_count", cfg.n_layers as u32); n_kv += 1;
-    write_kv_u32(&mut meta_buf, "llama.embedding_length", cfg.n_embd as u32); n_kv += 1;
-    write_kv_u32(&mut meta_buf, "llama.attention.head_count", cfg.n_heads as u32); n_kv += 1;
-    write_kv_u32(&mut meta_buf, "llama.attention.head_count_kv", cfg.n_kv_heads as u32); n_kv += 1;
-    write_kv_u32(&mut meta_buf, "llama.context_length", 64); n_kv += 1;
-    write_kv_u32(&mut meta_buf, "llama.feed_forward_length", cfg.n_ff as u32); n_kv += 1;
-    write_kv_f32(&mut meta_buf, "llama.attention.layer_norm_rms_epsilon", 1e-5); n_kv += 1;
-    write_kv_f32(&mut meta_buf, "llama.rope.freq_base", 10000.0); n_kv += 1;
+    write_kv_string(&mut meta_buf, "general.architecture", "llama");
+    n_kv += 1;
+    write_kv_u32(&mut meta_buf, "llama.block_count", cfg.n_layers as u32);
+    n_kv += 1;
+    write_kv_u32(&mut meta_buf, "llama.embedding_length", cfg.n_embd as u32);
+    n_kv += 1;
+    write_kv_u32(
+        &mut meta_buf,
+        "llama.attention.head_count",
+        cfg.n_heads as u32,
+    );
+    n_kv += 1;
+    write_kv_u32(
+        &mut meta_buf,
+        "llama.attention.head_count_kv",
+        cfg.n_kv_heads as u32,
+    );
+    n_kv += 1;
+    write_kv_u32(&mut meta_buf, "llama.context_length", 64);
+    n_kv += 1;
+    write_kv_u32(&mut meta_buf, "llama.feed_forward_length", cfg.n_ff as u32);
+    n_kv += 1;
+    write_kv_f32(
+        &mut meta_buf,
+        "llama.attention.layer_norm_rms_epsilon",
+        1e-5,
+    );
+    n_kv += 1;
+    write_kv_f32(&mut meta_buf, "llama.rope.freq_base", 10000.0);
+    n_kv += 1;
 
     // Tokenizer
-    write_kv_u32(&mut meta_buf, "tokenizer.ggml.bos_token_id", 1); n_kv += 1;
-    write_kv_u32(&mut meta_buf, "tokenizer.ggml.eos_token_id", 2); n_kv += 1;
-    write_kv_string_array(&mut meta_buf, "tokenizer.ggml.tokens", &vocab); n_kv += 1;
+    write_kv_u32(&mut meta_buf, "tokenizer.ggml.bos_token_id", 1);
+    n_kv += 1;
+    write_kv_u32(&mut meta_buf, "tokenizer.ggml.eos_token_id", 2);
+    n_kv += 1;
+    write_kv_string_array(&mut meta_buf, "tokenizer.ggml.tokens", &vocab);
+    n_kv += 1;
 
     let scores: Vec<f32> = (0..cfg.vocab_size).map(|i| -(i as f32)).collect();
-    write_kv_f32_array(&mut meta_buf, "tokenizer.ggml.scores", &scores); n_kv += 1;
+    write_kv_f32_array(&mut meta_buf, "tokenizer.ggml.scores", &scores);
+    n_kv += 1;
 
     // token types: 0=unk, 1=normal for BOS, 3=control for EOS, 1=normal for rest
     let token_types: Vec<i32> = (0..cfg.vocab_size)
@@ -160,7 +200,8 @@ pub fn build_tiny_gguf(path: &Path, cfg: &TinyModelConfig) {
             _ => 1, // normal
         })
         .collect();
-    write_kv_i32_array(&mut meta_buf, "tokenizer.ggml.token_type", &token_types); n_kv += 1;
+    write_kv_i32_array(&mut meta_buf, "tokenizer.ggml.token_type", &token_types);
+    n_kv += 1;
 
     // ── Build tensor descriptors ──
     let n_tensors = tensor_defs.len() as u64;

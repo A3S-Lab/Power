@@ -56,13 +56,7 @@ pub fn matvec(
 ///
 /// Used for embedding lookup: extract row `token_id` from `[vocab_size × n_embd]`.
 /// Only reads the bytes for that one row — does not touch the rest of the tensor.
-pub fn extract_row(
-    tensor_raw: &[u8],
-    ggml_type: u32,
-    n_cols: usize,
-    row: usize,
-    out: &mut [f32],
-) {
+pub fn extract_row(tensor_raw: &[u8], ggml_type: u32, n_cols: usize, row: usize, out: &mut [f32]) {
     let bs = block_size(ggml_type);
     let bb = block_bytes(ggml_type);
     let blocks_per_row = if bs == 1 { n_cols } else { n_cols / bs };

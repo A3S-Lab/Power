@@ -151,26 +151,42 @@ fn forward_pass_streaming(
     let input_ids = params.input_ids;
     let n_embd = cfg.n_embd;
     let mut hidden = vec![0.0f32; n_embd];
-    let mut rng_state: u64 = if params.seed == 0 { 0xDEAD_BEEF_CAFE_1234 } else { params.seed };
+    let mut rng_state: u64 = if params.seed == 0 {
+        0xDEAD_BEEF_CAFE_1234
+    } else {
+        params.seed
+    };
 
     // Get embedding tensor info
     let embd_raw = match gguf.tensor_bytes("token_embd.weight") {
         Ok(r) => r,
-        Err(e) => { let _ = tx.blocking_send(Err(e)); return; }
+        Err(e) => {
+            let _ = tx.blocking_send(Err(e));
+            return;
+        }
     };
     let embd_type = match gguf.tensor_type("token_embd.weight") {
         Ok(t) => t,
-        Err(e) => { let _ = tx.blocking_send(Err(e)); return; }
+        Err(e) => {
+            let _ = tx.blocking_send(Err(e));
+            return;
+        }
     };
 
     // Output norm + logit projection tensors
     let norm_raw = match gguf.tensor_bytes("output_norm.weight") {
         Ok(r) => r,
-        Err(e) => { let _ = tx.blocking_send(Err(e)); return; }
+        Err(e) => {
+            let _ = tx.blocking_send(Err(e));
+            return;
+        }
     };
     let norm_type = match gguf.tensor_type("output_norm.weight") {
         Ok(t) => t,
-        Err(e) => { let _ = tx.blocking_send(Err(e)); return; }
+        Err(e) => {
+            let _ = tx.blocking_send(Err(e));
+            return;
+        }
     };
 
     // output.weight may be tied to token_embd.weight
@@ -191,7 +207,12 @@ fn forward_pass_streaming(
         // Layer-streaming: process each layer, then drop weight references
         for layer in 0..cfg.n_layers {
             if let Err(e) = attention::attention_layer(
-                &mut hidden, gguf, layer, pos, kv_cache.layer_mut(layer), cfg,
+                &mut hidden,
+                gguf,
+                layer,
+                pos,
+                kv_cache.layer_mut(layer),
+                cfg,
             ) {
                 let _ = tx.blocking_send(Err(e));
                 return;
@@ -213,10 +234,18 @@ fn forward_pass_streaming(
 
         // Logit projection
         let mut logits = vec![0.0f32; cfg.vocab_size];
-        matmul::matvec(out_raw, out_type, cfg.vocab_size, n_embd, &normed, &mut logits);
+        matmul::matvec(
+            out_raw,
+            out_type,
+            cfg.vocab_size,
+            n_embd,
+            &normed,
+            &mut logits,
+        );
 
         // Sample
-        let next_token = sample_token(&logits, params.temperature, params.top_p, &mut rng_state) as u32;
+        let next_token =
+            sample_token(&logits, params.temperature, params.top_p, &mut rng_state) as u32;
 
         // Decode and send
         match tokenizer.decode(next_token) {
@@ -252,11 +281,22 @@ fn forward_pass_streaming(
         }
 
         // Forward pass for the new token
-        matmul::extract_row(embd_raw, embd_type, n_embd, next_token as usize, &mut hidden);
+        matmul::extract_row(
+            embd_raw,
+            embd_type,
+            n_embd,
+            next_token as usize,
+            &mut hidden,
+        );
 
         for layer in 0..cfg.n_layers {
             if let Err(e) = attention::attention_layer(
-                &mut hidden, gguf, layer, gen_pos, kv_cache.layer_mut(layer), cfg,
+                &mut hidden,
+                gguf,
+                layer,
+                gen_pos,
+                kv_cache.layer_mut(layer),
+                cfg,
             ) {
                 let _ = tx.blocking_send(Err(e));
                 return;
@@ -381,12 +421,8 @@ impl Backend for PicolmBackend {
                 cfg.eos_token_id,
             );
 
-            let kv_mem = (meta.n_layers as usize)
-                * 2
-                * (meta.n_kv_heads as usize)
-                * head_dim
-                * max_seq
-                * 4;
+            let kv_mem =
+                (meta.n_layers as usize) * 2 * (meta.n_kv_heads as usize) * head_dim * max_seq * 4;
 
             tracing::info!(
                 model = %name,
@@ -453,19 +489,14 @@ impl Backend for PicolmBackend {
         {
             let (gguf, cfg, tokenizer, activation, kv_cache) = {
                 let mut loaded = self.loaded.lock().map_err(|_| {
-                    PowerError::InferenceFailed(
-                        "picolm: loaded models lock poisoned".to_string(),
-                    )
+                    PowerError::InferenceFailed("picolm: loaded models lock poisoned".to_string())
                 })?;
                 let model = loaded
                     .get_mut(model_name)
                     .ok_or_else(|| PowerError::ModelNotFound(model_name.to_string()))?;
 
                 // Get or create KV cache for this session
-                let session_key = request
-                    .session_id
-                    .clone()
-                    .unwrap_or_default();
+                let session_key = request.session_id.clone().unwrap_or_default();
                 let kv = if session_key.is_empty() {
                     // Transient: new cache per request
                     KvCache::new(

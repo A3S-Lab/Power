@@ -305,13 +305,21 @@ mod picolm_tests {
 
         // Run twice, collect output
         let collect = |mut stream: std::pin::Pin<
-            Box<dyn futures::Stream<Item = a3s_power::error::Result<a3s_power::backend::types::ChatResponseChunk>> + Send>,
+            Box<
+                dyn futures::Stream<
+                        Item = a3s_power::error::Result<
+                            a3s_power::backend::types::ChatResponseChunk,
+                        >,
+                    > + Send,
+            >,
         >| async move {
             let mut text = String::new();
             while let Some(chunk) = stream.next().await {
                 let c = chunk.unwrap();
                 text.push_str(&c.content);
-                if c.done { break; }
+                if c.done {
+                    break;
+                }
             }
             text
         };
@@ -332,7 +340,10 @@ mod picolm_tests {
         let s2 = backend.chat("det-model", make_req()).await.unwrap();
         let t2 = collect(s2).await;
 
-        assert_eq!(t1, t2, "Greedy decoding with same seed should be deterministic");
+        assert_eq!(
+            t1, t2,
+            "Greedy decoding with same seed should be deterministic"
+        );
 
         backend.unload("det-model").await.unwrap();
     }

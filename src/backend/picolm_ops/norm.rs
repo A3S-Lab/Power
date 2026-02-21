@@ -34,7 +34,13 @@ pub fn rms_norm(x: &mut [f32], weight_raw: &[u8], weight_ggml_type: u32, eps: f3
 }
 
 /// RMSNorm into a separate output buffer (does not modify `x`).
-pub fn rms_norm_out(x: &[f32], weight_raw: &[u8], weight_ggml_type: u32, eps: f32, out: &mut [f32]) {
+pub fn rms_norm_out(
+    x: &[f32],
+    weight_raw: &[u8],
+    weight_ggml_type: u32,
+    eps: f32,
+    out: &mut [f32],
+) {
     out.copy_from_slice(x);
     rms_norm(out, weight_raw, weight_ggml_type, eps);
 }

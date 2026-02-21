@@ -7,7 +7,7 @@
 //! the same KV head (LLaMA 3, Mistral).
 
 use super::kv_cache::LayerKvCache;
-use super::matmul::matvec;
+use super::matmul::{extract_row, matvec};
 use super::norm::rms_norm_out;
 use super::rope::apply_rope;
 use crate::backend::gguf_stream::GgufFile;
@@ -80,9 +80,21 @@ pub fn attention_layer(
     matvec(k_raw, k_type, kv_dim, n_embd, &normed, &mut k);
     matvec(v_raw, v_type, kv_dim, n_embd, &normed, &mut v);
 
+    // 2b. Add bias if present (Qwen, Phi)
+    add_bias_if_present(gguf, &format!("blk.{layer}.attn_q.bias"), &mut q);
+    add_bias_if_present(gguf, &format!("blk.{layer}.attn_k.bias"), &mut k);
+    add_bias_if_present(gguf, &format!("blk.{layer}.attn_v.bias"), &mut v);
+
     // 3. Apply RoPE to Q and K
     apply_rope(&mut q, n_heads, head_dim, pos, cfg.rope_theta, cfg.rope_dim);
-    apply_rope(&mut k, n_kv_heads, head_dim, pos, cfg.rope_theta, cfg.rope_dim);
+    apply_rope(
+        &mut k,
+        n_kv_heads,
+        head_dim,
+        pos,
+        cfg.rope_theta,
+        cfg.rope_dim,
+    );
 
     // 4. Store K, V in cache
     kv_cache.store(&k, &v);
@@ -127,7 +139,14 @@ pub fn attention_layer(
     let o_type = gguf.tensor_type(&o_name)?;
 
     let mut proj = vec![0.0f32; n_embd];
-    matvec(o_raw, o_type, n_embd, n_heads * head_dim, &attn_out, &mut proj);
+    matvec(
+        o_raw,
+        o_type,
+        n_embd,
+        n_heads * head_dim,
+        &attn_out,
+        &mut proj,
+    );
 
     // Residual connection
     for i in 0..n_embd {
@@ -135,6 +154,20 @@ pub fn attention_layer(
     }
 
     Ok(())
+}
+
+/// Add a bias vector (dequantized from GGUF) to `out` if the tensor exists.
+/// Silently does nothing if the tensor is not found.
+fn add_bias_if_present(gguf: &GgufFile, name: &str, out: &mut [f32]) {
+    if let Ok(bias_raw) = gguf.tensor_bytes(name) {
+        if let Ok(bias_type) = gguf.tensor_type(name) {
+            let mut bias = vec![0.0f32; out.len()];
+            extract_row(bias_raw, bias_type, out.len(), 0, &mut bias);
+            for (o, b) in out.iter_mut().zip(bias.iter()) {
+                *o += b;
+            }
+        }
+    }
 }
 
 /// In-place softmax over a slice.
