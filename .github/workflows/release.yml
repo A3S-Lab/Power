@@ -38,11 +38,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install OpenSSL dev
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
-
       - name: Format check
         run: cargo fmt -- --check
 
@@ -94,12 +89,6 @@ jobs:
       - name: Install cross
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Install OpenSSL dev (Linux native)
-        if: runner.os == 'Linux' && !matrix.use_cross
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
 
       - name: Build release binary
         run: |
@@ -212,11 +201,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install OpenSSL dev
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
 
       - name: Publish
         env:
