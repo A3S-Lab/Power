@@ -21,27 +21,34 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
-    name: Clippy (${{ matrix.features }})
+    name: Clippy (${{ matrix.label }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        features:
-          - ""                    # default (mistralrs)
-          - "--all-features"      # everything
-          - "--no-default-features --features picolm"
-          - "--no-default-features --features hf"
+        include:
+          - label: default
+            features: ""
+          - label: all-features
+            features: "--all-features"
+          - label: picolm
+            features: "--no-default-features --features picolm"
+          - label: hf
+            features: "--no-default-features --features hf"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-${{ matrix.label }}
       - name: Install OpenSSL dev
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
-      - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
+      # Use --lib to avoid compiling examples/benches that need local-path dev-dependencies
+      - run: cargo clippy --lib ${{ matrix.features }} -- -D warnings
 
   test:
     name: Test
@@ -50,27 +57,53 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
       - name: Install OpenSSL dev
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
       - run: cargo test --lib
 
-  build:
-    name: Build (${{ matrix.features }})
-    runs-on: ubuntu-latest
+  cross-build:
+    name: Cross (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        features:
-          - ""
-          - "--all-features"
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Install OpenSSL dev
+        with:
+          key: cross-${{ matrix.target }}
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+      - name: Install OpenSSL dev (Linux native)
+        if: runner.os == 'Linux' && !matrix.use_cross
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
-      - run: cargo build --release ${{ matrix.features }}
+      - name: Build
+        run: |
+          BUILD_CMD="cargo"
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            BUILD_CMD="cross"
+          fi
+          $BUILD_CMD build --release --target ${{ matrix.target }} --features hf,hw-verify
