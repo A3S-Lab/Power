@@ -27,6 +27,6 @@ version = "0.6.0"
 edition = "2021"
 EOF
 
-touch "$SDK_DIR/src/lib.rs"
+printf '' > "$SDK_DIR/src/lib.rs"
 
 echo "Stub created."
