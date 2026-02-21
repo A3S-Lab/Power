@@ -7,9 +7,10 @@
 //!
 //! Gemma uses GeGLU (GELU instead of SiLU). Controlled by `FfnActivation`.
 
+use super::buffers::ForwardBuffers;
 use super::matmul::matvec;
-use super::norm::rms_norm_out;
-use crate::backend::gguf_stream::GgufFile;
+use super::norm::rms_norm_out_f32;
+use super::tensor_cache::{TensorCache, SLOT_FFN_DOWN, SLOT_FFN_GATE, SLOT_FFN_UP};
 use crate::error::Result;
 
 use super::attention::ModelConfig;
@@ -23,69 +24,78 @@ pub enum FfnActivation {
     Gelu,
 }
 
-/// SwiGLU/GeGLU FFN for one transformer layer.
+/// SwiGLU/GeGLU FFN for one transformer layer (optimized).
 ///
-/// Reads gate/up/down weight tensors from GGUF, applies RMSNorm,
-/// computes gated FFN, and adds residual.
-///
-/// `hidden` is the residual stream `[n_embd]`, modified in-place.
+/// Uses pre-dequantized norm weights, a pre-built tensor cache (no HashMap
+/// lookups), and pre-allocated working buffers (no heap allocation in hot path).
 pub fn ffn_layer(
     hidden: &mut [f32],
-    gguf: &GgufFile,
+    tc: &TensorCache,
     layer: u32,
     cfg: &ModelConfig,
     activation: FfnActivation,
+    ffn_norm_w: &[f32],
+    buf: &mut ForwardBuffers,
 ) -> Result<()> {
     let n_embd = cfg.n_embd;
     let n_ff = cfg.n_ff;
 
-    // 1. RMSNorm (pre-FFN)
-    let norm_name = format!("blk.{layer}.ffn_norm.weight");
-    let norm_raw = gguf.tensor_bytes(&norm_name)?;
-    let norm_type = gguf.tensor_type(&norm_name)?;
-    let mut normed = vec![0.0f32; n_embd];
-    rms_norm_out(hidden, norm_raw, norm_type, cfg.norm_eps, &mut normed);
+    // 1. RMSNorm (pre-FFN) — uses pre-dequantized weights, writes into buf.normed
+    rms_norm_out_f32(hidden, ffn_norm_w, cfg.norm_eps, &mut buf.normed);
 
-    // 2. Gate and Up projections
-    let gate_name = format!("blk.{layer}.ffn_gate.weight");
-    let up_name = format!("blk.{layer}.ffn_up.weight");
+    // 2. Gate and Up projections — tensor bytes from cache (zero HashMap lookups)
+    let gate_e = tc.get(layer, SLOT_FFN_GATE);
+    let up_e = tc.get(layer, SLOT_FFN_UP);
 
-    let gate_raw = gguf.tensor_bytes(&gate_name)?;
-    let gate_type = gguf.tensor_type(&gate_name)?;
-    let up_raw = gguf.tensor_bytes(&up_name)?;
-    let up_type = gguf.tensor_type(&up_name)?;
+    let gate_buf = &mut buf.gate[..n_ff];
+    let up_buf = &mut buf.up[..n_ff];
 
-    let mut gate = vec![0.0f32; n_ff];
-    let mut up = vec![0.0f32; n_ff];
+    matvec(
+        gate_e.bytes().unwrap(),
+        gate_e.ggml_type,
+        n_ff,
+        n_embd,
+        &buf.normed,
+        gate_buf,
+    );
+    matvec(
+        up_e.bytes().unwrap(),
+        up_e.ggml_type,
+        n_ff,
+        n_embd,
+        &buf.normed,
+        up_buf,
+    );
 
-    matvec(gate_raw, gate_type, n_ff, n_embd, &normed, &mut gate);
-    matvec(up_raw, up_type, n_ff, n_embd, &normed, &mut up);
-
-    // 3. Activation + element-wise gate
+    // 3. Activation + element-wise gate (in-place on gate_buf)
     match activation {
         FfnActivation::Silu => {
             for i in 0..n_ff {
-                gate[i] = silu(gate[i]) * up[i];
+                gate_buf[i] = silu(gate_buf[i]) * up_buf[i];
             }
         }
         FfnActivation::Gelu => {
             for i in 0..n_ff {
-                gate[i] = gelu(gate[i]) * up[i];
+                gate_buf[i] = gelu(gate_buf[i]) * up_buf[i];
             }
         }
     }
 
     // 4. Down projection
-    let down_name = format!("blk.{layer}.ffn_down.weight");
-    let down_raw = gguf.tensor_bytes(&down_name)?;
-    let down_type = gguf.tensor_type(&down_name)?;
-
-    let mut down = vec![0.0f32; n_embd];
-    matvec(down_raw, down_type, n_embd, n_ff, &gate, &mut down);
+    let down_e = tc.get(layer, SLOT_FFN_DOWN);
+    let down_buf = &mut buf.down[..n_embd];
+    matvec(
+        down_e.bytes().unwrap(),
+        down_e.ggml_type,
+        n_embd,
+        n_ff,
+        gate_buf,
+        down_buf,
+    );
 
     // 5. Residual connection
     for i in 0..n_embd {
-        hidden[i] += down[i];
+        hidden[i] += down_buf[i];
     }
 
     Ok(())

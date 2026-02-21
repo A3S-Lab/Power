@@ -43,9 +43,15 @@ use super::gguf_stream::GgufFile;
 #[cfg(feature = "picolm")]
 use super::picolm_ops::attention::ModelConfig;
 #[cfg(feature = "picolm")]
+use super::picolm_ops::buffers::ForwardBuffers;
+#[cfg(feature = "picolm")]
 use super::picolm_ops::ffn::FfnActivation;
 #[cfg(feature = "picolm")]
 use super::picolm_ops::kv_cache::KvCache;
+#[cfg(feature = "picolm")]
+use super::picolm_ops::rope::RopeTable;
+#[cfg(feature = "picolm")]
+use super::picolm_ops::tensor_cache::TensorCache;
 #[cfg(feature = "picolm")]
 use super::picolm_ops::tokenizer::BpeTokenizer;
 
@@ -57,6 +63,13 @@ struct LoadedModel {
     cfg: ModelConfig,
     tokenizer: Arc<BpeTokenizer>,
     activation: FfnActivation,
+    /// Pre-computed RoPE cos/sin tables (eliminates powf/sin/cos from hot path).
+    rope_table: Arc<RopeTable>,
+    /// Pre-dequantized output norm weights only (`n_embd` floats).
+    /// Per-layer norms are dequantized on-the-fly during the forward pass.
+    output_norm: Arc<Vec<f32>>,
+    /// Per-layer tensor pointer cache — eliminates HashMap lookups from the hot path.
+    tensor_cache: Arc<TensorCache>,
     /// Session-keyed KV caches for multi-turn reuse.
     sessions: HashMap<String, KvCache>,
 }
@@ -123,12 +136,17 @@ fn sample_token(logits: &[f32], temperature: f32, top_p: f32, rng_state: &mut u6
 #[cfg(feature = "picolm")]
 struct GenerateParams<'a> {
     gguf: &'a GgufFile,
+    tensor_cache: &'a TensorCache,
     tokenizer: &'a BpeTokenizer,
     cfg: &'a ModelConfig,
     activation: FfnActivation,
     kv_cache: &'a mut KvCache,
+    rope_table: &'a RopeTable,
+    /// Pre-dequantized output norm only (`n_embd` floats).
+    output_norm: &'a [f32],
     input_ids: &'a [u32],
     max_new_tokens: u32,
+    max_seq_len: usize,
     temperature: f32,
     top_p: f32,
     seed: u64,
@@ -145,19 +163,40 @@ fn forward_pass_streaming(
 
     let cfg = params.cfg;
     let gguf = params.gguf;
+    let tc = params.tensor_cache;
     let tokenizer = params.tokenizer;
     let activation = params.activation;
     let kv_cache = &mut params.kv_cache;
+    let rope_table = params.rope_table;
+    let output_norm_w = params.output_norm;
     let input_ids = params.input_ids;
     let n_embd = cfg.n_embd;
+
+    // Single hidden-state buffer reused across all tokens.
     let mut hidden = vec![0.0f32; n_embd];
+
+    // Pre-allocated working buffers — zero heap allocation in the hot path.
+    let mut buf = ForwardBuffers::new(
+        cfg.n_embd,
+        cfg.n_heads,
+        cfg.n_kv_heads,
+        cfg.head_dim,
+        cfg.n_ff,
+        cfg.vocab_size,
+        params.max_seq_len,
+    );
+
+    // Scratch buffers for on-the-fly norm dequantization (n_embd floats each).
+    let mut attn_norm_buf = vec![0.0f32; n_embd];
+    let mut ffn_norm_buf = vec![0.0f32; n_embd];
+
     let mut rng_state: u64 = if params.seed == 0 {
         0xDEAD_BEEF_CAFE_1234
     } else {
         params.seed
     };
 
-    // Get embedding tensor info
+    // Embedding tensor — looked up once, reused every token.
     let embd_raw = match gguf.tensor_bytes("token_embd.weight") {
         Ok(r) => r,
         Err(e) => {
@@ -173,23 +212,7 @@ fn forward_pass_streaming(
         }
     };
 
-    // Output norm + logit projection tensors
-    let norm_raw = match gguf.tensor_bytes("output_norm.weight") {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx.blocking_send(Err(e));
-            return;
-        }
-    };
-    let norm_type = match gguf.tensor_type("output_norm.weight") {
-        Ok(t) => t,
-        Err(e) => {
-            let _ = tx.blocking_send(Err(e));
-            return;
-        }
-    };
-
-    // output.weight may be tied to token_embd.weight
+    // Output projection tensors — looked up once.
     let (out_raw, out_type) = match gguf.tensor_bytes("output.weight") {
         Ok(r) => (r, gguf.tensor_type("output.weight").unwrap_or(embd_type)),
         Err(_) => (embd_raw, embd_type), // weight tying
@@ -197,60 +220,125 @@ fn forward_pass_streaming(
 
     let start_pos = kv_cache.seq_len();
 
-    // Prefill: process all input tokens (sequential, one at a time)
+    /// Dequantize a single norm weight vector from the GGUF file into `out`.
+    /// Norm tensors are tiny (n_embd floats) so this is microseconds.
+    macro_rules! load_norm {
+        ($name:expr, $buf:expr) => {
+            match gguf.tensor_bytes($name) {
+                Ok(raw) => {
+                    let t = gguf.tensor_type($name).unwrap_or(0);
+                    matmul::extract_row(raw, t, n_embd, 0, $buf);
+                }
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(e));
+                    return;
+                }
+            }
+        };
+    }
+
+    // Prefill: process all input tokens.
+    let prefill_start = std::time::Instant::now();
     for (i, &token_id) in input_ids.iter().enumerate() {
         let pos = start_pos + i;
-
-        // Embedding lookup
         matmul::extract_row(embd_raw, embd_type, n_embd, token_id as usize, &mut hidden);
 
-        // Layer-streaming: process each layer, then drop weight references
         for layer in 0..cfg.n_layers {
+            let attn_name = format!("blk.{layer}.attn_norm.weight");
+            let ffn_name = format!("blk.{layer}.ffn_norm.weight");
+            load_norm!(&attn_name, &mut attn_norm_buf);
+            load_norm!(&ffn_name, &mut ffn_norm_buf);
+
             if let Err(e) = attention::attention_layer(
                 &mut hidden,
-                gguf,
+                tc,
                 layer,
                 pos,
                 kv_cache.layer_mut(layer),
                 cfg,
+                rope_table,
+                &attn_norm_buf,
+                &mut buf,
             ) {
                 let _ = tx.blocking_send(Err(e));
                 return;
             }
-            if let Err(e) = ffn::ffn_layer(&mut hidden, gguf, layer, cfg, activation) {
+            if let Err(e) = ffn::ffn_layer(
+                &mut hidden,
+                tc,
+                layer,
+                cfg,
+                activation,
+                &ffn_norm_buf,
+                &mut buf,
+            ) {
                 let _ = tx.blocking_send(Err(e));
                 return;
             }
+
+            // Release physical pages for this layer's weights + norms.
+            let _ = tc.release_layer(gguf, layer);
+            let _ = gguf.advise_dontneed(&attn_name);
+            let _ = gguf.advise_dontneed(&ffn_name);
         }
     }
+    let prefill_elapsed = prefill_start.elapsed();
+    let prefill_tok_per_sec = if prefill_elapsed.as_secs_f64() > 0.0 {
+        input_ids.len() as f64 / prefill_elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+    tracing::debug!(
+        tokens = input_ids.len(),
+        elapsed_ms = prefill_elapsed.as_millis() as u64,
+        tok_per_sec = format!("{:.1}", prefill_tok_per_sec),
+        "picolm: prefill complete"
+    );
 
-    // Generate tokens
+    // Generate tokens.
     let mut gen_pos = start_pos + input_ids.len();
+    let decode_start = std::time::Instant::now();
+    let mut decode_count = 0u32;
 
     for _step in 0..params.max_new_tokens {
-        // Final norm on hidden state from last prefill/generate step
-        let mut normed = hidden.clone();
-        norm::rms_norm(&mut normed, norm_raw, norm_type, cfg.norm_eps);
+        // Final norm — write into buf.normed_final, then copy to buf.normed_final.
+        buf.normed_final[..n_embd].copy_from_slice(&hidden);
+        norm::rms_norm_f32(&mut buf.normed_final[..n_embd], output_norm_w, cfg.norm_eps);
 
-        // Logit projection
-        let mut logits = vec![0.0f32; cfg.vocab_size];
+        // Logit projection into pre-allocated buf.logits.
         matmul::matvec(
             out_raw,
             out_type,
             cfg.vocab_size,
             n_embd,
-            &normed,
-            &mut logits,
+            &buf.normed_final[..n_embd],
+            &mut buf.logits,
         );
 
-        // Sample
-        let next_token =
-            sample_token(&logits, params.temperature, params.top_p, &mut rng_state) as u32;
+        // Sample.
+        let next_token = sample_token(
+            &buf.logits,
+            params.temperature,
+            params.top_p,
+            &mut rng_state,
+        ) as u32;
 
-        // Decode and send
+        // Decode and send.
+        decode_count += 1;
         match tokenizer.decode(next_token) {
             None => {
-                // EOS
+                let decode_elapsed = decode_start.elapsed();
+                let decode_tok_per_sec = if decode_elapsed.as_secs_f64() > 0.0 {
+                    decode_count as f64 / decode_elapsed.as_secs_f64()
+                } else {
+                    0.0
+                };
+                tracing::debug!(
+                    tokens = decode_count,
+                    elapsed_ms = decode_elapsed.as_millis() as u64,
+                    tok_per_sec = format!("{:.1}", decode_tok_per_sec),
+                    "picolm: decode complete (eos)"
+                );
                 let _ = tx.blocking_send(Ok(ChatResponseChunk {
                     content: String::new(),
                     thinking_content: None,
@@ -275,12 +363,12 @@ fn forward_pass_streaming(
                     }))
                     .is_err()
                 {
-                    return; // receiver dropped
+                    return;
                 }
             }
         }
 
-        // Forward pass for the new token
+        // Forward pass for the new token.
         matmul::extract_row(
             embd_raw,
             embd_type,
@@ -290,27 +378,60 @@ fn forward_pass_streaming(
         );
 
         for layer in 0..cfg.n_layers {
+            let attn_name = format!("blk.{layer}.attn_norm.weight");
+            let ffn_name = format!("blk.{layer}.ffn_norm.weight");
+            load_norm!(&attn_name, &mut attn_norm_buf);
+            load_norm!(&ffn_name, &mut ffn_norm_buf);
+
             if let Err(e) = attention::attention_layer(
                 &mut hidden,
-                gguf,
+                tc,
                 layer,
                 gen_pos,
                 kv_cache.layer_mut(layer),
                 cfg,
+                rope_table,
+                &attn_norm_buf,
+                &mut buf,
             ) {
                 let _ = tx.blocking_send(Err(e));
                 return;
             }
-            if let Err(e) = ffn::ffn_layer(&mut hidden, gguf, layer, cfg, activation) {
+            if let Err(e) = ffn::ffn_layer(
+                &mut hidden,
+                tc,
+                layer,
+                cfg,
+                activation,
+                &ffn_norm_buf,
+                &mut buf,
+            ) {
                 let _ = tx.blocking_send(Err(e));
                 return;
             }
+
+            // Release physical pages for this layer's weights + norms.
+            let _ = tc.release_layer(gguf, layer);
+            let _ = gguf.advise_dontneed(&attn_name);
+            let _ = gguf.advise_dontneed(&ffn_name);
         }
 
         gen_pos += 1;
     }
 
-    // Max tokens reached
+    // Max tokens reached.
+    let decode_elapsed = decode_start.elapsed();
+    let decode_tok_per_sec = if decode_elapsed.as_secs_f64() > 0.0 {
+        decode_count as f64 / decode_elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+    tracing::debug!(
+        tokens = decode_count,
+        elapsed_ms = decode_elapsed.as_millis() as u64,
+        tok_per_sec = format!("{:.1}", decode_tok_per_sec),
+        "picolm: decode complete (max tokens)"
+    );
     let _ = tx.blocking_send(Ok(ChatResponseChunk {
         content: String::new(),
         thinking_content: None,
@@ -421,8 +542,40 @@ impl Backend for PicolmBackend {
                 cfg.eos_token_id,
             );
 
+            // Pre-compute RoPE cos/sin tables (eliminates powf/sin/cos from hot path)
+            let rope_table = RopeTable::new(max_seq, head_dim, rope_dim, cfg.rope_theta);
+
+            // Pre-dequantize only the output norm (used every token).
+            // Per-layer norms are dequantized on-the-fly in the forward pass —
+            // they are tiny (n_embd floats) and take microseconds each.
+            let n_embd = cfg.n_embd;
+            let out_norm_name = "output_norm.weight";
+            let out_norm_raw = gguf.tensor_bytes(out_norm_name).map_err(|e| {
+                PowerError::InferenceFailed(format!("picolm: missing {out_norm_name}: {e}"))
+            })?;
+            let out_norm_type = gguf.tensor_type(out_norm_name).map_err(|e| {
+                PowerError::InferenceFailed(format!("picolm: missing {out_norm_name} type: {e}"))
+            })?;
+            let mut output_norm = vec![0.0f32; n_embd];
+            super::picolm_ops::matmul::extract_row(
+                out_norm_raw,
+                out_norm_type,
+                n_embd,
+                0,
+                &mut output_norm,
+            );
+
+            // Build per-layer tensor pointer cache (eliminates HashMap lookups from hot path).
+            let tensor_cache = super::picolm_ops::tensor_cache::TensorCache::build(
+                &gguf,
+                meta.n_layers,
+            )
+            .map_err(|e| {
+                PowerError::InferenceFailed(format!("picolm: tensor cache build failed: {e}"))
+            })?;
+
             let kv_mem =
-                (meta.n_layers as usize) * 2 * (meta.n_kv_heads as usize) * head_dim * max_seq * 4;
+                (meta.n_layers as usize) * 2 * (meta.n_kv_heads as usize) * head_dim * max_seq * 2; // f16: 2 bytes
 
             tracing::info!(
                 model = %name,
@@ -433,7 +586,7 @@ impl Backend for PicolmBackend {
                 vocab_size = meta.vocab_size,
                 max_seq_len = max_seq,
                 kv_cache_mb = kv_mem / (1024 * 1024),
-                "picolm: model loaded (layer-streaming mode)"
+                "picolm: model loaded (layer-streaming mode, optimized)"
             );
 
             let mut loaded = self.loaded.lock().map_err(|_| {
@@ -446,6 +599,9 @@ impl Backend for PicolmBackend {
                     cfg,
                     tokenizer: Arc::new(tokenizer),
                     activation,
+                    rope_table: Arc::new(rope_table),
+                    output_norm: Arc::new(output_norm),
+                    tensor_cache: Arc::new(tensor_cache),
                     sessions: HashMap::new(),
                 },
             );
@@ -487,7 +643,7 @@ impl Backend for PicolmBackend {
 
         #[cfg(feature = "picolm")]
         {
-            let (gguf, cfg, tokenizer, activation, kv_cache) = {
+            let (gguf, cfg, tokenizer, activation, kv_cache, rope_table, output_norm, tensor_cache) = {
                 let mut loaded = self.loaded.lock().map_err(|_| {
                     PowerError::InferenceFailed("picolm: loaded models lock poisoned".to_string())
                 })?;
@@ -522,6 +678,9 @@ impl Backend for PicolmBackend {
                     Arc::clone(&model.tokenizer),
                     model.activation,
                     kv,
+                    Arc::clone(&model.rope_table),
+                    Arc::clone(&model.output_norm),
+                    Arc::clone(&model.tensor_cache),
                 )
             };
 
@@ -530,6 +689,7 @@ impl Backend for PicolmBackend {
             let temperature = request.temperature.unwrap_or(0.8);
             let top_p = request.top_p.unwrap_or(0.95);
             let max_new_tokens = request.max_tokens.unwrap_or(512);
+            let max_seq_len = self.max_seq_len;
             let seed = request.seed.map(|s| s as u64).unwrap_or(0);
 
             let (tx, rx) = mpsc::channel::<Result<ChatResponseChunk>>(128);
@@ -548,12 +708,16 @@ impl Backend for PicolmBackend {
                 let mut kv = kv_return.lock().unwrap().take().unwrap();
                 let mut params = GenerateParams {
                     gguf: &gguf,
+                    tensor_cache: &tensor_cache,
                     tokenizer: &tokenizer,
                     cfg: &cfg,
                     activation,
                     kv_cache: &mut kv,
+                    rope_table: &rope_table,
+                    output_norm: &output_norm,
                     input_ids: &input_ids,
                     max_new_tokens,
+                    max_seq_len,
                     temperature,
                     top_p,
                     seed,

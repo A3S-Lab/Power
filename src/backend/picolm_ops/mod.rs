@@ -6,6 +6,8 @@
 #[cfg(feature = "picolm")]
 pub mod attention;
 #[cfg(feature = "picolm")]
+pub mod buffers;
+#[cfg(feature = "picolm")]
 pub mod dequant;
 #[cfg(feature = "picolm")]
 pub mod ffn;
@@ -18,4 +20,8 @@ pub mod norm;
 #[cfg(feature = "picolm")]
 pub mod rope;
 #[cfg(feature = "picolm")]
+pub mod tensor_cache;
+#[cfg(feature = "picolm")]
 pub mod tokenizer;
+#[cfg(feature = "picolm")]
+pub mod vec_dot;

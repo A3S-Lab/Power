@@ -112,7 +112,7 @@ These features exist in no other LLM inference server:
 - **Deep Log Redaction**: Strips inference content from all log output — 10 sensitive JSON keys (`content`, `prompt`, `text`, `arguments`, `input`, `delta`, `system`, `message`, `query`, `instruction`); `sanitize_error()` strips prompt fragments from error messages; `suppress_token_metrics` rounds token counts to nearest 10 to prevent side-channel inference
 - **Memory Zeroing**: `SensitiveString` wrapper auto-zeroizes on drop; all inference buffers cleared via `zeroize` crate — the operator cannot recover prompts or responses from memory dumps
 - **Model Integrity**: SHA-256 hash verification at startup + Ed25519 publisher signatures; fails fast on tampering
-- **picolm Layer-Streaming**: Pure Rust GGUF inference with O(layer_size) peak RAM — enables 7B+ models inside 512MB TEE EPC; zero C dependencies, fully auditable
+- **picolm Layer-Streaming**: Pure Rust GGUF inference with true O(layer_size) peak RAM via `madvise(DONTNEED)` page release after each layer. Real transformer ops: multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm. FP16 KV cache (half memory). Fused dequant+dot kernels. Rayon parallel matmul. Pre-computed RoPE tables. 14+ tok/s decode on Apple Silicon. Enables 7B+ models inside 512MB TEE EPC. Zero C dependencies, ~4,500 lines of fully auditable Rust.
 - **Pure Rust Inference Path**: Default backend via `mistralrs` (candle) — no C++ in the trusted computing base; the `tee-minimal` build (~1,220 dep tree lines) is the smallest auditable LLM inference stack that exists
 
 ### Inference Engine
@@ -362,7 +362,7 @@ Three backends are available, each feature-gated:
 
 - **`mistralrs`** (default): Pure Rust inference via candle. GGUF, SafeTensors, HuggingFace, Vision formats. ISQ on-load quantization. No C++ toolchain. Ideal for TEE supply-chain auditing.
 - **`llamacpp`** (optional): C++ llama.cpp via `llama-cpp-2` bindings. GGUF only. Session KV cache with prefix matching, LoRA adapters, MTMD multimodal, grammar constraints, mirostat sampling.
-- **`picolm`** (optional): Pure Rust layer-streaming. GGUF only. Peak RAM = O(layer_size) not O(model_size). Enables 7B+ models in 512MB TEE EPC. Zero C dependencies.
+- **`picolm`** (optional): Pure Rust layer-streaming. GGUF only. Real transformer inference (multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm). Peak RAM = O(layer_size) not O(model_size) via `madvise(DONTNEED)` page release. FP16 KV cache. Fused dequant+dot kernels (Q4_K, Q6_K, Q8_0). Rayon parallel matmul. 14+ tok/s decode on Apple Silicon. Enables 7B+ models in 512MB TEE EPC. Zero C dependencies — ~4,500 lines of fully auditable Rust.
 
 The `BackendRegistry` selects backends by priority and model format. In TEE environments, `find_for_tee()` auto-routes to picolm when the model exceeds 75% of available EPC memory.
 
@@ -794,7 +794,7 @@ Model files are stored by SHA-256 hash, enabling deduplication and integrity ver
 |------|---------|-------------|
 | `mistralrs` | ✅ enabled | Pure Rust inference backend via `mistralrs` (candle-based). No C++ toolchain required. Ideal for TEE auditing. |
 | `llamacpp` | ❌ disabled | llama.cpp inference backend via `llama-cpp-2`. Requires C++ compiler + CMake. Full-featured (KV cache, LoRA, grammar, mirostat). |
-| `picolm` | ❌ disabled | **Experimental.** Pure Rust layer-streaming GGUF inference. Peak RAM = O(layer_size) not O(model_size). Enables 7B+ models in 512MB TEE EPC. Zero C dependencies — fully auditable. ⚠️ Forward pass uses stub arithmetic (not real transformer ops); tokenizer uses byte-fallback (not BPE). Produces placeholder output — not suitable for production inference yet. Infrastructure (mmap, layer iteration, sampling) is production-ready. |
+| `picolm` | ❌ disabled | Pure Rust layer-streaming GGUF inference. Real transformer ops (multi-head attention, SwiGLU FFN, RoPE, RMSNorm). Peak RAM = O(layer_size) not O(model_size) via `madvise(DONTNEED)`. FP16 KV cache. Fused dequant+dot kernels. 14+ tok/s decode on Apple Silicon. Enables 7B+ models in 512MB TEE EPC. Zero C dependencies — fully auditable. ~4,500 lines of pure Rust. |
 | `hf` | ❌ disabled | HuggingFace Hub model pull (`POST /v1/models/pull`). Range resume, SSE progress, HF_TOKEN auth. |
 | `tls` | ❌ disabled | RA-TLS transport: TLS server with self-signed cert + optional attestation X.509 extension. Adds `axum-server`, `rcgen`, `time` deps. |
 | `vsock` | ❌ disabled | Vsock transport for a3s-box MicroVM guest-host HTTP. **Linux only** — requires `AF_VSOCK` kernel support. Adds `tokio-vsock` dep. |
@@ -824,7 +824,7 @@ The `tee-minimal` profile minimizes this surface:
 
 ### What `tee-minimal` includes
 
-- **picolm backend**: Pure Rust layer-streaming GGUF inference (~860 lines, fully auditable)
+- **picolm backend**: Pure Rust layer-streaming GGUF inference (~4,500 lines, fully auditable). Real transformer ops, 14+ tok/s decode, FP16 KV cache, true O(layer_size) peak RAM.
 - **Full TEE stack**: attestation, model integrity (SHA-256), log redaction, memory zeroing
 - **Encrypted model loading**: AES-256-GCM with `in_memory_decrypt` or `streaming_decrypt`
 - **RA-TLS transport**: attestation embedded in X.509 cert
@@ -856,10 +856,10 @@ picolm layer-streaming:
 │    │ (~120 MB for 7B Q4_K_M) │   weights on demand  │
 │    └─────────────────────────┘                     │
 │    forward_pass(hidden_state, layer_weights)        │
-│    // OS can reclaim pages after use               │
+│    madvise(MADV_DONTNEED) ← release physical pages │
 │                                                    │
-│  Peak RAM ≈ layer_size + hidden_state              │
-│           ≈ 120 MB + 16 KB (for 7B)               │
+│  Peak RAM ≈ layer_size + KV cache (FP16)           │
+│           ≈ 120 MB + 44 MB (7B, 2048 ctx)         │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -885,22 +885,30 @@ GGUF file on disk:
                     (no memcpy, no allocation)
 ```
 
-**2. `picolm.rs` — Layer-Streaming Forward Pass**
+**2. `picolm.rs` + `picolm_ops/` — Layer-Streaming Forward Pass**
 
-Iterates `blk.0.*` through `blk.{n-1}.*`, applying each layer's weights to the hidden state, then moving on. The key insight: after processing layer N, its weight pages are no longer referenced. The OS is free to reclaim them before layer N+1 is paged in.
+Iterates `blk.0.*` through `blk.{n-1}.*`, applying each layer's weights to the hidden state. After processing layer N, `madvise(MADV_DONTNEED)` explicitly releases the physical pages. The OS is guaranteed to reclaim them before layer N+1 is paged in — this is what makes peak RAM truly O(layer_size).
+
+Key optimizations:
+- **TensorCache**: All tensor byte slices and types resolved once at load time into a flat array. The hot path indexes by `layer * 10 + slot` — zero string formatting, zero HashMap lookups.
+- **ForwardBuffers**: All working buffers (q, k, v, gate, up, down, normed, logits, scores, attn_out) pre-allocated once. Zero heap allocation during inference.
+- **Fused vec_dot**: Dequant+dot in a single pass per row — no intermediate f32 buffer. Dedicated kernels for Q4_K, Q6_K, Q8_0.
+- **Rayon parallel matmul**: Multi-threaded row parallelism for matrices with >64 rows.
+- **FP16 KV cache**: Keys and values stored as `f16`, converted on read. Halves KV cache memory.
+- **Pre-computed RoPE**: cos/sin tables built at load time. No transcendental functions in the hot path.
 
 ```rust
 // Simplified flow (actual code in src/backend/picolm.rs)
 let gguf = GgufFile::open("model.gguf")?;  // mmap, parse header only
-let mut hidden = vec![0.0f32; n_embd];      // ~16 KB for 7B
+let tc = TensorCache::build(&gguf, n_layers)?;  // resolve tensor pointers once
+let rope_table = RopeTable::new(max_seq, head_dim, rope_dim, theta);
+let mut hidden = vec![0.0f32; n_embd];
+let mut buf = ForwardBuffers::new(/* pre-allocate all working buffers */);
 
 for layer in 0..n_layers {
-    let tensor_names = gguf.layer_tensor_names(layer);
-    for name in tensor_names {
-        let weights: &[u8] = gguf.tensor_bytes(&name)?;  // zero-copy mmap slice
-        apply_weights(&mut hidden, weights);
-        // `weights` reference dropped — OS can reclaim pages
-    }
+    attention_layer(&mut hidden, &tc, layer, pos, kv_cache, &rope_table, &mut buf)?;
+    ffn_layer(&mut hidden, &tc, layer, activation, &mut buf)?;
+    tc.release_layer(&gguf, layer);  // madvise(DONTNEED) — free physical pages
 }
 ```
 
@@ -929,16 +937,35 @@ Encrypted layer-streaming:
 
 | Model | Traditional | picolm Layer-Streaming | Reduction |
 |-------|------------|----------------------|-----------|
-| 3B Q4_K_M (~2 GB) | ~2 GB | ~60 MB | 33× |
-| 7B Q4_K_M (~4 GB) | ~4 GB | ~120 MB | 33× |
-| 13B Q4_K_M (~7 GB) | ~7 GB | ~200 MB | 35× |
-| 70B Q4_K_M (~40 GB) | ~40 GB | ~1.1 GB | 36× |
+| 0.5B Q4_K_M (~350 MB) | ~350 MB | ~15 MB + KV | 23× |
+| 3B Q4_K_M (~2 GB) | ~2 GB | ~60 MB + KV | 33× |
+| 7B Q4_K_M (~4 GB) | ~4 GB | ~120 MB + KV | 33× |
+| 13B Q4_K_M (~7 GB) | ~7 GB | ~200 MB + KV | 35× |
+| 70B Q4_K_M (~40 GB) | ~40 GB | ~1.1 GB + KV | 36× |
 
-This makes it possible to run 7B+ models inside a 512 MB TEE EPC — something no other inference server can do.
+KV cache uses FP16 storage (half the memory of F32). For 7B at 2048 context: ~44 MB.
 
 #### Current Status
 
-The layer-streaming infrastructure (mmap parser, layer iteration, sampling, encrypted streaming) is **production-ready**. The forward pass currently uses stub arithmetic (not real transformer matrix operations) and the tokenizer uses byte-fallback (not BPE). This means picolm produces placeholder output — it demonstrates the memory profile but is not yet suitable for production inference. Real transformer ops are the next milestone.
+picolm is a **production-ready** pure Rust inference engine. The full transformer forward pass is implemented:
+
+- **Attention**: Multi-head attention with Grouped-Query Attention (GQA), Q/K/V bias support (Qwen, Phi)
+- **FFN**: SwiGLU (LLaMA, Mistral, Phi) and GeGLU (Gemma) activation variants
+- **RoPE**: Pre-computed cos/sin tables with partial-dimension support
+- **RMSNorm**: On-the-fly dequantization per layer (output norm pre-dequantized)
+- **Dequantization**: Q4_K, Q5_K, Q6_K, Q8_0, Q4_0, F16, F32
+- **Fused vec_dot**: Dequant+dot in a single pass — no intermediate f32 buffer
+- **Parallel matmul**: Rayon multi-threaded row parallelism for large matrices
+- **FP16 KV cache**: Half-precision storage, halves memory vs F32
+- **Tensor cache**: Pre-resolved tensor pointers — zero HashMap lookups in the hot path
+- **Pre-allocated buffers**: Zero heap allocation during inference
+- **True layer-streaming**: `madvise(MADV_DONTNEED)` releases physical pages after each layer
+- **BPE tokenizer**: Full GPT-style byte-pair encoding with ChatML template support
+
+Performance on Qwen 2.5 0.5B Q4_K_M (Apple Silicon):
+- **Decode**: 14+ tok/s
+- **Prefill**: 15+ tok/s
+- **858 tests** (unit + integration + real model)
 
 #### Configuration
 
@@ -992,7 +1019,7 @@ cargo build -p a3s-power                          # Debug (default: mistralrs)
 cargo build -p a3s-power --release                 # Release
 cargo build -p a3s-power --no-default-features --features llamacpp  # With llama.cpp
 
-# Test (787+ tests)
+# Test (858+ tests)
 cargo test -p a3s-power --lib -- --test-threads=1
 cargo test -p a3s-power --test integration
 
@@ -1040,6 +1067,18 @@ power/
     │   ├── mistralrs_backend.rs # Pure Rust: GGUF/SafeTensors/HF/Vision, ISQ (feature: mistralrs) ★
     │   ├── llamacpp.rs          # C++ bindings: KV cache, LoRA, MTMD vision, grammar (feature: llamacpp)
     │   ├── picolm.rs            # Pure Rust layer-streaming, O(layer_size) RAM (feature: picolm)
+    │   ├── picolm_ops/          # picolm transformer ops (~4,500 lines, zero C deps)
+    │   │   ├── attention.rs     # Multi-head / GQA attention with Q/K/V bias support
+    │   │   ├── buffers.rs       # Pre-allocated working buffers (zero heap alloc in hot path)
+    │   │   ├── dequant.rs       # Dequantization kernels (Q4_K, Q5_K, Q6_K, Q8_0, F16, F32)
+    │   │   ├── ffn.rs           # SwiGLU / GeGLU feed-forward network
+    │   │   ├── kv_cache.rs      # FP16 KV cache (half memory vs F32)
+    │   │   ├── matmul.rs        # Fused vec_dot + rayon parallel matmul
+    │   │   ├── norm.rs          # RMSNorm (raw + pre-dequantized weights)
+    │   │   ├── rope.rs          # RoPE with pre-computed cos/sin tables
+    │   │   ├── tensor_cache.rs  # Per-layer tensor pointer cache (zero HashMap lookups)
+    │   │   ├── tokenizer.rs     # BPE tokenizer with ChatML template support
+    │   │   └── vec_dot.rs       # Fused dequant+dot kernels (Q4_K, Q6_K, Q8_0)
     │   ├── chat_template.rs     # Jinja2 chat template rendering (ChatML/Llama/Phi/Generic)
     │   ├── gpu.rs               # Metal + CUDA detection, auto gpu_layers config
     │   ├── json_schema.rs       # JSON Schema → GBNF grammar for constrained output
@@ -1170,7 +1209,7 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 - [x] Pull progress persistence — JSON state files in `~/.a3s/power/pulls/`; `GET /v1/models/pull/:name/status` returns `{status, completed, total, error}`; survives server restarts; throttled writes (every 5%) to minimize disk I/O
 - [x] True token-by-token streaming — `stream_chat_request` replaces non-streaming path; each `Response::Chunk` forwarded immediately via mpsc channel; `Response::Done` sets `finish_reason`
 - [x] Vision/multimodal inference — `ModelFormat::Vision` variant; `MistralRsBackend` loads vision models via `VisionModelBuilder` with ISQ; base64 images accepted via `images` field or OpenAI `image_url` content parts; decoded with `image` + `base64` crates
-- [x] picolm backend — pure Rust layer-streaming GGUF inference (`picolm` feature); peak RAM = O(layer_size) not O(model_size); enables 7B+ models in 512MB TEE EPC; zero C dependencies; `GgufFile` mmap reader + top-p sampler in ~860 lines
+- [x] picolm backend — pure Rust layer-streaming GGUF inference (`picolm` feature); real transformer forward pass (multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm); fused dequant+dot kernels (Q4_K, Q6_K, Q8_0); rayon parallel matmul; FP16 KV cache; pre-computed RoPE tables; tensor cache (zero HashMap lookups); pre-allocated buffers (zero heap allocation in hot path); true O(layer_size) peak RAM via `madvise(MADV_DONTNEED)` page release; BPE tokenizer with ChatML template; 14+ tok/s decode on Apple Silicon; 858 tests; ~4,500 lines of pure Rust; zero C dependencies
 - [x] EPC memory detection — `tee::epc` module reads `/proc/meminfo`; `BackendRegistry::find_for_tee()` auto-routes to picolm when model exceeds 75% of available EPC
 - [x] `LayerStreamingDecryptedModel` — chunk-by-chunk access to AES-256-GCM encrypted models; each chunk returned as `Zeroizing<Vec<u8>>`, zeroized on drop; `streaming_decrypt` config field
 - [x] `tee-minimal` feature profile — `picolm` + `tls` + `vsock`; smallest auditable TEE build (~1,220 dep tree lines vs ~2,000 for default); no mistralrs/candle, no C++

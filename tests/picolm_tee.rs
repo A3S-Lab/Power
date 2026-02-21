@@ -15,15 +15,9 @@ mod gguf_builder;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Write a minimal valid GGUF v3 file (header only, no tensors).
+/// Write a minimal but valid GGUF file with real tensors (uses the shared builder).
 fn write_fake_gguf(path: &PathBuf) {
-    let mut data: Vec<u8> = Vec::new();
-    data.extend_from_slice(&0x4655_4747u32.to_le_bytes()); // magic
-    data.extend_from_slice(&3u32.to_le_bytes()); // version
-    data.extend_from_slice(&0u64.to_le_bytes()); // n_tensors
-    data.extend_from_slice(&0u64.to_le_bytes()); // n_kv
-    data.resize(1024, 0u8); // minimal padding
-    std::fs::write(path, &data).unwrap();
+    gguf_builder::build_tiny_gguf(path, &gguf_builder::TinyModelConfig::default());
 }
 
 fn fake_manifest(name: &str, path: PathBuf) -> ModelManifest {

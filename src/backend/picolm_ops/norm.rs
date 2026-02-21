@@ -6,17 +6,12 @@
 
 use super::dequant::{block_bytes, block_size, dequantize_block};
 
-/// In-place RMSNorm.
-///
-/// `weight_raw` is the raw GGUF bytes for the norm weight tensor (1D, `x.len()` elements).
+/// In-place RMSNorm with raw GGUF weight bytes (dequantizes on the fly).
 pub fn rms_norm(x: &mut [f32], weight_raw: &[u8], weight_ggml_type: u32, eps: f32) {
     let n = x.len();
-
-    // Compute 1/rms
     let ss: f32 = x.iter().map(|v| v * v).sum::<f32>() / n as f32;
     let rms_inv = 1.0 / (ss + eps).sqrt();
 
-    // Dequantize norm weights and apply
     let bs = block_size(weight_ggml_type);
     let bb = block_bytes(weight_ggml_type);
     let mut buf = [0.0f32; 256];
@@ -45,6 +40,22 @@ pub fn rms_norm_out(
     rms_norm(out, weight_raw, weight_ggml_type, eps);
 }
 
+/// RMSNorm with pre-dequantized f32 weight vector (no dequant overhead).
+pub fn rms_norm_f32(x: &mut [f32], weight: &[f32], eps: f32) {
+    let n = x.len();
+    let ss: f32 = x.iter().map(|v| v * v).sum::<f32>() / n as f32;
+    let rms_inv = 1.0 / (ss + eps).sqrt();
+    for i in 0..n {
+        x[i] = x[i] * rms_inv * weight[i];
+    }
+}
+
+/// RMSNorm into a separate output buffer with pre-dequantized weights.
+pub fn rms_norm_out_f32(x: &[f32], weight: &[f32], eps: f32, out: &mut [f32]) {
+    out.copy_from_slice(x);
+    rms_norm_f32(out, weight, eps);
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -53,9 +64,6 @@ mod tests {
 
     #[test]
     fn test_rms_norm_unit_weight() {
-        // weight = [1.0, 1.0, 1.0, 1.0], x = [2.0, 2.0, 2.0, 2.0]
-        // rms = sqrt(mean(4,4,4,4) + eps) = sqrt(4 + 1e-5) ≈ 2.0
-        // result ≈ [1.0, 1.0, 1.0, 1.0]
         let mut weight = Vec::new();
         for _ in 0..4 {
             weight.extend_from_slice(&1.0f32.to_le_bytes());
@@ -69,9 +77,6 @@ mod tests {
 
     #[test]
     fn test_rms_norm_scaling() {
-        // weight = [2.0, 2.0], x = [3.0, 3.0]
-        // rms = sqrt(9 + eps) ≈ 3.0
-        // result ≈ [3/3 * 2, 3/3 * 2] = [2.0, 2.0]
         let mut weight = Vec::new();
         for _ in 0..2 {
             weight.extend_from_slice(&2.0f32.to_le_bytes());
@@ -92,10 +97,25 @@ mod tests {
         let x = [3.0f32, 4.0];
         let mut out = [0.0f32; 2];
         rms_norm_out(&x, &weight, 0, 1e-5, &mut out);
-        // x should be unchanged
         assert!((x[0] - 3.0).abs() < 1e-6);
         assert!((x[1] - 4.0).abs() < 1e-6);
-        // out should be normalized
         assert!(out[0] != 0.0);
+    }
+
+    #[test]
+    fn test_rms_norm_f32_matches_raw() {
+        let weight_f32 = [1.0f32, 1.0, 1.0, 1.0];
+        let mut weight_raw = Vec::new();
+        for &w in &weight_f32 {
+            weight_raw.extend_from_slice(&w.to_le_bytes());
+        }
+
+        let mut x1 = [2.0f32; 4];
+        let mut x2 = [2.0f32; 4];
+        rms_norm(&mut x1, &weight_raw, 0, 1e-5);
+        rms_norm_f32(&mut x2, &weight_f32, 1e-5);
+        for (a, b) in x1.iter().zip(x2.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
     }
 }

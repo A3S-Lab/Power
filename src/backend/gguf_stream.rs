@@ -13,11 +13,18 @@ use std::collections::HashMap;
 #[cfg(feature = "picolm")]
 use std::path::Path;
 
+#[cfg(all(feature = "picolm", unix))]
+extern crate libc;
+
 #[cfg(feature = "picolm")]
 use memmap2::Mmap;
 
 #[cfg(feature = "picolm")]
 use crate::error::{PowerError, Result};
+
+// Page size for madvise alignment (4 KiB on all supported platforms).
+#[cfg(feature = "picolm")]
+const PAGE_SIZE: usize = 4096;
 
 // ── GGUF constants ────────────────────────────────────────────────────────────
 
@@ -199,6 +206,48 @@ impl GgufFile {
             .filter(|k| k.starts_with(&prefix))
             .cloned()
             .collect()
+    }
+
+    /// Advise the OS that the physical pages backing a named tensor are no
+    /// longer needed (`MADV_DONTNEED`).
+    ///
+    /// The mmap mapping stays intact — the virtual address range is still
+    /// valid. The OS will free the physical pages immediately and re-fault
+    /// them from disk on next access. This keeps peak RSS at O(layer_size)
+    /// rather than O(model_size) during layer-streaming inference.
+    ///
+    /// The advice is applied to the page-aligned region covering the tensor.
+    /// On macOS `MADV_DONTNEED` is equivalent to `MADV_FREE` (advisory only),
+    /// but still reduces RSS in practice. On Linux it is a hard guarantee.
+    ///
+    /// Silently succeeds if the tensor is not found (non-fatal).
+    pub fn advise_dontneed(&self, name: &str) -> Result<()> {
+        let desc = match self.meta.tensors.get(name) {
+            Some(d) => d,
+            None => return Ok(()), // tensor absent — nothing to release
+        };
+
+        let start_byte = (self.meta.tensor_data_offset + desc.offset) as usize;
+        let byte_size = ggml_type_size(desc.ggml_type, desc.n_elements);
+
+        // Align down to page boundary.
+        let aligned_start = start_byte & !(PAGE_SIZE - 1);
+        let aligned_end = (start_byte + byte_size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let aligned_len = aligned_end - aligned_start;
+
+        if aligned_len == 0 || aligned_start + aligned_len > self.data_len {
+            return Ok(());
+        }
+
+        // Safety: ptr is within the mmap; alignment and length are verified above.
+        #[cfg(unix)]
+        unsafe {
+            let ptr = self.data.add(aligned_start) as *mut libc::c_void;
+            // Ignore the return value — MADV_DONTNEED is best-effort.
+            libc::madvise(ptr, aligned_len, libc::MADV_DONTNEED);
+        }
+
+        Ok(())
     }
 }
 

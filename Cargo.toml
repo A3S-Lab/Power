@@ -36,7 +36,7 @@ hw-verify = ["dep:reqwest", "dep:x509-cert", "dep:p384", "dep:p256"]
 # picolm = pure-Rust layer-streaming GGUF inference for TEE memory-constrained environments.
 # Streams transformer layers one at a time; peak RAM = O(layer_size) not O(model_size).
 # Ideal for 7B+ models inside 512MB EPC. No C dependencies — fully auditable.
-picolm = ["dep:candle-core", "dep:memmap2", "dep:half"]
+picolm = ["dep:candle-core", "dep:memmap2", "dep:half", "dep:rayon"]
 # tee-minimal = smallest auditable TEE build: picolm + full TEE stack, no large dep trees.
 tee-minimal = ["picolm", "tls", "vsock"]
 
@@ -143,6 +143,8 @@ candle-core = { version = "0.9", optional = true }
 memmap2 = { version = "0.9", optional = true }
 # FP16 weight dequantization
 half = { version = "2", optional = true }
+# Parallel matmul for picolm inference
+rayon = { version = "1", optional = true }
 
 # TLS transport (optional, requires `tls` feature)
 axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
