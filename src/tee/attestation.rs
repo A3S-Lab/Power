@@ -295,7 +295,6 @@ fn simulated_report(nonce: Option<&[u8]>) -> AttestationReport {
 /// - Parses `report_data` (offset 0x50) and `measurement` (offset 0x90) from the response
 #[cfg(target_os = "linux")]
 mod sev_snp_ioctl {
-    use std::mem::size_of;
     use std::os::unix::io::AsRawFd;
 
     // Kernel struct: snp_report_req (96 bytes)
@@ -458,7 +457,6 @@ mod sev_snp_ioctl {
 /// - Parses `reportdata` (offset 64) and `mrtd` (offset 528) from the TDREPORT
 #[cfg(target_os = "linux")]
 mod tdx_ioctl {
-    use std::mem::size_of;
     use std::os::unix::io::AsRawFd;
 
     // Kernel struct: tdx_report_req (1088 bytes)

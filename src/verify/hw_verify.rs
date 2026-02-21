@@ -33,7 +33,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "hw-verify")]
-use crate::tee::attestation::AttestationReport;
+use crate::error::{PowerError, Result};
+#[cfg(feature = "hw-verify")]
+use crate::tee::attestation::{AttestationReport, TeeType};
+#[cfg(feature = "hw-verify")]
+use crate::verify::HardwareVerifier;
+
+/// Certificate cache: maps URL/key → (cert bytes, fetch time).
+#[cfg(feature = "hw-verify")]
+type CertCache = Arc<Mutex<std::collections::HashMap<String, (Vec<u8>, Instant)>>>;
 
 // ============================================================================
 // AMD SEV-SNP verifier
@@ -48,7 +56,7 @@ use crate::tee::attestation::AttestationReport;
 #[cfg(feature = "hw-verify")]
 pub struct SevSnpVerifier {
     /// Cached (cert_chain_pem, fetched_at) keyed by VCEK URL.
-    cache: Arc<Mutex<std::collections::HashMap<String, (Vec<u8>, Instant)>>>,
+    cache: CertCache,
     /// How long to keep cached certificates before re-fetching.
     cache_ttl: Duration,
 }
@@ -271,7 +279,7 @@ impl HardwareVerifier for SevSnpVerifier {
 #[cfg(feature = "hw-verify")]
 pub struct TdxVerifier {
     /// Cached (cert_chain_pem, fetched_at) keyed by FMSPC hex.
-    cache: Arc<Mutex<std::collections::HashMap<String, (Vec<u8>, Instant)>>>,
+    cache: CertCache,
     /// How long to keep cached certificates before re-fetching.
     cache_ttl: Duration,
 }
@@ -333,9 +341,7 @@ impl TdxVerifier {
         }
 
         // Intel PCS v4 endpoint for TDX PCK CRL/cert retrieval
-        let url = format!(
-            "https://api.trustedservices.intel.com/tdx/certification/v4/pckcrl?ca=platform&encoding=pem"
-        );
+        let url = "https://api.trustedservices.intel.com/tdx/certification/v4/pckcrl?ca=platform&encoding=pem".to_string();
 
         let response = ureq::get(&url)
             .set("Accept", "application/pem-certificate-chain")

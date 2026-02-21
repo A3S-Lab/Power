@@ -324,9 +324,8 @@ pub mod hf {
 
         // Verify and store in content-addressed blob store.
         let _ = tx.send(PullProgress::Verifying).await;
-        let (blob_path, sha256) = storage::store_blob_from_temp(&tmp_path).map_err(|e| {
+        let (blob_path, sha256) = storage::store_blob_from_temp(&tmp_path).inspect_err(|_| {
             let _ = std::fs::remove_file(&tmp_path);
-            e
         })?;
 
         let size = std::fs::metadata(&blob_path).map(|m| m.len()).unwrap_or(0);
