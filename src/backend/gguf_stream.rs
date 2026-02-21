@@ -16,6 +16,9 @@ use std::path::Path;
 #[cfg(feature = "picolm")]
 use memmap2::Mmap;
 
+#[cfg(feature = "picolm")]
+use crate::error::{PowerError, Result};
+
 // ── GGUF constants ────────────────────────────────────────────────────────────
 
 #[cfg(feature = "picolm")]
@@ -68,6 +71,20 @@ pub struct GgufMeta {
     pub vocab_size: u32,
     pub bos_token_id: i32,
     pub eos_token_id: i32,
+    /// FFN intermediate size (feed_forward_length).
+    pub n_ff: u32,
+    /// RMSNorm epsilon (default 1e-5).
+    pub norm_eps: f32,
+    /// RoPE base frequency (default 10000.0).
+    pub rope_theta: f32,
+    /// RoPE dimension count (None = full head_dim).
+    pub rope_dim: Option<u32>,
+    /// Tokenizer vocabulary strings.
+    pub vocab_tokens: Vec<String>,
+    /// Tokenizer merge priority scores.
+    pub vocab_scores: Vec<f32>,
+    /// Tokenizer token types (1=normal, 6=byte, etc.).
+    pub vocab_types: Vec<i32>,
     /// Byte offset where tensor data begins in the file.
     pub tensor_data_offset: u64,
     /// Tensor descriptors: name → (offset, shape, ggml_type).
@@ -163,6 +180,14 @@ impl GgufFile {
         Ok(unsafe { std::slice::from_raw_parts(self.data.add(start), byte_size) })
     }
 
+    /// Return the GGML quantization type for a named tensor.
+    pub fn tensor_type(&self, name: &str) -> Result<u32> {
+        let desc = self.meta.tensors.get(name).ok_or_else(|| {
+            PowerError::InvalidFormat(format!("Tensor '{name}' not found in GGUF file"))
+        })?;
+        Ok(desc.ggml_type)
+    }
+
     /// Returns the names of all weight tensors for a given layer index.
     ///
     /// LLaMA naming convention: `blk.{layer}.{weight_name}`
@@ -193,7 +218,7 @@ fn parse_gguf_header(data: *const u8, len: usize) -> Result<GgufMeta> {
 
     // Version
     let version = read_u32(data, len, &mut cursor)?;
-    if version < GGUF_VERSION_MIN || version > GGUF_VERSION_MAX {
+    if !(GGUF_VERSION_MIN..=GGUF_VERSION_MAX).contains(&version) {
         return Err(PowerError::InvalidFormat(format!(
             "Unsupported GGUF version {version} (supported: {GGUF_VERSION_MIN}–{GGUF_VERSION_MAX})"
         )));
@@ -262,6 +287,45 @@ fn parse_gguf_header(data: *const u8, len: usize) -> Result<GgufMeta> {
         .map(|v| v as i32)
         .unwrap_or(2);
 
+    // FFN intermediate size
+    let n_ff = kv
+        .get(&format!("{arch_prefix}.feed_forward_length"))
+        .and_then(|v| v.as_u32())
+        .unwrap_or(n_embd * 4); // common default: 4 × n_embd
+
+    // RMSNorm epsilon
+    let norm_eps = kv
+        .get(&format!("{arch_prefix}.attention.layer_norm_rms_epsilon"))
+        .and_then(|v| v.as_f32())
+        .unwrap_or(1e-5);
+
+    // RoPE base frequency
+    let rope_theta = kv
+        .get(&format!("{arch_prefix}.rope.freq_base"))
+        .and_then(|v| v.as_f32())
+        .unwrap_or(10000.0);
+
+    // RoPE dimension count (None = full head_dim)
+    let rope_dim = kv
+        .get(&format!("{arch_prefix}.rope.dimension_count"))
+        .and_then(|v| v.as_u32());
+
+    // Tokenizer vocabulary
+    let vocab_tokens = kv
+        .get("tokenizer.ggml.tokens")
+        .and_then(|v| v.as_string_array())
+        .unwrap_or_default();
+
+    let vocab_scores = kv
+        .get("tokenizer.ggml.scores")
+        .and_then(|v| v.as_f32_array())
+        .unwrap_or_default();
+
+    let vocab_types = kv
+        .get("tokenizer.ggml.token_type")
+        .and_then(|v| v.as_i32_array())
+        .unwrap_or_default();
+
     // Parse tensor descriptors
     // Alignment: tensor data starts at next multiple of alignment after descriptors
     let alignment = kv
@@ -312,6 +376,13 @@ fn parse_gguf_header(data: *const u8, len: usize) -> Result<GgufMeta> {
         vocab_size,
         bos_token_id,
         eos_token_id,
+        n_ff,
+        norm_eps,
+        rope_theta,
+        rope_dim,
+        vocab_tokens,
+        vocab_scores,
+        vocab_types,
         tensor_data_offset,
         tensors,
     })
@@ -359,6 +430,64 @@ impl MetaValue {
     fn as_array_len(&self) -> Option<usize> {
         match self {
             MetaValue::Array(v) => Some(v.len()),
+            _ => None,
+        }
+    }
+
+    fn as_f32(&self) -> Option<f32> {
+        match self {
+            MetaValue::F32(v) => Some(*v),
+            MetaValue::F64(v) => Some(*v as f32),
+            MetaValue::U32(v) => Some(*v as f32),
+            MetaValue::I32(v) => Some(*v as f32),
+            _ => None,
+        }
+    }
+
+    fn as_string_array(&self) -> Option<Vec<String>> {
+        match self {
+            MetaValue::Array(arr) => {
+                let mut out = Vec::with_capacity(arr.len());
+                for item in arr {
+                    match item {
+                        MetaValue::Str(s) => out.push(s.clone()),
+                        _ => out.push(String::new()),
+                    }
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    fn as_f32_array(&self) -> Option<Vec<f32>> {
+        match self {
+            MetaValue::Array(arr) => {
+                let mut out = Vec::with_capacity(arr.len());
+                for item in arr {
+                    out.push(item.as_f32().unwrap_or(0.0));
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    fn as_i32_array(&self) -> Option<Vec<i32>> {
+        match self {
+            MetaValue::Array(arr) => {
+                let mut out = Vec::with_capacity(arr.len());
+                for item in arr {
+                    match item {
+                        MetaValue::I32(v) => out.push(*v),
+                        MetaValue::U32(v) => out.push(*v as i32),
+                        MetaValue::I8(v) => out.push(*v as i32),
+                        MetaValue::U8(v) => out.push(*v as i32),
+                        _ => out.push(0),
+                    }
+                }
+                Some(out)
+            }
             _ => None,
         }
     }

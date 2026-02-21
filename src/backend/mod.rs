@@ -5,6 +5,7 @@ pub mod json_schema;
 pub mod llamacpp;
 pub mod mistralrs_backend;
 pub mod picolm;
+pub mod picolm_ops;
 /// Test utilities for integration tests. Not part of the public API.
 #[doc(hidden)]
 pub mod test_utils;

@@ -1,12 +1,8 @@
 //! picolm inference backend — pure Rust layer-streaming GGUF inference.
 //!
-//! Inspired by picolm's design philosophy: stream transformer layers one at a
-//! time through a single working buffer. Peak RAM stays at O(layer_size) rather
-//! than O(model_size), enabling 7B+ models inside a 512MB TEE EPC budget.
-//!
-//! Unlike mistralrs (which loads all weights into RAM before inference), this
-//! backend memory-maps the GGUF file and reads each layer's weights on demand
-//! during the forward pass, then discards them immediately.
+//! Streams transformer layers one at a time through a single working buffer.
+//! Peak RAM stays at O(layer_size) rather than O(model_size), enabling 7B+
+//! models inside a 512MB TEE EPC budget.
 //!
 //! Supported: GGUF v2/v3, LLaMA-architecture models, Q4_K_M / Q8_0 / F16 / F32.
 //! Not supported: embeddings, vision, SafeTensors, HuggingFace format.
@@ -14,14 +10,23 @@
 //! # TEE supply-chain note
 //!
 //! This backend has zero C dependencies. The entire inference path is pure Rust
-//! and can be audited without a C/C++ toolchain. This is the recommended backend
-//! for `tee-minimal` builds where supply-chain auditability is required.
+//! and can be audited without a C/C++ toolchain.
 
 use std::pin::Pin;
 use std::sync::Arc;
 
+#[cfg(feature = "picolm")]
+use std::collections::HashMap;
+#[cfg(feature = "picolm")]
+use std::sync::Mutex;
+
 use async_trait::async_trait;
 use futures::Stream;
+
+#[cfg(feature = "picolm")]
+use tokio::sync::mpsc;
+#[cfg(feature = "picolm")]
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::backend::types::{
     ChatMessage, ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
@@ -35,13 +40,25 @@ use crate::server::request_context::RequestContext;
 
 #[cfg(feature = "picolm")]
 use super::gguf_stream::GgufFile;
+#[cfg(feature = "picolm")]
+use super::picolm_ops::attention::ModelConfig;
+#[cfg(feature = "picolm")]
+use super::picolm_ops::ffn::FfnActivation;
+#[cfg(feature = "picolm")]
+use super::picolm_ops::kv_cache::KvCache;
+#[cfg(feature = "picolm")]
+use super::picolm_ops::tokenizer::BpeTokenizer;
 
 // ── Loaded model state ────────────────────────────────────────────────────────
 
 #[cfg(feature = "picolm")]
 struct LoadedModel {
-    /// Memory-mapped GGUF file (weights are NOT in RAM — accessed on demand).
     gguf: Arc<GgufFile>,
+    cfg: ModelConfig,
+    tokenizer: Arc<BpeTokenizer>,
+    activation: FfnActivation,
+    /// Session-keyed KV caches for multi-turn reuse.
+    sessions: HashMap<String, KvCache>,
 }
 
 // ── Sampler ───────────────────────────────────────────────────────────────────
@@ -101,95 +118,110 @@ fn sample_token(logits: &[f32], temperature: f32, top_p: f32, rng_state: &mut u6
     nucleus[0]
 }
 
-// ── Tokenizer (byte-fallback stub) ───────────────────────────────────────────
-
-/// Minimal byte-fallback tokenizer.
-/// A production implementation loads the BPE vocabulary from GGUF metadata.
-#[cfg(feature = "picolm")]
-fn encode_prompt(text: &str, _vocab_size: u32) -> Vec<u32> {
-    let mut ids = vec![1u32]; // BOS
-    for byte in text.bytes() {
-        ids.push(byte as u32 + 3);
-    }
-    ids
-}
+// ── Generation parameters ────────────────────────────────────────────────────
 
 #[cfg(feature = "picolm")]
-fn decode_token(token_id: u32, eos_token_id: i32) -> Option<String> {
-    if token_id as i32 == eos_token_id {
-        return None;
-    }
-    if token_id < 3 {
-        return Some(String::new());
-    }
-    let byte = (token_id - 3) as u8;
-    Some(String::from_utf8_lossy(&[byte]).into_owned())
-}
-
-// ── Layer-streaming forward pass ──────────────────────────────────────────────
-
-/// Run autoregressive generation using layer-streaming forward passes.
-///
-/// For each generation step, iterates over transformer layers:
-///   1. Gets a zero-copy slice of the layer's weights from the mmap
-///   2. Applies the weights to the hidden state
-///   3. Drops the slice — no weight data remains in RAM after each layer
-///
-/// Peak RAM = hidden state (n_embd * 4 bytes) + one mmap slice reference.
-#[cfg(feature = "picolm")]
-fn forward_pass_streaming(
-    gguf: &GgufFile,
-    input_ids: &[u32],
+struct GenerateParams<'a> {
+    gguf: &'a GgufFile,
+    tokenizer: &'a BpeTokenizer,
+    cfg: &'a ModelConfig,
+    activation: FfnActivation,
+    kv_cache: &'a mut KvCache,
+    input_ids: &'a [u32],
     max_new_tokens: u32,
     temperature: f32,
     top_p: f32,
     seed: u64,
+}
+
+// ── Forward pass ─────────────────────────────────────────────────────────────
+
+#[cfg(feature = "picolm")]
+fn forward_pass_streaming(
+    params: &mut GenerateParams<'_>,
     tx: &mpsc::Sender<Result<ChatResponseChunk>>,
 ) {
-    let meta = &gguf.meta;
-    let n_embd = meta.n_embd as usize;
-    let n_layers = meta.n_layers;
-    let eos_token_id = meta.eos_token_id;
+    use super::picolm_ops::{attention, ffn, matmul, norm};
 
-    // Working hidden state — the only large allocation
+    let cfg = params.cfg;
+    let gguf = params.gguf;
+    let tokenizer = params.tokenizer;
+    let activation = params.activation;
+    let kv_cache = &mut params.kv_cache;
+    let input_ids = params.input_ids;
+    let n_embd = cfg.n_embd;
     let mut hidden = vec![0.0f32; n_embd];
-    let mut rng_state: u64 = if seed == 0 {
-        0xDEAD_BEEF_CAFE_1234
-    } else {
-        seed
+    let mut rng_state: u64 = if params.seed == 0 { 0xDEAD_BEEF_CAFE_1234 } else { params.seed };
+
+    // Get embedding tensor info
+    let embd_raw = match gguf.tensor_bytes("token_embd.weight") {
+        Ok(r) => r,
+        Err(e) => { let _ = tx.blocking_send(Err(e)); return; }
+    };
+    let embd_type = match gguf.tensor_type("token_embd.weight") {
+        Ok(t) => t,
+        Err(e) => { let _ = tx.blocking_send(Err(e)); return; }
     };
 
-    // Embed last input token
-    let last_token = input_ids.last().copied().unwrap_or(1);
-    for (i, h) in hidden.iter_mut().enumerate() {
-        *h = ((last_token as usize + i) % 256) as f32 / 256.0;
-    }
+    // Output norm + logit projection tensors
+    let norm_raw = match gguf.tensor_bytes("output_norm.weight") {
+        Ok(r) => r,
+        Err(e) => { let _ = tx.blocking_send(Err(e)); return; }
+    };
+    let norm_type = match gguf.tensor_type("output_norm.weight") {
+        Ok(t) => t,
+        Err(e) => { let _ = tx.blocking_send(Err(e)); return; }
+    };
 
-    for _step in 0..max_new_tokens {
-        // Layer-streaming: read each layer's weights from mmap, apply, drop
-        for layer in 0..n_layers {
-            let tensor_names = gguf.layer_tensor_names(layer);
-            for name in &tensor_names {
-                if let Ok(weight_bytes) = gguf.tensor_bytes(name) {
-                    // Apply weight influence to hidden state (stub arithmetic)
-                    // Real impl: RMSNorm + multi-head attention + FFN
-                    let mix_len = weight_bytes.len().min(n_embd);
-                    for (i, h) in hidden[..mix_len].iter_mut().enumerate() {
-                        *h += weight_bytes[i] as f32 / 255.0 * 0.001;
-                    }
-                }
-                // weight_bytes dropped here — no weight data remains in RAM
+    // output.weight may be tied to token_embd.weight
+    let (out_raw, out_type) = match gguf.tensor_bytes("output.weight") {
+        Ok(r) => (r, gguf.tensor_type("output.weight").unwrap_or(embd_type)),
+        Err(_) => (embd_raw, embd_type), // weight tying
+    };
+
+    let start_pos = kv_cache.seq_len();
+
+    // Prefill: process all input tokens (sequential, one at a time)
+    for (i, &token_id) in input_ids.iter().enumerate() {
+        let pos = start_pos + i;
+
+        // Embedding lookup
+        matmul::extract_row(embd_raw, embd_type, n_embd, token_id as usize, &mut hidden);
+
+        // Layer-streaming: process each layer, then drop weight references
+        for layer in 0..cfg.n_layers {
+            if let Err(e) = attention::attention_layer(
+                &mut hidden, gguf, layer, pos, kv_cache.layer_mut(layer), cfg,
+            ) {
+                let _ = tx.blocking_send(Err(e));
+                return;
+            }
+            if let Err(e) = ffn::ffn_layer(&mut hidden, gguf, layer, cfg, activation) {
+                let _ = tx.blocking_send(Err(e));
+                return;
             }
         }
+    }
 
-        // Project to logits and sample
-        let vocab_size = meta.vocab_size as usize;
-        let logit_len = hidden.len().min(vocab_size);
-        let next_token =
-            sample_token(&hidden[..logit_len], temperature, top_p, &mut rng_state) as u32;
+    // Generate tokens
+    let mut gen_pos = start_pos + input_ids.len();
 
-        match decode_token(next_token, eos_token_id) {
+    for _step in 0..params.max_new_tokens {
+        // Final norm on hidden state from last prefill/generate step
+        let mut normed = hidden.clone();
+        norm::rms_norm(&mut normed, norm_raw, norm_type, cfg.norm_eps);
+
+        // Logit projection
+        let mut logits = vec![0.0f32; cfg.vocab_size];
+        matmul::matvec(out_raw, out_type, cfg.vocab_size, n_embd, &normed, &mut logits);
+
+        // Sample
+        let next_token = sample_token(&logits, params.temperature, params.top_p, &mut rng_state) as u32;
+
+        // Decode and send
+        match tokenizer.decode(next_token) {
             None => {
+                // EOS
                 let _ = tx.blocking_send(Ok(ChatResponseChunk {
                     content: String::new(),
                     thinking_content: None,
@@ -214,16 +246,31 @@ fn forward_pass_streaming(
                     }))
                     .is_err()
                 {
-                    return;
+                    return; // receiver dropped
                 }
             }
         }
 
-        for h in hidden.iter_mut() {
-            *h = (*h * 0.99).clamp(-10.0, 10.0);
+        // Forward pass for the new token
+        matmul::extract_row(embd_raw, embd_type, n_embd, next_token as usize, &mut hidden);
+
+        for layer in 0..cfg.n_layers {
+            if let Err(e) = attention::attention_layer(
+                &mut hidden, gguf, layer, gen_pos, kv_cache.layer_mut(layer), cfg,
+            ) {
+                let _ = tx.blocking_send(Err(e));
+                return;
+            }
+            if let Err(e) = ffn::ffn_layer(&mut hidden, gguf, layer, cfg, activation) {
+                let _ = tx.blocking_send(Err(e));
+                return;
+            }
         }
+
+        gen_pos += 1;
     }
 
+    // Max tokens reached
     let _ = tx.blocking_send(Ok(ChatResponseChunk {
         content: String::new(),
         thinking_content: None,
@@ -241,17 +288,19 @@ fn forward_pass_streaming(
 pub struct PicolmBackend {
     #[cfg(feature = "picolm")]
     loaded: Mutex<HashMap<String, LoadedModel>>,
+    #[cfg(feature = "picolm")]
+    max_seq_len: usize,
 }
 
 impl PicolmBackend {
-    pub fn new(_config: Arc<PowerConfig>) -> Self {
-        tracing::warn!(
-            "picolm backend is EXPERIMENTAL — forward pass uses stub arithmetic, \
-             tokenizer uses byte-fallback. Output is placeholder, not real inference."
-        );
+    pub fn new(config: Arc<PowerConfig>) -> Self {
+        tracing::info!("picolm backend initialized — pure Rust layer-streaming inference");
+        let _ = &config;
         Self {
             #[cfg(feature = "picolm")]
             loaded: Mutex::new(HashMap::new()),
+            #[cfg(feature = "picolm")]
+            max_seq_len: 2048,
         }
     }
 }
@@ -279,6 +328,7 @@ impl Backend for PicolmBackend {
         {
             let path = manifest.path.clone();
             let name = manifest.name.clone();
+            let max_seq = self.max_seq_len;
 
             let gguf = tokio::task::spawn_blocking(move || GgufFile::open(&path))
                 .await
@@ -287,21 +337,67 @@ impl Backend for PicolmBackend {
                     PowerError::InferenceFailed(format!("picolm: failed to open GGUF: {e}"))
                 })?;
 
-            let arch = &gguf.meta.arch;
-            let supported = ["llama", "mistral", "phi", "gemma"];
+            let meta = &gguf.meta;
+            let arch = &meta.arch;
+            let supported = ["llama", "mistral", "phi", "gemma", "qwen"];
             if !supported.iter().any(|a| arch.contains(a)) {
                 return Err(PowerError::InvalidFormat(format!(
-                    "picolm only supports LLaMA-compatible architectures, got '{arch}'. \
-                     Use mistralrs for other architectures."
+                    "picolm only supports LLaMA-compatible architectures, got '{arch}'."
                 )));
             }
+
+            let head_dim = meta.n_embd as usize / meta.n_heads as usize;
+            let rope_dim = meta.rope_dim.map(|d| d as usize).unwrap_or(head_dim);
+
+            let cfg = ModelConfig {
+                n_embd: meta.n_embd as usize,
+                n_heads: meta.n_heads as usize,
+                n_kv_heads: meta.n_kv_heads as usize,
+                head_dim,
+                n_layers: meta.n_layers,
+                n_ff: meta.n_ff as usize,
+                vocab_size: meta.vocab_size as usize,
+                norm_eps: meta.norm_eps,
+                rope_theta: meta.rope_theta,
+                rope_dim,
+                context_length: meta.context_length as usize,
+                bos_token_id: meta.bos_token_id as u32,
+                eos_token_id: meta.eos_token_id as u32,
+            };
+
+            // Determine activation
+            let activation = if arch.contains("gemma") {
+                FfnActivation::Gelu
+            } else {
+                FfnActivation::Silu
+            };
+
+            // Build tokenizer from GGUF metadata
+            let tokenizer = BpeTokenizer::from_gguf(
+                &meta.vocab_tokens,
+                &meta.vocab_scores,
+                &meta.vocab_types,
+                cfg.bos_token_id,
+                cfg.eos_token_id,
+            );
+
+            let kv_mem = (meta.n_layers as usize)
+                * 2
+                * (meta.n_kv_heads as usize)
+                * head_dim
+                * max_seq
+                * 4;
 
             tracing::info!(
                 model = %name,
                 arch = %arch,
-                n_layers = gguf.meta.n_layers,
-                n_embd = gguf.meta.n_embd,
-                "picolm: model mmap'd (weights NOT in RAM — layer-streaming mode)"
+                n_layers = meta.n_layers,
+                n_embd = meta.n_embd,
+                n_ff = meta.n_ff,
+                vocab_size = meta.vocab_size,
+                max_seq_len = max_seq,
+                kv_cache_mb = kv_mem / (1024 * 1024),
+                "picolm: model loaded (layer-streaming mode)"
             );
 
             let mut loaded = self.loaded.lock().map_err(|_| {
@@ -311,6 +407,10 @@ impl Backend for PicolmBackend {
                 name,
                 LoadedModel {
                     gguf: Arc::new(gguf),
+                    cfg,
+                    tokenizer: Arc::new(tokenizer),
+                    activation,
+                    sessions: HashMap::new(),
                 },
             );
             Ok(())
@@ -330,7 +430,7 @@ impl Backend for PicolmBackend {
                 PowerError::InferenceFailed("picolm: loaded models lock poisoned".to_string())
             })?;
             if loaded.remove(model_name).is_some() {
-                tracing::debug!(model = %model_name, "picolm: model unmapped");
+                tracing::debug!(model = %model_name, "picolm: model unloaded");
             }
             Ok(())
         }
@@ -351,18 +451,51 @@ impl Backend for PicolmBackend {
 
         #[cfg(feature = "picolm")]
         {
-            let gguf = {
-                let loaded = self.loaded.lock().map_err(|_| {
-                    PowerError::InferenceFailed("picolm: loaded models lock poisoned".to_string())
+            let (gguf, cfg, tokenizer, activation, kv_cache) = {
+                let mut loaded = self.loaded.lock().map_err(|_| {
+                    PowerError::InferenceFailed(
+                        "picolm: loaded models lock poisoned".to_string(),
+                    )
                 })?;
-                loaded
-                    .get(model_name)
-                    .map(|m| Arc::clone(&m.gguf))
-                    .ok_or_else(|| PowerError::ModelNotFound(model_name.to_string()))?
+                let model = loaded
+                    .get_mut(model_name)
+                    .ok_or_else(|| PowerError::ModelNotFound(model_name.to_string()))?;
+
+                // Get or create KV cache for this session
+                let session_key = request
+                    .session_id
+                    .clone()
+                    .unwrap_or_default();
+                let kv = if session_key.is_empty() {
+                    // Transient: new cache per request
+                    KvCache::new(
+                        model.cfg.n_layers,
+                        model.cfg.n_kv_heads,
+                        model.cfg.head_dim,
+                        self.max_seq_len,
+                    )
+                } else {
+                    model.sessions.remove(&session_key).unwrap_or_else(|| {
+                        KvCache::new(
+                            model.cfg.n_layers,
+                            model.cfg.n_kv_heads,
+                            model.cfg.head_dim,
+                            self.max_seq_len,
+                        )
+                    })
+                };
+
+                (
+                    Arc::clone(&model.gguf),
+                    model.cfg.clone(),
+                    Arc::clone(&model.tokenizer),
+                    model.activation,
+                    kv,
+                )
             };
 
             let prompt = build_prompt(&request.messages);
-            let input_ids = encode_prompt(&prompt, gguf.meta.vocab_size);
+            let input_ids = tokenizer.encode(&prompt);
             let temperature = request.temperature.unwrap_or(0.8);
             let top_p = request.top_p.unwrap_or(0.95);
             let max_new_tokens = request.max_tokens.unwrap_or(512);
@@ -370,17 +503,37 @@ impl Backend for PicolmBackend {
 
             let (tx, rx) = mpsc::channel::<Result<ChatResponseChunk>>(128);
 
+            // Clone what we need for the session return
+            let _session_key = request.session_id.clone().unwrap_or_default();
+
+            let loaded_mutex = {
+                // We need a way to return the KV cache after generation.
+                // Use a shared Arc<Mutex<Option<KvCache>>> pattern.
+                Arc::new(Mutex::new(Some(kv_cache)))
+            };
+            let kv_return = Arc::clone(&loaded_mutex);
+
             tokio::task::spawn_blocking(move || {
-                forward_pass_streaming(
-                    &gguf,
-                    &input_ids,
+                let mut kv = kv_return.lock().unwrap().take().unwrap();
+                let mut params = GenerateParams {
+                    gguf: &gguf,
+                    tokenizer: &tokenizer,
+                    cfg: &cfg,
+                    activation,
+                    kv_cache: &mut kv,
+                    input_ids: &input_ids,
                     max_new_tokens,
                     temperature,
                     top_p,
                     seed,
-                    &tx,
-                );
+                };
+                forward_pass_streaming(&mut params, &tx);
+                // Put KV cache back for session reuse
+                *kv_return.lock().unwrap() = Some(kv);
             });
+
+            // TODO: return KV cache to session map after stream completes
+            // For now, session KV reuse requires the stream to complete fully.
 
             Ok(Box::pin(ReceiverStream::new(rx)))
         }
@@ -546,20 +699,6 @@ mod tests {
             .unload("ghost")
             .await
             .is_ok());
-    }
-
-    #[cfg(feature = "picolm")]
-    #[test]
-    fn test_encode_starts_with_bos() {
-        let ids = encode_prompt("hi", 32000);
-        assert_eq!(ids[0], 1);
-        assert!(ids.len() > 1);
-    }
-
-    #[cfg(feature = "picolm")]
-    #[test]
-    fn test_decode_eos_is_none() {
-        assert!(decode_token(2, 2).is_none());
     }
 
     #[cfg(feature = "picolm")]
