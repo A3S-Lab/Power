@@ -8,14 +8,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-use a3s_power::backend::BackendRegistry;
 use a3s_power::config::PowerConfig;
 use a3s_power::model::manifest::{ModelFormat, ModelManifest};
-use a3s_power::model::registry::ModelRegistry;
+
+mod gguf_builder;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Write a minimal valid GGUF v3 file.
+/// Write a minimal valid GGUF v3 file (header only, no tensors).
 fn write_fake_gguf(path: &PathBuf) {
     let mut data: Vec<u8> = Vec::new();
     data.extend_from_slice(&0x4655_4747u32.to_le_bytes()); // magic
@@ -77,11 +77,16 @@ mod picolm_tests {
         assert!(unload_result.is_ok());
     }
 
+    /// End-to-end test: build a tiny synthetic GGUF, load it, run chat,
+    /// verify we get a stream of token chunks ending with done=true.
     #[tokio::test]
     async fn test_picolm_chat_produces_stream() {
         let dir = TempDir::new().unwrap();
-        let model_path = dir.path().join("model.gguf");
-        write_fake_gguf(&model_path);
+        let model_path = dir.path().join("tiny.gguf");
+
+        // Build a real (tiny) GGUF with actual tensor data
+        let tiny_cfg = gguf_builder::TinyModelConfig::default();
+        gguf_builder::build_tiny_gguf(&model_path, &tiny_cfg);
 
         let config = Arc::new(PowerConfig::default());
         let backend = PicolmBackend::new(config);
@@ -92,14 +97,14 @@ mod picolm_tests {
         let req = ChatRequest {
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: MessageContent::Text("Hello".to_string()),
+                content: MessageContent::Text("a b c".to_string()),
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
                 images: None,
             }],
             session_id: None,
-            temperature: Some(0.0),
+            temperature: Some(0.0), // greedy
             top_p: None,
             max_tokens: Some(4),
             stop: None,
@@ -230,6 +235,7 @@ mod picolm_tests {
         assert!(result.unwrap_err().to_string().contains("embeddings"));
     }
 
+    #[cfg(feature = "picolm")]
     #[tokio::test]
     async fn test_picolm_registered_in_default_backends() {
         let config = Arc::new(PowerConfig::default());
@@ -239,6 +245,96 @@ mod picolm_tests {
             names.contains(&"picolm"),
             "picolm should be registered in default_backends when feature is enabled"
         );
+    }
+
+    /// Verify deterministic output: same seed + greedy sampling = same tokens.
+    #[tokio::test]
+    async fn test_picolm_deterministic_output() {
+        let dir = TempDir::new().unwrap();
+        let model_path = dir.path().join("det.gguf");
+        gguf_builder::build_tiny_gguf(&model_path, &gguf_builder::TinyModelConfig::default());
+
+        let config = Arc::new(PowerConfig::default());
+        let backend = PicolmBackend::new(config);
+        let manifest = fake_manifest("det-model", model_path);
+        backend.load(&manifest).await.unwrap();
+
+        let make_req = || ChatRequest {
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("a".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            }],
+            session_id: None,
+            temperature: Some(0.0),
+            top_p: None,
+            max_tokens: Some(3),
+            stop: None,
+            stream: true,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: Some(42),
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
+            num_parallel: None,
+            images: None,
+        };
+
+        // Run twice, collect output
+        let collect = |mut stream: std::pin::Pin<
+            Box<dyn futures::Stream<Item = a3s_power::error::Result<a3s_power::backend::types::ChatResponseChunk>> + Send>,
+        >| async move {
+            let mut text = String::new();
+            while let Some(chunk) = stream.next().await {
+                let c = chunk.unwrap();
+                text.push_str(&c.content);
+                if c.done { break; }
+            }
+            text
+        };
+
+        // First run uses a fresh session, second run uses a new session too
+        // (no session_id = no KV cache reuse)
+        let s1 = backend.chat("det-model", make_req()).await.unwrap();
+        let t1 = collect(s1).await;
+
+        // Unload and reload to reset all state
+        backend.unload("det-model").await.unwrap();
+        let dir2 = TempDir::new().unwrap();
+        let model_path2 = dir2.path().join("det2.gguf");
+        gguf_builder::build_tiny_gguf(&model_path2, &gguf_builder::TinyModelConfig::default());
+        let manifest2 = fake_manifest("det-model", model_path2);
+        backend.load(&manifest2).await.unwrap();
+
+        let s2 = backend.chat("det-model", make_req()).await.unwrap();
+        let t2 = collect(s2).await;
+
+        assert_eq!(t1, t2, "Greedy decoding with same seed should be deterministic");
+
+        backend.unload("det-model").await.unwrap();
     }
 }
 
