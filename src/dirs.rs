@@ -47,6 +47,7 @@ mod tests {
     use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_power_home_default() {
         // Unset env var to test default path
         std::env::remove_var("A3S_POWER_HOME");
