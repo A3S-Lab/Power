@@ -194,6 +194,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_path_is_deterministic() {
         assert_eq!(
             PullState::path("owner/repo:Q4_K_M"),
@@ -202,6 +203,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_path_differs_for_different_names() {
         assert_ne!(
             PullState::path("owner/repo-a:Q4_K_M"),

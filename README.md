@@ -5,6 +5,13 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/A3S-Lab/Power/actions/workflows/ci.yml"><img src="https://github.com/A3S-Lab/Power/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/A3S-Lab/Power/actions/workflows/release.yml"><img src="https://github.com/A3S-Lab/Power/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="https://crates.io/crates/a3s-power"><img src="https://img.shields.io/crates/v/a3s-power.svg" alt="crates.io"></a>
+  <a href="https://github.com/A3S-Lab/Power/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+</p>
+
+<p align="center">
   <em>Run large language models inside Trusted Execution Environments with hardware-enforced privacy, model integrity verification, and log redaction.</em>
 </p>
 
@@ -1003,6 +1010,32 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 - [x] `LayerStreamingDecryptedModel` — chunk-by-chunk access to AES-256-GCM encrypted models; each chunk returned as `Zeroizing<Vec<u8>>`, zeroized on drop; `streaming_decrypt` config field
 - [x] `tee-minimal` feature profile — `picolm` + `tls` + `vsock`; smallest auditable TEE build (~1,220 dep tree lines vs ~2,000 for default); no mistralrs/candle, no C++
 - [x] Supply-chain audit document — `docs/supply-chain.md`; per-profile dependency listing, audit status table, threat model
+
+## CI/CD
+
+Automated via GitHub Actions:
+
+- **CI** (`.github/workflows/ci.yml`): Format check, Clippy (4 feature combos), unit tests, cross-build (4 platforms)
+- **Release** (`.github/workflows/release.yml`): CI gate → 4-platform build → GitHub Release → crates.io → Homebrew formula update
+
+### Supported Platforms
+
+| Target | OS | Cross |
+|--------|----|-------|
+| `aarch64-apple-darwin` | macOS (Apple Silicon) | Native |
+| `x86_64-apple-darwin` | macOS (Intel) | Native |
+| `aarch64-unknown-linux-gnu` | Linux (ARM64) | `cross` |
+| `x86_64-unknown-linux-gnu` | Linux (x86_64) | Native |
+
+### Release Process
+
+```bash
+# 1. Bump version in Cargo.toml
+# 2. Commit and tag
+git add -A && git commit -m "chore: release v0.x.y"
+git tag v0.x.y && git push origin main --tags
+# 3. GitHub Actions builds, publishes to crates.io, creates GitHub Release, updates Homebrew formula
+```
 
 ## Community
 
