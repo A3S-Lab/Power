@@ -1,7 +1,7 @@
 # A3S Power
 
 <p align="center">
-  <strong>Privacy-Preserving LLM Inference for TEE Environments</strong>
+  <strong>The Only LLM Inference Server You Don't Have to Trust</strong>
 </p>
 
 <p align="center">
@@ -12,20 +12,81 @@
 </p>
 
 <p align="center">
-  <em>Run large language models inside Trusted Execution Environments with hardware-enforced privacy, model integrity verification, and log redaction.</em>
+  <em>Cryptographically prove that a specific model runs unmodified inside hardware-encrypted memory — without trusting the infrastructure operator.</em>
 </p>
 
 <p align="center">
+  <a href="#the-problem">The Problem</a> •
+  <a href="#how-power-solves-it">How Power Solves It</a> •
   <a href="#features">Features</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#installation">Installation</a> •
   <a href="#configuration">Configuration</a> •
-  <a href="#tee-privacy-protection">TEE Privacy</a> •
   <a href="#api-reference">API Reference</a> •
   <a href="#development">Development</a>
 </p>
 
 ---
+
+## The Problem
+
+Every LLM inference server — Ollama, vLLM, llama.cpp, TGI, LocalAI — was designed for a world where you **trust the machine**. You send your prompts to a server and hope the operator doesn't look at them. That's a policy promise, not a technical guarantee.
+
+For healthcare (HIPAA), finance (SOX/GLBA), government (classified data), and any multi-tenant AI deployment where the infrastructure operator is a different party than the data owner — "we promise not to look" is not enough.
+
+## How Power Solves It
+
+A3S Power runs LLM inference inside **Trusted Execution Environments** (AMD SEV-SNP / Intel TDX). The CPU encrypts all memory. The infrastructure operator **cannot** read prompts, responses, or model weights — the hardware enforces it.
+
+But hardware isolation alone isn't enough. You need to **verify** it. Power provides a complete chain of cryptographic proof:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  a3s-box MicroVM (AMD SEV-SNP / Intel TDX)                         │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  a3s-power                                                    │  │
+│  │                                                               │  │
+│  │  1. Verify model integrity (SHA-256 + Ed25519 signature)      │  │
+│  │  2. Bind model hash into hardware attestation report          │  │
+│  │  3. Serve inference via OpenAI-compatible API                 │  │
+│  │  4. Redact all inference content from logs and metrics        ��  │
+│  │  5. Zero all memory on model unload                           │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│  Hardware-encrypted memory — host cannot read                       │
+└─────────────────────────────────────────────────────────────────────┘
+        │
+        ▼  Client verifies independently:
+┌─────────────────────────────────────────────────────────────────────┐
+│  a3s-power-verify                                                    │
+│  ✓ Nonce binding (prevents replay)                                   │
+│  ✓ Model hash binding (proves which model is running)                │
+│  ✓ Hardware signature (AMD KDS P-384 / Intel PCS P-256)              │
+│  ✓ Platform measurement (proves unmodified code)                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+The difference: every other inference server asks you to **trust**. Power lets you **verify**.
+
+## Why Not Just Use Ollama / vLLM / TGI?
+
+| Capability | Ollama | vLLM | TGI | Power |
+|---|:---:|:---:|:---:|:---:|
+| OpenAI-compatible API | ✅ | ✅ | ✅ | ✅ |
+| GPU acceleration | ✅ | ✅ | ✅ | ✅ |
+| Streaming | ✅ | ✅ | ✅ | ✅ |
+| TEE hardware isolation (SEV-SNP / TDX) | ❌ | ❌ | ❌ | ✅ |
+| Remote attestation (hardware-signed proof) | ❌ | ❌ | ❌ | ✅ |
+| Model-attestation binding (prove which model runs) | ❌ | ❌ | ❌ | ✅ |
+| RA-TLS (attestation in TLS handshake) | ❌ | ❌ | ❌ | ✅ |
+| Encrypted model loading (AES-256-GCM, 3 modes) | ❌ | ❌ | ❌ | ✅ |
+| Deep log redaction (10 keys + error sanitization) | ❌ | ❌ | ❌ | ✅ |
+| Memory zeroing (zeroize on drop) | ❌ | ❌ | ❌ | ✅ |
+| Client-side verification SDK | ❌ | ❌ | ❌ | ✅ |
+| Hardware signature verification (AMD KDS / Intel PCS) | ❌ | ❌ | ❌ | ✅ |
+| Layer-streaming for memory-constrained TEE | ❌ | ❌ | ❌ | ✅ |
+| Pure Rust inference (fully auditable, no C++) | ❌ | ❌ | ❌ | ✅ |
+
+The bottom half of this table is Power's moat. No other inference server has a threat model. They all assume you trust the machine.
 
 ## Overview
 
@@ -33,54 +94,50 @@
 
 Power is built to run inside [a3s-box](https://github.com/A3S-Lab/Box) MicroVMs with AMD SEV-SNP or Intel TDX, ensuring that inference data (prompts, responses, model weights) never leaves the encrypted enclave.
 
-### How It Works
-
-```
-┌─────────────────────────────────────────────────────┐
-│  a3s-box MicroVM (AMD SEV-SNP / Intel TDX)          │
-│  ┌───────────────────────────────────────────────┐  │
-│  │  a3s-power                                    │  │
-│  │                                               │  │
-│  │  1. Verify model integrity (SHA-256)          │  │
-│  │  2. Generate remote attestation report        │  │
-│  │  3. Serve inference via OpenAI API            │  │
-│  │  4. Redact all inference content from logs    │  │
-│  └───────────────────────────────────────────────┘  │
-│  Hardware-encrypted memory — host cannot read        │
-└─────────────────────────────────────────────────────┘
-```
-
 ## Features
 
+### Trust & Verification (The Moat)
+
+These features exist in no other LLM inference server:
+
 - **TEE-Aware Runtime**: Auto-detects AMD SEV-SNP (`/dev/sev-guest`) and Intel TDX (`/dev/tdx_guest`) at startup; simulated mode for development (`A3S_TEE_SIMULATE=1`)
-- **Remote Attestation**: `TeeProvider` trait with `AttestationReport` generation — cryptographic proof that inference runs in a genuine TEE; AMD SEV-SNP uses real `/dev/sev-guest` ioctl (`SNP_GET_REPORT`), Intel TDX uses real `/dev/tdx-guest` ioctl (`TDX_CMD_GET_REPORT0`); full raw reports included for client verification
-- **Model Integrity Verification**: SHA-256 hash verification of all model files at startup against configured expected hashes; fails fast on tampering
-- **Deep Log Redaction**: `PrivacyProvider` trait strips inference content from all log output in TEE mode — covers 10 sensitive JSON keys (`"content"`, `"prompt"`, `"text"`, `"arguments"`, `"input"`, `"delta"`, `"system"`, `"message"`, `"query"`, `"instruction"`); `sanitize_error()` strips prompt fragments from error messages; `suppress_token_metrics` rounds token counts to nearest 10 to prevent side-channel inference
-- **Memory Zeroing**: `SensitiveString` wrapper auto-zeroizes on drop; `zeroize_string()` / `zeroize_bytes()` utilities for clearing inference buffers via `zeroize` crate
-- **Encrypted Model Loading**: AES-256-GCM encryption/decryption of model files; `DecryptedModel` RAII wrapper securely wipes temp files on drop; `MemoryDecryptedModel` decrypts entirely in RAM with `mlock` (never touches disk); key from file or env var
-- **KeyProvider Trait**: Abstract key loading for HSM integration and zero-downtime key rotation; `StaticKeyProvider` wraps existing file/env key source; `RotatingKeyProvider` holds multiple keys and advances on `rotate_key()` — deploy new key, rotate, remove old
-- **Rate Limiting**: Token-bucket rate limiter middleware (`rate_limit_rps`) and concurrency cap (`max_concurrent_requests`) applied to all `/v1/*` endpoints; returns `429 Too Many Requests` with OpenAI-style error body
-- **Model-Attestation Binding**: `GET /v1/attestation?model=<name>` embeds the model's SHA-256 hash into `report_data` alongside the nonce — layout `[nonce(32)][model_sha256(32)]` — cryptographically tying the attestation to the specific model being served
-- **Health + TEE Status**: `GET /health` reports TEE type, attestation status, and model verification state
+- **Remote Attestation**: Real hardware ioctl — AMD `SNP_GET_REPORT` and Intel `TDX_CMD_GET_REPORT0` — generates firmware-signed proof that inference runs in a genuine TEE; full raw reports included for client verification
+- **Model-Attestation Binding**: `GET /v1/attestation?model=<name>` embeds the model's SHA-256 hash into `report_data` alongside the nonce — layout `[nonce(32)][model_sha256(32)]` — cryptographically tying the attestation to the specific model being served; you can't swap the model without invalidating the attestation
+- **RA-TLS Transport**: TLS certificate embeds the attestation report as a custom X.509 extension (OID `1.3.6.1.4.1.56560.1.1`) — clients verify the TEE during the TLS handshake itself, no separate API call needed
+- **Hardware Signature Verification**: Client-side SDK verifies attestation signatures against AMD KDS (ECDSA P-384) and Intel PCS (ECDSA P-256) certificate chains — closes the loop from hardware root of trust to client
+- **Client Verification CLI**: `a3s-power-verify` independently verifies nonce binding, model hash binding, platform measurement, and hardware signatures from any running Power server
+- **Encrypted Model Loading**: AES-256-GCM with 3 modes — `DecryptedModel` (temp file, zero-overwrite on drop), `MemoryDecryptedModel` (mlock-pinned RAM, never touches disk), `LayerStreamingDecryptedModel` (chunk-by-chunk for picolm); the infrastructure operator cannot read model weights from disk or swap
+- **KeyProvider Trait**: Abstract key loading for HSM integration; `StaticKeyProvider` (file/env) + `RotatingKeyProvider` (zero-downtime rotation)
+- **Deep Log Redaction**: Strips inference content from all log output — 10 sensitive JSON keys (`content`, `prompt`, `text`, `arguments`, `input`, `delta`, `system`, `message`, `query`, `instruction`); `sanitize_error()` strips prompt fragments from error messages; `suppress_token_metrics` rounds token counts to nearest 10 to prevent side-channel inference
+- **Memory Zeroing**: `SensitiveString` wrapper auto-zeroizes on drop; all inference buffers cleared via `zeroize` crate — the operator cannot recover prompts or responses from memory dumps
+- **Model Integrity**: SHA-256 hash verification at startup + Ed25519 publisher signatures; fails fast on tampering
+- **picolm Layer-Streaming**: Pure Rust GGUF inference with O(layer_size) peak RAM — enables 7B+ models inside 512MB TEE EPC; zero C dependencies, fully auditable
+- **Pure Rust Inference Path**: Default backend via `mistralrs` (candle) — no C++ in the trusted computing base; the `tee-minimal` build (~1,220 dep tree lines) is the smallest auditable LLM inference stack that exists
+
+### Inference Engine
+
+Full-featured LLM inference, competitive with any standalone server:
+
 - **OpenAI-Compatible API**: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings` — works with any OpenAI SDK
-- **Pure Rust Inference (default)**: GGUF model inference via `mistralrs` (built on candle) — no C++ dependency, ideal for TEE auditing
-- **SafeTensors Inference**: HuggingFace SafeTensors chat models loaded via `TextModelBuilder` with ISQ on-load quantization (default Q8_0); register with `format=safetensors`, configure ISQ via `default_parameters.isq` (e.g. `Q4K`, `Q6K`, `Q8_0`)
-- **Vision/Multimodal Inference**: Vision models (e.g. LLaVA, Phi-3-Vision) loaded via `VisionModelBuilder`; register with `format=vision`; pass base64-encoded images via `images` field or OpenAI-style `content` parts (`image_url`); ISQ quantization supported
-- **True Token-by-Token Streaming**: Chat completions use `stream_chat_request` for per-token SSE delivery; each `Response::Chunk` is forwarded immediately as it is generated
-- **Embedding Models**: HuggingFace-format embedding models (e.g. Qwen3-Embedding, GTE, NomicBert) loaded via `EmbeddingModelBuilder`; register with `format=huggingface`, call `POST /v1/embeddings`; empty-input fast path returns immediately
-- **llama.cpp Backend (optional)**: GGUF inference via `llama-cpp-2` Rust bindings (feature-gated, requires C++ toolchain)
+- **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
+- **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional)
+- **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
-- **Chat Template Engine**: Jinja2-compatible template rendering via `minijinja` (Llama 3, ChatML, Phi, Gemma, custom)
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
 - **JSON Schema Structured Output**: Constrain model output via JSON Schema → GBNF grammar conversion
 - **Thinking & Reasoning**: Streaming `<think>` block parser for DeepSeek-R1, QwQ reasoning models
+- **Chat Template Engine**: Jinja2-compatible rendering via `minijinja` (Llama 3, ChatML, Phi, Gemma, custom)
 - **KV Cache Reuse**: Prefix matching across multi-turn requests for conversation speedup
+- **HuggingFace Hub Pull**: `POST /v1/models/pull` with SSE progress, Range resume, concurrent dedup, HF token auth
+
+### Operations
+
 - **Content-Addressed Storage**: Model blobs stored by SHA-256 hash with automatic deduplication
 - **Automatic Model Lifecycle**: LRU eviction, configurable keep-alive, background reaper for idle models
-- **TEE Metrics**: Prometheus counters for attestation reports (`power_tee_attestations_total`), model decryptions (`power_tee_model_decryptions_total`), and log redactions (`power_tee_redactions_total`)
-- **RA-TLS Transport**: Feature-gated (`tls`) TLS server with self-signed ECDSA P-256 certificate; when `ra_tls = true`, the TEE attestation report is embedded as a custom X.509 extension (OID 1.3.6.1.4.1.56560.1.1) so clients can cryptographically verify the server is running inside a genuine TEE before trusting inference
-- **Vsock Transport**: Feature-gated (`vsock`, Linux only) AF_VSOCK server for a3s-box MicroVM guest-host communication; exposes the same API as the TCP listener without requiring any network configuration inside the VM
-- **Prometheus Metrics**: Request counts, durations, tokens, inference timing, TTFT, model memory, GPU utilization
+- **Rate Limiting**: Token-bucket + concurrency cap on `/v1/*`; returns `429` with OpenAI-style error
+- **Prometheus Metrics**: 16 metric groups — HTTP, inference, TTFT, GPU, TEE attestations, model decryptions, log redactions
+- **Audit Logging**: JSONL / Encrypted / Async / Noop; flushed on graceful shutdown
+- **Vsock Transport**: AF_VSOCK for a3s-box MicroVM guest-host communication (Linux only)
 - **HCL Configuration**: HashiCorp Configuration Language for all settings
 
 ## Architecture
