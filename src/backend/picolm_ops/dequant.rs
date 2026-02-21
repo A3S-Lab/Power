@@ -289,7 +289,7 @@ fn dequant_q6_k(block: &[u8], out: &mut [f32]) {
             let sc2 = (sc[sc_base + l / 16 + 4] as i8) as f32 * d;
             let sc3 = (sc[sc_base + l / 16 + 6] as i8) as f32 * d;
 
-            let q0 = ((ql_lo & 0xF) | (((h >> 0) & 3) << 4)) as i8 - 32;
+            let q0 = ((ql_lo & 0xF) | ((h & 3) << 4)) as i8 - 32;
             let q1 = ((ql_hi & 0xF) | (((h >> 2) & 3) << 4)) as i8 - 32;
             let q2 = ((ql_lo >> 4) | (((h >> 4) & 3) << 4)) as i8 - 32;
             let q3 = ((ql_hi >> 4) | (((h >> 6) & 3) << 4)) as i8 - 32;

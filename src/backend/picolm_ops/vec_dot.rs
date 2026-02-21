@@ -193,7 +193,7 @@ fn vec_dot_q6_k(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
             let xp_c = &xp[chunk * 128..];
 
             for l in 0..16 {
-                let q1 = ((ql_c[l] & 0xF) | (((qh_c[l] >> 0) & 3) << 4)) as i8 - 32;
+                let q1 = ((ql_c[l] & 0xF) | ((qh_c[l] & 3) << 4)) as i8 - 32;
                 let q2 = ((ql_c[l + 32] & 0xF) | (((qh_c[l] >> 2) & 3) << 4)) as i8 - 32;
                 let q3 = ((ql_c[l] >> 4) | (((qh_c[l] >> 4) & 3) << 4)) as i8 - 32;
                 let q4 = ((ql_c[l + 32] >> 4) | (((qh_c[l] >> 6) & 3) << 4)) as i8 - 32;
@@ -203,7 +203,7 @@ fn vec_dot_q6_k(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
                 sums[is + 6] += q4 as f32 * xp_c[l + 96];
             }
             for l in 16..32 {
-                let q1 = ((ql_c[l] & 0xF) | (((qh_c[l] >> 0) & 3) << 4)) as i8 - 32;
+                let q1 = ((ql_c[l] & 0xF) | ((qh_c[l] & 3) << 4)) as i8 - 32;
                 let q2 = ((ql_c[l + 32] & 0xF) | (((qh_c[l] >> 2) & 3) << 4)) as i8 - 32;
                 let q3 = ((ql_c[l] >> 4) | (((qh_c[l] >> 4) & 3) << 4)) as i8 - 32;
                 let q4 = ((ql_c[l + 32] >> 4) | (((qh_c[l] >> 6) & 3) << 4)) as i8 - 32;

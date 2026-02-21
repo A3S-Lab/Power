@@ -40,6 +40,7 @@ pub struct ModelConfig {
 /// Uses pre-computed RoPE tables, pre-dequantized norm weights, a pre-built
 /// tensor cache (no HashMap lookups), and pre-allocated working buffers
 /// (no heap allocation in the hot path).
+#[allow(clippy::too_many_arguments)]
 pub fn attention_layer(
     hidden: &mut [f32],
     tc: &TensorCache,

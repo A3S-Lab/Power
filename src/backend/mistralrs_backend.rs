@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+#[allow(unused_imports)]
 use futures::{Stream, StreamExt};
 
 use crate::config::PowerConfig;
