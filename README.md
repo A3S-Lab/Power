@@ -78,48 +78,228 @@ Power is built to run inside [a3s-box](https://github.com/A3S-Lab/Box) MicroVMs 
 
 ## Architecture
 
+A3S Power is organized into 6 layers. Each layer has a clear responsibility and communicates only with adjacent layers through trait-based interfaces.
+
+### System Overview
+
 ```
-┌──────────────────────────────────────────────────────┐
-│                     a3s-power                         │
-│                                                       │
-│  TEE Layer                                            │
-│  ┌────────────────┐ ┌──────────────┐ ┌────────────┐  │
-│  │  attestation   │ │  model_seal  │ │  privacy   │  │
-│  │  (TeeProvider) │ │  (SHA-256)   │ │  (redact)  │  │
-│  └────────┬───────┘ └──────┬───────┘ └─────┬──────┘  │
-│           │                │               │          │
-│  Server Layer              │               │          │
-│  ┌─────────────────────────┴───────────────┴───────┐  │
-│  │  Axum Router                                    │  │
-│  │  /health  /metrics  /v1/*                       │  │
-│  └──────────────────────┬──────────────────────────┘  │
-│                         │                             │
-│  Backend Layer          │                             │
-│  ┌──────────────────────┴──────────────────────────┐  │
-│  │  BackendRegistry                                │  │
-│  │  ┌────────────────────────────────────────────┐ │  │
-│  │  │  MistralRsBackend (feature: mistralrs) ★   │ │  │
-│  │  │  pure Rust · candle · GGUF                 │ │  │
-│  │  ├────────────────────────────────────────────┤ │  │
-│  │  │  LlamaCppBackend (feature: llamacpp)       │ │  │
-│  │  │  chat_template · json_schema · tool_parser │ │  │
-│  │  └────────────────────────────────────────────┘ │  │
-│  └─────────────────────────────────────────────────┘  │
-│                                                       │
-│  Model Layer                                          │
-│  ┌─────────────────────────────────────────────────┐  │
-│  │  ModelRegistry                                  │  │
-│  │  manifest · storage (SHA-256) · gguf parser     │  │
-│  └─────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              a3s-power                                      │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  API Layer                                                            │  │
+│  │  ┌──────────────┐ ┌──────────────┐ ┌────────────┐ ┌──────────────┐  │  │
+│  │  │ /v1/chat/    │ │ /v1/models   │ │ /v1/embed  │ │ /v1/attest   │  │  │
+│  │  │ completions  │ │ /v1/models/  │ │ dings      │ │ ation        │  │  │
+│  │  │              │ │ pull         │ │            │ │              │  │  │
+│  │  │ /v1/         │ │ /v1/models/  │ │            │ │ /health      │  │  │
+│  │  │ completions  │ │ :name        │ │            │ │ /metrics     │  │  │
+│  │  └──────┬───────┘ └──────┬───────┘ └─────┬──────┘ └──────┬───────┘  │  │
+│  │         │                │               │               │          │  │
+│  │  ┌──────┴────────────────┴───────────────┴───────────────┘          │  │
+│  │  │  autoload: LRU eviction → decrypt → integrity check → load      │  │
+│  │  └──────┬──────────────────────────────────────────────────         │  │
+│  └─────────┼─────────────────────────────────────────────────────────┘  │
+│            │                                                             │
+│  ┌─────────┼─────────────────────────────────────────────────────────┐  │
+│  │  Server │Layer                                                     │  │
+│  │  ┌──────┴───────────────────────────────────────────────────────┐  │  │
+│  │  │  Middleware Stack (outermost → innermost)                     │  │  │
+│  │  │  RateLimiter → RequestID → Metrics → Tracing → CORS → Auth  │  │  │
+│  │  └──────────────────────────┬───────────────────────────────────┘  │  │
+│  │                             │                                      │  │
+│  │  ┌──────────┐ ┌─────────┐ ┌┴─────────┐ ┌──────────┐ ┌─────────┐  │  │
+│  │  │ AppState │ │  Auth   │ │  Audit   │ │ Metrics  │ │Transport│  │  │
+│  │  │ (model   │ │ (Bearer │ │ (JSONL/  │ │(Promethe │ │TCP/TLS/ │  │  │
+│  │  │lifecycle,│ │  SHA256 │ │ encrypt/ │ │ us, 16   │ │ Vsock)  │  │  │
+│  │  │ LRU,     │ │  const- │ │ async/   │ │ metric   │ │         │  │  │
+│  │  │ privacy) │ │  time)  │ │ noop)    │ │ groups)  │ │         │  │  │
+│  │  └──────┬───┘ └─────────┘ └──────────┘ └──────────┘ └─────────┘  │  │
+│  └─────────┼─────────────────────────────────────────────────────────┘  │
+│            │                                                             │
+│  ┌─────────┼─────────────────────────────────────────────────────────┐  │
+│  │  Backend│Layer                                                     │  │
+│  │  ┌──────┴───────────────────────────────────────────────────────┐  │  │
+│  │  │  BackendRegistry (priority-based, TEE-aware routing)         │  │  │
+│  │  │  ┌─────────────────────┬─────────────────┬────────────────┐  │  │  │
+│  │  │  │ MistralRsBackend ★  │ LlamaCppBackend │ PicolmBackend  │  │  │  │
+│  │  │  │ pure Rust (candle)  │ C++ bindings    │ pure Rust      │  │  │  │
+│  │  │  │ GGUF/SafeTensors/   │ GGUF only       │ layer-stream   │  │  │  │
+│  │  │  │ HuggingFace/Vision  │ KV cache, LoRA  │ O(layer_size)  │  │  │  │
+│  │  │  │ ISQ quantization    │ grammar, vision │ TEE-optimized  │  │  │  │
+│  │  │  └─────────────────────┴─────────────────┴────────────────┘  │  │  │
+│  │  └──────────────────────────────────────────────────────────────┘  │  │
+│  │                                                                    │  │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │  │
+│  │  │  Shared: chat_template · gpu · json_schema · tool_parser    │  │  │
+│  │  │          think_parser · gguf_stream                         │  │  │
+│  │  └──────────────────────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  Model Layer                                                      │  │
+│  │  ┌──────────────┐ ┌──────────────┐ ┌──────────┐ ┌─────────────┐  │  │
+│  │  │ ModelRegistry│ │ BlobStorage  │ │ GgufMeta │ │ HfPull      │  │  │
+│  │  │ (RwLock<Map>)│ │ (SHA-256     │ │ (parser, │ │ (Range      │  │  │
+│  │  │ manifest     │ │  content-    │ │  memory  │ │  resume,    │  │  │
+│  │  │ persistence) │ │  addressed)  │ │  estim.) │ │  SSE prog.) │  │  │
+│  │  └──────────────┘ └──────────────┘ └──────────┘ └─────────────┘  │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  TEE Layer (cross-cutting security)                               │  │
+│  │  ┌────────────┐ ┌────────────┐ ┌──────────┐ ┌─────────────────┐  │  │
+│  │  │Attestation │ │ Encrypted  │ │ Privacy  │ │  Model Seal     │  │  │
+│  │  │(TeeProvider│ │ Model      │ │(Provider │ │  (SHA-256 +     │  │  │
+│  │  │ SEV-SNP,   │ │ AES-256-   │ │ redact,  │ │   Ed25519 sig)  │  │  │
+│  │  │ TDX, ioctl)│ │ GCM, 3     │ │ zeroize, │ │                 │  │  │
+│  │  │            │ │ modes)     │ │ suppress)│ │                 │  │  │
+│  │  └────────────┘ └────────────┘ └──────────┘ └─────────────────┘  │  │
+│  │  ┌────────────┐ ┌────────────┐ ┌──────────┐ ┌─────────────────┐  │  │
+│  │  │KeyProvider │ │ TeePolicy  │ │   EPC    │ │  RA-TLS Cert    │  │  │
+│  │  │(Static,    │ │(allowlist, │ │(memory   │ │  (X.509 +       │  │  │
+│  │  │ Rotating,  │ │ measure-   │ │ detect,  │ │   attestation   │  │  │
+│  │  │ HSM ext.)  │ │ ment pin)  │ │ routing) │ │   extension)    │  │  │
+│  │  └────────────┘ └────────────┘ └──────────┘ └─────────────────┘  │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  Verify Layer (client-side SDK)                                   │  │
+│  │  ┌──────────────────────────────┐ ┌─────────────────────────────┐ │  │
+│  │  │ verify_report()              │ │ HardwareVerifier trait       │ │  │
+│  │  │ · nonce binding (const-time) │ │ · SevSnpVerifier (AMD KDS)  │ │  │
+│  │  │ · model hash binding         │ │ · TdxVerifier (Intel PCS)   │ │  │
+│  │  │ · measurement check          │ │ · ECDSA P-384 / P-256       │ │  │
+│  │  └──────────────────────────────┘ └─────────────────────────────┘ │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  Infrastructure: config.rs (HCL) · dirs.rs · error.rs (14 var.)  │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Core vs Extension
+
+Power follows the Minimal Core + External Extensions pattern. Core components are stable and non-replaceable; extensions are trait-based and swappable.
+
+```
+Core (7)                              Extensions (8 trait-based)
+─────────────────────────             ──────────────────────────────────────
+AppState (model lifecycle)            Backend: MistralRs / LlamaCpp / Picolm
+BackendRegistry + Backend trait       TeeProvider: SEV-SNP / TDX / Simulated
+ModelRegistry + ModelManifest         PrivacyProvider: redaction policy
+PowerConfig (HCL)                     TeePolicy: allowlist + measurement pin
+PowerError (14 variants → HTTP)       KeyProvider: Static / Rotating / KMS
+Router + middleware stack             AuthProvider: API key (SHA-256)
+RequestContext (per-request)          AuditLogger: JSONL / Encrypted / Async / Noop
+                                      HardwareVerifier: AMD KDS / Intel PCS
+```
+
+### Request Flow: Chat Completion
+
+```
+Client
+  │
+  │  POST /v1/chat/completions
+  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Middleware Stack                                                 │
+│ RateLimiter ─► RequestID ─► Metrics ─► Tracing ─► CORS ─► Auth │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ chat::handler()                                                  │
+│                                                                  │
+│  1. Build RequestContext (request_id, auth_id)                   │
+│  2. Privacy: sanitize_log() if redaction enabled                 │
+│  3. ModelRegistry.get(model) → ModelManifest                     │
+│  4. BackendRegistry.find_for_format(format) → Backend            │
+│                                                                  │
+│  5. autoload::ensure_loaded()                                    │
+│     ├─ LRU eviction if at max_loaded_models                     │
+│     ├─ If .enc: KeyProvider.get_key() → AES-256-GCM decrypt     │
+│     │   ├─ MemoryDecryptedModel (mlock RAM, zeroize on drop)    │
+│     │   ├─ DecryptedModel (temp file, secure wipe on drop)      │
+│     │   └─ LayerStreamingDecryptedModel (chunk-by-chunk)        │
+│     ├─ model_seal: verify SHA-256 integrity                     │
+│     ├─ model_seal: verify Ed25519 signature (if configured)     │
+│     └─ Backend.load(manifest)                                   │
+│                                                                  │
+│  6. Backend.chat(model, request) → Stream<ChatResponseChunk>     │
+│  7. Streaming SSE: role → content chunks (TTFT) → usage → DONE  │
+│  8. Privacy: zeroize buffers, round token counts                 │
+│  9. Timing padding (±20% jitter) if configured                  │
+│ 10. Audit: log event, Metrics: record duration/tokens            │
+│ 11. If keep_alive=0: Backend.unload() → RAII secure wipe        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### TEE Security Integration
+
+The TEE layer is cross-cutting — it integrates at every layer of the stack:
+
+```
+Layer           TEE Integration
+──────────────  ──────────────────────────────────────────────────────
+API             Log redaction, buffer zeroization, token rounding,
+                timing padding, attestation endpoint (nonce + model bind)
+
+Server          Encrypted audit logs (AES-256-GCM), constant-time auth,
+                RAII decrypted model storage, RA-TLS cert with attestation
+                X.509 extension, TEE-specific Prometheus counters
+
+Backend         EPC-aware routing (auto picolm when model > 75% EPC),
+                KV cache isolation per request, mlock weight pinning
+
+Model           Content-addressed SHA-256 storage, GGUF memory estimation
+                for EPC budget planning
+
+TEE             Attestation (SEV-SNP/TDX ioctl), AES-256-GCM encryption
+                (3 modes: file/RAM/streaming), Ed25519 model signatures,
+                key rotation, policy enforcement, log redaction (9 keys),
+                SensitiveString (auto-zeroize), EPC memory detection
+
+Verify          Client-side: nonce binding, model hash binding,
+                measurement check (all constant-time), hardware signature
+                verification via AMD KDS / Intel PCS certificate chains
+```
+
+### Encrypted Model Decryption Modes
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │         KeyProvider.get_key()            │
+                    │    Static ─── Rotating ─── (HSM ext.)   │
+                    └──────────────────┬──────────────────────┘
+                                       │ AES-256-GCM key
+                    ┌──────────────────┼──────────────────────┐
+                    │                  │                       │
+              ┌─────┴──────┐   ┌──────┴───────┐   ┌──────────┴──────────┐
+              │ DecryptedMo│   │ MemoryDecrypt│   │ LayerStreamingDecry │
+              │ del (file) │   │ edModel (RAM)│   │ ptedModel (chunks)  │
+              │            │   │              │   │                     │
+              │ Temp .dec  │   │ mlock-pinned │   │ Chunk-by-chunk      │
+              │ file on    │   │ RAM buffer,  │   │ Zeroizing<Vec<u8>>  │
+              │ disk, zero │   │ never touches│   │ per layer, for      │
+              │ overwrite  │   │ disk, zeroize│   │ picolm streaming    │
+              │ + delete   │   │ on drop      │   │ O(layer_size) peak  │
+              │ on drop    │   │              │   │                     │
+              └────────────┘   └──────────────┘   └─────────────────────┘
+                  Any              Any                  picolm only
+                backend          backend
 ```
 
 ### Backend Trait
 
-The `Backend` trait abstracts inference engines. Two backends are available:
+Three backends are available, each feature-gated:
 
-- **`mistralrs`** (default): Pure Rust inference via `mistralrs` (candle-based). No C++ toolchain required. Ideal for TEE environments where supply-chain auditability matters.
-- **`llamacpp`** (optional): C++ llama.cpp via `llama-cpp-2` Rust bindings. Mature, full-featured (KV cache reuse, LoRA, grammar sampling, mirostat).
+- **`mistralrs`** (default): Pure Rust inference via candle. GGUF, SafeTensors, HuggingFace, Vision formats. ISQ on-load quantization. No C++ toolchain. Ideal for TEE supply-chain auditing.
+- **`llamacpp`** (optional): C++ llama.cpp via `llama-cpp-2` bindings. GGUF only. Session KV cache with prefix matching, LoRA adapters, MTMD multimodal, grammar constraints, mirostat sampling.
+- **`picolm`** (optional): Pure Rust layer-streaming. GGUF only. Peak RAM = O(layer_size) not O(model_size). Enables 7B+ models in 512MB TEE EPC. Zero C dependencies.
+
+The `BackendRegistry` selects backends by priority and model format. In TEE environments, `find_for_tee()` auto-routes to picolm when the model exceeds 75% of available EPC memory.
 
 Without any backend feature enabled, Power can manage models but returns "backend not available" for inference.
 
@@ -139,18 +319,14 @@ pub trait Backend: Send + Sync {
 }
 ```
 
-### TEE Extension Points
+### Extension Points
 
-TEE capabilities are implemented as traits with default implementations:
+All extension points are trait-based with working default implementations — the system works out of the box:
 
 ```rust
-/// Remote attestation provider.
+/// Remote attestation provider (TEE hardware abstraction).
 pub trait TeeProvider: Send + Sync {
-    /// Generate attestation report. Optional nonce is bound into report_data
-    /// to prevent replay attacks.
     async fn attestation_report(&self, nonce: Option<&[u8]>) -> Result<AttestationReport>;
-    /// Generate attestation report bound to a specific model hash.
-    /// report_data layout: [nonce(32 bytes)][model_sha256(32 bytes)]
     async fn attestation_report_with_model(
         &self, nonce: Option<&[u8]>, model_hash: Option<&[u8]>
     ) -> Result<AttestationReport>;
@@ -166,11 +342,33 @@ pub trait PrivacyProvider: Send + Sync {
     fn should_suppress_token_metrics(&self) -> bool;
 }
 
-/// Model decryption key provider.
+/// Model decryption key management (extensible to HSM/KMS).
 pub trait KeyProvider: Send + Sync {
     async fn get_key(&self) -> Result<[u8; 32]>;
-    async fn rotate_key(&self) -> Result<[u8; 32]>;  // default: Err (not supported)
+    async fn rotate_key(&self) -> Result<[u8; 32]>;
     fn provider_name(&self) -> &str;
+}
+
+/// Authentication mechanism.
+pub trait AuthProvider: Send + Sync {
+    fn authenticate(&self, token: &str) -> Result<AuthId>;
+}
+
+/// Audit trail persistence.
+pub trait AuditLogger: Send + Sync {
+    fn log(&self, event: AuditEvent);
+    async fn flush(&self);
+}
+
+/// TEE policy enforcement.
+pub trait TeePolicy: Send + Sync {
+    fn is_allowed(&self, tee_type: TeeType) -> bool;
+    fn validate_measurement(&self, measurement: &[u8]) -> bool;
+}
+
+/// Client-side hardware attestation signature verification.
+pub trait HardwareVerifier: Send + Sync {
+    async fn verify(&self, report: &AttestationReport) -> Result<()>;
 }
 ```
 
@@ -531,10 +729,66 @@ Model files are stored by SHA-256 hash, enabling deduplication and integrity ver
 |------|---------|-------------|
 | `mistralrs` | ✅ enabled | Pure Rust inference backend via `mistralrs` (candle-based). No C++ toolchain required. Ideal for TEE auditing. |
 | `llamacpp` | ❌ disabled | llama.cpp inference backend via `llama-cpp-2`. Requires C++ compiler + CMake. Full-featured (KV cache, LoRA, grammar, mirostat). |
+| `picolm` | ❌ disabled | **Experimental.** Pure Rust layer-streaming GGUF inference. Peak RAM = O(layer_size) not O(model_size). Enables 7B+ models in 512MB TEE EPC. Zero C dependencies — fully auditable. ⚠️ Forward pass uses stub arithmetic (not real transformer ops); tokenizer uses byte-fallback (not BPE). Produces placeholder output — not suitable for production inference yet. Infrastructure (mmap, layer iteration, sampling) is production-ready. |
+| `hf` | ❌ disabled | HuggingFace Hub model pull (`POST /v1/models/pull`). Range resume, SSE progress, HF_TOKEN auth. |
 | `tls` | ❌ disabled | RA-TLS transport: TLS server with self-signed cert + optional attestation X.509 extension. Adds `axum-server`, `rcgen`, `time` deps. |
 | `vsock` | ❌ disabled | Vsock transport for a3s-box MicroVM guest-host HTTP. **Linux only** — requires `AF_VSOCK` kernel support. Adds `tokio-vsock` dep. |
+| `hw-verify` | ❌ disabled | Hardware attestation signature verification. AMD KDS (ECDSA P-384) + Intel PCS (ECDSA P-256) certificate chain validation. |
+| `tee-minimal` | ❌ disabled | Composite: `picolm` + `tls` + `vsock`. Smallest auditable TEE build — no mistralrs/candle, no C++. Recommended for production TEE deployments. |
 
-Without a backend feature (`mistralrs` or `llamacpp`), Power can manage models but inference calls return "backend not available".
+Without a backend feature (`mistralrs`, `llamacpp`, or `picolm`), Power can manage models but inference calls return "backend not available".
+
+## TEE Deployment
+
+For production TEE deployments (AMD SEV-SNP / Intel TDX), use the `tee-minimal` build profile:
+
+```bash
+cargo build --release --no-default-features --features tee-minimal
+```
+
+### Why `tee-minimal`?
+
+Inside a TEE, every crate in the inference path is part of the trusted computing base.
+The `tee-minimal` profile minimizes this surface:
+
+| Profile | Inference backend | Dep tree lines | C dependencies |
+|---------|------------------|----------------|----------------|
+| `default` | mistralrs (candle) | ~2,000 | None |
+| `tee-minimal` | picolm (pure Rust) | ~1,220 | None |
+| `llamacpp` | llama.cpp | ~1,800+ | Yes (C++) |
+
+### What `tee-minimal` includes
+
+- **picolm backend**: Pure Rust layer-streaming GGUF inference (~860 lines, fully auditable)
+- **Full TEE stack**: attestation, model integrity (SHA-256), log redaction, memory zeroing
+- **Encrypted model loading**: AES-256-GCM with `in_memory_decrypt` or `streaming_decrypt`
+- **RA-TLS transport**: attestation embedded in X.509 cert
+- **Vsock transport**: for a3s-box MicroVM guest-host communication
+
+### Layer-streaming inference
+
+The picolm backend streams transformer layers one at a time through a single working buffer.
+Peak RAM stays at O(layer_size) rather than O(model_size), enabling 7B+ models inside a 512MB EPC:
+
+```hcl
+# config.hcl — TEE deployment with layer-streaming
+tee_mode        = true
+redact_logs     = true
+
+# For encrypted models: decrypt one layer at a time (requires picolm feature)
+streaming_decrypt = true
+
+# Or: decrypt full model into mlock RAM (compatible with all backends)
+# in_memory_decrypt = true
+```
+
+### Supply-chain audit
+
+See [`docs/supply-chain.md`](docs/supply-chain.md) for:
+- Full dependency listing per feature profile
+- Audit status for each crate in the `tee-minimal` inference path
+- Security properties of `LayerStreamingDecryptedModel`
+- How to reproduce dependency counts and audit unsafe blocks
 
 ### Building with RA-TLS
 
@@ -566,7 +820,7 @@ cargo build -p a3s-power                          # Debug (default: mistralrs)
 cargo build -p a3s-power --release                 # Release
 cargo build -p a3s-power --no-default-features --features llamacpp  # With llama.cpp
 
-# Test (755+ tests)
+# Test (787+ tests)
 cargo test -p a3s-power --lib -- --test-threads=1
 cargo test -p a3s-power --test integration
 
@@ -586,67 +840,79 @@ cargo run -p a3s-power                             # Start server
 ```
 power/
 ├── Cargo.toml
+├── justfile                     # Build, test, coverage, lint, CI targets
 ├── README.md
 └── src/
-    ├── main.rs              # Entry point (start server)
-    ├── lib.rs               # Module declarations
-    ├── error.rs             # PowerError enum + Result<T>
-    ├── config.rs            # HCL configuration (TEE-native)
-    ├── dirs.rs              # Platform paths (~/.a3s/power/)
+    ├── main.rs                  # Entry point: load HCL config → server::start()
+    ├── lib.rs                   # Module declarations
+    ├── config.rs                # PowerConfig (HCL deserialization + env overrides)
+    ├── dirs.rs                  # Platform paths (~/.a3s/power/{manifests,blobs,pulls})
+    ├── error.rs                 # PowerError enum (14 variants) + HTTP status mapping
     │
-    ├── tee/                 # TEE privacy protection layer
-    │   ├── mod.rs           # Module entry
-    │   ├── attestation.rs   # TeeProvider trait + remote attestation + build_report_data
-    │   ├── cert.rs          # CertManager: RA-TLS cert generation (feature: tls)
-    │   ├── encrypted_model.rs # AES-256-GCM model encryption/decryption + MemoryDecryptedModel
-    │   ├── key_provider.rs  # KeyProvider trait + StaticKeyProvider + RotatingKeyProvider
-    │   ├── model_seal.rs    # Model integrity verification (SHA-256)
-    │   ├── policy.rs        # TEE policy enforcement
-    │   └── privacy.rs       # PrivacyProvider + deep log redaction + memory zeroing
+    ├── api/                     # API layer — OpenAI-compatible HTTP handlers
+    │   ├── mod.rs               # Shared utilities, timestamp helpers
+    │   ├── types.rs             # OpenAI request/response types (chat, completion, embedding)
+    │   ├── health.rs            # GET /health (TEE status, version, uptime, loaded models)
+    │   ├── autoload.rs          # Model lifecycle: LRU eviction → decrypt → verify → load
+    │   └── openai/              # OpenAI-compatible endpoint handlers
+    │       ├── mod.rs           # Route definitions, openai_error() helper
+    │       ├── chat.rs          # POST /v1/chat/completions (streaming SSE + JSON)
+    │       ├── completions.rs   # POST /v1/completions
+    │       ├── embeddings.rs    # POST /v1/embeddings
+    │       ├── models.rs        # GET/POST/DELETE /v1/models, POST /v1/models/pull
+    │       └── attestation.rs   # GET /v1/attestation (nonce + model hash binding)
     │
-    ├── backend/             # Inference engines
-    │   ├── mod.rs           # Backend trait + BackendRegistry
-    │   ├── types.rs         # ChatRequest, CompletionRequest, EmbeddingRequest
-    │   ├── mistralrs_backend.rs # mistral.rs backend — pure Rust (feature: mistralrs, default)
-    │   ├── llamacpp.rs      # llama.cpp backend (feature: llamacpp)
-    │   ├── chat_template.rs # Jinja2 chat template rendering
-    │   ├── json_schema.rs   # JSON Schema → GBNF grammar
-    │   ├── tool_parser.rs   # Tool call output parser
-    │   ├── think_parser.rs  # Thinking block parser
-    │   ├── gpu.rs           # GPU auto-detection
-    │   └── test_utils.rs    # MockBackend for testing
+    ├── backend/                 # Backend layer — inference engine abstraction
+    │   ├── mod.rs               # Backend trait (8 methods) + BackendRegistry (priority, TEE routing)
+    │   ├── types.rs             # ChatRequest, ChatResponseChunk, EmbeddingRequest, Tool, ToolCall
+    │   ├── mistralrs_backend.rs # Pure Rust: GGUF/SafeTensors/HF/Vision, ISQ (feature: mistralrs) ★
+    │   ├── llamacpp.rs          # C++ bindings: KV cache, LoRA, MTMD vision, grammar (feature: llamacpp)
+    │   ├── picolm.rs            # Pure Rust layer-streaming, O(layer_size) RAM (feature: picolm)
+    │   ├── chat_template.rs     # Jinja2 chat template rendering (ChatML/Llama/Phi/Generic)
+    │   ├── gpu.rs               # Metal + CUDA detection, auto gpu_layers config
+    │   ├── json_schema.rs       # JSON Schema → GBNF grammar for constrained output
+    │   ├── tool_parser.rs       # Tool call parsing (XML/Hermes, Mistral, raw JSON)
+    │   ├── think_parser.rs      # Streaming <think> block extraction (DeepSeek-R1, QwQ)
+    │   ├── gguf_stream.rs       # GGUF v2/v3 mmap reader for picolm layer-streaming
+    │   └── test_utils.rs        # MockBackend for testing
     │
-    ├── model/               # Model management (local only)
-    │   ├── mod.rs           # Module declarations
-    │   ├── manifest.rs      # ModelManifest metadata
-    │   ├── registry.rs      # In-memory model index
-    │   ├── storage.rs       # Content-addressed blob store
-    │   └── gguf.rs          # GGUF metadata parser
+    ├── model/                   # Model layer — storage, registry, pull
+    │   ├── mod.rs               # Module declarations
+    │   ├── manifest.rs          # ModelManifest, ModelFormat (Gguf/SafeTensors/HuggingFace/Vision)
+    │   ├── registry.rs          # ModelRegistry (RwLock<HashMap>, JSON manifest persistence)
+    │   ├── storage.rs           # Content-addressed blob store (SHA-256 naming, prune)
+    │   ├── gguf.rs              # GGUF metadata reader, memory estimation (KV cache + compute)
+    │   ├── pull.rs              # HuggingFace Hub pull with Range resume, SSE progress (feature: hf)
+    │   └── pull_state.rs        # Persistent pull state (Pulling/Done/Failed) as JSON
     │
-    ├── server/              # HTTP server
-    │   ├── mod.rs           # Server startup + TEE init + key provider init + keep_alive reaper
-    │   ├── state.rs         # Shared AppState with LRU tracking + key_provider field
-    │   ├── router.rs        # Axum router + rate limiting middleware
-    │   ├── lock.rs          # Shared RwLock helpers (read_lock/write_lock)
-    │   ├── metrics.rs       # Prometheus metrics
-    │   ├── auth.rs          # API key authentication
-    │   ├── audit.rs         # Structured audit logging (JSONL)
-    │   ├── request_context.rs # Request-scoped context (ID, timing)
-    │   └── vsock.rs         # Vsock transport (feature: vsock, Linux only)
+    ├── server/                  # Server layer — transport, auth, metrics, audit
+    │   ├── mod.rs               # Server startup orchestration (TCP/TLS/Vsock), graceful shutdown
+    │   ├── state.rs             # AppState: model lifecycle, LRU, decrypted model RAII, privacy
+    │   ├── router.rs            # Axum router + middleware: rate limit, request ID, metrics, auth
+    │   ├── auth.rs              # AuthProvider trait, ApiKeyAuth (SHA-256, constant-time)
+    │   ├── audit.rs             # AuditLogger trait: JSONL / Encrypted / Async / Noop
+    │   ├── metrics.rs           # Prometheus metrics (16 groups: HTTP, inference, TTFT, GPU, TEE)
+    │   ├── request_context.rs   # Per-request context (request_id, auth_id, created_at)
+    │   ├── lock.rs              # Shared RwLock helpers
+    │   └── vsock.rs             # AF_VSOCK transport (feature: vsock, Linux only)
     │
-    └── api/                 # HTTP API handlers
-        ├── mod.rs           # Shared utilities
-        ├── health.rs        # GET /health (with TEE status)
-        ├── autoload.rs      # Model auto-loading on first request
-        ├── sse.rs           # SSE streaming utilities
-        ├── types.rs         # Request/response types
-        └── openai/          # OpenAI-compatible API
-            ├── mod.rs       # Route group
-            ├── chat.rs      # POST /v1/chat/completions
-            ├── completions.rs # POST /v1/completions
-            ├── models.rs    # GET /v1/models
-            ├── embeddings.rs # POST /v1/embeddings
-            └── attestation.rs # GET /v1/attestation (nonce + model binding)
+    ├── tee/                     # TEE layer — cross-cutting security
+    │   ├── mod.rs               # Module entry
+    │   ├── attestation.rs       # TeeProvider trait, SEV-SNP/TDX ioctl, report_data binding
+    │   ├── encrypted_model.rs   # AES-256-GCM: DecryptedModel / MemoryDecrypted / LayerStreaming
+    │   ├── key_provider.rs      # KeyProvider trait: StaticKeyProvider + RotatingKeyProvider
+    │   ├── model_seal.rs        # SHA-256 integrity + Ed25519 signature verification
+    │   ├── policy.rs            # TeePolicy trait: allowlist + measurement pinning
+    │   ├── privacy.rs           # PrivacyProvider: log redaction (9 keys), SensitiveString, zeroize
+    │   ├── epc.rs               # EPC memory detection (/proc/meminfo), 75% threshold routing
+    │   └── cert.rs              # RA-TLS X.509 cert with attestation extension (feature: tls)
+    │
+    ├── verify/                  # Verify layer — client-side attestation SDK
+    │   ├── mod.rs               # verify_report(), nonce/hash/measurement binding (constant-time)
+    │   └── hw_verify.rs         # SevSnpVerifier (AMD KDS) + TdxVerifier (Intel PCS)
+    │
+    └── bin/
+        └── a3s-power-verify.rs  # CLI for offline attestation report verification
 ```
 
 ## A3S Ecosystem
@@ -654,18 +920,30 @@ power/
 A3S Power is the inference engine of the A3S privacy-preserving AI platform. It runs inside a3s-box MicroVMs to provide hardware-isolated LLM inference.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    A3S Ecosystem                      │
-│                                                       │
-│  Runtime:     a3s-box      (MicroVM with TEE)         │
-│                  │                                     │
-│  Inference:   a3s-power ◄── runs inside a3s-box       │
-│                  │                                     │
-│  Application: a3s-code     (AI coding agent)          │
-│                  │                                     │
-│  Platform:    a3s-gateway  (API gateway)               │
-│               a3s-event    (event bus)                 │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                         A3S Ecosystem                             │
+│                                                                   │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │  a3s-box MicroVM (AMD SEV-SNP / Intel TDX)               │    │
+│  │  ┌────────────────────────────────────────────────────┐  │    │
+│  │  │  a3s-power                                         │  │    │
+│  │  │  OpenAI API ← Vsock/RA-TLS → host                 │  │    │
+│  │  └────────────────────────────────────────────────────┘  │    │
+│  │  Hardware-encrypted memory — host cannot read             │    │
+│  └──────────────────────────────────────────────────────────┘    │
+│       ▲ Vsock                                                     │
+│       │                                                           │
+│  ┌────┴─────────┐  ┌──────────────┐  ┌────────────────────────┐  │
+│  │  a3s-gateway │  │  a3s-event   │  │  a3s-code              │  │
+│  │  (API route) │  │  (event bus) │  │  (AI coding agent)     │  │
+│  └──────────────┘  └──────────────┘  └────────────────────────┘  │
+│                                                                   │
+│  Client-side:                                                     │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │  a3s-power verify SDK                                     │    │
+│  │  Nonce binding · Model hash binding · HW signature check  │    │
+│  └──────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 | Component | Relationship to Power |
@@ -673,6 +951,8 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 | **a3s-box** | Hosts Power inside TEE-enabled MicroVMs (AMD SEV-SNP / Intel TDX) |
 | **a3s-code** | Uses Power as a local inference backend |
 | **a3s-gateway** | Routes inference requests to Power instances |
+| **a3s-event** | Distributes inference events across the platform |
+| **verify SDK** | Client-side attestation verification (nonce, model hash, HW signature) |
 
 ## Roadmap
 
@@ -718,6 +998,11 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 - [x] Pull progress persistence — JSON state files in `~/.a3s/power/pulls/`; `GET /v1/models/pull/:name/status` returns `{status, completed, total, error}`; survives server restarts; throttled writes (every 5%) to minimize disk I/O
 - [x] True token-by-token streaming — `stream_chat_request` replaces non-streaming path; each `Response::Chunk` forwarded immediately via mpsc channel; `Response::Done` sets `finish_reason`
 - [x] Vision/multimodal inference — `ModelFormat::Vision` variant; `MistralRsBackend` loads vision models via `VisionModelBuilder` with ISQ; base64 images accepted via `images` field or OpenAI `image_url` content parts; decoded with `image` + `base64` crates
+- [x] picolm backend — pure Rust layer-streaming GGUF inference (`picolm` feature); peak RAM = O(layer_size) not O(model_size); enables 7B+ models in 512MB TEE EPC; zero C dependencies; `GgufFile` mmap reader + top-p sampler in ~860 lines
+- [x] EPC memory detection — `tee::epc` module reads `/proc/meminfo`; `BackendRegistry::find_for_tee()` auto-routes to picolm when model exceeds 75% of available EPC
+- [x] `LayerStreamingDecryptedModel` — chunk-by-chunk access to AES-256-GCM encrypted models; each chunk returned as `Zeroizing<Vec<u8>>`, zeroized on drop; `streaming_decrypt` config field
+- [x] `tee-minimal` feature profile — `picolm` + `tls` + `vsock`; smallest auditable TEE build (~1,220 dep tree lines vs ~2,000 for default); no mistralrs/candle, no C++
+- [x] Supply-chain audit document — `docs/supply-chain.md`; per-profile dependency listing, audit status table, threat model
 
 ## Community
 

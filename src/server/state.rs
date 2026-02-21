@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::backend::BackendRegistry;
@@ -11,7 +12,9 @@ use crate::server::auth::AuthProvider;
 use crate::server::lock::{read_lock, write_lock};
 use crate::server::metrics::Metrics;
 use crate::tee::attestation::TeeProvider;
-use crate::tee::encrypted_model::{DecryptedModel, MemoryDecryptedModel};
+use crate::tee::encrypted_model::{
+    DecryptedModel, LayerStreamingDecryptedModel, MemoryDecryptedModel,
+};
 use crate::tee::key_provider::KeyProvider;
 use crate::tee::privacy::PrivacyProvider;
 
@@ -40,6 +43,10 @@ pub struct AppState {
     decrypted_models: Arc<RwLock<HashMap<String, DecryptedModel>>>,
     /// RAII handles for in-memory decrypted models. Dropping triggers zeroize + munlock.
     memory_decrypted_models: Arc<RwLock<HashMap<String, MemoryDecryptedModel>>>,
+    /// RAII handles for layer-streaming decrypted models. Dropping triggers zeroize + munlock.
+    streaming_decrypted_models: Arc<RwLock<HashMap<String, LayerStreamingDecryptedModel>>>,
+    /// Models currently being pulled (downloading). Prevents duplicate concurrent pulls.
+    pulling_models: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AppState {
@@ -62,6 +69,8 @@ impl AppState {
             loaded_models: Arc::new(RwLock::new(HashMap::new())),
             decrypted_models: Arc::new(RwLock::new(HashMap::new())),
             memory_decrypted_models: Arc::new(RwLock::new(HashMap::new())),
+            streaming_decrypted_models: Arc::new(RwLock::new(HashMap::new())),
+            pulling_models: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -97,7 +106,7 @@ impl AppState {
 
     /// Whether privacy redaction is active.
     pub fn should_redact(&self) -> bool {
-        self.privacy.as_ref().map_or(false, |p| p.should_redact())
+        self.privacy.as_ref().is_some_and(|p| p.should_redact())
     }
 
     /// Sanitize a log message through the privacy provider.
@@ -174,6 +183,10 @@ impl AppState {
             tracing::info!(model = %name, "Cleaning up in-memory decrypted model");
             drop(mem); // triggers MemoryDecryptedModel::drop → zeroize + munlock
         }
+        if let Some(stream) = write_lock(&self.streaming_decrypted_models).remove(name) {
+            tracing::info!(model = %name, "Cleaning up layer-streaming decrypted model");
+            drop(stream); // triggers LayerStreamingDecryptedModel::drop → zeroize + munlock
+        }
     }
 
     /// Store a decrypted model handle for RAII cleanup on unload.
@@ -186,11 +199,62 @@ impl AppState {
         write_lock(&self.memory_decrypted_models).insert(name.to_string(), handle);
     }
 
+    /// Store a layer-streaming decrypted model handle for RAII cleanup on unload.
+    pub fn store_streaming_decrypted(&self, name: &str, handle: LayerStreamingDecryptedModel) {
+        write_lock(&self.streaming_decrypted_models).insert(name.to_string(), handle);
+    }
+
+    /// Sanitize an error message through the privacy provider (strips paths, internal state).
+    pub fn sanitize_error(&self, err: &str) -> String {
+        match &self.privacy {
+            Some(p) => p.sanitize_error(err),
+            None => err.to_string(),
+        }
+    }
+
+    /// Find the best backend for a model, using TEE-aware routing when in TEE mode.
+    ///
+    /// In TEE mode, delegates to `BackendRegistry::find_for_tee()` which prefers
+    /// picolm (layer-streaming) when the model exceeds 75% of available EPC memory.
+    /// Outside TEE mode, uses standard priority-based format matching.
+    pub fn find_backend(
+        &self,
+        format: &crate::model::manifest::ModelFormat,
+        model_size_bytes: u64,
+    ) -> crate::error::Result<std::sync::Arc<dyn crate::backend::Backend>> {
+        if self.config.tee_mode {
+            self.backends.find_for_tee(format, model_size_bytes)
+        } else {
+            self.backends.find_for_format(format)
+        }
+    }
+
     /// Whether token counts in responses should be rounded (side-channel mitigation).
     pub fn suppress_token_metrics(&self) -> bool {
         self.privacy
             .as_ref()
-            .map_or(false, |p| p.should_suppress_token_metrics())
+            .is_some_and(|p| p.should_suppress_token_metrics())
+    }
+
+    /// Compute the timing padding duration for this request, with ±20% jitter.
+    ///
+    /// Returns `None` when `timing_padding_ms` is not configured.
+    /// The jitter prevents statistical timing attacks by varying the actual
+    /// delay within [padding * 0.8, padding * 1.2].
+    pub fn timing_padding(&self) -> Option<std::time::Duration> {
+        let base_ms = self.config.timing_padding_ms?;
+        if base_ms == 0 {
+            return None;
+        }
+        // Apply ±20% jitter using subsecond nanos as a cheap entropy source.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        // Map nanos % 1000 → jitter_factor in [0.8, 1.2]
+        let jitter_factor = 0.8 + (nanos % 1000) as f64 / 2500.0;
+        let padded_ms = (base_ms as f64 * jitter_factor) as u64;
+        Some(std::time::Duration::from_millis(padded_ms))
     }
 
     /// Update the last-used time for a loaded model.
@@ -256,6 +320,29 @@ impl AppState {
                 Some(chrono::Utc::now() + chrono::Duration::from_std(remaining).unwrap_or_default())
             }
         })
+    }
+
+    /// Mark a model as currently being pulled. Returns `false` if already pulling.
+    pub fn start_pull(&self, name: &str) -> bool {
+        self.pulling_models
+            .lock()
+            .map(|mut s| s.insert(name.to_string()))
+            .unwrap_or(false)
+    }
+
+    /// Mark a model pull as finished (success or failure).
+    pub fn finish_pull(&self, name: &str) {
+        if let Ok(mut s) = self.pulling_models.lock() {
+            s.remove(name);
+        }
+    }
+
+    /// Whether a model is currently being pulled.
+    pub fn is_pulling(&self, name: &str) -> bool {
+        self.pulling_models
+            .lock()
+            .map(|s| s.contains(name))
+            .unwrap_or(false)
     }
 }
 
@@ -606,6 +693,51 @@ mod tests {
     }
 
     #[test]
+    fn test_timing_padding_none_by_default() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        assert!(state.timing_padding().is_none());
+    }
+
+    #[test]
+    fn test_timing_padding_zero_returns_none() {
+        let mut config = PowerConfig::default();
+        config.timing_padding_ms = Some(0);
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(config),
+        );
+        assert!(state.timing_padding().is_none());
+    }
+
+    #[test]
+    fn test_timing_padding_returns_duration_within_jitter_range() {
+        let mut config = PowerConfig::default();
+        config.timing_padding_ms = Some(100);
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(config),
+        );
+        let pad = state.timing_padding().unwrap();
+        // Must be within [80ms, 120ms] (±20% jitter)
+        assert!(
+            pad.as_millis() >= 80,
+            "padding too short: {}ms",
+            pad.as_millis()
+        );
+        assert!(
+            pad.as_millis() <= 120,
+            "padding too long: {}ms",
+            pad.as_millis()
+        );
+    }
+
+    #[test]
     fn test_suppress_token_metrics_true_when_privacy_redacts() {
         use crate::tee::privacy::DefaultPrivacyProvider;
         let state = AppState::new(
@@ -644,5 +776,89 @@ mod tests {
         // Unloading should trigger MemoryDecryptedModel drop → zeroize + munlock
         state.mark_unloaded("mem-model");
         assert!(!state.is_model_loaded("mem-model"));
+    }
+
+    #[test]
+    fn test_sanitize_error_without_privacy() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        // Without privacy provider, error is returned as-is
+        let err = "Failed to load /home/user/models/secret.gguf: permission denied";
+        assert_eq!(state.sanitize_error(err), err);
+    }
+
+    #[test]
+    fn test_sanitize_error_with_privacy() {
+        let privacy = crate::tee::privacy::DefaultPrivacyProvider::new(true);
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        )
+        .with_privacy(Arc::new(privacy));
+        // With privacy provider, content after sensitive prefixes is redacted
+        let err = "content: user said something secret";
+        let sanitized = state.sanitize_error(err);
+        assert!(sanitized.contains("[REDACTED]"));
+        assert!(!sanitized.contains("secret"));
+    }
+
+    #[test]
+    fn test_find_backend_non_tee_mode() {
+        use crate::model::manifest::ModelFormat;
+        let config = Arc::new(PowerConfig::default());
+        let backends = Arc::new(crate::backend::default_backends(config.clone()));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), backends, config);
+        // Non-TEE mode: should use find_for_format (standard priority)
+        let result = state.find_backend(&ModelFormat::Gguf, 1_000_000);
+        // Should succeed if any backend is registered
+        #[cfg(feature = "mistralrs")]
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_find_backend_tee_mode() {
+        use crate::model::manifest::ModelFormat;
+        let config = Arc::new(PowerConfig {
+            tee_mode: true,
+            ..Default::default()
+        });
+        let backends = Arc::new(crate::backend::default_backends(config.clone()));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), backends, config);
+        // TEE mode: should use find_for_tee (EPC-aware routing)
+        let result = state.find_backend(&ModelFormat::Gguf, 1_000_000);
+        #[cfg(feature = "mistralrs")]
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_store_streaming_decrypted_and_cleanup_on_unload() {
+        use crate::tee::encrypted_model::{encrypt_model_file, LayerStreamingDecryptedModel};
+
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        std::fs::write(&plain_path, b"test data for streaming decryption").unwrap();
+
+        let mut key = [0u8; 32];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+        let stream_model = LayerStreamingDecryptedModel::decrypt(&enc_path, &key).unwrap();
+
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        state.mark_loaded("stream-model");
+        state.store_streaming_decrypted("stream-model", stream_model);
+
+        // Unloading should trigger LayerStreamingDecryptedModel drop → zeroize + munlock
+        state.mark_unloaded("stream-model");
+        assert!(!state.is_model_loaded("stream-model"));
     }
 }

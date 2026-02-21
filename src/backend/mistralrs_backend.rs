@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 
 use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
@@ -28,6 +28,9 @@ pub struct MistralRsBackend {
     /// Embedding models loaded via EmbeddingModelBuilder (HuggingFace format).
     #[cfg(feature = "mistralrs")]
     embedding_models: tokio::sync::RwLock<std::collections::HashMap<String, Arc<mistralrs::Model>>>,
+    /// Vision/multimodal models loaded via VisionModelBuilder.
+    #[cfg(feature = "mistralrs")]
+    vision_models: tokio::sync::RwLock<std::collections::HashMap<String, Arc<mistralrs::Model>>>,
     #[allow(dead_code)]
     config: Arc<PowerConfig>,
 }
@@ -48,6 +51,8 @@ impl MistralRsBackend {
             models: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "mistralrs")]
             embedding_models: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            #[cfg(feature = "mistralrs")]
+            vision_models: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             config,
         }
     }
@@ -65,7 +70,13 @@ impl Backend for MistralRsBackend {
     }
 
     fn supports(&self, format: &ModelFormat) -> bool {
-        matches!(format, ModelFormat::Gguf | ModelFormat::HuggingFace)
+        matches!(
+            format,
+            ModelFormat::Gguf
+                | ModelFormat::HuggingFace
+                | ModelFormat::SafeTensors
+                | ModelFormat::Vision
+        )
     }
 
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {
@@ -74,6 +85,16 @@ impl Backend for MistralRsBackend {
         // HuggingFace embedding models use a separate builder and map.
         if manifest.format == ModelFormat::HuggingFace {
             return self.load_embedding_model(manifest).await;
+        }
+
+        // SafeTensors chat models use TextModelBuilder with ISQ quantization.
+        if manifest.format == ModelFormat::SafeTensors {
+            return self.load_safetensors_model(manifest).await;
+        }
+
+        // Vision/multimodal models use VisionModelBuilder.
+        if manifest.format == ModelFormat::Vision {
+            return self.load_vision_model(manifest).await;
         }
 
         // Extract the directory and filename from the manifest path
@@ -147,8 +168,23 @@ impl Backend for MistralRsBackend {
         if self.models.write().await.remove(model_name).is_some() {
             tracing::info!(model = model_name, "Model unloaded");
         }
-        if self.embedding_models.write().await.remove(model_name).is_some() {
+        if self
+            .embedding_models
+            .write()
+            .await
+            .remove(model_name)
+            .is_some()
+        {
             tracing::info!(model = model_name, "Embedding model unloaded");
+        }
+        if self
+            .vision_models
+            .write()
+            .await
+            .remove(model_name)
+            .is_some()
+        {
+            tracing::info!(model = model_name, "Vision model unloaded");
         }
         Ok(())
     }
@@ -160,7 +196,31 @@ impl Backend for MistralRsBackend {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
         use mistralrs::{RequestBuilder, TextMessageRole};
 
-        let model = {
+        // Check if this is a vision request (has images) and route accordingly.
+        let has_images = request.messages.iter().any(|m| {
+            matches!(&m.content, super::types::MessageContent::Parts(parts) if
+                parts.iter().any(|p| matches!(p, super::types::ContentPart::ImageUrl { .. }))
+            )
+        }) || request.images.as_ref().is_some_and(|v| !v.is_empty());
+
+        // Try vision model first if images present, fall back to text model.
+        let model = if has_images {
+            let vision = self.vision_models.read().await;
+            if let Some(m) = vision.get(model_name) {
+                Arc::clone(m)
+            } else {
+                // Fall back to text model (may not support images, but let mistralrs decide).
+                let models = self.models.read().await;
+                models
+                    .get(model_name)
+                    .map(|m| Arc::clone(&m.model))
+                    .ok_or_else(|| {
+                        PowerError::InferenceFailed(format!(
+                            "Model '{model_name}' not loaded (vision model required for image inputs)"
+                        ))
+                    })?
+            }
+        } else {
             let models = self.models.read().await;
             models
                 .get(model_name)
@@ -209,85 +269,182 @@ impl Backend for MistralRsBackend {
                 "tool" => TextMessageRole::Tool,
                 _ => TextMessageRole::User,
             };
-            req_builder = req_builder.add_message(role, msg.content.text());
+
+            // Extract inline images from multimodal content parts (OpenAI format).
+            let inline_images: Vec<String> = match &msg.content {
+                super::types::MessageContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|p| {
+                        if let super::types::ContentPart::ImageUrl { image_url } = p {
+                            Some(image_url.url.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                _ => vec![],
+            };
+
+            // Combine inline images with top-level images field (Ollama-native format).
+            let all_images: Vec<String> = if inline_images.is_empty() {
+                request.images.clone().unwrap_or_default()
+            } else {
+                inline_images
+            };
+
+            if all_images.is_empty() {
+                req_builder = req_builder.add_message(role, msg.content.text());
+            } else {
+                // Decode base64 images and add as multimodal message.
+                use image::DynamicImage;
+                let decoded: Vec<DynamicImage> = all_images
+                    .iter()
+                    .filter_map(|img_str| {
+                        // Strip data URI prefix if present (e.g. "data:image/png;base64,...")
+                        let b64 = if let Some(pos) = img_str.find(',') {
+                            &img_str[pos + 1..]
+                        } else {
+                            img_str.as_str()
+                        };
+                        use base64::Engine;
+                        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+                        image::load_from_memory(&bytes).ok()
+                    })
+                    .collect();
+
+                if decoded.is_empty() {
+                    req_builder = req_builder.add_message(role, msg.content.text());
+                } else {
+                    req_builder = req_builder
+                        .add_image_message(role, msg.content.text(), decoded, &model)
+                        .map_err(|e| {
+                            PowerError::InferenceFailed(format!("failed to add image message: {e}"))
+                        })?;
+                }
+            }
         }
 
         let has_tools = request.tools.is_some();
 
-        // Use non-streaming API and convert to a stream.
-        // mistralrs's Stream<'_> borrows &Model which prevents moving into
-        // tokio::spawn. We use send_chat_request (non-streaming) and emit
-        // the full response as chunks through a channel.
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<ChatResponseChunk>>(32);
+        // Use streaming API for true token-by-token output.
+        // mistralrs::Model::stream_chat_request returns a Stream that borrows &Model,
+        // so we drive it inside a spawn and forward chunks through a channel.
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<ChatResponseChunk>>(64);
 
         tokio::spawn(async move {
-            let response = model.send_chat_request(req_builder).await;
-
-            match response {
-                Ok(resp) => {
-                    for choice in &resp.choices {
-                        let raw_content = choice.message.content.as_deref().unwrap_or("");
-
-                        // Parse think blocks from the full response
-                        let mut think_parser = super::think_parser::ThinkBlockParser::new();
-                        let (content_part, thinking_part) = think_parser.feed(raw_content);
-                        let (flush_c, flush_t) = think_parser.flush();
-                        let content = content_part + &flush_c;
-                        let thinking = thinking_part + &flush_t;
-
-                        let thinking_content = if thinking.is_empty() {
-                            None
-                        } else {
-                            Some(thinking)
-                        };
-
-                        // Parse tool calls from the full response text
-                        let tool_calls = if has_tools {
-                            super::tool_parser::parse_tool_calls(raw_content)
-                        } else {
-                            None
-                        };
-
-                        let done_reason = if tool_calls.is_some() {
-                            Some("tool_calls".to_string())
-                        } else {
-                            Some(choice.finish_reason.clone())
-                        };
-
-                        let chat_chunk = ChatResponseChunk {
-                            content,
-                            thinking_content,
-                            done: true,
-                            prompt_tokens: Some(resp.usage.prompt_tokens as u32),
-                            done_reason,
-                            prompt_eval_duration_ns: None,
-                            tool_calls,
-                        };
-
-                        let _ = tx.send(Ok(chat_chunk)).await;
-                    }
-
-                    // If no choices, send an empty done chunk
-                    if resp.choices.is_empty() {
-                        let _ = tx
-                            .send(Ok(ChatResponseChunk {
-                                content: String::new(),
-                                thinking_content: None,
-                                done: true,
-                                prompt_tokens: Some(resp.usage.prompt_tokens as u32),
-                                done_reason: Some("stop".to_string()),
-                                prompt_eval_duration_ns: None,
-                                tool_calls: None,
-                            }))
-                            .await;
-                    }
-                }
+            let mut stream = match model.stream_chat_request(req_builder).await {
+                Ok(s) => s,
                 Err(e) => {
                     let _ = tx
                         .send(Err(PowerError::InferenceFailed(format!(
-                            "mistral.rs inference failed: {e}"
+                            "mistral.rs stream init failed: {e}"
                         ))))
                         .await;
+                    return;
+                }
+            };
+
+            let mut prompt_tokens: Option<u32> = None;
+            let mut think_parser = super::think_parser::ThinkBlockParser::new();
+            let mut accumulated_raw = String::new();
+
+            while let Some(response) = stream.next().await {
+                match response {
+                    mistralrs::Response::Chunk(chunk) => {
+                        for choice in &chunk.choices {
+                            let delta_text = choice.delta.content.as_deref().unwrap_or("");
+                            let thinking_delta =
+                                choice.delta.reasoning_content.as_deref().unwrap_or("");
+
+                            accumulated_raw.push_str(delta_text);
+
+                            // Feed delta through think-block parser for streaming separation.
+                            let (content_part, thinking_part) = think_parser.feed(delta_text);
+
+                            // Combine explicit reasoning_content with parsed think blocks.
+                            let thinking_content = {
+                                let combined = format!("{thinking_delta}{thinking_part}");
+                                if combined.is_empty() {
+                                    None
+                                } else {
+                                    Some(combined)
+                                }
+                            };
+
+                            let finish_reason = choice.finish_reason.as_deref().unwrap_or("");
+                            let is_done = finish_reason != "null" && !finish_reason.is_empty();
+
+                            // On the final chunk, flush the think parser and parse tool calls.
+                            let (final_content, final_thinking, tool_calls, done_reason) =
+                                if is_done {
+                                    let (fc, ft) = think_parser.flush();
+                                    let full_content = content_part + &fc;
+                                    let full_thinking = thinking_part + &ft;
+                                    let tc = if has_tools {
+                                        super::tool_parser::parse_tool_calls(&accumulated_raw)
+                                    } else {
+                                        None
+                                    };
+                                    let dr = if tc.is_some() {
+                                        "tool_calls".to_string()
+                                    } else {
+                                        finish_reason.to_string()
+                                    };
+                                    let thinking = {
+                                        let combined = format!("{thinking_delta}{full_thinking}");
+                                        if combined.is_empty() {
+                                            None
+                                        } else {
+                                            Some(combined)
+                                        }
+                                    };
+                                    (full_content, thinking, tc, Some(dr))
+                                } else {
+                                    (content_part, thinking_content, None, None)
+                                };
+
+                            let chat_chunk = ChatResponseChunk {
+                                content: final_content,
+                                thinking_content: final_thinking,
+                                done: is_done,
+                                prompt_tokens,
+                                done_reason,
+                                prompt_eval_duration_ns: None,
+                                tool_calls,
+                            };
+
+                            if tx.send(Ok(chat_chunk)).await.is_err() {
+                                return; // client disconnected
+                            }
+                        }
+                    }
+                    mistralrs::Response::Done(resp) => {
+                        prompt_tokens = Some(resp.usage.prompt_tokens as u32);
+                        // Send a final done chunk with token counts.
+                        let (fc, ft) = think_parser.flush();
+                        if !fc.is_empty() || !ft.is_empty() {
+                            let _ = tx
+                                .send(Ok(ChatResponseChunk {
+                                    content: fc,
+                                    thinking_content: if ft.is_empty() { None } else { Some(ft) },
+                                    done: true,
+                                    prompt_tokens,
+                                    done_reason: Some("stop".to_string()),
+                                    prompt_eval_duration_ns: None,
+                                    tool_calls: None,
+                                }))
+                                .await;
+                        }
+                    }
+                    mistralrs::Response::ModelError(e, _) => {
+                        let _ = tx
+                            .send(Err(PowerError::InferenceFailed(format!(
+                                "mistral.rs model error: {e}"
+                            ))))
+                            .await;
+                        return;
+                    }
+                    _ => {} // CompletionChunk, etc. — not used in chat path
                 }
             }
         });
@@ -343,12 +500,13 @@ impl Backend for MistralRsBackend {
             use_mmap: request.use_mmap,
             use_mlock: request.use_mlock,
             num_parallel: request.num_parallel,
+            images: None,
+            session_id: request.session_id,
         };
 
         // Get the chat stream and map ChatResponseChunk -> CompletionResponseChunk
         let chat_stream = self.chat(model_name, chat_request).await?;
 
-        use futures::StreamExt;
         let completion_stream = chat_stream.map(|chunk_result| {
             chunk_result.map(|chat_chunk| CompletionResponseChunk {
                 text: chat_chunk.content,
@@ -376,29 +534,56 @@ impl Backend for MistralRsBackend {
 
         let model = {
             let models = self.embedding_models.read().await;
-            models
-                .get(model_name)
-                .map(|m| Arc::clone(m))
-                .ok_or_else(|| {
-                    PowerError::InferenceFailed(format!(
-                        "Embedding model '{model_name}' not loaded. \
+            models.get(model_name).map(Arc::clone).ok_or_else(|| {
+                PowerError::InferenceFailed(format!(
+                    "Embedding model '{model_name}' not loaded. \
                          Register it with format=huggingface and load it first."
-                    ))
-                })?
+                ))
+            })?
         };
 
         let embeddings = model
             .generate_embeddings(
-                EmbeddingRequestBuilder::new().add_prompts(request.input.iter().map(|s| s.as_str())),
+                EmbeddingRequestBuilder::new()
+                    .add_prompts(request.input.iter().map(|s| s.as_str())),
             )
             .await
-            .map_err(|e| PowerError::InferenceFailed(format!("Embedding generation failed: {e}")))?;
+            .map_err(|e| {
+                PowerError::InferenceFailed(format!("Embedding generation failed: {e}"))
+            })?;
 
         Ok(EmbeddingResponse { embeddings })
     }
 }
 
 // Private helpers for the mistralrs backend (not part of the Backend trait).
+#[cfg(feature = "mistralrs")]
+/// Parse an ISQ type string (e.g. `"Q8_0"`) into a `mistralrs::IsqType`.
+/// Returns `Q8_0` for unrecognized values.
+fn parse_isq_type(s: &str) -> mistralrs::IsqType {
+    match s.to_uppercase().as_str() {
+        "Q4_0" => mistralrs::IsqType::Q4_0,
+        "Q4_1" => mistralrs::IsqType::Q4_1,
+        "Q5_0" => mistralrs::IsqType::Q5_0,
+        "Q5_1" => mistralrs::IsqType::Q5_1,
+        "Q8_0" => mistralrs::IsqType::Q8_0,
+        "Q8_1" => mistralrs::IsqType::Q8_1,
+        "Q2K" | "Q2_K" => mistralrs::IsqType::Q2K,
+        "Q3K" | "Q3_K" => mistralrs::IsqType::Q3K,
+        "Q4K" | "Q4_K" => mistralrs::IsqType::Q4K,
+        "Q5K" | "Q5_K" => mistralrs::IsqType::Q5K,
+        "Q6K" | "Q6_K" => mistralrs::IsqType::Q6K,
+        "Q8K" | "Q8_K" => mistralrs::IsqType::Q8K,
+        "HQQ8" => mistralrs::IsqType::HQQ8,
+        "HQQ4" => mistralrs::IsqType::HQQ4,
+        "F8E4M3" => mistralrs::IsqType::F8E4M3,
+        _ => {
+            tracing::warn!(isq = s, "Unknown ISQ type, defaulting to Q8_0");
+            mistralrs::IsqType::Q8_0
+        }
+    }
+}
+
 #[cfg(feature = "mistralrs")]
 impl MistralRsBackend {
     /// Load a HuggingFace embedding model via EmbeddingModelBuilder.
@@ -431,6 +616,114 @@ impl MistralRsBackend {
         tracing::info!(model = %manifest.name, "Embedding model loaded successfully via mistral.rs");
         Ok(())
     }
+
+    /// Load a SafeTensors chat model via TextModelBuilder with ISQ quantization.
+    ///
+    /// `manifest.path` must point to the local model directory containing
+    /// `config.json`, `tokenizer.json`, and `.safetensors` weight files.
+    ///
+    /// ISQ type is read from `manifest.default_parameters["isq"]` (e.g. `"Q8_0"`).
+    /// Defaults to `Q8_0` if not specified.
+    async fn load_safetensors_model(&self, manifest: &ModelManifest) -> Result<()> {
+        // Resolve ISQ type from manifest default_parameters, fallback to Q8_0.
+        let isq = manifest
+            .default_parameters
+            .as_ref()
+            .and_then(|p| p.get("isq"))
+            .and_then(|v| v.as_str())
+            .map(parse_isq_type)
+            .unwrap_or(mistralrs::IsqType::Q8_0);
+
+        tracing::info!(
+            model = %manifest.name,
+            path = %manifest.path.display(),
+            isq = ?isq,
+            "Loading SafeTensors model via mistral.rs TextModelBuilder"
+        );
+
+        let mut builder = mistralrs::TextModelBuilder::new(manifest.path.to_string_lossy())
+            .with_token_source(mistralrs::TokenSource::None)
+            .from_hf_cache_pathf(manifest.path.clone())
+            .with_isq(isq);
+
+        if let Some(ref template) = manifest.template_override {
+            builder = builder.with_chat_template(template.clone());
+        }
+
+        if self.config.gpu.gpu_layers == 0 {
+            builder = builder.with_force_cpu();
+        }
+
+        let model = builder.build().await.map_err(|e| {
+            PowerError::InferenceFailed(format!(
+                "Failed to load SafeTensors model '{}' via mistral.rs: {e}",
+                manifest.name
+            ))
+        })?;
+
+        self.models.write().await.insert(
+            manifest.name.clone(),
+            LoadedModel {
+                model: Arc::new(model),
+                raw_template: manifest.template_override.clone(),
+            },
+        );
+
+        tracing::info!(model = %manifest.name, "SafeTensors model loaded successfully via mistral.rs");
+        Ok(())
+    }
+
+    /// Load a vision/multimodal model via VisionModelBuilder.
+    ///
+    /// `manifest.path` must point to the local model directory containing
+    /// `config.json`, `tokenizer.json`, and `.safetensors` weight files.
+    ///
+    /// ISQ type is read from `manifest.default_parameters["isq"]` (e.g. `"Q8_0"`).
+    /// Defaults to `Q8_0` if not specified.
+    async fn load_vision_model(&self, manifest: &ModelManifest) -> Result<()> {
+        let isq = manifest
+            .default_parameters
+            .as_ref()
+            .and_then(|p| p.get("isq"))
+            .and_then(|v| v.as_str())
+            .map(parse_isq_type)
+            .unwrap_or(mistralrs::IsqType::Q8_0);
+
+        tracing::info!(
+            model = %manifest.name,
+            path = %manifest.path.display(),
+            isq = ?isq,
+            "Loading vision model via mistral.rs VisionModelBuilder"
+        );
+
+        let mut builder = mistralrs::VisionModelBuilder::new(manifest.path.to_string_lossy())
+            .with_token_source(mistralrs::TokenSource::None)
+            .from_hf_cache_pathf(manifest.path.clone())
+            .with_isq(isq);
+
+        if let Some(ref template) = manifest.template_override {
+            builder = builder.with_chat_template(template.clone());
+        }
+
+        if self.config.gpu.gpu_layers == 0 {
+            builder = builder.with_force_cpu();
+        }
+
+        let model = builder.build().await.map_err(|e| {
+            PowerError::InferenceFailed(format!(
+                "Failed to load vision model '{}' via mistral.rs: {e}",
+                manifest.name
+            ))
+        })?;
+
+        self.vision_models
+            .write()
+            .await
+            .insert(manifest.name.clone(), Arc::new(model));
+
+        tracing::info!(model = %manifest.name, "Vision model loaded successfully via mistral.rs");
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -445,7 +738,7 @@ impl Backend for MistralRsBackend {
     }
 
     fn supports(&self, format: &ModelFormat) -> bool {
-        matches!(format, ModelFormat::Gguf)
+        matches!(format, ModelFormat::Gguf | ModelFormat::SafeTensors)
     }
 
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {
@@ -522,9 +815,9 @@ mod tests {
     }
 
     #[test]
-    fn test_does_not_support_safetensors() {
+    fn test_supports_safetensors() {
         let backend = MistralRsBackend::new(test_config());
-        assert!(!backend.supports(&ModelFormat::SafeTensors));
+        assert!(backend.supports(&ModelFormat::SafeTensors));
     }
 
     #[test]
@@ -544,8 +837,11 @@ mod tests {
 
     #[test]
     fn test_backend_does_not_support_unknown_format() {
+        // SafeTensors is now supported; only truly unknown formats should fail.
         let backend = MistralRsBackend::new(test_config());
-        assert!(!backend.supports(&ModelFormat::SafeTensors));
+        assert!(backend.supports(&ModelFormat::SafeTensors));
+        assert!(backend.supports(&ModelFormat::Gguf));
+        assert!(backend.supports(&ModelFormat::HuggingFace));
     }
 
     #[test]
@@ -622,6 +918,9 @@ mod tests {
             main_gpu: None,
             use_mmap: None,
             use_mlock: None,
+            num_parallel: None,
+            session_id: None,
+            images: None,
         };
         let result = backend.chat("test", request).await;
         assert!(result.is_err());
@@ -665,6 +964,8 @@ mod tests {
             use_mlock: None,
             suffix: None,
             context: None,
+            num_parallel: None,
+            session_id: None,
         };
         let result = backend.complete("test", request).await;
         assert!(result.is_err());
@@ -730,6 +1031,50 @@ mod tests {
             assert!(result.is_err());
             let msg = result.unwrap_err().to_string();
             assert!(msg.contains("not loaded"), "error: {msg}");
+        }
+    }
+
+    // ========================================================================
+    // parse_isq_type tests (feature-gated)
+    // ========================================================================
+
+    #[cfg(feature = "mistralrs")]
+    mod isq_tests {
+        use super::super::parse_isq_type;
+        use mistralrs::IsqType;
+
+        #[test]
+        fn test_parse_q8_0() {
+            assert!(matches!(parse_isq_type("Q8_0"), IsqType::Q8_0));
+            assert!(matches!(parse_isq_type("q8_0"), IsqType::Q8_0));
+        }
+
+        #[test]
+        fn test_parse_q4k() {
+            assert!(matches!(parse_isq_type("Q4K"), IsqType::Q4K));
+            assert!(matches!(parse_isq_type("Q4_K"), IsqType::Q4K));
+        }
+
+        #[test]
+        fn test_parse_q4_0() {
+            assert!(matches!(parse_isq_type("Q4_0"), IsqType::Q4_0));
+        }
+
+        #[test]
+        fn test_parse_q6k() {
+            assert!(matches!(parse_isq_type("Q6K"), IsqType::Q6K));
+            assert!(matches!(parse_isq_type("Q6_K"), IsqType::Q6K));
+        }
+
+        #[test]
+        fn test_parse_hqq8() {
+            assert!(matches!(parse_isq_type("HQQ8"), IsqType::HQQ8));
+        }
+
+        #[test]
+        fn test_parse_unknown_defaults_to_q8_0() {
+            assert!(matches!(parse_isq_type("UNKNOWN"), IsqType::Q8_0));
+            assert!(matches!(parse_isq_type(""), IsqType::Q8_0));
         }
     }
 }

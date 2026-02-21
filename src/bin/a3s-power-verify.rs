@@ -161,8 +161,7 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
                 opts.model_hash = Some(next_arg(args, &mut i, "--model-hash")?);
             }
             "--expected-measurement" => {
-                opts.expected_measurement =
-                    Some(next_arg(args, &mut i, "--expected-measurement")?);
+                opts.expected_measurement = Some(next_arg(args, &mut i, "--expected-measurement")?);
             }
             other => {
                 return Err(anyhow::anyhow!("unknown argument: {other}"));

@@ -1,8 +1,10 @@
 pub mod chat_template;
+pub mod gguf_stream;
 pub mod gpu;
 pub mod json_schema;
 pub mod llamacpp;
 pub mod mistralrs_backend;
+pub mod picolm;
 /// Test utilities for integration tests. Not part of the public API.
 #[doc(hidden)]
 pub mod test_utils;
@@ -113,6 +115,40 @@ impl BackendRegistry {
             })
     }
 
+    /// Find a backend for TEE-constrained inference.
+    ///
+    /// When `model_size_bytes` exceeds 75% of available EPC memory, prefers the
+    /// picolm backend (layer-streaming, O(layer_size) RAM) over mistralrs/llamacpp
+    /// (which load the full model into RAM). Falls back to normal priority order
+    /// when EPC info is unavailable or the model fits comfortably.
+    pub fn find_for_tee(
+        &self,
+        format: &ModelFormat,
+        model_size_bytes: u64,
+    ) -> Result<Arc<dyn Backend>> {
+        use crate::tee::epc::model_exceeds_epc;
+
+        if model_exceeds_epc(model_size_bytes) {
+            // Prefer picolm for layer-streaming when model won't fit in EPC
+            if let Ok(b) = self.find_by_name("picolm") {
+                if b.supports(format) {
+                    tracing::info!(
+                        model_size_mb = model_size_bytes / 1_048_576,
+                        "TEE EPC pressure: routing to picolm layer-streaming backend"
+                    );
+                    return Ok(b);
+                }
+            }
+            // picolm not available — warn and fall through to normal selection
+            tracing::warn!(
+                model_size_mb = model_size_bytes / 1_048_576,
+                "Model may exceed TEE EPC budget. Enable --features picolm for layer-streaming."
+            );
+        }
+
+        self.find_for_format(format)
+    }
+
     /// Find a backend by name.
     pub fn find_by_name(&self, name: &str) -> Result<Arc<dyn Backend>> {
         self.backends
@@ -153,6 +189,12 @@ pub fn default_backends(#[allow(unused)] config: Arc<PowerConfig>) -> BackendReg
     // Register llama.cpp backend (available as fallback or explicit selection)
     #[cfg(feature = "llamacpp")]
     registry.register(Arc::new(llamacpp::LlamaCppBackend::new(config.clone())));
+
+    // Register picolm backend (pure Rust, layer-streaming, TEE memory-efficient)
+    // Lower priority than mistralrs/llamacpp for normal use; selected automatically
+    // by memory-aware routing when model_size > EPC * 0.75.
+    #[cfg(feature = "picolm")]
+    registry.register(Arc::new(picolm::PicolmBackend::new(config.clone())));
 
     registry
 }
@@ -232,7 +274,8 @@ mod tests {
     fn test_mistralrs_backend_supports() {
         let backend = mistralrs_backend::MistralRsBackend::new(test_config());
         assert!(backend.supports(&ModelFormat::Gguf));
-        assert!(!backend.supports(&ModelFormat::SafeTensors));
+        assert!(backend.supports(&ModelFormat::SafeTensors));
+        assert!(backend.supports(&ModelFormat::HuggingFace));
     }
 
     #[cfg(feature = "llamacpp")]

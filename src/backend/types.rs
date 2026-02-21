@@ -142,6 +142,13 @@ pub struct ChatMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
+    /// Session identifier for KV cache reuse across turns.
+    ///
+    /// When set, the KV cache is keyed by this ID so that only requests from
+    /// the same session can reuse each other's cached context. When `None`,
+    /// no KV cache is reused (anonymous / stateless request).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     #[serde(default)]
     pub temperature: Option<f32>,
     #[serde(default)]
@@ -216,6 +223,10 @@ pub struct ChatRequest {
     /// Number of parallel decode slots (concurrent inference sequences). 1 = serial.
     #[serde(default)]
     pub num_parallel: Option<u32>,
+    /// Base64-encoded images for multimodal/vision models.
+    /// Each entry is a base64-encoded image (with or without data URI prefix).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
 }
 
 /// A streamed chunk from a chat completion.
@@ -247,6 +258,13 @@ pub struct ChatResponseChunk {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub prompt: String,
+    /// Session identifier for KV cache reuse across turns.
+    ///
+    /// When set, the KV cache is keyed by this ID so that only requests from
+    /// the same session can reuse each other's cached context. When `None`,
+    /// no KV cache is reused (anonymous / stateless request).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     #[serde(default)]
     pub temperature: Option<f32>,
     #[serde(default)]
@@ -423,6 +441,40 @@ mod tests {
         assert!(req.response_format.is_none());
         assert!(req.tools.is_none());
         assert!(req.tool_choice.is_none());
+        // Anonymous by default — no session_id means no KV cache reuse
+        assert!(req.session_id.is_none());
+    }
+
+    #[test]
+    fn test_chat_request_session_id_parsed() {
+        let json = r#"{"messages": [], "session_id": "user-abc-123"}"#;
+        let req: ChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.session_id.as_deref(), Some("user-abc-123"));
+    }
+
+    #[test]
+    fn test_chat_request_session_id_omitted_in_serialization_when_none() {
+        let json = r#"{"messages": []}"#;
+        let req: ChatRequest = serde_json::from_str(json).unwrap();
+        let out = serde_json::to_string(&req).unwrap();
+        assert!(
+            !out.contains("session_id"),
+            "session_id must be omitted when None"
+        );
+    }
+
+    #[test]
+    fn test_completion_request_session_id_parsed() {
+        let json = r#"{"prompt": "hi", "session_id": "sess-xyz"}"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.session_id.as_deref(), Some("sess-xyz"));
+    }
+
+    #[test]
+    fn test_completion_request_session_id_none_by_default() {
+        let json = r#"{"prompt": "hi"}"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        assert!(req.session_id.is_none());
     }
 
     #[test]

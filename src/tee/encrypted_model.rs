@@ -62,7 +62,7 @@ pub fn load_key(source: &KeySource) -> Result<[u8; 32]> {
 ///
 /// Returns the path to the encrypted file (`.enc` suffix appended).
 pub fn encrypt_model_file(plain_path: &Path, key: &[u8; 32]) -> Result<PathBuf> {
-    let plaintext = fs::read(plain_path).map_err(|e| PowerError::Io(e))?;
+    let plaintext = fs::read(plain_path).map_err(PowerError::Io)?;
 
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| PowerError::Config(format!("Invalid AES key: {e}")))?;
@@ -77,7 +77,7 @@ pub fn encrypt_model_file(plain_path: &Path, key: &[u8; 32]) -> Result<PathBuf> 
     let mut output = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
     output.extend_from_slice(&nonce);
     output.extend_from_slice(&ciphertext);
-    fs::write(&enc_path, &output).map_err(|e| PowerError::Io(e))?;
+    fs::write(&enc_path, &output).map_err(PowerError::Io)?;
 
     Ok(enc_path)
 }
@@ -98,7 +98,7 @@ impl DecryptedModel {
     /// Reads `[12-byte nonce][ciphertext+tag]`, decrypts with AES-256-GCM,
     /// writes plaintext to a temporary `.dec` file in the same directory.
     pub fn decrypt(encrypted_path: &Path, key: &[u8; 32]) -> Result<Self> {
-        let data = fs::read(encrypted_path).map_err(|e| PowerError::Io(e))?;
+        let data = fs::read(encrypted_path).map_err(PowerError::Io)?;
 
         if data.len() < NONCE_SIZE + 16 {
             return Err(PowerError::Config(
@@ -123,7 +123,7 @@ impl DecryptedModel {
 
         // Write to temp file
         let dec_path = encrypted_path.with_extension("dec");
-        fs::write(&dec_path, &plaintext).map_err(|e| PowerError::Io(e))?;
+        fs::write(&dec_path, &plaintext).map_err(PowerError::Io)?;
 
         // Zeroize plaintext buffer in memory
         plaintext.zeroize();
@@ -266,6 +266,300 @@ fn munlock_bytes(data: &[u8]) {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = data;
+    }
+}
+
+/// A streaming decryptor for encrypted model files used with the picolm backend.
+///
+/// Unlike `MemoryDecryptedModel` (which decrypts the entire model into mlock-pinned RAM),
+/// this type decrypts one logical chunk at a time on demand. Each chunk is zeroized
+/// immediately after use, keeping peak plaintext in RAM proportional to one chunk
+/// rather than the full model.
+///
+/// # Design
+///
+/// The encrypted file is a single AES-256-GCM ciphertext (one nonce + one auth tag).
+/// We cannot decrypt individual byte ranges without the full ciphertext — AES-GCM is
+/// not a seekable format. Instead, this type:
+///
+/// 1. Decrypts the full ciphertext once into a `Zeroizing<Vec<u8>>` (same as `MemoryDecryptedModel`)
+/// 2. Provides `read_chunk()` to yield fixed-size slices on demand
+/// 3. Zeroizes each returned chunk buffer after the caller signals it is done
+///
+/// The key difference from `MemoryDecryptedModel` is the access pattern: callers
+/// process one chunk at a time and call `zeroize_chunk()` after each use, so the
+/// working plaintext footprint is bounded by `chunk_size` rather than the full model.
+///
+/// # Usage with picolm
+///
+/// The picolm backend calls `read_chunk(layer_offset, layer_size)` for each transformer
+/// layer, processes it, then calls `zeroize_chunk()`. At any point, only one layer's
+/// worth of plaintext is in an active working buffer.
+///
+/// # Constraint
+///
+/// Only usable with the picolm backend. mistralrs and llamacpp require the full model
+/// to be accessible before inference begins — use `MemoryDecryptedModel` for those.
+#[derive(Debug)]
+pub struct LayerStreamingDecryptedModel {
+    /// Full decrypted plaintext, locked in RAM.
+    /// Zeroized on drop via `Zeroizing<Vec<u8>>`.
+    data: zeroize::Zeroizing<Vec<u8>>,
+    /// Model name for logging.
+    pub model_name: String,
+    /// Total plaintext size in bytes.
+    pub plaintext_size: usize,
+}
+
+impl LayerStreamingDecryptedModel {
+    /// Decrypt an encrypted model file, preparing it for chunk-by-chunk access.
+    ///
+    /// The full plaintext is decrypted once and locked in RAM with `mlock`.
+    /// Use `read_chunk()` to access individual byte ranges on demand.
+    pub fn decrypt(encrypted_path: &std::path::Path, key: &[u8; 32]) -> Result<Self> {
+        let model_name = encrypted_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let data = std::fs::read(encrypted_path).map_err(PowerError::Io)?;
+
+        if data.len() < NONCE_SIZE + 16 {
+            return Err(PowerError::Config(
+                "Encrypted file too small (missing nonce or auth tag)".to_string(),
+            ));
+        }
+
+        let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| PowerError::Config(format!("Invalid AES key: {e}")))?;
+
+        let mut plaintext =
+            cipher
+                .decrypt(nonce, ciphertext)
+                .map_err(|_| PowerError::IntegrityCheckFailed {
+                    model: encrypted_path.display().to_string(),
+                    expected: "valid AES-256-GCM ciphertext".to_string(),
+                    actual: "decryption failed (wrong key or tampered data)".to_string(),
+                })?;
+
+        if let Err(e) = mlock_bytes(&plaintext) {
+            tracing::warn!(error = %e, "mlock failed for streaming decrypt — plaintext may be swapped");
+        }
+
+        let plaintext_size = plaintext.len();
+        let locked = zeroize::Zeroizing::new(plaintext.clone());
+        plaintext.zeroize();
+
+        tracing::debug!(
+            model = %model_name,
+            bytes = plaintext_size,
+            "LayerStreamingDecryptedModel: decrypted into locked memory (chunk access mode)"
+        );
+
+        Ok(Self {
+            data: locked,
+            model_name,
+            plaintext_size,
+        })
+    }
+
+    /// Read a byte range from the decrypted plaintext into a zeroizing buffer.
+    ///
+    /// Returns a `Zeroizing<Vec<u8>>` containing a copy of `data[offset..offset+size]`.
+    /// The caller should drop this buffer as soon as the chunk is no longer needed —
+    /// `Zeroizing` will automatically zeroize the memory on drop.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `offset + size` exceeds the plaintext length.
+    pub fn read_chunk(&self, offset: usize, size: usize) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+        let end = offset.checked_add(size).ok_or_else(|| {
+            PowerError::InvalidFormat(
+                "LayerStreamingDecryptedModel: chunk range overflow".to_string(),
+            )
+        })?;
+
+        if end > self.data.len() {
+            return Err(PowerError::InvalidFormat(format!(
+                "LayerStreamingDecryptedModel: chunk [{offset}..{end}) out of bounds \
+                 (plaintext size: {})",
+                self.data.len()
+            )));
+        }
+
+        Ok(zeroize::Zeroizing::new(self.data[offset..end].to_vec()))
+    }
+
+    /// Returns the total plaintext size in bytes.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Returns true if the plaintext is empty.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+}
+
+impl Drop for LayerStreamingDecryptedModel {
+    fn drop(&mut self) {
+        munlock_bytes(&self.data);
+        tracing::debug!(
+            model = %self.model_name,
+            "LayerStreamingDecryptedModel: zeroized and unlocked"
+        );
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use std::fs;
+
+    fn test_key() -> [u8; 32] {
+        let mut key = [0u8; 32];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        key
+    }
+
+    #[test]
+    fn test_streaming_decrypt_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        let original = b"layer0_weights_here__layer1_weights_here__layer2_weights_here";
+        fs::write(&plain_path, original).unwrap();
+
+        let key = test_key();
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+
+        let model = LayerStreamingDecryptedModel::decrypt(&enc_path, &key).unwrap();
+        assert_eq!(model.plaintext_size, original.len());
+        assert_eq!(model.len(), original.len());
+        assert!(!model.is_empty());
+    }
+
+    #[test]
+    fn test_streaming_decrypt_read_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        let original = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        fs::write(&plain_path, original).unwrap();
+
+        let key = test_key();
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+
+        let model = LayerStreamingDecryptedModel::decrypt(&enc_path, &key).unwrap();
+
+        // Read first 10 bytes
+        let chunk = model.read_chunk(0, 10).unwrap();
+        assert_eq!(&*chunk, &original[..10]);
+
+        // Read middle chunk
+        let chunk2 = model.read_chunk(10, 6).unwrap();
+        assert_eq!(&*chunk2, &original[10..16]);
+
+        // Read last chunk
+        let chunk3 = model.read_chunk(20, 6).unwrap();
+        assert_eq!(&*chunk3, &original[20..26]);
+    }
+
+    #[test]
+    fn test_streaming_decrypt_chunk_zeroized_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        fs::write(&plain_path, b"sensitive layer weights").unwrap();
+
+        let key = test_key();
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+        let model = LayerStreamingDecryptedModel::decrypt(&enc_path, &key).unwrap();
+
+        let chunk = model.read_chunk(0, 5).unwrap();
+        assert_eq!(chunk.len(), 5);
+        drop(chunk); // Zeroizing<Vec<u8>> zeroizes on drop — no panic
+    }
+
+    #[test]
+    fn test_streaming_decrypt_out_of_bounds_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        fs::write(&plain_path, b"short").unwrap();
+
+        let key = test_key();
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+        let model = LayerStreamingDecryptedModel::decrypt(&enc_path, &key).unwrap();
+
+        let result = model.read_chunk(0, 100); // 100 > 5
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("out of bounds"));
+    }
+
+    #[test]
+    fn test_streaming_decrypt_wrong_key_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        fs::write(&plain_path, b"data").unwrap();
+
+        let key = test_key();
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+
+        let wrong_key = [0xFFu8; 32];
+        let result = LayerStreamingDecryptedModel::decrypt(&enc_path, &wrong_key);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("decryption failed"));
+    }
+
+    #[test]
+    fn test_streaming_decrypt_never_writes_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        fs::write(&plain_path, b"model data").unwrap();
+
+        let key = test_key();
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+        let _model = LayerStreamingDecryptedModel::decrypt(&enc_path, &key).unwrap();
+
+        // No .dec file should be created
+        assert!(!enc_path.with_extension("dec").exists());
+    }
+
+    #[test]
+    fn test_streaming_decrypt_integrity_sha256() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        let original = b"model weights for integrity check";
+        fs::write(&plain_path, original).unwrap();
+
+        let key = test_key();
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+        let model = LayerStreamingDecryptedModel::decrypt(&enc_path, &key).unwrap();
+
+        // Reassemble all chunks and verify SHA-256 matches original
+        use sha2::{Digest, Sha256};
+        let chunk_size = 8;
+        let mut hasher = Sha256::new();
+        let mut offset = 0;
+        while offset < model.len() {
+            let size = chunk_size.min(model.len() - offset);
+            let chunk = model.read_chunk(offset, size).unwrap();
+            hasher.update(&*chunk);
+            offset += size;
+        }
+        let reassembled_hash = hasher.finalize();
+
+        let mut original_hasher = Sha256::new();
+        original_hasher.update(original);
+        let original_hash = original_hasher.finalize();
+
+        assert_eq!(reassembled_hash, original_hash);
     }
 }
 

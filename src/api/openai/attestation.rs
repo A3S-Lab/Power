@@ -18,7 +18,7 @@ pub struct AttestationQuery {
 
 /// Decode a hex string to bytes, returning an error response on invalid input.
 fn decode_hex_nonce(hex: &str) -> Result<Vec<u8>, (StatusCode, axum::Json<serde_json::Value>)> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -101,10 +101,7 @@ pub async fn handler(
                     .unwrap_or_else(|| manifest.sha256.clone());
 
                 let hex = hash_str.strip_prefix("sha256:").unwrap_or(&hash_str);
-                match decode_hex_nonce(hex) {
-                    Ok(b) => Some(b),
-                    Err(_) => None,
-                }
+                decode_hex_nonce(hex).ok()
             }
             Err(_) => {
                 return (

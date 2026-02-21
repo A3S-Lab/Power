@@ -281,6 +281,8 @@ mod tests {
             use_mmap: None,
             use_mlock: None,
             num_parallel: None,
+            images: None,
+            session_id: None,
         };
         let mut stream = mock.chat("test", request).await.unwrap();
         let first = stream.next().await.unwrap().unwrap();
@@ -328,6 +330,8 @@ mod tests {
             use_mmap: None,
             use_mlock: None,
             num_parallel: None,
+            images: None,
+            session_id: None,
         };
         let mut stream = mock.chat("test", request).await.unwrap();
 

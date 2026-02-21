@@ -24,6 +24,11 @@ pub fn blobs_dir() -> PathBuf {
     power_home().join("models").join("blobs")
 }
 
+/// Returns the directory where pull state files are stored.
+pub fn pulls_dir() -> PathBuf {
+    power_home().join("pulls")
+}
+
 /// Returns the path to the user configuration file (HCL format).
 pub fn config_path() -> PathBuf {
     power_home().join("config.hcl")

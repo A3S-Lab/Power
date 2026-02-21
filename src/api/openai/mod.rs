@@ -21,6 +21,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/models/pull", post(models::pull_handler))
         .route(
+            "/models/pull/:name/status",
+            get(models::pull_status_handler),
+        )
+        .route(
             "/models/:name",
             get(models::get_handler).delete(models::delete_handler),
         )

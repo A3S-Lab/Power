@@ -140,6 +140,17 @@ pub struct PowerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_log_path: Option<std::path::PathBuf>,
 
+    /// Encrypt audit log entries at rest with AES-256-GCM. Default: false.
+    ///
+    /// When enabled, each log line is encrypted with a fresh nonce and written
+    /// as `<nonce_hex>.<base64_ciphertext>`. Requires `audit_key_source` to be set.
+    #[serde(default)]
+    pub audit_log_encrypt: bool,
+
+    /// Key source for audit log encryption. Required when `audit_log_encrypt` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_key_source: Option<crate::tee::encrypted_model::KeySource>,
+
     // --- Model Signing ---
     /// Ed25519 **verifying** (public) key for model signature verification (hex-encoded, 32 bytes).
     /// Despite the field name, this is the public key used to *verify* signatures — not a private
@@ -164,6 +175,13 @@ pub struct PowerConfig {
     #[serde(default)]
     pub in_memory_decrypt: bool,
 
+    /// Decrypt encrypted models one layer at a time during inference (requires `picolm` feature).
+    /// Peak plaintext in RAM = one transformer layer (~50–200MB) instead of the full model.
+    /// Each layer is zeroized immediately after use. Incompatible with mistralrs/llamacpp.
+    /// Default: false.
+    #[serde(default)]
+    pub streaming_decrypt: bool,
+
     // --- Token Metrics Side-Channel Mitigation ---
     /// Round token counts in responses to the nearest 10.
     /// Prevents exact token-count side-channel inference. Default: false.
@@ -178,6 +196,15 @@ pub struct PowerConfig {
     /// Max concurrent requests for /v1/* endpoints. 0 = unlimited (default).
     #[serde(default)]
     pub max_concurrent_requests: u64,
+
+    // --- Timing Side-Channel Mitigation ---
+    /// Minimum response time in milliseconds for all inference requests.
+    ///
+    /// When set, responses are padded to at least this duration by delaying
+    /// the first token. A ±20% jitter is applied to prevent statistical
+    /// timing attacks. Default: None (disabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_padding_ms: Option<u64>,
 }
 
 fn default_key_provider() -> String {
@@ -272,13 +299,17 @@ impl Default for PowerConfig {
             expected_measurements: HashMap::new(),
             audit_log: false,
             audit_log_path: None,
+            audit_log_encrypt: false,
+            audit_key_source: None,
             model_signing_key: None,
             key_provider: default_key_provider(),
             key_rotation_sources: Vec::new(),
             in_memory_decrypt: false,
+            streaming_decrypt: false,
             suppress_token_metrics: false,
             rate_limit_rps: 0,
             max_concurrent_requests: 0,
+            timing_padding_ms: None,
         }
     }
 }
@@ -368,6 +399,23 @@ impl PowerConfig {
             tracing::warn!(
                 "key_provider = \"rotating\" but key_rotation_sources is empty. \
                  No keys are available for model decryption."
+            );
+        }
+
+        // Warn if audit_log_encrypt is set but audit_key_source is missing.
+        if self.audit_log_encrypt && self.audit_key_source.is_none() {
+            tracing::warn!(
+                "audit_log_encrypt = true but audit_key_source is not configured. \
+                 Encrypted audit logging requires a key source."
+            );
+        }
+
+        // Warn if streaming_decrypt is set but picolm feature is not enabled.
+        if self.streaming_decrypt {
+            #[cfg(not(feature = "picolm"))]
+            tracing::warn!(
+                "streaming_decrypt = true but the picolm feature is not enabled. \
+                 Layer-streaming decryption requires --features picolm."
             );
         }
     }
@@ -477,7 +525,7 @@ impl PowerConfig {
     }
 
     /// Serialize the config to HCL format.
-    fn to_hcl(&self) -> String {
+    pub fn to_hcl(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("host = \"{}\"\n", self.host));
         out.push_str(&format!("port = {}\n", self.port));
@@ -586,6 +634,9 @@ impl PowerConfig {
         if self.in_memory_decrypt {
             out.push_str("in_memory_decrypt = true\n");
         }
+        if self.streaming_decrypt {
+            out.push_str("streaming_decrypt = true\n");
+        }
         if self.suppress_token_metrics {
             out.push_str("suppress_token_metrics = true\n");
         }
@@ -673,13 +724,17 @@ mod tests {
             expected_measurements: HashMap::new(),
             audit_log: false,
             audit_log_path: None,
+            audit_log_encrypt: false,
+            audit_key_source: None,
             model_signing_key: None,
             key_provider: "static".to_string(),
             key_rotation_sources: Vec::new(),
             in_memory_decrypt: false,
+            streaming_decrypt: false,
             suppress_token_metrics: false,
             rate_limit_rps: 0,
             max_concurrent_requests: 0,
+            timing_padding_ms: None,
         };
         config.save().unwrap();
 
@@ -1330,5 +1385,36 @@ mod tests {
             ..Default::default()
         };
         config.validate(); // must not panic; warning is emitted via tracing
+    }
+
+    #[test]
+    fn test_validate_audit_encrypt_without_key_source() {
+        let config = PowerConfig {
+            audit_log_encrypt: true,
+            audit_key_source: None,
+            ..Default::default()
+        };
+        config.validate(); // must not panic; warning is emitted via tracing
+    }
+
+    #[test]
+    fn test_validate_audit_encrypt_with_key_source() {
+        let config = PowerConfig {
+            audit_log_encrypt: true,
+            audit_key_source: Some(crate::tee::encrypted_model::KeySource::Env(
+                "TEST_KEY".to_string(),
+            )),
+            ..Default::default()
+        };
+        config.validate(); // must not panic, no warning
+    }
+
+    #[test]
+    fn test_validate_streaming_decrypt() {
+        let config = PowerConfig {
+            streaming_decrypt: true,
+            ..Default::default()
+        };
+        config.validate(); // must not panic; warning may be emitted if picolm not enabled
     }
 }

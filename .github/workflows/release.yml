@@ -16,6 +16,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: a3s-power
+  # Build with HF pull + hardware attestation verification enabled.
+  # mistralrs is the default feature and is always included.
+  BUILD_FEATURES: "--features hf,hw-verify"
 
 jobs:
   build:
@@ -46,6 +49,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
       - name: Install cross
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
@@ -59,9 +66,9 @@ jobs:
       - name: Build release binary
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release --target ${{ matrix.target }} ${{ env.BUILD_FEATURES }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release --target ${{ matrix.target }} ${{ env.BUILD_FEATURES }}
           fi
 
       - name: Determine tag
@@ -73,13 +80,18 @@ jobs:
             echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Package binary
+      - name: Package binaries
         id: package
         run: |
           TAG="${{ steps.tag.outputs.version }}"
           ARCHIVE="${BINARY_NAME}-${TAG}-${{ matrix.target }}.tar.gz"
-          cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
-          tar czf "${ARCHIVE}" "${BINARY_NAME}"
+          RELEASE_DIR="target/${{ matrix.target }}/release"
+
+          # Collect both binaries
+          cp "${RELEASE_DIR}/${BINARY_NAME}" "${BINARY_NAME}"
+          cp "${RELEASE_DIR}/${BINARY_NAME}-verify" "${BINARY_NAME}-verify"
+
+          tar czf "${ARCHIVE}" "${BINARY_NAME}" "${BINARY_NAME}-verify"
           shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
           echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
 
@@ -134,6 +146,27 @@ jobs:
               --generate-notes
           fi
 
+  cargo-publish:
+    needs: release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install OpenSSL dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --no-verify
+
   homebrew:
     needs: release
     runs-on: ubuntu-latest
@@ -167,20 +200,20 @@ jobs:
       - name: Update Homebrew formula
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          SHA_AARCH64_DARWIN: ${{ steps.sha.outputs.aarch64_apple_darwin }}
-          SHA_X86_64_DARWIN: ${{ steps.sha.outputs.x86_64_apple_darwin }}
-          SHA_AARCH64_LINUX: ${{ steps.sha.outputs.aarch64_unknown_linux_gnu }}
-          SHA_X86_64_LINUX: ${{ steps.sha.outputs.x86_64_unknown_linux_gnu }}
         run: |
           TAG="${{ steps.tag.outputs.version }}"
           VERSION="${{ steps.sha.outputs.version }}"
+          SHA_AARCH64_DARWIN="${{ steps.sha.outputs.aarch64_apple_darwin }}"
+          SHA_X86_64_DARWIN="${{ steps.sha.outputs.x86_64_apple_darwin }}"
+          SHA_AARCH64_LINUX="${{ steps.sha.outputs.aarch64_unknown_linux_gnu }}"
+          SHA_X86_64_LINUX="${{ steps.sha.outputs.x86_64_unknown_linux_gnu }}"
 
           git clone https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/homebrew-tap.git tap
           cd tap
 
-          cat > Formula/a3s-power.rb <<FORMULA
+          cat > Formula/a3s-power.rb <<EOF
           class A3sPower < Formula
-            desc "Local model management and serving with OpenAI-compatible API"
+            desc "Privacy-preserving LLM inference for TEE environments"
             homepage "https://github.com/A3S-Lab/Power"
             version "${VERSION}"
             license "MIT"
@@ -209,32 +242,20 @@ jobs:
 
             def install
               bin.install "a3s-power"
+              bin.install "a3s-power-verify"
             end
 
             test do
               assert_match "a3s-power", shell_output("#{bin}/a3s-power --version")
             end
           end
-          FORMULA
+          EOF
+
+          # Remove leading whitespace from heredoc (GitHub Actions heredoc quirk)
+          sed -i 's/^          //' Formula/a3s-power.rb
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/a3s-power.rb
           git commit -m "chore: update a3s-power to ${TAG}"
           git push
-
-  cargo-publish:
-    needs: release
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Publish to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --no-verify

@@ -33,11 +33,12 @@ pub async fn handler(
         }
     };
 
-    let backend = match state.backends.find_for_format(&manifest.format) {
+    let backend = match state.find_backend(&manifest.format, manifest.size) {
         Ok(b) => b,
         Err(e) => {
             state.metrics.decrement_active_requests();
-            return openai_error("backend_unavailable", &e.to_string()).into_response();
+            return openai_error("backend_unavailable", &state.sanitize_error(&e.to_string()))
+                .into_response();
         }
     };
 
@@ -53,7 +54,8 @@ pub async fn handler(
         Ok(r) => r,
         Err(e) => {
             state.metrics.decrement_active_requests();
-            return openai_error("model_load_failed", &e.to_string()).into_response();
+            return openai_error("model_load_failed", &state.sanitize_error(&e.to_string()))
+                .into_response();
         }
     };
     let unload_after_use = load_result.unload_after_use;
@@ -120,7 +122,7 @@ pub async fn handler(
                     e.to_string(),
                 ));
             }
-            openai_error("inference_failed", &e.to_string()).into_response()
+            openai_error("inference_failed", &state.sanitize_error(&e.to_string())).into_response()
         }
     }
 }

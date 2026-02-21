@@ -85,6 +85,10 @@ pub enum ModelFormat {
     /// Used for embedding models loaded via `EmbeddingModelBuilder`.
     /// `ModelManifest::path` points to the local model directory.
     HuggingFace,
+    /// Vision/multimodal model directory (safetensors weights + tokenizer + config).
+    /// Loaded via `VisionModelBuilder`; supports image inputs in chat requests.
+    /// `ModelManifest::path` points to the local model directory.
+    Vision,
 }
 
 impl std::fmt::Display for ModelFormat {
@@ -93,6 +97,7 @@ impl std::fmt::Display for ModelFormat {
             ModelFormat::Gguf => write!(f, "GGUF"),
             ModelFormat::SafeTensors => write!(f, "SafeTensors"),
             ModelFormat::HuggingFace => write!(f, "HuggingFace"),
+            ModelFormat::Vision => write!(f, "Vision"),
         }
     }
 }

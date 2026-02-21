@@ -6,7 +6,9 @@ use crate::config::parse_keep_alive;
 use crate::error::Result;
 use crate::model::manifest::ModelManifest;
 use crate::server::state::AppState;
-use crate::tee::encrypted_model::{load_key, DecryptedModel, MemoryDecryptedModel};
+use crate::tee::encrypted_model::{
+    load_key, DecryptedModel, LayerStreamingDecryptedModel, MemoryDecryptedModel,
+};
 
 /// Result of an ensure_loaded call, including load timing.
 #[derive(Debug)]
@@ -95,7 +97,7 @@ pub async fn ensure_loaded_with_keep_alive(
     }
 
     // Decrypt encrypted models (.enc) if key source is configured
-    let is_encrypted = manifest.path.extension().map_or(false, |ext| ext == "enc");
+    let is_encrypted = manifest.path.extension().is_some_and(|ext| ext == "enc");
     let load_manifest;
     if is_encrypted {
         // Resolve key: prefer key_provider in AppState, fall back to model_key_source config
@@ -116,9 +118,15 @@ pub async fn ensure_loaded_with_keep_alive(
             load_key(key_source)?
         };
 
-        tracing::info!(model = %model_name, in_memory = state.config.in_memory_decrypt, "Decrypting encrypted model");
+        tracing::info!(model = %model_name, in_memory = state.config.in_memory_decrypt, streaming = state.config.streaming_decrypt, "Decrypting encrypted model");
 
-        if state.config.in_memory_decrypt {
+        if state.config.streaming_decrypt {
+            // Layer-streaming decryption: chunk-by-chunk access for picolm backend.
+            // Peak plaintext in RAM = one transformer layer (~50–200MB).
+            let stream_model = LayerStreamingDecryptedModel::decrypt(&manifest.path, &key)?;
+            state.store_streaming_decrypted(model_name, stream_model);
+            load_manifest = manifest.clone();
+        } else if state.config.in_memory_decrypt {
             // Decrypt into mlock-pinned RAM — plaintext never touches disk
             let mem_model = MemoryDecryptedModel::decrypt(&manifest.path, &key)?;
             state.store_memory_decrypted(model_name, mem_model);

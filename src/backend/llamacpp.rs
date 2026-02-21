@@ -55,14 +55,30 @@ struct LoadedModel {
     load_mode: LoadMode,
     /// Trained context length from the model's GGUF metadata.
     n_ctx_train: u32,
-    /// Cached context for KV cache reuse across requests.
-    /// Holds (context, evaluated_tokens) — taken for each request and returned after.
-    cached_ctx: Arc<std::sync::Mutex<Option<CachedContext>>>,
+    /// Per-session KV cache map: session_id → CachedContext.
+    ///
+    /// Anonymous requests (session_id = None) never touch this map — they always
+    /// create a fresh context and discard it after use, preventing cross-request
+    /// cache leakage in multi-tenant deployments.
+    session_cache: Arc<std::sync::Mutex<HashMap<String, CachedContext>>>,
     /// LoRA adapter loaded from manifest.adapter_path (if any).
     lora_adapter: Option<Arc<std::sync::Mutex<SendableLoraAdapter>>>,
     /// Path to multimodal projector file (for vision models).
     projector_path: Option<String>,
+    /// Multimodal context for vision/audio inference (initialized from projector_path).
+    mtmd_ctx: Option<Arc<std::sync::Mutex<SendableMtmdContext>>>,
 }
+
+/// Newtype wrapper around MtmdContext to implement Send.
+///
+/// Safety: MtmdContext wraps a C pointer that is safe to send between threads
+/// when accessed sequentially (protected by Mutex). The MTMD context is only
+/// used during inference inside spawn_blocking, serialized by the Mutex.
+#[cfg(feature = "llamacpp")]
+struct SendableMtmdContext(llama_cpp_2::mtmd::MtmdContext);
+
+#[cfg(feature = "llamacpp")]
+unsafe impl Send for SendableMtmdContext {}
 
 /// A cached llama.cpp context with the tokens already evaluated in its KV cache.
 #[cfg(feature = "llamacpp")]
@@ -72,7 +88,13 @@ struct CachedContext {
     evaluated_tokens: Vec<llama_cpp_2::token::LlamaToken>,
     /// Context size this was created with.
     ctx_size: u32,
+    /// Last time this cache entry was used (for TTL eviction).
+    last_used: std::time::Instant,
 }
+
+/// TTL for idle session KV caches. Sessions not used within this duration are evicted.
+#[cfg(feature = "llamacpp")]
+const SESSION_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Safety: LlamaContext wraps a C pointer that is safe to send between threads
 /// when accessed sequentially (protected by Mutex). The llama.cpp library is
@@ -251,6 +273,52 @@ impl Backend for LlamaCppBackend {
             None
         };
 
+        // Initialize multimodal context if projector_path is set.
+        // MtmdContext::init_from_file is blocking (loads the projector weights).
+        let mtmd_ctx = if let Some(ref proj_path) = manifest.projector_path {
+            let proj_path_str = proj_path.clone();
+            let model_ref = model_arc.clone();
+            let model_name_for_log = manifest.name.clone();
+            match tokio::task::spawn_blocking(move || {
+                use llama_cpp_2::mtmd::{MtmdContext, MtmdContextParams};
+                let params = MtmdContextParams::default();
+                MtmdContext::init_from_file(&proj_path_str, &model_ref, &params)
+                    .map(SendableMtmdContext)
+                    .map_err(|e| {
+                        PowerError::InferenceFailed(format!(
+                            "Failed to initialize MTMD context from {proj_path_str}: {e}"
+                        ))
+                    })
+            })
+            .await
+            .map_err(|e| PowerError::InferenceFailed(format!("MTMD init task failed: {e}")))
+            {
+                Ok(Ok(ctx)) => {
+                    tracing::info!(
+                        model = %model_name_for_log,
+                        projector = %proj_path,
+                        "Multimodal projector loaded"
+                    );
+                    Some(Arc::new(std::sync::Mutex::new(ctx)))
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        model = %manifest.name,
+                        projector = %proj_path,
+                        error = %e,
+                        "Failed to load multimodal projector, vision inference disabled"
+                    );
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "MTMD init task panicked");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         self.models.write().await.insert(
             model_name.clone(),
             LoadedModel {
@@ -261,9 +329,10 @@ impl Backend for LlamaCppBackend {
                 raw_template: raw_template_str,
                 load_mode: LoadMode::Inference,
                 n_ctx_train,
-                cached_ctx: Arc::new(std::sync::Mutex::new(None)),
+                session_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 lora_adapter,
                 projector_path: manifest.projector_path.clone(),
+                mtmd_ctx,
             },
         );
 
@@ -368,6 +437,7 @@ impl Backend for LlamaCppBackend {
 
         let completion_req = CompletionRequest {
             prompt,
+            session_id: request.session_id,
             temperature: request.temperature,
             top_p: request.top_p,
             max_tokens: request.max_tokens,
@@ -402,6 +472,7 @@ impl Backend for LlamaCppBackend {
             main_gpu: request.main_gpu,
             use_mmap: request.use_mmap,
             use_mlock: request.use_mlock,
+            num_parallel: request.num_parallel,
             suffix: None,
             context: None,
         };
@@ -480,16 +551,17 @@ impl Backend for LlamaCppBackend {
         use llama_cpp_2::llama_batch::LlamaBatch;
         use llama_cpp_2::sampling::LlamaSampler;
 
-        let (model_arc, cached_ctx_mutex, lora_adapter, model_n_ctx_train) = {
+        let (model_arc, session_cache, lora_adapter, model_n_ctx_train, mtmd_ctx) = {
             let models = self.models.read().await;
             models
                 .get(model_name)
                 .map(|m| {
                     (
                         m.model.clone(),
-                        m.cached_ctx.clone(),
+                        m.session_cache.clone(),
                         m.lora_adapter.clone(),
                         m.n_ctx_train,
+                        m.mtmd_ctx.clone(),
                     )
                 })
                 .ok_or_else(|| {
@@ -547,9 +619,213 @@ impl Backend for LlamaCppBackend {
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<CompletionResponseChunk>>(32);
 
+        // Evict stale session caches before starting inference.
+        {
+            let mut cache = session_cache.lock().unwrap();
+            cache.retain(|_, v| v.last_used.elapsed() < SESSION_CACHE_TTL);
+        }
+
+        let session_id = request.session_id.clone();
+        let session_cache_for_return = session_cache.clone();
+
         // Run inference in a blocking task
-        let cached_ctx_for_return = cached_ctx_mutex.clone();
         tokio::task::spawn_blocking(move || {
+            let prompt_eval_start = std::time::Instant::now();
+
+            // Determine whether to use the MTMD (multimodal) path.
+            // Conditions: images present in request AND mtmd_ctx loaded for this model.
+            let has_images = request.images.as_ref().map_or(false, |v| !v.is_empty());
+            let use_mtmd = has_images && mtmd_ctx.is_some();
+
+            // ----------------------------------------------------------------
+            // MTMD path: vision/multimodal inference
+            // ----------------------------------------------------------------
+            if use_mtmd {
+                use llama_cpp_2::mtmd::{mtmd_default_marker, MtmdBitmap, MtmdInputText};
+
+                let mtmd_guard = mtmd_ctx.as_ref().unwrap().lock().unwrap();
+                let mtmd = &mtmd_guard.0;
+
+                // Build bitmaps from base64-encoded images.
+                // Images are never logged — they pass through the privacy boundary here.
+                let mut bitmaps: Vec<MtmdBitmap> = Vec::new();
+                for b64 in request.images.as_deref().unwrap_or(&[]) {
+                    // Strip data URI prefix if present (e.g. "data:image/png;base64,...")
+                    let b64_data = b64.find(',').map(|i| &b64[i + 1..]).unwrap_or(b64.as_str());
+                    let raw = match base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        b64_data,
+                    ) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
+                                "Failed to decode base64 image: {e}"
+                            ))));
+                            return;
+                        }
+                    };
+                    match MtmdBitmap::from_buffer(mtmd, &raw) {
+                        Ok(bm) => bitmaps.push(bm),
+                        Err(e) => {
+                            let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
+                                "Failed to create bitmap from image data: {e}"
+                            ))));
+                            return;
+                        }
+                    }
+                }
+
+                // Insert media markers into the prompt — one per image.
+                let marker = mtmd_default_marker();
+                let markers: String = std::iter::repeat(marker)
+                    .take(bitmaps.len())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let prompt_with_markers = format!("{markers}\n{}", request.prompt);
+
+                let input_text = MtmdInputText {
+                    text: prompt_with_markers,
+                    add_special: true,
+                    parse_special: true,
+                };
+
+                let bitmap_refs: Vec<&MtmdBitmap> = bitmaps.iter().collect();
+                let chunks = match mtmd.tokenize(input_text, &bitmap_refs) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
+                            "MTMD tokenization failed: {e}"
+                        ))));
+                        return;
+                    }
+                };
+
+                let prompt_token_count = chunks.total_tokens() as u32;
+
+                // Create a fresh context for multimodal inference (no KV cache reuse —
+                // image embeddings are request-specific and must not leak across sessions).
+                let ctx_params = LlamaContextParams::default().with_n_ctx(Some(
+                    std::num::NonZeroU32::new(ctx_size)
+                        .unwrap_or(std::num::NonZeroU32::new(2048).unwrap()),
+                ));
+                let mut ctx = match model_arc.new_context(backend_ref(), ctx_params) {
+                    Ok(c) => {
+                        let c: llama_cpp_2::context::LlamaContext<'static> =
+                            unsafe { std::mem::transmute(c) };
+                        c
+                    }
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
+                            "Failed to create MTMD context: {e}"
+                        ))));
+                        return;
+                    }
+                };
+
+                // Evaluate all chunks (text + image embeddings) via the MTMD helper.
+                let n_batch = num_batch.unwrap_or(512) as i32;
+                let n_past = match chunks.eval_chunks(mtmd, &ctx, 0, 0, n_batch, true) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
+                            "MTMD eval_chunks failed: {e}"
+                        ))));
+                        return;
+                    }
+                };
+
+                let prompt_eval_duration_ns = prompt_eval_start.elapsed().as_nanos() as u64;
+
+                // Build sampler and generate tokens (same as text path below)
+                let mut samplers: Vec<llama_cpp_2::sampling::LlamaSampler> = Vec::new();
+                if let Some(temp) = request.temperature {
+                    if temp > 0.0 {
+                        samplers.push(llama_cpp_2::sampling::LlamaSampler::temp(temp));
+                    }
+                }
+                samplers.push(llama_cpp_2::sampling::LlamaSampler::greedy());
+                let mut sampler = llama_cpp_2::sampling::LlamaSampler::chain(samplers, false);
+
+                let eos_token = model_arc.token_eos();
+                let mut n_cur = n_past;
+                let mut generated_text = String::new();
+
+                for _i in 0..max_tokens {
+                    let new_token = sampler.sample(&ctx, -1);
+                    if new_token == eos_token {
+                        let _ = tx.blocking_send(Ok(CompletionResponseChunk {
+                            text: String::new(),
+                            done: true,
+                            prompt_tokens: Some(prompt_token_count),
+                            done_reason: Some("stop".to_string()),
+                            prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
+                            token_id: None,
+                        }));
+                        return;
+                    }
+
+                    let text = {
+                        let mut decoder = encoding_rs::UTF_8.new_decoder();
+                        model_arc
+                            .token_to_piece(new_token, &mut decoder, true, None)
+                            .unwrap_or_default()
+                    };
+                    generated_text.push_str(&text);
+
+                    let should_stop = stop_sequences.iter().any(|s| generated_text.ends_with(s));
+
+                    if tx
+                        .blocking_send(Ok(CompletionResponseChunk {
+                            text,
+                            done: should_stop,
+                            prompt_tokens: if should_stop {
+                                Some(prompt_token_count)
+                            } else {
+                                None
+                            },
+                            done_reason: if should_stop {
+                                Some("stop".to_string())
+                            } else {
+                                None
+                            },
+                            prompt_eval_duration_ns: if should_stop {
+                                Some(prompt_eval_duration_ns)
+                            } else {
+                                None
+                            },
+                            token_id: Some(new_token.0 as u32),
+                        }))
+                        .is_err()
+                        || should_stop
+                    {
+                        return;
+                    }
+
+                    let mut batch = LlamaBatch::new(1, 1);
+                    if batch.add(new_token, n_cur, &[0], true).is_err() {
+                        return;
+                    }
+                    n_cur += 1;
+                    if ctx.decode(&mut batch).is_err() {
+                        return;
+                    }
+                }
+
+                let _ = tx.blocking_send(Ok(CompletionResponseChunk {
+                    text: String::new(),
+                    done: true,
+                    prompt_tokens: Some(prompt_token_count),
+                    done_reason: Some("length".to_string()),
+                    prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
+                    token_id: None,
+                }));
+                return;
+            }
+
+            // ----------------------------------------------------------------
+            // Text-only path (original implementation)
+            // ----------------------------------------------------------------
+
             // Tokenize the prompt
             let tokens =
                 match model_arc.str_to_token(&request.prompt, llama_cpp_2::model::AddBos::Always) {
@@ -564,8 +840,12 @@ impl Backend for LlamaCppBackend {
 
             let prompt_token_count = tokens.len() as u32;
 
-            // Try to reuse cached context with KV cache prefix matching
-            let cached = cached_ctx_mutex.lock().unwrap().take();
+            // Try to reuse cached context with KV cache prefix matching.
+            // Only reuse if the request carries a session_id — anonymous requests
+            // always get a fresh context to prevent cross-request cache leakage.
+            let cached = session_id
+                .as_deref()
+                .and_then(|sid| session_cache.lock().unwrap().remove(sid));
             let (mut ctx, skip_tokens) = match cached {
                 Some(mut cached) if cached.ctx_size == ctx_size => {
                     // Find common prefix between cached tokens and new tokens
@@ -764,13 +1044,19 @@ impl Backend for LlamaCppBackend {
                         prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
                         token_id: None,
                     }));
-                    // Return context to cache (with prompt + generated tokens)
+                    // Return context to session cache (only when session_id is set).
                     all_tokens.push(new_token);
-                    *cached_ctx_for_return.lock().unwrap() = Some(CachedContext {
-                        ctx,
-                        evaluated_tokens: all_tokens,
-                        ctx_size,
-                    });
+                    if let Some(ref sid) = session_id {
+                        session_cache_for_return.lock().unwrap().insert(
+                            sid.clone(),
+                            CachedContext {
+                                ctx,
+                                evaluated_tokens: all_tokens,
+                                ctx_size,
+                                last_used: std::time::Instant::now(),
+                            },
+                        );
+                    }
                     return;
                 }
 
@@ -817,22 +1103,34 @@ impl Backend for LlamaCppBackend {
                     }))
                     .is_err()
                 {
-                    // Receiver dropped — still cache the context
-                    *cached_ctx_for_return.lock().unwrap() = Some(CachedContext {
-                        ctx,
-                        evaluated_tokens: all_tokens,
-                        ctx_size,
-                    });
+                    // Receiver dropped — cache context if session is set
+                    if let Some(ref sid) = session_id {
+                        session_cache_for_return.lock().unwrap().insert(
+                            sid.clone(),
+                            CachedContext {
+                                ctx,
+                                evaluated_tokens: all_tokens,
+                                ctx_size,
+                                last_used: std::time::Instant::now(),
+                            },
+                        );
+                    }
                     return;
                 }
 
                 if should_stop {
-                    // Return context to cache
-                    *cached_ctx_for_return.lock().unwrap() = Some(CachedContext {
-                        ctx,
-                        evaluated_tokens: all_tokens,
-                        ctx_size,
-                    });
+                    // Return context to session cache
+                    if let Some(ref sid) = session_id {
+                        session_cache_for_return.lock().unwrap().insert(
+                            sid.clone(),
+                            CachedContext {
+                                ctx,
+                                evaluated_tokens: all_tokens,
+                                ctx_size,
+                                last_used: std::time::Instant::now(),
+                            },
+                        );
+                    }
                     return;
                 }
 
@@ -851,7 +1149,7 @@ impl Backend for LlamaCppBackend {
                 }
             }
 
-            // Max tokens reached — return context to cache
+            // Max tokens reached — cache context if session is set
             let _ = tx.blocking_send(Ok(CompletionResponseChunk {
                 text: String::new(),
                 done: true,
@@ -860,11 +1158,17 @@ impl Backend for LlamaCppBackend {
                 prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
                 token_id: None,
             }));
-            *cached_ctx_for_return.lock().unwrap() = Some(CachedContext {
-                ctx,
-                evaluated_tokens: all_tokens,
-                ctx_size,
-            });
+            if let Some(ref sid) = session_id {
+                session_cache_for_return.lock().unwrap().insert(
+                    sid.clone(),
+                    CachedContext {
+                        ctx,
+                        evaluated_tokens: all_tokens,
+                        ctx_size,
+                        last_used: std::time::Instant::now(),
+                    },
+                );
+            }
         });
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -944,9 +1248,10 @@ impl Backend for LlamaCppBackend {
                     raw_template,
                     load_mode: LoadMode::Embedding,
                     n_ctx_train,
-                    cached_ctx: Arc::new(std::sync::Mutex::new(None)),
+                    session_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
                     lora_adapter,
                     projector_path,
+                    mtmd_ctx: None, // Embedding models don't use multimodal projectors
                 },
             );
         }
@@ -1178,6 +1483,8 @@ mod tests {
             use_mmap: None,
             use_mlock: None,
             num_parallel: None,
+            images: None,
+            session_id: None,
         };
         let result = backend.chat("test", request).await;
         assert!(result.is_err());
@@ -1222,6 +1529,7 @@ mod tests {
             num_parallel: None,
             suffix: None,
             context: None,
+            session_id: None,
         };
         let result = backend.complete("test", request).await;
         assert!(result.is_err());

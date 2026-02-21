@@ -28,6 +28,9 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
     // Auto-detect GPU and configure layers if not explicitly set
     backend::gpu::auto_configure(&mut config.gpu);
 
+    // Detect GPU for metrics (recorded after AppState creation)
+    let gpu_info = backend::gpu::detect();
+
     // Initialize model registry and scan for existing models
     let registry = Arc::new(ModelRegistry::new());
     registry.scan()?;
@@ -120,13 +123,33 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
             .audit_log_path
             .clone()
             .unwrap_or_else(|| dirs::power_home().join("audit.jsonl"));
-        match audit::AsyncJsonLinesAuditLogger::open(log_path.clone()) {
-            Ok(logger) => {
-                app_state = app_state.with_audit(Arc::new(logger));
-                tracing::info!(path = %log_path.display(), "Audit logging enabled (async)");
+
+        if config.audit_log_encrypt {
+            // Encrypted audit logging: AES-256-GCM per-line encryption
+            let key_source = config.audit_key_source.as_ref().ok_or_else(|| {
+                PowerError::Config(
+                    "audit_log_encrypt = true but audit_key_source is not configured".to_string(),
+                )
+            })?;
+            let key = crate::tee::encrypted_model::load_key(key_source)?;
+            match audit::EncryptedAuditLogger::open(log_path.clone(), key) {
+                Ok(logger) => {
+                    app_state = app_state.with_audit(Arc::new(logger));
+                    tracing::info!(path = %log_path.display(), "Audit logging enabled (encrypted)");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to open encrypted audit log, audit logging disabled");
+                }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to open audit log, audit logging disabled");
+        } else {
+            match audit::AsyncJsonLinesAuditLogger::open(log_path.clone()) {
+                Ok(logger) => {
+                    app_state = app_state.with_audit(Arc::new(logger));
+                    tracing::info!(path = %log_path.display(), "Audit logging enabled (async)");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to open audit log, audit logging disabled");
+                }
             }
         }
     }
@@ -142,6 +165,25 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
 
     // Spawn background keep_alive reaper task
     spawn_keep_alive_reaper(app_state.clone());
+
+    // Record detected GPU memory in Prometheus metrics
+    if gpu_info.vram_bytes > 0 {
+        app_state
+            .metrics
+            .set_gpu_memory(&gpu_info.name, gpu_info.vram_bytes);
+        tracing::info!(
+            gpu = %gpu_info.name,
+            vram = %gpu_info.vram_display(),
+            backend = %gpu_info.backend,
+            "GPU detected"
+        );
+    }
+
+    // Spawn SIGHUP handler for key rotation (Unix only)
+    #[cfg(unix)]
+    if app_state.key_provider.is_some() {
+        spawn_key_rotation_handler(app_state.clone());
+    }
 
     let app_state_for_shutdown = app_state.clone();
     let app = router::build(app_state.clone());
@@ -247,8 +289,8 @@ async fn shutdown_signal(state: state::AppState) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate())
-            .expect("failed to register SIGTERM handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
         tokio::select! {
             _ = sigterm.recv() => {
                 tracing::info!("SIGTERM received, starting graceful shutdown");
@@ -331,6 +373,39 @@ fn spawn_keep_alive_reaper(state: state::AppState) {
                     model = %model_name,
                     "Unloaded model (keep_alive expired)"
                 );
+            }
+        }
+    });
+}
+
+/// Spawn a SIGHUP handler that triggers key rotation.
+///
+/// When a SIGHUP signal is received, calls `rotate_key()` on the key provider.
+/// This enables zero-downtime key rotation: deploy a new key, send SIGHUP,
+/// then remove the old key.
+#[cfg(unix)]
+fn spawn_key_rotation_handler(state: state::AppState) {
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sighup = signal(SignalKind::hangup()).expect("failed to register SIGHUP handler");
+
+        loop {
+            sighup.recv().await;
+            tracing::info!("SIGHUP received, attempting key rotation");
+
+            if let Some(ref kp) = state.key_provider {
+                match kp.rotate_key().await {
+                    Ok(_) => {
+                        tracing::info!(provider = kp.provider_name(), "Key rotation successful");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = kp.provider_name(),
+                            error = %e,
+                            "Key rotation failed"
+                        );
+                    }
+                }
             }
         }
     });

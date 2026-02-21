@@ -53,11 +53,12 @@ pub async fn handler(
         }
     };
 
-    let backend = match state.backends.find_for_format(&manifest.format) {
+    let backend = match state.find_backend(&manifest.format, manifest.size) {
         Ok(b) => b,
         Err(e) => {
             state.metrics.decrement_active_requests();
-            return openai_error("backend_unavailable", &e.to_string()).into_response();
+            return openai_error("backend_unavailable", &state.sanitize_error(&e.to_string()))
+                .into_response();
         }
     };
 
@@ -73,7 +74,8 @@ pub async fn handler(
         Ok(r) => r,
         Err(e) => {
             state.metrics.decrement_active_requests();
-            return openai_error("model_load_failed", &e.to_string()).into_response();
+            return openai_error("model_load_failed", &state.sanitize_error(&e.to_string()))
+                .into_response();
         }
     };
     let unload_after_use = load_result.unload_after_use;
@@ -121,6 +123,7 @@ pub async fn handler(
         num_parallel: Some(state.config.num_parallel as u32),
         suffix: None,
         context: None,
+        session_id: None,
     };
 
     match backend.complete(&model_name, backend_request).await {
@@ -130,6 +133,12 @@ pub async fn handler(
                 let model = model_name.clone();
                 let created = chrono::Utc::now().timestamp();
                 let start = Instant::now();
+
+                // Timing padding: delay before sending first token to prevent
+                // prompt-length inference from response latency.
+                if let Some(pad) = state.timing_padding() {
+                    tokio::time::sleep(pad).await;
+                }
 
                 let eval_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
                 let counter_clone = eval_counter.clone();
@@ -303,7 +312,11 @@ pub async fn handler(
                             }
                         }
                         Err(e) => {
-                            return openai_error("server_error", &e.to_string()).into_response();
+                            return openai_error(
+                                "server_error",
+                                &state.sanitize_error(&e.to_string()),
+                            )
+                            .into_response();
                         }
                     }
                 }
@@ -388,7 +401,7 @@ pub async fn handler(
                     e.to_string(),
                 ));
             }
-            openai_error("server_error", &e.to_string()).into_response()
+            openai_error("server_error", &state.sanitize_error(&e.to_string())).into_response()
         }
     }
 }

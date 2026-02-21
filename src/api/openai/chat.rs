@@ -19,7 +19,6 @@ use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 
 /// POST /v1/chat/completions - OpenAI-compatible chat completion.
-
 pub async fn handler(
     State(state): State<AppState>,
     auth_id: Option<axum::Extension<AuthId>>,
@@ -52,11 +51,12 @@ pub async fn handler(
         }
     };
 
-    let backend = match state.backends.find_for_format(&manifest.format) {
+    let backend = match state.find_backend(&manifest.format, manifest.size) {
         Ok(b) => b,
         Err(e) => {
             state.metrics.decrement_active_requests();
-            return openai_error("backend_unavailable", &e.to_string()).into_response();
+            return openai_error("backend_unavailable", &state.sanitize_error(&e.to_string()))
+                .into_response();
         }
     };
 
@@ -72,7 +72,8 @@ pub async fn handler(
         Ok(r) => r,
         Err(e) => {
             state.metrics.decrement_active_requests();
-            return openai_error("model_load_failed", &e.to_string()).into_response();
+            return openai_error("model_load_failed", &state.sanitize_error(&e.to_string()))
+                .into_response();
         }
     };
     let unload_after_use = load_result.unload_after_use;
@@ -145,6 +146,8 @@ pub async fn handler(
             None
         },
         num_parallel: Some(state.config.num_parallel as u32),
+        images: None,
+        session_id: None,
     };
 
     let is_stream = request.stream.unwrap_or(false);
@@ -162,6 +165,12 @@ pub async fn handler(
                 let model = model_name.clone();
                 let created = chrono::Utc::now().timestamp();
                 let start = Instant::now();
+
+                // Timing padding: delay before sending first token to prevent
+                // prompt-length inference from response latency.
+                if let Some(pad) = state.timing_padding() {
+                    tokio::time::sleep(pad).await;
+                }
 
                 // First chunk: send role
                 let first_chunk = ChatCompletionChunk {
@@ -373,7 +382,11 @@ pub async fn handler(
                             }
                         }
                         Err(e) => {
-                            return openai_error("server_error", &e.to_string()).into_response();
+                            return openai_error(
+                                "server_error",
+                                &state.sanitize_error(&e.to_string()),
+                            )
+                            .into_response();
                         }
                     }
                 }
@@ -473,7 +486,7 @@ pub async fn handler(
                     e.to_string(),
                 ));
             }
-            openai_error("server_error", &e.to_string()).into_response()
+            openai_error("server_error", &state.sanitize_error(&e.to_string())).into_response()
         }
     }
 }
@@ -950,7 +963,10 @@ mod tests {
             .unwrap();
         let body_str = String::from_utf8_lossy(&body);
         // The SSE stream should contain a usage chunk before [DONE]
-        assert!(body_str.contains("\"usage\""), "expected usage chunk in SSE stream");
+        assert!(
+            body_str.contains("\"usage\""),
+            "expected usage chunk in SSE stream"
+        );
 
         std::env::remove_var("A3S_POWER_HOME");
     }

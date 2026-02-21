@@ -2,6 +2,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+#[cfg(feature = "hf")]
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::api::types::{ModelInfo, ModelList};
@@ -266,80 +268,180 @@ fn dir_size(path: &std::path::Path) -> u64 {
 /// Request body for POST /v1/models/pull.
 #[derive(Debug, Deserialize)]
 pub struct PullModelRequest {
-    /// Model name to pull (e.g. "llama3.2:3b").
+    /// Model name to pull.
+    ///
+    /// Supported formats:
+    /// - `owner/repo:Q4_K_M`          — resolves quantization via HF API
+    /// - `owner/repo/file.gguf`        — direct filename
     pub name: String,
     /// If true, re-download even if already registered.
     #[serde(default)]
     pub force: bool,
+    /// HuggingFace API token for private/gated models.
+    /// Falls back to the `HF_TOKEN` environment variable if not set.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
-/// POST /v1/models/pull - Pull a model from the Ollama registry.
+/// POST /v1/models/pull — Pull a GGUF model from HuggingFace Hub.
 ///
-/// Delegates to the configured pull backend. Returns 501 if no pull
-/// backend is available (pull support is backend-specific).
+/// Streams SSE progress events while downloading:
+/// ```json
+/// {"status":"downloading","completed":104857600,"total":2147483648}
+/// {"status":"verifying"}
+/// {"status":"success","id":"owner/repo:Q4_K_M","object":"model","created":1234567890}
+/// ```
+///
+/// Returns 200 with `{"status":"already_exists"}` if the model is already
+/// registered and `force` is false.
+///
+/// Requires the `hf` feature; returns 501 otherwise.
 pub async fn pull_handler(
     State(state): State<AppState>,
     Json(req): Json<PullModelRequest>,
 ) -> impl IntoResponse {
-    // If already registered and not forcing, return early.
+    // Fast path: already registered and not forcing.
     if !req.force && state.registry.exists(&req.name) {
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "already_exists",
-                "name": req.name
-            })),
-        )
-            .into_response();
+        return axum::response::Sse::new(futures::stream::once(async move {
+            Ok::<_, std::convert::Infallible>(
+                axum::response::sse::Event::default()
+                    .json_data(serde_json::json!({
+                        "status": "already_exists",
+                        "name": req.name
+                    }))
+                    .unwrap(),
+            )
+        }))
+        .into_response();
     }
 
-    // Delegate to backend pull if supported.
-    match state.backends.find_for_format(&ModelFormat::Gguf) {
-        Ok(backend) => match backend.pull(&req.name).await {
-            Ok(manifest) => {
-                let name = manifest.name.clone();
-                let created = manifest.created_at.timestamp();
-                // On force re-pull, remove the stale entry first so the new
-                // manifest replaces it rather than being silently dropped.
-                if req.force {
-                    let _ = state.registry.remove(&name);
-                }
-                let _ = state.registry.register(manifest);
-                (
-                    StatusCode::OK,
-                    Json(serde_json::json!({
-                        "status": "success",
-                        "id": name,
-                        "object": "model",
-                        "created": created,
-                        "owned_by": "local"
-                    })),
-                )
-                    .into_response()
-            }
-            Err(e) => (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": format!("pull failed: {e}"),
-                        "type": "server_error",
-                        "code": "pull_failed"
-                    }
-                })),
+    // Concurrent pull guard: reject duplicate in-flight pulls for the same model.
+    if state.is_pulling(&req.name) {
+        return axum::response::Sse::new(futures::stream::once(async move {
+            Ok::<_, std::convert::Infallible>(
+                axum::response::sse::Event::default()
+                    .json_data(serde_json::json!({
+                        "status": "already_pulling",
+                        "name": req.name
+                    }))
+                    .unwrap(),
             )
-                .into_response(),
-        },
-        Err(_) => (
+        }))
+        .into_response();
+    }
+
+    #[cfg(feature = "hf")]
+    {
+        use crate::model::pull::hf::{pull, PullProgress};
+        use axum::response::sse::Event;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<PullProgress>(32);
+        let name = req.name.clone();
+        let token = req.token.clone();
+        let registry = state.registry.clone();
+        let force = req.force;
+
+        // Mark as in-flight before spawning.
+        state.start_pull(&name);
+        let state_for_cleanup = state.clone();
+        let name_for_cleanup = name.clone();
+
+        // Persist initial pull state.
+        {
+            use crate::model::pull_state::PullState;
+            let ps = PullState::new(&name);
+            let _ = ps.save();
+        }
+
+        // Spawn download task; progress flows through the channel.
+        tokio::spawn(async move {
+            let result = pull(&name, token.as_deref(), tx.clone()).await;
+            // Always release the pull lock, success or failure.
+            state_for_cleanup.finish_pull(&name_for_cleanup);
+            match result {
+                Ok(manifest) => {
+                    use crate::model::pull_state::PullState;
+                    if force {
+                        let _ = registry.remove(&manifest.name);
+                    }
+                    let _ = registry.register(manifest);
+                    // Mark state as done; clean up after successful registration.
+                    if let Some(mut ps) = PullState::load(&name_for_cleanup) {
+                        let _ = ps.mark_done();
+                    }
+                }
+                Err(e) => {
+                    use crate::model::pull_state::PullState;
+                    tracing::error!(error = %e, model = %name_for_cleanup, "model pull failed");
+                    if let Some(mut ps) = PullState::load(&name_for_cleanup) {
+                        let _ = ps.mark_failed(&e.to_string());
+                    }
+                }
+            }
+        });
+
+        let pull_name = req.name.clone();
+        let stream = ReceiverStream::new(rx).map(move |progress| {
+            // Persist progress to disk on Downloading events (throttled to every 5%).
+            if let PullProgress::Downloading { completed, total } = &progress {
+                use crate::model::pull_state::PullState;
+                if *total > 0 {
+                    let pct = completed * 100 / total;
+                    let prev_pct = completed.saturating_sub(1024 * 1024) * 100 / total;
+                    if pct / 5 != prev_pct / 5 {
+                        if let Some(mut ps) = PullState::load(&pull_name) {
+                            let _ = ps.update_progress(*completed, *total);
+                        }
+                    }
+                }
+            }
+            let event = match progress {
+                PullProgress::Resuming { offset, total } => Event::default()
+                    .json_data(serde_json::json!({
+                        "status": "resuming",
+                        "offset": offset,
+                        "total": total
+                    }))
+                    .unwrap(),
+                PullProgress::Downloading { completed, total } => Event::default()
+                    .json_data(serde_json::json!({
+                        "status": "downloading",
+                        "completed": completed,
+                        "total": total
+                    }))
+                    .unwrap(),
+                PullProgress::Verifying => Event::default()
+                    .json_data(serde_json::json!({ "status": "verifying" }))
+                    .unwrap(),
+                PullProgress::Done => Event::default()
+                    .json_data(serde_json::json!({
+                        "status": "success",
+                        "id": req.name,
+                        "object": "model",
+                        "created": chrono::Utc::now().timestamp()
+                    }))
+                    .unwrap(),
+            };
+            Ok::<_, std::convert::Infallible>(event)
+        });
+
+        axum::response::Sse::new(stream).into_response()
+    }
+
+    #[cfg(not(feature = "hf"))]
+    {
+        (
             StatusCode::NOT_IMPLEMENTED,
             Json(serde_json::json!({
                 "error": {
-                    "message": "no backend available for model pull",
+                    "message": "model pull requires the 'hf' feature (recompile with --features hf)",
                     "type": "server_error",
                     "code": "not_implemented"
                 }
             })),
         )
-            .into_response(),
+            .into_response()
     }
 }
 
@@ -575,16 +677,18 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+        // pull_handler returns SSE; read the raw body and check for already_exists.
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json["status"], "already_exists");
+        let body_str = String::from_utf8_lossy(&bytes);
+        assert!(body_str.contains("already_exists"));
     }
 
     #[tokio::test]
     async fn test_pull_model_backend_not_implemented() {
-        // MockBackend doesn't implement pull, so we expect 501
+        // With the hf feature, pull_handler streams SSE (200 OK) and spawns a
+        // background download task. Without hf, it returns 501.
         let state = test_state_with_mock(MockBackend::success());
         let app = router::build(state);
         let body = serde_json::json!({ "name": "new-model" });
@@ -595,11 +699,12 @@ mod tests {
             .body(Body::from(body.to_string()))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        // Either 501 (no pull support) or 502 (pull attempted but failed)
-        assert!(
-            resp.status() == StatusCode::NOT_IMPLEMENTED
-                || resp.status() == StatusCode::BAD_GATEWAY
-        );
+        #[cfg(feature = "hf")]
+        // hf feature: SSE stream starts immediately (200 OK)
+        assert_eq!(resp.status(), StatusCode::OK);
+        #[cfg(not(feature = "hf"))]
+        // no hf feature: 501 Not Implemented
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
     }
 
     #[tokio::test]
@@ -707,5 +812,32 @@ mod tests {
         assert_eq!(json["error"]["code"], "not_a_directory");
 
         std::env::remove_var("A3S_POWER_HOME");
+    }
+}
+
+/// GET /v1/models/pull/:name/status — Query the persisted state of a pull operation.
+///
+/// Returns the last known state of a pull (pulling, done, or failed).
+/// Useful after a server restart to check whether a previous download completed.
+///
+/// Returns 404 if no pull state exists for the given model name.
+pub async fn pull_status_handler(Path(name): Path<String>) -> impl IntoResponse {
+    use crate::model::pull_state::PullState;
+
+    match PullState::load(&name) {
+        Some(state) => {
+            (StatusCode::OK, Json(serde_json::to_value(&state).unwrap())).into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": {
+                    "message": format!("no pull state found for model '{name}'"),
+                    "type": "not_found",
+                    "code": "pull_state_not_found"
+                }
+            })),
+        )
+            .into_response(),
     }
 }
