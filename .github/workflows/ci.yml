@@ -47,7 +47,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
-      # Use --lib to avoid compiling examples/benches that need local-path dev-dependencies
+      - name: Setup workspace
+        run: bash .github/setup-workspace.sh
       - run: cargo clippy --lib ${{ matrix.features }} -- -D warnings
 
   test:
@@ -63,6 +64,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
+      - name: Setup workspace
+        run: bash .github/setup-workspace.sh
       - run: cargo test --lib
 
   cross-build:
@@ -100,6 +103,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
+      - name: Setup workspace
+        run: bash .github/setup-workspace.sh
       - name: Build
         run: |
           BUILD_CMD="cargo"

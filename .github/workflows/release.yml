@@ -16,12 +16,47 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: a3s-power
-  # Build with HF pull + hardware attestation verification enabled.
-  # mistralrs is the default feature and is always included.
   BUILD_FEATURES: "--features hf,hw-verify"
 
 jobs:
+  # ───────────────────────────────────────────────
+  # Gate: CI checks must pass before any publishing
+  # ───────────────────────────────────────────────
+  ci:
+    name: CI Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install OpenSSL dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --lib --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --lib
+
+  # ───────────────────────────────────────────────
+  # Build release binaries for all platforms
+  # ───────────────────────────────────────────────
   build:
+    needs: ci
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +79,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup workspace
+        run: bash .github/setup-workspace.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -51,7 +89,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: release-${{ matrix.target }}
 
       - name: Install cross
         if: matrix.use_cross
@@ -87,7 +125,6 @@ jobs:
           ARCHIVE="${BINARY_NAME}-${TAG}-${{ matrix.target }}.tar.gz"
           RELEASE_DIR="target/${{ matrix.target }}/release"
 
-          # Collect both binaries
           cp "${RELEASE_DIR}/${BINARY_NAME}" "${BINARY_NAME}"
           cp "${RELEASE_DIR}/${BINARY_NAME}-verify" "${BINARY_NAME}-verify"
 
@@ -103,12 +140,18 @@ jobs:
             ${{ steps.package.outputs.archive }}
             ${{ steps.package.outputs.archive }}.sha256
 
-  release:
+  # ───────────────────────────────────────────────
+  # Create GitHub Release
+  # ───────────────────────────────────────────────
+  github-release:
+    name: GitHub Release
     needs: build
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Determine tag
         id: tag
@@ -130,12 +173,21 @@ jobs:
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release/ \;
           ls -lh release/
 
-      - name: Create or update GitHub release
+      - name: Generate release notes
+        run: |
+          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | head -2 | tail -1)
+          if [ -z "$PREV_TAG" ]; then
+            NOTES="Initial release"
+          else
+            NOTES=$(git log "${PREV_TAG}..HEAD" --oneline --no-merges --pretty=format:"- %s" | head -50)
+          fi
+          echo "$NOTES" > /tmp/release-notes.md
+
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.tag.outputs.version }}"
-
           if gh release view "${TAG}" > /dev/null 2>&1; then
             echo "Release ${TAG} exists — uploading assets (overwriting duplicates)..."
             gh release upload "${TAG}" release/* --clobber
@@ -143,11 +195,15 @@ jobs:
             echo "Creating release ${TAG}..."
             gh release create "${TAG}" release/* \
               --title "${TAG}" \
-              --generate-notes
+              --notes-file /tmp/release-notes.md
           fi
 
-  cargo-publish:
-    needs: release
+  # ───────────────────────────────────────────────
+  # Publish to crates.io
+  # ───────────────────────────────────────────────
+  publish-crate:
+    name: Publish to crates.io
+    needs: github-release
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
 
@@ -162,19 +218,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
 
-      - name: Publish to crates.io
+      - name: Publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --no-verify
 
+  # ───────────────────────────────────────────────
+  # Update Homebrew formula
+  # ───────────────────────────────────────────────
   homebrew:
-    needs: release
+    name: Homebrew
+    needs: github-release
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
 
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -200,62 +258,72 @@ jobs:
       - name: Update Homebrew formula
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          FORMULA_TAG: ${{ steps.tag.outputs.version }}
+          FORMULA_VERSION: ${{ steps.sha.outputs.version }}
+          SHA_AARCH64_DARWIN: ${{ steps.sha.outputs.aarch64_apple_darwin }}
+          SHA_X86_64_DARWIN: ${{ steps.sha.outputs.x86_64_apple_darwin }}
+          SHA_AARCH64_LINUX: ${{ steps.sha.outputs.aarch64_unknown_linux_gnu }}
+          SHA_X86_64_LINUX: ${{ steps.sha.outputs.x86_64_unknown_linux_gnu }}
         run: |
-          TAG="${{ steps.tag.outputs.version }}"
-          VERSION="${{ steps.sha.outputs.version }}"
-          SHA_AARCH64_DARWIN="${{ steps.sha.outputs.aarch64_apple_darwin }}"
-          SHA_X86_64_DARWIN="${{ steps.sha.outputs.x86_64_apple_darwin }}"
-          SHA_AARCH64_LINUX="${{ steps.sha.outputs.aarch64_unknown_linux_gnu }}"
-          SHA_X86_64_LINUX="${{ steps.sha.outputs.x86_64_unknown_linux_gnu }}"
-
           git clone https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/homebrew-tap.git tap
           cd tap
 
-          cat > Formula/a3s-power.rb <<EOF
-          class A3sPower < Formula
-            desc "Privacy-preserving LLM inference for TEE environments"
-            homepage "https://github.com/A3S-Lab/Power"
-            version "${VERSION}"
-            license "MIT"
+          python3 -c "
+          import os
+          tag = os.environ['FORMULA_TAG']
+          ver = os.environ['FORMULA_VERSION']
+          shas = {
+              'aarch64_darwin': os.environ['SHA_AARCH64_DARWIN'],
+              'x86_64_darwin': os.environ['SHA_X86_64_DARWIN'],
+              'aarch64_linux': os.environ['SHA_AARCH64_LINUX'],
+              'x86_64_linux': os.environ['SHA_X86_64_LINUX'],
+          }
+          base = f'https://github.com/A3S-Lab/Power/releases/download/{tag}/a3s-power-{tag}'
+          formula = f'''class A3sPower < Formula
+            desc \"Privacy-preserving LLM inference for TEE environments\"
+            homepage \"https://github.com/A3S-Lab/Power\"
+            version \"{ver}\"
+            license \"MIT\"
 
             on_macos do
               on_arm do
-                url "https://github.com/A3S-Lab/Power/releases/download/${TAG}/a3s-power-${TAG}-aarch64-apple-darwin.tar.gz"
-                sha256 "${SHA_AARCH64_DARWIN}"
+                url \"{base}-aarch64-apple-darwin.tar.gz\"
+                sha256 \"{shas['aarch64_darwin']}\"
               end
               on_intel do
-                url "https://github.com/A3S-Lab/Power/releases/download/${TAG}/a3s-power-${TAG}-x86_64-apple-darwin.tar.gz"
-                sha256 "${SHA_X86_64_DARWIN}"
+                url \"{base}-x86_64-apple-darwin.tar.gz\"
+                sha256 \"{shas['x86_64_darwin']}\"
               end
             end
 
             on_linux do
               on_arm do
-                url "https://github.com/A3S-Lab/Power/releases/download/${TAG}/a3s-power-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
-                sha256 "${SHA_AARCH64_LINUX}"
+                url \"{base}-aarch64-unknown-linux-gnu.tar.gz\"
+                sha256 \"{shas['aarch64_linux']}\"
               end
               on_intel do
-                url "https://github.com/A3S-Lab/Power/releases/download/${TAG}/a3s-power-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
-                sha256 "${SHA_X86_64_LINUX}"
+                url \"{base}-x86_64-unknown-linux-gnu.tar.gz\"
+                sha256 \"{shas['x86_64_linux']}\"
               end
             end
 
             def install
-              bin.install "a3s-power"
-              bin.install "a3s-power-verify"
+              bin.install \"a3s-power\"
+              bin.install \"a3s-power-verify\"
             end
 
             test do
-              assert_match "a3s-power", shell_output("#{bin}/a3s-power --version")
+              assert_match \"a3s-power\", shell_output(\"#{{bin}}/a3s-power --version\")
             end
           end
-          EOF
-
-          # Remove leading whitespace from heredoc (GitHub Actions heredoc quirk)
-          sed -i 's/^          //' Formula/a3s-power.rb
+          '''
+          import textwrap
+          with open('Formula/a3s-power.rb', 'w') as f:
+              f.write(textwrap.dedent(formula))
+          "
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/a3s-power.rb
-          git commit -m "chore: update a3s-power to ${TAG}"
+          git commit -m "chore: update a3s-power to ${FORMULA_TAG}"
           git push

@@ -170,3 +170,9 @@ harness = false
 [[bench]]
 name = "layer_stream"
 harness = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
