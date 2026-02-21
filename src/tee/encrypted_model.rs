@@ -107,6 +107,7 @@ impl DecryptedModel {
         }
 
         let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
+        #[allow(deprecated)]
         let nonce = Nonce::from_slice(nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(key)
@@ -178,6 +179,7 @@ impl MemoryDecryptedModel {
         }
 
         let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
+        #[allow(deprecated)]
         let nonce = Nonce::from_slice(nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(key)
@@ -332,6 +334,7 @@ impl LayerStreamingDecryptedModel {
         }
 
         let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
+        #[allow(deprecated)]
         let nonce = Nonce::from_slice(nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(key)

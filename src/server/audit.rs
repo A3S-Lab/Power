@@ -233,6 +233,7 @@ impl EncryptedAuditLogger {
         let nonce_bytes: Vec<u8> = (0..12)
             .map(|i| u8::from_str_radix(&nonce_hex[i * 2..i * 2 + 2], 16).ok())
             .collect::<Option<Vec<_>>>()?;
+        #[allow(deprecated)]
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext =
