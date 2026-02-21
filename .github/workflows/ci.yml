@@ -29,11 +29,11 @@ jobs:
         include:
           - label: default
             features: ""
-          - label: all-features
-            features: "--all-features"
+          - label: hf+hw-verify
+            features: "--features hf,hw-verify"
           - label: picolm
             features: "--no-default-features --features picolm"
-          - label: hf
+          - label: hf-only
             features: "--no-default-features --features hf"
     steps:
       - uses: actions/checkout@v4
