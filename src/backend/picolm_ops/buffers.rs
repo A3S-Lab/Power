@@ -49,6 +49,10 @@ pub struct ForwardBuffers {
     pub logits: Vec<f32>,
     /// Temporary buffer for KV cache f16→f32 decode  [head_dim]
     pub kv_tmp: Vec<f32>,
+    /// Sampler: probability buffer  [vocab_size]
+    pub sampler_probs: Vec<f32>,
+    /// Sampler: sorted index buffer  [vocab_size]
+    pub sampler_indices: Vec<usize>,
 }
 
 impl ForwardBuffers {
@@ -77,6 +81,8 @@ impl ForwardBuffers {
             normed_final: vec![0.0f32; n_embd],
             logits: vec![0.0f32; vocab_size],
             kv_tmp: vec![0.0f32; head_dim],
+            sampler_probs: vec![0.0f32; vocab_size],
+            sampler_indices: vec![0usize; vocab_size],
         }
     }
 }
@@ -99,6 +105,10 @@ impl Drop for ForwardBuffers {
         self.normed_final.zeroize();
         self.logits.zeroize();
         self.kv_tmp.zeroize();
+        self.sampler_probs.zeroize();
+        // sampler_indices contains no sensitive data (just index positions),
+        // but zero for consistency.
+        self.sampler_indices.fill(0);
     }
 }
 

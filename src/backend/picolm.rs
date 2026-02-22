@@ -190,7 +190,16 @@ fn apply_repeat_penalty(
 }
 
 #[cfg(feature = "picolm")]
-fn sample_token(logits: &[f32], temperature: f32, top_p: f32, rng_state: &mut u64) -> usize {
+fn sample_token(
+    logits: &[f32],
+    temperature: f32,
+    top_p: f32,
+    rng_state: &mut u64,
+    probs_buf: &mut [f32],
+    indices_buf: &mut [usize],
+) -> usize {
+    let vocab_size = logits.len();
+
     if temperature <= 0.0 {
         return logits
             .iter()
@@ -201,25 +210,32 @@ fn sample_token(logits: &[f32], temperature: f32, top_p: f32, rng_state: &mut u6
     }
 
     let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let mut probs: Vec<f32> = logits
-        .iter()
-        .map(|&l| ((l - max_logit) / temperature).exp())
-        .collect();
+    let probs = &mut probs_buf[..vocab_size];
+    for (i, &l) in logits.iter().enumerate() {
+        probs[i] = ((l - max_logit) / temperature).exp();
+    }
 
     let sum: f32 = probs.iter().sum();
-    probs.iter_mut().for_each(|p| *p /= sum);
+    let inv_sum = 1.0 / sum;
+    for p in probs.iter_mut() {
+        *p *= inv_sum;
+    }
 
-    let mut sorted_indices: Vec<usize> = (0..probs.len()).collect();
+    let sorted_indices = &mut indices_buf[..vocab_size];
+    for (i, idx) in sorted_indices.iter_mut().enumerate() {
+        *idx = i;
+    }
     sorted_indices.sort_unstable_by(|&a, &b| {
         probs[b]
             .partial_cmp(&probs[a])
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    // Nucleus (top-p) sampling — no Vec allocation, just scan sorted_indices.
     let mut cumulative = 0.0f32;
-    let mut nucleus: Vec<usize> = Vec::new();
-    for &idx in &sorted_indices {
-        nucleus.push(idx);
+    let mut nucleus_len = 0usize;
+    for &idx in sorted_indices.iter() {
+        nucleus_len += 1;
         cumulative += probs[idx];
         if cumulative >= top_p {
             break;
@@ -232,15 +248,14 @@ fn sample_token(logits: &[f32], temperature: f32, top_p: f32, rng_state: &mut u6
     *rng_state ^= *rng_state << 17;
     let r = (*rng_state as f32) / (u64::MAX as f32);
 
-    let nucleus_sum: f32 = nucleus.iter().map(|&i| probs[i]).sum();
-    let mut threshold = r * nucleus_sum;
-    for &idx in &nucleus {
+    let mut threshold = r * cumulative;
+    for &idx in &sorted_indices[..nucleus_len] {
         threshold -= probs[idx];
         if threshold <= 0.0 {
             return idx;
         }
     }
-    nucleus[0]
+    sorted_indices[0]
 }
 
 // ── Generation parameters ────────────────────────────────────────────────────
@@ -492,6 +507,8 @@ fn forward_pass_streaming(
             params.temperature,
             params.top_p,
             &mut rng_state,
+            &mut buf.sampler_probs,
+            &mut buf.sampler_indices,
         ) as u32;
 
         // Track recent tokens for penalty (ring buffer, keep last 64).
@@ -1471,7 +1488,12 @@ mod tests {
     fn test_sample_greedy_picks_max() {
         let logits = vec![0.1f32, 0.9, 0.3, 0.2];
         let mut rng = 42u64;
-        assert_eq!(sample_token(&logits, 0.0, 1.0, &mut rng), 1);
+        let mut probs = vec![0.0f32; 4];
+        let mut indices = vec![0usize; 4];
+        assert_eq!(
+            sample_token(&logits, 0.0, 1.0, &mut rng, &mut probs, &mut indices),
+            1
+        );
     }
 
     #[cfg(feature = "picolm")]
@@ -1479,7 +1501,9 @@ mod tests {
     fn test_sample_returns_valid_index() {
         let logits = vec![0.1f32, 0.9, 0.3, 0.2];
         let mut rng = 99999u64;
-        let t = sample_token(&logits, 0.8, 0.95, &mut rng);
+        let mut probs = vec![0.0f32; 4];
+        let mut indices = vec![0usize; 4];
+        let t = sample_token(&logits, 0.8, 0.95, &mut rng, &mut probs, &mut indices);
         assert!(t < logits.len());
     }
 
