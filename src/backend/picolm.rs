@@ -78,9 +78,105 @@ struct LoadedModel {
     sessions: HashMap<String, KvCache>,
 }
 
+// ── Startup self-test ────────────────────────────────────────────────────────
+
+/// Verify inference kernels produce correct results at model load time.
+/// In TEE, there's no debugger — if memory corruption or a bad build causes
+/// wrong output, this catches it immediately instead of silently producing garbage.
+#[cfg(feature = "picolm")]
+fn startup_self_test() -> Result<()> {
+    use super::picolm_ops::{norm, vec_dot};
+
+    // Test 1: RMS norm with known input/output.
+    let mut x = [1.0f32, 2.0, 3.0, 4.0];
+    let w = [1.0f32, 1.0, 1.0, 1.0];
+    norm::rms_norm_f32(&mut x, &w, 1e-5);
+    // RMS = sqrt(mean([1,4,9,16])) = sqrt(7.5) ≈ 2.7386
+    // normalized = [1/2.7386, 2/2.7386, 3/2.7386, 4/2.7386] ≈ [0.3651, 0.7303, 1.0954, 1.4606]
+    if (x[0] - 0.3651).abs() > 0.01 || (x[3] - 1.4606).abs() > 0.01 {
+        return Err(PowerError::InferenceFailed(format!(
+            "picolm self-test FAILED: rms_norm produced [{:.4}, {:.4}, {:.4}, {:.4}], \
+             expected [0.3651, 0.7303, 1.0954, 1.4606]",
+            x[0], x[1], x[2], x[3]
+        )));
+    }
+
+    // Test 2: F32 vec_dot with known input/output.
+    let mut row = Vec::new();
+    for v in [1.0f32, 2.0, 3.0] {
+        row.extend_from_slice(&v.to_le_bytes());
+    }
+    let xv = [4.0f32, 5.0, 6.0];
+    let dot = vec_dot::vec_dot(&row, &xv, 3, 0);
+    // 1*4 + 2*5 + 3*6 = 32
+    if (dot - 32.0).abs() > 0.01 {
+        return Err(PowerError::InferenceFailed(format!(
+            "picolm self-test FAILED: vec_dot_f32 produced {dot:.4}, expected 32.0"
+        )));
+    }
+
+    // Test 3: Q8_0 vec_dot with known input/output.
+    let scale = half::f16::from_f32(2.0);
+    let mut block = [0u8; 34];
+    block[0..2].copy_from_slice(&scale.to_le_bytes());
+    for j in 0..32 {
+        block[2 + j] = 1u8; // quant = 1
+    }
+    let ones = [1.0f32; 32];
+    let q8_dot = vec_dot::vec_dot(&block, &ones, 32, 8);
+    // scale=2.0, sum(1*1 for 32 elements) = 32, result = 2.0 * 32 = 64.0
+    if (q8_dot - 64.0).abs() > 0.5 {
+        return Err(PowerError::InferenceFailed(format!(
+            "picolm self-test FAILED: vec_dot_q8_0 produced {q8_dot:.4}, expected 64.0"
+        )));
+    }
+
+    tracing::debug!("picolm: startup self-test passed (norm, f32_dot, q8_0_dot)");
+    Ok(())
+}
+
 // ── Sampler ───────────────────────────────────────────────────────────────────
 
 /// Minimal top-p + temperature sampler operating on a logit vector.
+#[cfg(feature = "picolm")]
+fn apply_repeat_penalty(
+    logits: &mut [f32],
+    recent_tokens: &[u32],
+    repeat_penalty: f32,
+    frequency_penalty: f32,
+    presence_penalty: f32,
+) {
+    if (repeat_penalty - 1.0).abs() < f32::EPSILON
+        && frequency_penalty == 0.0
+        && presence_penalty == 0.0
+    {
+        return;
+    }
+
+    // Count occurrences of each token in the recent window.
+    let mut counts = std::collections::HashMap::<u32, u32>::new();
+    for &tok in recent_tokens {
+        *counts.entry(tok).or_insert(0) += 1;
+    }
+
+    for (&tok, &count) in &counts {
+        let idx = tok as usize;
+        if idx >= logits.len() {
+            continue;
+        }
+        // repeat_penalty: multiplicative penalty (llama.cpp style)
+        if logits[idx] > 0.0 {
+            logits[idx] /= repeat_penalty;
+        } else {
+            logits[idx] *= repeat_penalty;
+        }
+        // frequency_penalty: proportional to count (OpenAI style)
+        logits[idx] -= frequency_penalty * count as f32;
+        // presence_penalty: flat penalty if token appeared at all (OpenAI style)
+        logits[idx] -= presence_penalty;
+    }
+}
+
 #[cfg(feature = "picolm")]
 fn sample_token(logits: &[f32], temperature: f32, top_p: f32, rng_state: &mut u64) -> usize {
     if temperature <= 0.0 {
@@ -156,6 +252,12 @@ struct GenerateParams<'a> {
     seed: u64,
     /// Stop sequences — generation stops when any is found in the output.
     stop: Vec<String>,
+    /// Repeat penalty (llama.cpp style, multiplicative). 1.0 = disabled.
+    repeat_penalty: f32,
+    /// Frequency penalty (OpenAI style, proportional to count). 0.0 = disabled.
+    frequency_penalty: f32,
+    /// Presence penalty (OpenAI style, flat if token appeared). 0.0 = disabled.
+    presence_penalty: f32,
 }
 
 // ── Forward pass ─────────────────────────────────────────────────────────────
@@ -307,6 +409,10 @@ fn forward_pass_streaming(
     let mut decode_count = 0u32;
     let mut generated_text = String::new();
 
+    // Recent token ring buffer for repeat/frequency/presence penalty.
+    // Tracks last 64 generated tokens (sufficient for most repetition patterns).
+    let mut recent_tokens: Vec<u32> = Vec::with_capacity(64);
+
     for _step in 0..params.max_new_tokens {
         // Final norm — write into buf.normed_final, then copy to buf.normed_final.
         buf.normed_final[..n_embd].copy_from_slice(&hidden);
@@ -322,6 +428,15 @@ fn forward_pass_streaming(
             &mut buf.logits,
         );
 
+        // Apply repeat/frequency/presence penalty before sampling.
+        apply_repeat_penalty(
+            &mut buf.logits,
+            &recent_tokens,
+            params.repeat_penalty,
+            params.frequency_penalty,
+            params.presence_penalty,
+        );
+
         // Sample.
         let next_token = sample_token(
             &buf.logits,
@@ -329,6 +444,12 @@ fn forward_pass_streaming(
             params.top_p,
             &mut rng_state,
         ) as u32;
+
+        // Track recent tokens for penalty (ring buffer, keep last 64).
+        if recent_tokens.len() >= 64 {
+            recent_tokens.remove(0);
+        }
+        recent_tokens.push(next_token);
 
         // Decode and send.
         decode_count += 1;
@@ -639,6 +760,11 @@ impl Backend for PicolmBackend {
                 PowerError::InferenceFailed(format!("picolm: tensor cache build failed: {e}"))
             })?;
 
+            // Startup self-test: verify inference kernels produce correct results.
+            // In TEE, there's no debugger — if memory corruption causes wrong output,
+            // this catches it at load time instead of silently producing garbage.
+            startup_self_test()?;
+
             let kv_mem =
                 (meta.n_layers as usize) * 2 * (meta.n_kv_heads as usize) * head_dim * max_seq * 2; // f16: 2 bytes
 
@@ -781,6 +907,9 @@ impl Backend for PicolmBackend {
             let max_new_tokens = request.max_tokens.unwrap_or(512);
             let seed = request.seed.map(|s| s as u64).unwrap_or(0);
             let stop = request.stop.clone().unwrap_or_default();
+            let repeat_penalty = request.repeat_penalty.unwrap_or(1.0);
+            let frequency_penalty = request.frequency_penalty.unwrap_or(0.0);
+            let presence_penalty = request.presence_penalty.unwrap_or(0.0);
 
             let (tx, rx) = mpsc::channel::<Result<ChatResponseChunk>>(128);
 
@@ -809,6 +938,9 @@ impl Backend for PicolmBackend {
                     top_p,
                     seed,
                     stop,
+                    repeat_penalty,
+                    frequency_penalty,
+                    presence_penalty,
                 };
                 forward_pass_streaming(&mut params, &tx);
                 // Put KV cache back into the slot so the return task can pick it up.
@@ -1149,5 +1281,53 @@ mod tests {
         }];
         let p = build_prompt(&msgs, Some("{% invalid jinja %}"));
         assert!(p.contains("<|im_start|>"));
+    }
+
+    #[test]
+    fn test_repeat_penalty_reduces_repeated_token_logit() {
+        let mut logits = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
+        let recent = vec![2u32, 2, 3]; // token 2 appears twice, token 3 once
+        apply_repeat_penalty(&mut logits, &recent, 1.5, 0.0, 0.0);
+        // Token 2 (positive logit 3.0) should be divided by 1.5 → 2.0
+        assert!((logits[2] - 2.0).abs() < 0.01);
+        // Token 3 (positive logit 4.0) should be divided by 1.5 → ~2.67
+        assert!((logits[3] - 4.0 / 1.5).abs() < 0.01);
+        // Token 0 and 1 should be unchanged
+        assert!((logits[0] - 1.0).abs() < 0.01);
+        assert!((logits[1] - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_frequency_penalty_proportional_to_count() {
+        let mut logits = vec![5.0f32, 5.0, 5.0];
+        let recent = vec![0u32, 0, 0, 1]; // token 0 appears 3x, token 1 appears 1x
+        apply_repeat_penalty(&mut logits, &recent, 1.0, 0.5, 0.0);
+        // Token 0: 5.0 - 0.5*3 = 3.5
+        assert!((logits[0] - 3.5).abs() < 0.01);
+        // Token 1: 5.0 - 0.5*1 = 4.5
+        assert!((logits[1] - 4.5).abs() < 0.01);
+        // Token 2: unchanged
+        assert!((logits[2] - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_presence_penalty_flat() {
+        let mut logits = vec![5.0f32, 5.0, 5.0];
+        let recent = vec![0u32, 0, 0, 1]; // token 0 appears 3x, token 1 appears 1x
+        apply_repeat_penalty(&mut logits, &recent, 1.0, 0.0, 1.0);
+        // Token 0: 5.0 - 1.0 = 4.0 (flat, regardless of count)
+        assert!((logits[0] - 4.0).abs() < 0.01);
+        // Token 1: 5.0 - 1.0 = 4.0
+        assert!((logits[1] - 4.0).abs() < 0.01);
+        // Token 2: unchanged
+        assert!((logits[2] - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_no_penalty_when_defaults() {
+        let mut logits = vec![1.0f32, 2.0, 3.0];
+        let original = logits.clone();
+        apply_repeat_penalty(&mut logits, &[0, 1, 2], 1.0, 0.0, 0.0);
+        assert_eq!(logits, original);
     }
 }

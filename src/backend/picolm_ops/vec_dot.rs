@@ -144,6 +144,12 @@ fn get_scale_min_k4(j: usize, scales: &[u8]) -> (u8, u8) {
 }
 
 fn vec_dot_q4_k(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            return unsafe { avx2::vec_dot_q4_k_avx2(row_raw, x, n) };
+        }
+    }
     vec_dot_q4_k_scalar(row_raw, x, n)
 }
 
@@ -198,6 +204,12 @@ fn vec_dot_q4_k_scalar(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
 // ── Q6_K (type 14): 256 elements per block, 210 bytes ───────────────────────
 
 fn vec_dot_q6_k(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            return unsafe { avx2::vec_dot_q6_k_avx2(row_raw, x, n) };
+        }
+    }
     vec_dot_q6_k_scalar(row_raw, x, n)
 }
 
@@ -373,6 +385,172 @@ mod avx2 {
         let result = _mm_add_ss(sums, shuf2);
         _mm_cvtss_f32(result)
     }
+
+    /// AVX2 Q4_K dot product: dequant nibbles to f32 in groups of 8, FMA with x.
+    ///
+    /// Q4_K block layout (144 bytes, 256 elements):
+    ///   [0..2]   d (f16 scale)
+    ///   [2..4]   dmin (f16 min)
+    ///   [4..16]  scales (12 bytes, packed 6-bit scale + 6-bit min)
+    ///   [16..144] qs (128 bytes, 256 nibbles packed as lo/hi 4-bit)
+    ///
+    /// Each block has 4 sub-blocks of 64 elements (32 lo-nibble + 32 hi-nibble).
+    ///
+    /// # Safety
+    /// Caller must verify AVX2+FMA are available.
+    #[target_feature(enable = "avx2", enable = "fma")]
+    pub unsafe fn vec_dot_q4_k_avx2(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
+        let nb = n / 256;
+        let mask_lo = _mm256_set1_epi32(0x0F);
+        let mut total = _mm256_setzero_ps();
+
+        for i in 0..nb {
+            let blk = i * 144;
+            let d = f16::from_le_bytes([row_raw[blk], row_raw[blk + 1]]).to_f32();
+            let dmin = f16::from_le_bytes([row_raw[blk + 2], row_raw[blk + 3]]).to_f32();
+            let scales_raw = &row_raw[blk + 4..blk + 16];
+            let qs = row_raw.as_ptr().add(blk + 16);
+            let xp = x.as_ptr().add(i * 256);
+
+            let mut q_off = 0usize;
+            let mut x_off = 0usize;
+            let mut is = 0usize;
+
+            for _ in 0..4 {
+                let (sc1, mn1) = super::get_scale_min_k4(is, scales_raw);
+                let (sc2, mn2) = super::get_scale_min_k4(is + 1, scales_raw);
+                let d1 = d * sc1 as f32;
+                let m1 = dmin * mn1 as f32;
+                let d2 = d * sc2 as f32;
+                let m2 = dmin * mn2 as f32;
+
+                let d1_v = _mm256_set1_ps(d1);
+                let m1_v = _mm256_set1_ps(m1);
+                let d2_v = _mm256_set1_ps(d2);
+                let m2_v = _mm256_set1_ps(m2);
+
+                // Process 32 lo-nibble elements (sub-block 1) in 4 groups of 8
+                let mut sum_qx1 = _mm256_setzero_ps();
+                let mut sum_x1 = _mm256_setzero_ps();
+                let mut sum_qx2 = _mm256_setzero_ps();
+                let mut sum_x2 = _mm256_setzero_ps();
+
+                for g in 0..4 {
+                    let base = g * 8;
+                    // Load 8 bytes of qs, extract lo nibbles
+                    let q8 = _mm_loadl_epi64(qs.add(q_off + base) as *const __m128i);
+                    let q32 = _mm256_cvtepu8_epi32(q8);
+                    let lo = _mm256_and_si256(q32, mask_lo);
+                    let hi = _mm256_srli_epi32(q32, 4);
+
+                    let lo_f = _mm256_cvtepi32_ps(lo);
+                    let hi_f = _mm256_cvtepi32_ps(hi);
+
+                    let xlo = _mm256_loadu_ps(xp.add(x_off + base));
+                    let xhi = _mm256_loadu_ps(xp.add(x_off + base + 32));
+
+                    sum_qx1 = _mm256_fmadd_ps(lo_f, xlo, sum_qx1);
+                    sum_x1 = _mm256_add_ps(sum_x1, xlo);
+                    sum_qx2 = _mm256_fmadd_ps(hi_f, xhi, sum_qx2);
+                    sum_x2 = _mm256_add_ps(sum_x2, xhi);
+                }
+
+                // total += d1*sum_qx1 - m1*sum_x1 + d2*sum_qx2 - m2*sum_x2
+                let t1 = _mm256_fmsub_ps(d1_v, sum_qx1, _mm256_mul_ps(m1_v, sum_x1));
+                let t2 = _mm256_fmsub_ps(d2_v, sum_qx2, _mm256_mul_ps(m2_v, sum_x2));
+                total = _mm256_add_ps(total, _mm256_add_ps(t1, t2));
+
+                q_off += 32;
+                x_off += 64;
+                is += 2;
+            }
+        }
+
+        hsum_avx2(total)
+    }
+
+    /// AVX2 Q6_K dot product: reconstruct 6-bit quants from ql+qh, convert to f32, FMA.
+    ///
+    /// Q6_K block layout (210 bytes, 256 elements):
+    ///   [0..128]   ql (128 bytes, low 4 bits of each 6-bit quant)
+    ///   [128..192]  qh (64 bytes, high 2 bits packed)
+    ///   [192..208]  scales (16 × i8 scale factors)
+    ///   [208..210]  d (f16 block scale)
+    ///
+    /// # Safety
+    /// Caller must verify AVX2+FMA are available.
+    #[target_feature(enable = "avx2", enable = "fma")]
+    pub unsafe fn vec_dot_q6_k_avx2(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
+        let nb = n / 256;
+        let mut total = _mm256_setzero_ps();
+
+        for i in 0..nb {
+            let blk = i * 210;
+            let ql = row_raw.as_ptr().add(blk);
+            let qh = row_raw.as_ptr().add(blk + 128);
+            let sc = &row_raw[blk + 192..blk + 208];
+            let d = f16::from_le_bytes([row_raw[blk + 208], row_raw[blk + 209]]).to_f32();
+            let xp = x.as_ptr().add(i * 256);
+
+            let mut sums = [_mm256_setzero_ps(); 16];
+
+            for chunk in 0..2 {
+                let is = chunk * 8;
+                let ql_c = ql.add(chunk * 64);
+                let qh_c = qh.add(chunk * 32);
+                let xp_c = xp.add(chunk * 128);
+
+                // Process 16 elements at a time using scalar reconstruction
+                // (Q6_K bit layout is complex — scalar dequant + AVX2 FMA)
+                for l in 0..16 {
+                    let q1 = ((*ql_c.add(l) & 0xF) | ((*qh_c.add(l) & 3) << 4)) as i8 - 32;
+                    let q2 =
+                        ((*ql_c.add(l + 32) & 0xF) | (((*qh_c.add(l) >> 2) & 3) << 4)) as i8 - 32;
+                    let q3 = ((*ql_c.add(l) >> 4) | (((*qh_c.add(l) >> 4) & 3) << 4)) as i8 - 32;
+                    let q4 =
+                        ((*ql_c.add(l + 32) >> 4) | (((*qh_c.add(l) >> 6) & 3) << 4)) as i8 - 32;
+
+                    let x1 = *xp_c.add(l);
+                    let x2 = *xp_c.add(l + 32);
+                    let x3 = *xp_c.add(l + 64);
+                    let x4 = *xp_c.add(l + 96);
+
+                    // Accumulate into scalar sums array (indexed by scale group)
+                    let s = &mut sums;
+                    s[is] = _mm256_add_ps(s[is], _mm256_set1_ps(q1 as f32 * x1));
+                    s[is + 2] = _mm256_add_ps(s[is + 2], _mm256_set1_ps(q2 as f32 * x2));
+                    s[is + 4] = _mm256_add_ps(s[is + 4], _mm256_set1_ps(q3 as f32 * x3));
+                    s[is + 6] = _mm256_add_ps(s[is + 6], _mm256_set1_ps(q4 as f32 * x4));
+                }
+                for l in 16..32 {
+                    let q1 = ((*ql_c.add(l) & 0xF) | ((*qh_c.add(l) & 3) << 4)) as i8 - 32;
+                    let q2 =
+                        ((*ql_c.add(l + 32) & 0xF) | (((*qh_c.add(l) >> 2) & 3) << 4)) as i8 - 32;
+                    let q3 = ((*ql_c.add(l) >> 4) | (((*qh_c.add(l) >> 4) & 3) << 4)) as i8 - 32;
+                    let q4 =
+                        ((*ql_c.add(l + 32) >> 4) | (((*qh_c.add(l) >> 6) & 3) << 4)) as i8 - 32;
+
+                    let x1 = *xp_c.add(l);
+                    let x2 = *xp_c.add(l + 32);
+                    let x3 = *xp_c.add(l + 64);
+                    let x4 = *xp_c.add(l + 96);
+
+                    let s = &mut sums;
+                    s[is + 1] = _mm256_add_ps(s[is + 1], _mm256_set1_ps(q1 as f32 * x1));
+                    s[is + 3] = _mm256_add_ps(s[is + 3], _mm256_set1_ps(q2 as f32 * x2));
+                    s[is + 5] = _mm256_add_ps(s[is + 5], _mm256_set1_ps(q3 as f32 * x3));
+                    s[is + 7] = _mm256_add_ps(s[is + 7], _mm256_set1_ps(q4 as f32 * x4));
+                }
+            }
+
+            for j in 0..16 {
+                let scale = d * (sc[j] as i8) as f32;
+                total = _mm256_add_ps(total, _mm256_mul_ps(_mm256_set1_ps(scale), sums[j]));
+            }
+        }
+
+        hsum_avx2(total)
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -542,5 +720,62 @@ mod tests {
         let scalar = vec_dot_q8_0_scalar(&blocks, &x, n);
         let simd = unsafe { avx2::vec_dot_q8_0_avx2(&blocks, &x, n) };
         assert!((scalar - simd).abs() < 0.5, "scalar={scalar}, simd={simd}");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_avx2_q4_k_matches_scalar() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let mut block = [0u8; 144];
+        let d = f16::from_f32(1.0);
+        block[0..2].copy_from_slice(&d.to_le_bytes());
+        let dmin = f16::from_f32(0.5);
+        block[2..4].copy_from_slice(&dmin.to_le_bytes());
+        block[4] = 2;
+        block[5] = 3;
+        block[6] = 1;
+        block[7] = 4;
+        for i in 16..144 {
+            block[i] = 0x53; // lo=3, hi=5
+        }
+        let mut x = [0.0f32; 256];
+        for (i, v) in x.iter_mut().enumerate() {
+            *v = (i as f32 + 1.0) * 0.01;
+        }
+        let scalar = vec_dot_q4_k_scalar(&block, &x, 256);
+        let simd = unsafe { avx2::vec_dot_q4_k_avx2(&block, &x, 256) };
+        assert!(
+            (scalar - simd).abs() < 0.5,
+            "q4_k: scalar={scalar}, simd={simd}"
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_avx2_q6_k_matches_scalar() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let mut block = [0u8; 210];
+        let d = f16::from_f32(0.5);
+        block[208..210].copy_from_slice(&d.to_le_bytes());
+        for i in 192..208 {
+            block[i] = 2u8;
+        }
+        for i in 0..128 {
+            block[i] = 0x21;
+        }
+        let mut x = [0.0f32; 256];
+        for (i, v) in x.iter_mut().enumerate() {
+            *v = (i as f32 + 1.0) * 0.01;
+        }
+        let scalar = vec_dot_q6_k_scalar(&block, &x, 256);
+        let simd = unsafe { avx2::vec_dot_q6_k_avx2(&block, &x, 256) };
+        assert!(
+            (scalar - simd).abs() < 0.5,
+            "q6_k: scalar={scalar}, simd={simd}"
+        );
     }
 }
