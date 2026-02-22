@@ -70,9 +70,13 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 - Scalar fallback for non-AVX2 platforms (aarch64)
 - Parity tests: AVX2 vs scalar for all kernel types
 
-### 5.2 — 🚧 NEON-Accelerated vec_dot for Apple Silicon (Priority: LOW)
-- `#[cfg(target_arch = "aarch64")]` NEON paths
-- Dev convenience only, not TEE-relevant
+### 5.2 — ✅ NEON-Accelerated vec_dot for Apple Silicon
+- `#[cfg(target_arch = "aarch64")]` NEON paths for F32, Q8_0, Q4_K, Q6_K
+- F32: vfmaq_f32 4-wide accumulation
+- Q8_0: vmull_s8 + vpadalq_s16 with scalar scale accumulation
+- Q4_K: nibble extract + vmull with min/scale dequant
+- Q6_K: 6-bit reconstruct (ql low4 + qh high2) + vmull
+- Parity tests for all 4 kernel types
 
 ### 5.3 — 🚧 Batch Prefill (Priority: MEDIUM)
 - Batch Q/K/V projections: matmul instead of matvec for prefill
@@ -107,10 +111,11 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 
 **Goal**: Make Power useful in the broader A3S platform.
 
-### 7.1 — 🚧 picolm Tool/Function Calling (Priority: MEDIUM)
-- Wire `tool_parser.rs` into picolm response stream
-- Parse tool call JSON from model output
-- Return structured `tool_calls` in response chunks
+### 7.1 — ✅ picolm Tool/Function Calling
+- Wire `tool_parser::parse_tool_calls()` into picolm response stream
+- Accumulate full generated text, parse tool calls on final chunk (EOS/stop/max_tokens)
+- `has_tools` flag in GenerateParams, set from ChatRequest.tools
+- Matches llamacpp/mistralrs backend pattern
 
 ### 7.2 — 🚧 picolm Structured Output (JSON Schema) (Priority: MEDIUM)
 - Implement grammar-constrained sampling in picolm
@@ -162,15 +167,15 @@ Phase 6 (TEE Hardening):                     ✅ ALL COMPLETE
 
 Phase 5 (Performance):                       🚧 PARTIAL
   5.1 AVX2/AVX-512 vec_dot                   ✅ (F32, Q8_0, Q4_K, Q6_K)
+  5.2 NEON vec_dot                           ✅ (F32, Q8_0, Q4_K, Q6_K)
   5.3 Batch prefill                          🚧 (not started)
-  5.2 NEON vec_dot                           🚧 (not started, low priority)
   5.4 Speculative decoding                   🚧 (not started, low priority)
 
 Phase 7 (Ecosystem):                         🚧 PARTIAL
   7.3 Repeat penalty                         ✅
-  7.1 Tool/function calling                  🚧 (not started)
+  7.1 Tool/function calling                  ✅
   7.2 Structured output                      🚧 (not started)
 ```
 
-**868 tests total** (unit + integration + real model).
-**Recommended next**: 5.3 Batch prefill → 7.1 Tool calling → 7.2 Structured output.
+**872 tests total** (unit + integration + real model).
+**Recommended next**: 5.3 Batch prefill → 7.2 Structured output.
