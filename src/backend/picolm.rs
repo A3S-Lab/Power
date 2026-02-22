@@ -258,6 +258,8 @@ struct GenerateParams<'a> {
     frequency_penalty: f32,
     /// Presence penalty (OpenAI style, flat if token appeared). 0.0 = disabled.
     presence_penalty: f32,
+    /// Whether the request included tool definitions (triggers tool call parsing).
+    has_tools: bool,
 }
 
 // ── Forward pass ─────────────────────────────────────────────────────────────
@@ -467,6 +469,11 @@ fn forward_pass_streaming(
                     tok_per_sec = format!("{:.1}", decode_tok_per_sec),
                     "picolm: decode complete (eos)"
                 );
+                let tool_calls = if params.has_tools {
+                    super::tool_parser::parse_tool_calls(&generated_text)
+                } else {
+                    None
+                };
                 let _ = tx.blocking_send(Ok(ChatResponseChunk {
                     content: String::new(),
                     thinking_content: None,
@@ -474,7 +481,7 @@ fn forward_pass_streaming(
                     prompt_tokens: Some(input_ids.len() as u32),
                     done_reason: Some("stop".to_string()),
                     prompt_eval_duration_ns: None,
-                    tool_calls: None,
+                    tool_calls,
                 }));
                 return;
             }
@@ -521,6 +528,11 @@ fn forward_pass_streaming(
                         tok_per_sec = format!("{:.1}", decode_tok_per_sec),
                         "picolm: decode complete (stop sequence)"
                     );
+                    let tool_calls = if params.has_tools {
+                        super::tool_parser::parse_tool_calls(&generated_text)
+                    } else {
+                        None
+                    };
                     let _ = tx.blocking_send(Ok(ChatResponseChunk {
                         content: String::new(),
                         thinking_content: None,
@@ -528,7 +540,7 @@ fn forward_pass_streaming(
                         prompt_tokens: Some(input_ids.len() as u32),
                         done_reason: Some("stop".to_string()),
                         prompt_eval_duration_ns: None,
-                        tool_calls: None,
+                        tool_calls,
                     }));
                     return;
                 }
@@ -614,6 +626,11 @@ fn forward_pass_streaming(
         tok_per_sec = format!("{:.1}", decode_tok_per_sec),
         "picolm: decode complete (max tokens)"
     );
+    let tool_calls = if params.has_tools {
+        super::tool_parser::parse_tool_calls(&generated_text)
+    } else {
+        None
+    };
     let _ = tx.blocking_send(Ok(ChatResponseChunk {
         content: String::new(),
         thinking_content: None,
@@ -621,7 +638,7 @@ fn forward_pass_streaming(
         prompt_tokens: Some(input_ids.len() as u32),
         done_reason: Some("length".to_string()),
         prompt_eval_duration_ns: None,
-        tool_calls: None,
+        tool_calls,
     }));
 }
 
@@ -910,6 +927,7 @@ impl Backend for PicolmBackend {
             let repeat_penalty = request.repeat_penalty.unwrap_or(1.0);
             let frequency_penalty = request.frequency_penalty.unwrap_or(0.0);
             let presence_penalty = request.presence_penalty.unwrap_or(0.0);
+            let has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
 
             let (tx, rx) = mpsc::channel::<Result<ChatResponseChunk>>(128);
 
@@ -941,6 +959,7 @@ impl Backend for PicolmBackend {
                     repeat_penalty,
                     frequency_penalty,
                     presence_penalty,
+                    has_tools,
                 };
                 forward_pass_streaming(&mut params, &tx);
                 // Put KV cache back into the slot so the return task can pick it up.

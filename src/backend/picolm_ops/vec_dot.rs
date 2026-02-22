@@ -13,6 +13,9 @@
 //! `is_x86_feature_detected!`). This gives 4-8x speedup on the dot product
 //! inner loop — the single biggest performance win for TEE inference on
 //! AMD SEV-SNP / Intel TDX (both x86-64 only).
+//!
+//! On aarch64, NEON kernels are used unconditionally (NEON is mandatory on
+//! all AArch64 CPUs). This accelerates local development on Apple Silicon.
 
 use half::f16;
 
@@ -41,6 +44,11 @@ fn vec_dot_f32(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
             return unsafe { avx2::vec_dot_f32_avx2(row_raw, x, n) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return unsafe { neon::vec_dot_f32_neon(row_raw, x, n) };
+    }
+    #[allow(unreachable_code)]
     vec_dot_f32_scalar(row_raw, x, n)
 }
 
@@ -108,6 +116,11 @@ fn vec_dot_q8_0(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
             return unsafe { avx2::vec_dot_q8_0_avx2(row_raw, x, n) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return unsafe { neon::vec_dot_q8_0_neon(row_raw, x, n) };
+    }
+    #[allow(unreachable_code)]
     vec_dot_q8_0_scalar(row_raw, x, n)
 }
 
@@ -150,6 +163,11 @@ fn vec_dot_q4_k(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
             return unsafe { avx2::vec_dot_q4_k_avx2(row_raw, x, n) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return unsafe { neon::vec_dot_q4_k_neon(row_raw, x, n) };
+    }
+    #[allow(unreachable_code)]
     vec_dot_q4_k_scalar(row_raw, x, n)
 }
 
@@ -210,6 +228,11 @@ fn vec_dot_q6_k(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
             return unsafe { avx2::vec_dot_q6_k_avx2(row_raw, x, n) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return unsafe { neon::vec_dot_q6_k_neon(row_raw, x, n) };
+    }
+    #[allow(unreachable_code)]
     vec_dot_q6_k_scalar(row_raw, x, n)
 }
 
@@ -280,6 +303,246 @@ fn vec_dot_generic(row_raw: &[u8], x: &[f32], n: usize, ggml_type: u32) -> f32 {
         }
     }
     sum
+}
+
+// ── NEON SIMD kernels (aarch64) ──────────────────────────────────────────────
+
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use half::f16;
+    use std::arch::aarch64::*;
+
+    /// NEON F32 dot product: loads 4 floats at a time via vld1q_f32.
+    ///
+    /// # Safety
+    /// NEON is mandatory on all AArch64 CPUs — no runtime detection needed.
+    pub unsafe fn vec_dot_f32_neon(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
+        let mut acc0 = vdupq_n_f32(0.0);
+        let mut acc1 = vdupq_n_f32(0.0);
+        let mut i = 0;
+
+        // Process 8 elements per iteration (2 × 4-wide NEON)
+        while i + 7 < n {
+            let w0 = vld1q_f32(row_raw.as_ptr().add(i * 4) as *const f32);
+            let x0 = vld1q_f32(x.as_ptr().add(i));
+            acc0 = vfmaq_f32(acc0, w0, x0);
+
+            let w1 = vld1q_f32(row_raw.as_ptr().add((i + 4) * 4) as *const f32);
+            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+            acc1 = vfmaq_f32(acc1, w1, x1);
+
+            i += 8;
+        }
+
+        while i + 3 < n {
+            let w = vld1q_f32(row_raw.as_ptr().add(i * 4) as *const f32);
+            let xv = vld1q_f32(x.as_ptr().add(i));
+            acc0 = vfmaq_f32(acc0, w, xv);
+            i += 4;
+        }
+
+        acc0 = vaddq_f32(acc0, acc1);
+        let mut sum = vaddvq_f32(acc0);
+
+        // Scalar tail
+        while i < n {
+            let w = f32::from_le_bytes([
+                row_raw[i * 4],
+                row_raw[i * 4 + 1],
+                row_raw[i * 4 + 2],
+                row_raw[i * 4 + 3],
+            ]);
+            sum += w * x[i];
+            i += 1;
+        }
+        sum
+    }
+
+    /// NEON Q8_0 dot product: sign-extend i8 quants to i16, widen to i32,
+    /// convert to f32, FMA with x.
+    ///
+    /// # Safety
+    /// NEON is mandatory on all AArch64 CPUs.
+    pub unsafe fn vec_dot_q8_0_neon(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
+        let nb = n / 32;
+        let mut sumf = 0.0f32;
+
+        for i in 0..nb {
+            let blk = i * 34;
+            let scale = f16::from_le_bytes([row_raw[blk], row_raw[blk + 1]]).to_f32();
+            let quants = row_raw.as_ptr().add(blk + 2);
+            let xp = x.as_ptr().add(i * 32);
+
+            let mut block_acc = vdupq_n_f32(0.0);
+
+            // 8 groups of 4 quants
+            for g in 0..8 {
+                let base = g * 4;
+                let q0 = *quants.add(base) as i8 as f32;
+                let q1 = *quants.add(base + 1) as i8 as f32;
+                let q2 = *quants.add(base + 2) as i8 as f32;
+                let q3 = *quants.add(base + 3) as i8 as f32;
+                let qv = vld1q_f32([q0, q1, q2, q3].as_ptr());
+                let xv = vld1q_f32(xp.add(base));
+                block_acc = vfmaq_f32(block_acc, qv, xv);
+            }
+
+            sumf += scale * vaddvq_f32(block_acc);
+        }
+
+        sumf
+    }
+
+    /// NEON Q4_K dot product: dequant nibbles, FMA with x.
+    ///
+    /// # Safety
+    /// NEON is mandatory on all AArch64 CPUs.
+    pub unsafe fn vec_dot_q4_k_neon(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
+        let nb = n / 256;
+        let mut total = vdupq_n_f32(0.0);
+
+        for i in 0..nb {
+            let blk = i * 144;
+            let d = f16::from_le_bytes([row_raw[blk], row_raw[blk + 1]]).to_f32();
+            let dmin = f16::from_le_bytes([row_raw[blk + 2], row_raw[blk + 3]]).to_f32();
+            let scales_raw = &row_raw[blk + 4..blk + 16];
+            let qs = row_raw.as_ptr().add(blk + 16);
+            let xp = x.as_ptr().add(i * 256);
+
+            let mut q_off = 0usize;
+            let mut x_off = 0usize;
+            let mut is = 0usize;
+
+            for _ in 0..4 {
+                let (sc1, mn1) = super::get_scale_min_k4(is, scales_raw);
+                let (sc2, mn2) = super::get_scale_min_k4(is + 1, scales_raw);
+                let d1 = d * sc1 as f32;
+                let m1 = dmin * mn1 as f32;
+                let d2 = d * sc2 as f32;
+                let m2 = dmin * mn2 as f32;
+
+                let mut sum_qx1 = vdupq_n_f32(0.0);
+                let mut sum_x1 = vdupq_n_f32(0.0);
+                let mut sum_qx2 = vdupq_n_f32(0.0);
+                let mut sum_x2 = vdupq_n_f32(0.0);
+
+                // Process 32 elements in 8 groups of 4
+                for g in 0..8 {
+                    let base = g * 4;
+                    // Load 4 bytes, extract lo/hi nibbles
+                    let b0 = *qs.add(q_off + base);
+                    let b1 = *qs.add(q_off + base + 1);
+                    let b2 = *qs.add(q_off + base + 2);
+                    let b3 = *qs.add(q_off + base + 3);
+
+                    let lo = vld1q_f32(
+                        [
+                            (b0 & 0x0F) as f32,
+                            (b1 & 0x0F) as f32,
+                            (b2 & 0x0F) as f32,
+                            (b3 & 0x0F) as f32,
+                        ]
+                        .as_ptr(),
+                    );
+                    let hi = vld1q_f32(
+                        [(b0 >> 4) as f32, (b1 >> 4) as f32, (b2 >> 4) as f32, (b3 >> 4) as f32]
+                            .as_ptr(),
+                    );
+
+                    let xlo = vld1q_f32(xp.add(x_off + base));
+                    let xhi = vld1q_f32(xp.add(x_off + base + 32));
+
+                    sum_qx1 = vfmaq_f32(sum_qx1, lo, xlo);
+                    sum_x1 = vaddq_f32(sum_x1, xlo);
+                    sum_qx2 = vfmaq_f32(sum_qx2, hi, xhi);
+                    sum_x2 = vaddq_f32(sum_x2, xhi);
+                }
+
+                // d1*sum_qx1 - m1*sum_x1 + d2*sum_qx2 - m2*sum_x2
+                let t1 = vsubq_f32(
+                    vmulq_f32(vdupq_n_f32(d1), sum_qx1),
+                    vmulq_f32(vdupq_n_f32(m1), sum_x1),
+                );
+                let t2 = vsubq_f32(
+                    vmulq_f32(vdupq_n_f32(d2), sum_qx2),
+                    vmulq_f32(vdupq_n_f32(m2), sum_x2),
+                );
+                total = vaddq_f32(total, vaddq_f32(t1, t2));
+
+                q_off += 32;
+                x_off += 64;
+                is += 2;
+            }
+        }
+
+        vaddvq_f32(total)
+    }
+
+    /// NEON Q6_K dot product: reconstruct 6-bit quants, FMA with x.
+    ///
+    /// # Safety
+    /// NEON is mandatory on all AArch64 CPUs.
+    pub unsafe fn vec_dot_q6_k_neon(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
+        let nb = n / 256;
+        let mut sumf = 0.0f32;
+
+        for i in 0..nb {
+            let blk = i * 210;
+            let ql = row_raw.as_ptr().add(blk);
+            let qh = row_raw.as_ptr().add(blk + 128);
+            let sc = &row_raw[blk + 192..blk + 208];
+            let d = f16::from_le_bytes([row_raw[blk + 208], row_raw[blk + 209]]).to_f32();
+            let xp = x.as_ptr().add(i * 256);
+
+            let mut sums = [0.0f32; 16];
+
+            for chunk in 0..2 {
+                let is = chunk * 8;
+                let ql_c = ql.add(chunk * 64);
+                let qh_c = qh.add(chunk * 32);
+                let xp_c = xp.add(chunk * 128);
+
+                for l in 0..16 {
+                    let q1 = ((*ql_c.add(l) & 0xF) | ((*qh_c.add(l) & 3) << 4)) as i8 - 32;
+                    let q2 = ((*ql_c.add(l + 32) & 0xF) | (((*qh_c.add(l) >> 2) & 3) << 4))
+                        as i8
+                        - 32;
+                    let q3 =
+                        ((*ql_c.add(l) >> 4) | (((*qh_c.add(l) >> 4) & 3) << 4)) as i8 - 32;
+                    let q4 = ((*ql_c.add(l + 32) >> 4) | (((*qh_c.add(l) >> 6) & 3) << 4))
+                        as i8
+                        - 32;
+
+                    sums[is] += q1 as f32 * *xp_c.add(l);
+                    sums[is + 2] += q2 as f32 * *xp_c.add(l + 32);
+                    sums[is + 4] += q3 as f32 * *xp_c.add(l + 64);
+                    sums[is + 6] += q4 as f32 * *xp_c.add(l + 96);
+                }
+                for l in 16..32 {
+                    let q1 = ((*ql_c.add(l) & 0xF) | ((*qh_c.add(l) & 3) << 4)) as i8 - 32;
+                    let q2 = ((*ql_c.add(l + 32) & 0xF) | (((*qh_c.add(l) >> 2) & 3) << 4))
+                        as i8
+                        - 32;
+                    let q3 =
+                        ((*ql_c.add(l) >> 4) | (((*qh_c.add(l) >> 4) & 3) << 4)) as i8 - 32;
+                    let q4 = ((*ql_c.add(l + 32) >> 4) | (((*qh_c.add(l) >> 6) & 3) << 4))
+                        as i8
+                        - 32;
+
+                    sums[is + 1] += q1 as f32 * *xp_c.add(l);
+                    sums[is + 3] += q2 as f32 * *xp_c.add(l + 32);
+                    sums[is + 5] += q3 as f32 * *xp_c.add(l + 64);
+                    sums[is + 7] += q4 as f32 * *xp_c.add(l + 96);
+                }
+            }
+
+            for j in 0..16 {
+                sumf += d * (sc[j] as i8) as f32 * sums[j];
+            }
+        }
+
+        sumf
+    }
 }
 
 // ── AVX2 SIMD kernels (x86-64 only) ─────────────────────────────────────────
@@ -776,6 +1039,97 @@ mod tests {
         assert!(
             (scalar - simd).abs() < 0.5,
             "q6_k: scalar={scalar}, simd={simd}"
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_neon_f32_matches_scalar() {
+        let n = 64;
+        let mut row = Vec::new();
+        let mut x = Vec::new();
+        for i in 0..n {
+            let w = (i as f32 + 1.0) * 0.37;
+            row.extend_from_slice(&w.to_le_bytes());
+            x.push((n as f32 - i as f32) * 0.13);
+        }
+        let scalar = vec_dot_f32_scalar(&row, &x, n);
+        let simd = unsafe { neon::vec_dot_f32_neon(&row, &x, n) };
+        assert!((scalar - simd).abs() < 0.01, "scalar={scalar}, neon={simd}");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_neon_q8_0_matches_scalar() {
+        let nb = 4;
+        let n = nb * 32;
+        let mut blocks = vec![0u8; nb * 34];
+        let mut x = vec![0.0f32; n];
+        for b in 0..nb {
+            let off = b * 34;
+            let scale = f16::from_f32((b as f32 + 1.0) * 0.5);
+            blocks[off..off + 2].copy_from_slice(&scale.to_le_bytes());
+            for j in 0..32 {
+                blocks[off + 2 + j] = ((j as i8) - 16) as u8;
+                x[b * 32 + j] = (j as f32 + 1.0) * 0.1;
+            }
+        }
+        let scalar = vec_dot_q8_0_scalar(&blocks, &x, n);
+        let simd = unsafe { neon::vec_dot_q8_0_neon(&blocks, &x, n) };
+        assert!(
+            (scalar - simd).abs() < 0.5,
+            "q8_0: scalar={scalar}, neon={simd}"
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_neon_q4_k_matches_scalar() {
+        let mut block = [0u8; 144];
+        let d = f16::from_f32(1.0);
+        block[0..2].copy_from_slice(&d.to_le_bytes());
+        let dmin = f16::from_f32(0.5);
+        block[2..4].copy_from_slice(&dmin.to_le_bytes());
+        block[4] = 2;
+        block[5] = 3;
+        block[6] = 1;
+        block[7] = 4;
+        for i in 16..144 {
+            block[i] = 0x53;
+        }
+        let mut x = [0.0f32; 256];
+        for (i, v) in x.iter_mut().enumerate() {
+            *v = (i as f32 + 1.0) * 0.01;
+        }
+        let scalar = vec_dot_q4_k_scalar(&block, &x, 256);
+        let simd = unsafe { neon::vec_dot_q4_k_neon(&block, &x, 256) };
+        assert!(
+            (scalar - simd).abs() < 0.5,
+            "q4_k: scalar={scalar}, neon={simd}"
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_neon_q6_k_matches_scalar() {
+        let mut block = [0u8; 210];
+        let d = f16::from_f32(0.5);
+        block[208..210].copy_from_slice(&d.to_le_bytes());
+        for i in 192..208 {
+            block[i] = 2u8;
+        }
+        for i in 0..128 {
+            block[i] = 0x21;
+        }
+        let mut x = [0.0f32; 256];
+        for (i, v) in x.iter_mut().enumerate() {
+            *v = (i as f32 + 1.0) * 0.01;
+        }
+        let scalar = vec_dot_q6_k_scalar(&block, &x, 256);
+        let simd = unsafe { neon::vec_dot_q6_k_neon(&block, &x, 256) };
+        assert!(
+            (scalar - simd).abs() < 0.5,
+            "q6_k: scalar={scalar}, neon={simd}"
         );
     }
 }
