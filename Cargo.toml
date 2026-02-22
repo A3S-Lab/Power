@@ -30,9 +30,9 @@ tls = ["dep:axum-server", "dep:rcgen", "dep:time"]
 # vsock = Linux-only; requires AF_VSOCK kernel support (a3s-box MicroVMs)
 vsock = ["dep:tokio-vsock"]
 # hf = HuggingFace Hub model pull support (async HTTP download)
-hf = ["dep:reqwest"]
+hf = []
 # hw-verify = AMD KDS + Intel PCS hardware attestation signature verification
-hw-verify = ["dep:reqwest", "dep:x509-cert", "dep:p384", "dep:p256"]
+hw-verify = ["dep:x509-cert", "dep:p384", "dep:p256"]
 # picolm = pure-Rust layer-streaming GGUF inference for TEE memory-constrained environments.
 # Streams transformer layers one at a time; peak RAM = O(layer_size) not O(model_size).
 # Ideal for 7B+ models inside 512MB EPC. No C dependencies — fully auditable.
@@ -49,6 +49,9 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hcl-rs = "0.18"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
 
 # Error handling
 thiserror = "1"
@@ -83,9 +86,8 @@ hex = "0.4"
 # Blocking HTTP client for a3s-power-verify CLI
 ureq = "2"
 
-# Async HTTP client for HuggingFace Hub model pull (optional, hf feature)
-# Also used for hw-verify (AMD KDS / Intel PCS certificate fetch)
-reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"], optional = true }
+# Async HTTP client — used by CLI commands and optionally by hf/hw-verify features
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
 
 # X.509 certificate parsing for hardware attestation verification (hw-verify feature)
 x509-cert = { version = "0.2", optional = true }

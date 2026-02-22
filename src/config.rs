@@ -315,6 +315,30 @@ impl Default for PowerConfig {
 }
 
 impl PowerConfig {
+    /// Load configuration from a specific file path (HCL format).
+    ///
+    /// After loading from file, applies `A3S_POWER_*` environment variable overrides.
+    pub fn load_from(path: &str) -> Result<Self> {
+        let path = std::path::Path::new(path);
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            crate::error::PowerError::Config(format!(
+                "Failed to read config file {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+        let mut config: Self = hcl::from_str(&content).map_err(|e| {
+            crate::error::PowerError::HclDe(format!(
+                "Failed to parse HCL config {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+        config.apply_env_overrides();
+        config.validate();
+        Ok(config)
+    }
+
     /// Load configuration from the default config file path (HCL format).
     /// Returns default config if the file does not exist.
     ///
