@@ -112,7 +112,7 @@ These features exist in no other LLM inference server:
 - **Deep Log Redaction**: Strips inference content from all log output — 10 sensitive JSON keys (`content`, `prompt`, `text`, `arguments`, `input`, `delta`, `system`, `message`, `query`, `instruction`); `sanitize_error()` strips prompt fragments from error messages; `suppress_token_metrics` rounds token counts to nearest 10 to prevent side-channel inference
 - **Memory Zeroing**: `SensitiveString` wrapper auto-zeroizes on drop; all inference buffers cleared via `zeroize` crate — the operator cannot recover prompts or responses from memory dumps
 - **Model Integrity**: SHA-256 hash verification at startup + Ed25519 publisher signatures; fails fast on tampering
-- **picolm Layer-Streaming**: Pure Rust GGUF inference with true O(layer_size) peak RAM via `madvise(DONTNEED)` page release after each layer. Real transformer ops: multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm. FP16 KV cache (half memory). Fused dequant+dot kernels. Rayon parallel matmul. Pre-computed RoPE tables. 14+ tok/s decode on Apple Silicon. Enables 7B+ models inside 512MB TEE EPC. Zero C dependencies, ~4,500 lines of fully auditable Rust.
+- **picolm Layer-Streaming**: Pure Rust GGUF inference with true O(layer_size) peak RAM via `madvise(DONTNEED)` page release after each layer. Real transformer ops: multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm. FP16 KV cache with fused f16 dot/accumulate (no intermediate buffer). Fused dequant+dot kernels. NEON SIMD (aarch64) + AVX2 (x86_64). Rayon parallel matmul. Pre-computed RoPE tables. Batch prefill, speculative decoding, tool calling, grammar-constrained output. Zero-alloc hot path. 14+ tok/s decode on Apple Silicon. Enables 7B+ models inside 512MB TEE EPC. Zero C dependencies, ~4,500 lines of fully auditable Rust.
 - **Pure Rust Inference Path**: Default backend via `mistralrs` (candle) — no C++ in the trusted computing base; the `tee-minimal` build (~1,220 dep tree lines) is the smallest auditable LLM inference stack that exists
 
 ### Inference Engine
@@ -362,7 +362,7 @@ Three backends are available, each feature-gated:
 
 - **`mistralrs`** (default): Pure Rust inference via candle. GGUF, SafeTensors, HuggingFace, Vision formats. ISQ on-load quantization. No C++ toolchain. Ideal for TEE supply-chain auditing.
 - **`llamacpp`** (optional): C++ llama.cpp via `llama-cpp-2` bindings. GGUF only. Session KV cache with prefix matching, LoRA adapters, MTMD multimodal, grammar constraints, mirostat sampling.
-- **`picolm`** (optional): Pure Rust layer-streaming. GGUF only. Real transformer inference (multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm). Peak RAM = O(layer_size) not O(model_size) via `madvise(DONTNEED)` page release. FP16 KV cache. Fused dequant+dot kernels (Q4_K, Q6_K, Q8_0). Rayon parallel matmul. 14+ tok/s decode on Apple Silicon. Enables 7B+ models in 512MB TEE EPC. Zero C dependencies — ~4,500 lines of fully auditable Rust.
+- **`picolm`** (optional): Pure Rust layer-streaming. GGUF only. Real transformer inference (multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm). Peak RAM = O(layer_size) not O(model_size) via `madvise(DONTNEED)` page release. FP16 KV cache with fused f16 dot/accumulate. Fused dequant+dot kernels (Q4_K, Q6_K, Q8_0). NEON SIMD (aarch64) + AVX2 (x86_64). Rayon parallel matmul. Batch prefill, speculative decoding, tool calling, grammar-constrained output. 14+ tok/s decode on Apple Silicon. Enables 7B+ models in 512MB TEE EPC. Zero C dependencies — ~4,500 lines of fully auditable Rust.
 
 The `BackendRegistry` selects backends by priority and model format. In TEE environments, `find_for_tee()` auto-routes to picolm when the model exceeds 75% of available EPC memory.
 
@@ -584,7 +584,7 @@ The `/health` endpoint exposes TEE status:
 ```json
 {
   "status": "ok",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "uptime_seconds": 120,
   "loaded_models": 1,
   "tee": {
@@ -794,7 +794,7 @@ Model files are stored by SHA-256 hash, enabling deduplication and integrity ver
 |------|---------|-------------|
 | `mistralrs` | ✅ enabled | Pure Rust inference backend via `mistralrs` (candle-based). No C++ toolchain required. Ideal for TEE auditing. |
 | `llamacpp` | ❌ disabled | llama.cpp inference backend via `llama-cpp-2`. Requires C++ compiler + CMake. Full-featured (KV cache, LoRA, grammar, mirostat). |
-| `picolm` | ❌ disabled | Pure Rust layer-streaming GGUF inference. Real transformer ops (multi-head attention, SwiGLU FFN, RoPE, RMSNorm). Peak RAM = O(layer_size) not O(model_size) via `madvise(DONTNEED)`. FP16 KV cache. Fused dequant+dot kernels. 14+ tok/s decode on Apple Silicon. Enables 7B+ models in 512MB TEE EPC. Zero C dependencies — fully auditable. ~4,500 lines of pure Rust. |
+| `picolm` | ❌ disabled | Pure Rust layer-streaming GGUF inference. Real transformer ops (multi-head attention, SwiGLU FFN, RoPE, RMSNorm). Peak RAM = O(layer_size) not O(model_size) via `madvise(DONTNEED)`. FP16 KV cache with fused f16 dot/accumulate. Fused dequant+dot kernels. NEON SIMD (aarch64) + AVX2 (x86_64). Batch prefill, speculative decoding, tool calling, grammar-constrained output. 14+ tok/s decode on Apple Silicon. Enables 7B+ models in 512MB TEE EPC. Zero C dependencies — fully auditable. ~4,500 lines of pure Rust. |
 | `hf` | ❌ disabled | HuggingFace Hub model pull (`POST /v1/models/pull`). Range resume, SSE progress, HF_TOKEN auth. |
 | `tls` | ❌ disabled | RA-TLS transport: TLS server with self-signed cert + optional attestation X.509 extension. Adds `axum-server`, `rcgen`, `time` deps. |
 | `vsock` | ❌ disabled | Vsock transport for a3s-box MicroVM guest-host HTTP. **Linux only** — requires `AF_VSOCK` kernel support. Adds `tokio-vsock` dep. |
@@ -956,16 +956,54 @@ picolm is a **production-ready** pure Rust inference engine. The full transforme
 - **Dequantization**: Q4_K, Q5_K, Q6_K, Q8_0, Q4_0, F16, F32
 - **Fused vec_dot**: Dequant+dot in a single pass — no intermediate f32 buffer
 - **Parallel matmul**: Rayon multi-threaded row parallelism for large matrices
-- **FP16 KV cache**: Half-precision storage, halves memory vs F32
+- **FP16 KV cache**: Half-precision storage with fused f16→f32 dot product and accumulate — no intermediate buffer in attention
 - **Tensor cache**: Pre-resolved tensor pointers — zero HashMap lookups in the hot path
-- **Pre-allocated buffers**: Zero heap allocation during inference
+- **Pre-allocated buffers**: Zero heap allocation during inference (including sampler probs/indices)
 - **True layer-streaming**: `madvise(MADV_DONTNEED)` releases physical pages after each layer
 - **BPE tokenizer**: Full GPT-style byte-pair encoding with ChatML template support
+- **Batch prefill**: Process prompt tokens in batch for faster time-to-first-token
+- **Speculative decoding**: Prompt-lookup draft for faster decode throughput
+- **Tool/function calling**: OpenAI-compatible `tool_calls` with auto-dispatch
+- **Grammar-constrained output**: JSON Schema enforcement during generation
+- **Repeat/frequency/presence penalty**: Configurable repetition control (zero-alloc, stack-based dedup)
 
 Performance on Qwen 2.5 0.5B Q4_K_M (Apple Silicon):
 - **Decode**: 14+ tok/s
 - **Prefill**: 15+ tok/s
-- **858 tests** (unit + integration + real model)
+- **911 tests** (unit + integration + real model)
+
+#### Performance Optimization Status
+
+Profiling breakdown of the decode hot path (per token):
+
+| Stage | % Time | Status |
+|-------|--------|--------|
+| Embedding lookup | 0.3% | ✅ Optimized |
+| Attention (Q·K scores + V weighted sum) | 22.1% | ✅ Fused f16 KV dot/accumulate, NEON softmax |
+| FFN (gate + up + down matvec) | 63.4% | ✅ Fused vec_dot, Rayon parallel, NEON SiLU/residual |
+| Logit projection | 9.1% | ✅ Rayon parallel matmul |
+| Sampling | 0.3% | ✅ Zero-alloc (pre-allocated probs/indices) |
+
+Completed optimizations:
+- ✅ NEON SIMD for softmax, RMSNorm, SiLU, add_residual (aarch64)
+- ✅ AVX2 SIMD for Q4_K, Q6_K vec_dot kernels (x86_64)
+- ✅ Q4_K NEON kernel — register-based nibble extraction via `vld1_lane_u32` + `vand`/`vshr`
+- ✅ Fused f16 KV attention — `k_dot()` and `v_accumulate()` skip intermediate f32 buffer
+- ✅ Zero-alloc sampler — pre-allocated `probs_buf` and `indices_buf` in `ForwardBuffers`
+- ✅ Zero-alloc repeat penalty — stack-based `[(u32, u32); 64]` dedup, no HashMap
+- ✅ Pre-computed RoPE cos/sin tables — no transcendental functions in hot path
+- ✅ TensorCache — flat array indexed by `layer * SLOTS + slot`, zero HashMap lookups
+- ✅ ForwardBuffers — all working buffers pre-allocated, zero heap allocation per token
+- ✅ FP16 KV cache — halves memory via `half` crate batch SIMD conversion
+- ✅ Rayon parallel matmul — multi-threaded row parallelism for matrices with >64 rows
+- ✅ Decode profiling instrumentation — per-stage timing breakdown for continuous optimization
+
+Remaining optimization opportunities (diminishing returns):
+- 🔲 Block-wise quantized matmul — process multiple output rows per pass for better cache locality
+- 🔲 Integer-only Q4_K accumulation — accumulate in i32, avoid f32 conversion overhead
+- 🔲 Tiled matmul with explicit prefetch hints — improve L1/L2 cache utilization
+- 🔲 Fused gate+up projection — single matmul pass if weight layout permits
+- 🔲 AMX/SME acceleration — Apple Silicon matrix coprocessor (requires nightly Rust)
 
 #### Configuration
 
@@ -1019,7 +1057,7 @@ cargo build -p a3s-power                          # Debug (default: mistralrs)
 cargo build -p a3s-power --release                 # Release
 cargo build -p a3s-power --no-default-features --features llamacpp  # With llama.cpp
 
-# Test (858+ tests)
+# Test (911+ tests)
 cargo test -p a3s-power --lib -- --test-threads=1
 cargo test -p a3s-power --test integration
 
@@ -1209,7 +1247,10 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 - [x] Pull progress persistence — JSON state files in `~/.a3s/power/pulls/`; `GET /v1/models/pull/:name/status` returns `{status, completed, total, error}`; survives server restarts; throttled writes (every 5%) to minimize disk I/O
 - [x] True token-by-token streaming — `stream_chat_request` replaces non-streaming path; each `Response::Chunk` forwarded immediately via mpsc channel; `Response::Done` sets `finish_reason`
 - [x] Vision/multimodal inference — `ModelFormat::Vision` variant; `MistralRsBackend` loads vision models via `VisionModelBuilder` with ISQ; base64 images accepted via `images` field or OpenAI `image_url` content parts; decoded with `image` + `base64` crates
-- [x] picolm backend — pure Rust layer-streaming GGUF inference (`picolm` feature); real transformer forward pass (multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm); fused dequant+dot kernels (Q4_K, Q6_K, Q8_0); rayon parallel matmul; FP16 KV cache; pre-computed RoPE tables; tensor cache (zero HashMap lookups); pre-allocated buffers (zero heap allocation in hot path); true O(layer_size) peak RAM via `madvise(MADV_DONTNEED)` page release; BPE tokenizer with ChatML template; 14+ tok/s decode on Apple Silicon; 858 tests; ~4,500 lines of pure Rust; zero C dependencies
+- [x] picolm backend — pure Rust layer-streaming GGUF inference (`picolm` feature); real transformer forward pass (multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm); fused dequant+dot kernels (Q4_K, Q6_K, Q8_0); rayon parallel matmul; FP16 KV cache; pre-computed RoPE tables; tensor cache (zero HashMap lookups); pre-allocated buffers (zero heap allocation in hot path); true O(layer_size) peak RAM via `madvise(MADV_DONTNEED)` page release; BPE tokenizer with ChatML template; 14+ tok/s decode on Apple Silicon; ~4,500 lines of pure Rust; zero C dependencies
+- [x] picolm features — batch prefill (faster time-to-first-token); speculative decoding via prompt-lookup; tool/function calling (OpenAI-compatible `tool_calls`); grammar-constrained structured output (JSON Schema enforcement); repeat/frequency/presence penalty
+- [x] picolm SIMD — NEON (aarch64): softmax, RMSNorm, SiLU, add_residual, Q4_K nibble extraction; AVX2 (x86_64): Q4_K, Q6_K vec_dot kernels
+- [x] picolm performance — fused f16 KV attention (`k_dot`/`v_accumulate` skip intermediate f32 buffer); zero-alloc sampler (pre-allocated probs/indices in ForwardBuffers); zero-alloc repeat penalty (stack-based `[(u32,u32); 64]` dedup); Q4_K NEON register-based nibble extraction; decode profiling instrumentation (per-stage timing breakdown); 911 tests
 - [x] EPC memory detection — `tee::epc` module reads `/proc/meminfo`; `BackendRegistry::find_for_tee()` auto-routes to picolm when model exceeds 75% of available EPC
 - [x] `LayerStreamingDecryptedModel` — chunk-by-chunk access to AES-256-GCM encrypted models; each chunk returned as `Zeroizing<Vec<u8>>`, zeroized on drop; `streaming_decrypt` config field
 - [x] `tee-minimal` feature profile — `picolm` + `tls` + `vsock`; smallest auditable TEE build (~1,220 dep tree lines vs ~2,000 for default); no mistralrs/candle, no C++
