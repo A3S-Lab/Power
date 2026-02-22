@@ -70,9 +70,7 @@ pub fn ffn_layer(
     // 3. Activation + element-wise gate (in-place on gate_buf)
     match activation {
         FfnActivation::Silu => {
-            for i in 0..n_ff {
-                gate_buf[i] = silu(gate_buf[i]) * up_buf[i];
-            }
+            silu_mul(gate_buf, up_buf);
         }
         FfnActivation::Gelu => {
             for i in 0..n_ff {
@@ -94,11 +92,99 @@ pub fn ffn_layer(
     );
 
     // 5. Residual connection
-    for i in 0..n_embd {
-        hidden[i] += down_buf[i];
-    }
+    add_residual(hidden, down_buf);
 
     Ok(())
+}
+
+/// Fused SiLU(gate) * up — NEON-accelerated on aarch64.
+#[inline]
+fn silu_mul(gate: &mut [f32], up: &[f32]) {
+    debug_assert_eq!(gate.len(), up.len());
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if gate.len() >= 4 {
+            silu_mul_neon(gate, up);
+            return;
+        }
+    }
+
+    for i in 0..gate.len() {
+        gate[i] = silu(gate[i]) * up[i];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn silu_mul_neon(gate: &mut [f32], up: &[f32]) {
+    use std::arch::aarch64::*;
+    let n = gate.len();
+    let chunks = n / 4;
+
+    unsafe {
+        let one_v = vdupq_n_f32(1.0);
+        for i in 0..chunks {
+            let off = i * 4;
+            let gv = vld1q_f32(gate.as_ptr().add(off));
+            let uv = vld1q_f32(up.as_ptr().add(off));
+
+            // SiLU(x) = x / (1 + exp(-x)) — scalar exp per lane
+            let neg_g = vnegq_f32(gv);
+            let mut arr = [0.0f32; 4];
+            vst1q_f32(arr.as_mut_ptr(), neg_g);
+            arr[0] = arr[0].exp();
+            arr[1] = arr[1].exp();
+            arr[2] = arr[2].exp();
+            arr[3] = arr[3].exp();
+            let exp_v = vld1q_f32(arr.as_ptr());
+
+            // x / (1 + exp(-x)) * up
+            let denom = vaddq_f32(one_v, exp_v);
+            let silu_v = vdivq_f32(gv, denom);
+            let result = vmulq_f32(silu_v, uv);
+            vst1q_f32(gate.as_mut_ptr().add(off), result);
+        }
+        for i in (chunks * 4)..n {
+            gate[i] = silu(gate[i]) * up[i];
+        }
+    }
+}
+
+/// Residual connection: hidden[i] += buf[i] (NEON-accelerated).
+#[inline]
+fn add_residual(hidden: &mut [f32], buf: &[f32]) {
+    debug_assert_eq!(hidden.len(), buf.len());
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if hidden.len() >= 4 {
+            add_residual_neon(hidden, buf);
+            return;
+        }
+    }
+
+    for i in 0..hidden.len() {
+        hidden[i] += buf[i];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn add_residual_neon(hidden: &mut [f32], buf: &[f32]) {
+    use std::arch::aarch64::*;
+    let n = hidden.len();
+    let chunks = n / 4;
+
+    unsafe {
+        for i in 0..chunks {
+            let off = i * 4;
+            let hv = vld1q_f32(hidden.as_ptr().add(off));
+            let bv = vld1q_f32(buf.as_ptr().add(off));
+            vst1q_f32(hidden.as_mut_ptr().add(off), vaddq_f32(hv, bv));
+        }
+        for i in (chunks * 4)..n {
+            hidden[i] += buf[i];
+        }
+    }
 }
 
 /// SiLU (Swish) activation: x * sigmoid(x)
@@ -110,8 +196,8 @@ fn silu(x: f32) -> f32 {
 /// GELU activation (approximate): 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
 #[inline]
 fn gelu(x: f32) -> f32 {
-    let c = (2.0f32 / std::f32::consts::PI).sqrt();
-    0.5 * x * (1.0 + (c * (x + 0.044715 * x * x * x)).tanh())
+    const C: f32 = 0.7978845608; // sqrt(2/π)
+    0.5 * x * (1.0 + (C * (x + 0.044715 * x * x * x)).tanh())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

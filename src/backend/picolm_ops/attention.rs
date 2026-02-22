@@ -106,28 +106,27 @@ pub fn attention_layer(
     attn_out.fill(0.0);
     let scores = &mut buf.scores[..seq_len];
 
-    // Temporary buffer for f16→f32 KV decode (reused across heads/positions).
-    let mut kv_tmp = vec![0.0f32; head_dim];
+    // Temporary buffer for f16→f32 KV decode (pre-allocated, reused across heads/positions).
+    let kv_tmp = &mut buf.kv_tmp[..head_dim];
 
     for h in 0..n_heads {
         let kv_head = h / heads_per_kv;
         let q_offset = h * head_dim;
         let q_head = &buf.q[q_offset..q_offset + head_dim];
 
+        // Compute Q·K scores for all cached positions.
         for (p, score) in scores.iter_mut().enumerate() {
-            kv_cache.k_at_into(p, kv_head, &mut kv_tmp);
-            let dot: f32 = q_head.iter().zip(kv_tmp.iter()).map(|(a, b)| a * b).sum();
-            *score = dot * scale;
+            kv_cache.k_at_into(p, kv_head, kv_tmp);
+            *score = dot_f32(q_head, kv_tmp) * scale;
         }
 
         softmax(scores);
 
+        // Weighted sum of V vectors.
         let out_offset = h * head_dim;
         for (p, &s) in scores.iter().enumerate() {
-            kv_cache.v_at_into(p, kv_head, &mut kv_tmp);
-            for d in 0..head_dim {
-                attn_out[out_offset + d] += s * kv_tmp[d];
-            }
+            kv_cache.v_at_into(p, kv_head, kv_tmp);
+            accumulate_scaled(&mut attn_out[out_offset..out_offset + head_dim], kv_tmp, s);
         }
     }
 
@@ -171,6 +170,15 @@ fn softmax(x: &mut [f32]) {
     if x.is_empty() {
         return;
     }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if x.len() >= 4 {
+            softmax_neon(x);
+            return;
+        }
+    }
+
     let max = x.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0.0f32;
     for v in x.iter_mut() {
@@ -178,8 +186,146 @@ fn softmax(x: &mut [f32]) {
         sum += *v;
     }
     if sum > 0.0 {
+        let inv_sum = 1.0 / sum;
         for v in x.iter_mut() {
-            *v /= sum;
+            *v *= inv_sum;
+        }
+    }
+}
+
+/// NEON-accelerated softmax: fused max-find, exp-sum, and normalize.
+#[cfg(target_arch = "aarch64")]
+fn softmax_neon(x: &mut [f32]) {
+    use std::arch::aarch64::*;
+    let n = x.len();
+    let chunks = n / 4;
+
+    unsafe {
+        // Pass 1: find max
+        let mut max_v = vdupq_n_f32(f32::NEG_INFINITY);
+        for i in 0..chunks {
+            let v = vld1q_f32(x.as_ptr().add(i * 4));
+            max_v = vmaxq_f32(max_v, v);
+        }
+        let mut max_val = vmaxvq_f32(max_v);
+        for i in (chunks * 4)..n {
+            if x[i] > max_val {
+                max_val = x[i];
+            }
+        }
+
+        // Pass 2: exp(x - max) and sum
+        let max_v = vdupq_n_f32(max_val);
+        let mut sum_v = vdupq_n_f32(0.0);
+        for i in 0..chunks {
+            let off = i * 4;
+            let v = vld1q_f32(x.as_ptr().add(off));
+            let shifted = vsubq_f32(v, max_v);
+            // Scalar exp per lane (no NEON exp intrinsic)
+            let mut arr = [0.0f32; 4];
+            vst1q_f32(arr.as_mut_ptr(), shifted);
+            arr[0] = arr[0].exp();
+            arr[1] = arr[1].exp();
+            arr[2] = arr[2].exp();
+            arr[3] = arr[3].exp();
+            let exp_v = vld1q_f32(arr.as_ptr());
+            vst1q_f32(x.as_mut_ptr().add(off), exp_v);
+            sum_v = vaddq_f32(sum_v, exp_v);
+        }
+        let mut sum = vaddvq_f32(sum_v);
+        for i in (chunks * 4)..n {
+            x[i] = (x[i] - max_val).exp();
+            sum += x[i];
+        }
+
+        // Pass 3: normalize
+        if sum > 0.0 {
+            let inv_sum = 1.0 / sum;
+            let inv_v = vdupq_n_f32(inv_sum);
+            for i in 0..chunks {
+                let off = i * 4;
+                let v = vld1q_f32(x.as_ptr().add(off));
+                vst1q_f32(x.as_mut_ptr().add(off), vmulq_f32(v, inv_v));
+            }
+            for i in (chunks * 4)..n {
+                x[i] *= inv_sum;
+            }
+        }
+    }
+}
+
+/// Dot product of two f32 slices (NEON-accelerated on aarch64).
+#[inline]
+fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if a.len() >= 4 {
+            return dot_f32_neon(a, b);
+        }
+    }
+
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn dot_f32_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let n = a.len();
+    let chunks = n / 4;
+
+    unsafe {
+        let mut acc = vdupq_n_f32(0.0);
+        for i in 0..chunks {
+            let av = vld1q_f32(a.as_ptr().add(i * 4));
+            let bv = vld1q_f32(b.as_ptr().add(i * 4));
+            acc = vfmaq_f32(acc, av, bv);
+        }
+        let mut sum = vaddvq_f32(acc);
+        for i in (chunks * 4)..n {
+            sum += a[i] * b[i];
+        }
+        sum
+    }
+}
+
+/// Accumulate scaled vector: out[i] += scale * src[i] (NEON-accelerated).
+#[inline]
+fn accumulate_scaled(out: &mut [f32], src: &[f32], scale: f32) {
+    debug_assert_eq!(out.len(), src.len());
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if out.len() >= 4 {
+            accumulate_scaled_neon(out, src, scale);
+            return;
+        }
+    }
+
+    for (o, &s) in out.iter_mut().zip(src.iter()) {
+        *o += scale * s;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn accumulate_scaled_neon(out: &mut [f32], src: &[f32], scale: f32) {
+    use std::arch::aarch64::*;
+    let n = out.len();
+    let chunks = n / 4;
+
+    unsafe {
+        let scale_v = vdupq_n_f32(scale);
+        for i in 0..chunks {
+            let off = i * 4;
+            let ov = vld1q_f32(out.as_ptr().add(off));
+            let sv = vld1q_f32(src.as_ptr().add(off));
+            vst1q_f32(out.as_mut_ptr().add(off), vfmaq_f32(ov, scale_v, sv));
+        }
+        for i in (chunks * 4)..n {
+            out[i] += scale * src[i];
         }
     }
 }

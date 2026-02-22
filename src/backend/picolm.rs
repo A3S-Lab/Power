@@ -153,26 +153,38 @@ fn apply_repeat_penalty(
         return;
     }
 
-    // Count occurrences of each token in the recent window.
-    let mut counts = std::collections::HashMap::<u32, u32>::new();
+    // Deduplicate + count without HashMap allocation.
+    // For a 64-token window, linear scan is faster than HashMap overhead.
+    let mut seen: [(u32, u32); 64] = [(0, 0); 64];
+    let mut n_seen = 0usize;
+
     for &tok in recent_tokens {
-        *counts.entry(tok).or_insert(0) += 1;
+        let mut found = false;
+        for i in 0..n_seen {
+            if seen[i].0 == tok {
+                seen[i].1 += 1;
+                found = true;
+                break;
+            }
+        }
+        if !found && n_seen < 64 {
+            seen[n_seen] = (tok, 1);
+            n_seen += 1;
+        }
     }
 
-    for (&tok, &count) in &counts {
+    for i in 0..n_seen {
+        let (tok, count) = seen[i];
         let idx = tok as usize;
         if idx >= logits.len() {
             continue;
         }
-        // repeat_penalty: multiplicative penalty (llama.cpp style)
         if logits[idx] > 0.0 {
             logits[idx] /= repeat_penalty;
         } else {
             logits[idx] *= repeat_penalty;
         }
-        // frequency_penalty: proportional to count (OpenAI style)
         logits[idx] -= frequency_penalty * count as f32;
-        // presence_penalty: flat penalty if token appeared at all (OpenAI style)
         logits[idx] -= presence_penalty;
     }
 }

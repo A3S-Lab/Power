@@ -47,6 +47,8 @@ pub struct ForwardBuffers {
     pub normed_final: Vec<f32>,
     /// Logit vector  [vocab_size]
     pub logits: Vec<f32>,
+    /// Temporary buffer for KV cache f16→f32 decode  [head_dim]
+    pub kv_tmp: Vec<f32>,
 }
 
 impl ForwardBuffers {
@@ -74,6 +76,7 @@ impl ForwardBuffers {
             down: vec![0.0f32; n_embd],
             normed_final: vec![0.0f32; n_embd],
             logits: vec![0.0f32; vocab_size],
+            kv_tmp: vec![0.0f32; head_dim],
         }
     }
 }
@@ -95,6 +98,7 @@ impl Drop for ForwardBuffers {
         self.down.zeroize();
         self.normed_final.zeroize();
         self.logits.zeroize();
+        self.kv_tmp.zeroize();
     }
 }
 

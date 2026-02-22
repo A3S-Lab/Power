@@ -43,10 +43,55 @@ pub fn rms_norm_out(
 /// RMSNorm with pre-dequantized f32 weight vector (no dequant overhead).
 pub fn rms_norm_f32(x: &mut [f32], weight: &[f32], eps: f32) {
     let n = x.len();
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if n >= 4 {
+            rms_norm_f32_neon(x, weight, eps);
+            return;
+        }
+    }
+
     let ss: f32 = x.iter().map(|v| v * v).sum::<f32>() / n as f32;
     let rms_inv = 1.0 / (ss + eps).sqrt();
     for i in 0..n {
         x[i] = x[i] * rms_inv * weight[i];
+    }
+}
+
+/// NEON-accelerated RMSNorm: fused sum-of-squares + scale in SIMD.
+#[cfg(target_arch = "aarch64")]
+fn rms_norm_f32_neon(x: &mut [f32], weight: &[f32], eps: f32) {
+    use std::arch::aarch64::*;
+    let n = x.len();
+
+    unsafe {
+        // Pass 1: sum of squares with 4-wide NEON accumulation
+        let mut sum_v = vdupq_n_f32(0.0);
+        let chunks = n / 4;
+
+        for i in 0..chunks {
+            let xv = vld1q_f32(x.as_ptr().add(i * 4));
+            sum_v = vfmaq_f32(sum_v, xv, xv);
+        }
+        let mut ss = vaddvq_f32(sum_v);
+        for i in (chunks * 4)..n {
+            ss += x[i] * x[i];
+        }
+        let rms_inv = 1.0 / (ss / n as f32 + eps).sqrt();
+        let rms_inv_v = vdupq_n_f32(rms_inv);
+
+        // Pass 2: x[i] = x[i] * rms_inv * weight[i]
+        for i in 0..chunks {
+            let off = i * 4;
+            let xv = vld1q_f32(x.as_ptr().add(off));
+            let wv = vld1q_f32(weight.as_ptr().add(off));
+            let scaled = vmulq_f32(vmulq_f32(xv, rms_inv_v), wv);
+            vst1q_f32(x.as_mut_ptr().add(off), scaled);
+        }
+        for i in (chunks * 4)..n {
+            x[i] = x[i] * rms_inv * weight[i];
+        }
     }
 }
 
