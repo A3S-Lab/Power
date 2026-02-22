@@ -12,6 +12,8 @@ pub mod dequant;
 #[cfg(feature = "picolm")]
 pub mod ffn;
 #[cfg(feature = "picolm")]
+pub mod grammar;
+#[cfg(feature = "picolm")]
 pub mod kv_cache;
 #[cfg(feature = "picolm")]
 pub mod matmul;

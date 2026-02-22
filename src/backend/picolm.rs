@@ -260,6 +260,8 @@ struct GenerateParams<'a> {
     presence_penalty: f32,
     /// Whether the request included tool definitions (triggers tool call parsing).
     has_tools: bool,
+    /// Response format constraint (JSON schema or "json" for generic JSON).
+    response_format: Option<serde_json::Value>,
 }
 
 // ── Forward pass ─────────────────────────────────────────────────────────────
@@ -281,6 +283,13 @@ fn forward_pass_streaming(
     let output_norm_w = params.output_norm;
     let input_ids = params.input_ids;
     let n_embd = cfg.n_embd;
+
+    // Grammar-constrained sampling for structured output (JSON).
+    let mut grammar_sampler = if params.response_format.is_some() {
+        Some(super::picolm_ops::grammar::JsonGrammarSampler::new())
+    } else {
+        None
+    };
 
     // Single hidden-state buffer reused across all tokens.
     let mut hidden = vec![0.0f32; n_embd];
@@ -347,50 +356,76 @@ fn forward_pass_streaming(
         };
     }
 
-    // Prefill: process all input tokens.
+    // Prefill: process all input tokens through each layer (batch prefill).
+    //
+    // Layer-outer, token-inner ordering: each layer's mmap pages are loaded once,
+    // all tokens are processed, then pages are released. This is O(n_layers) page
+    // faults instead of O(n_layers × n_tokens) with the naive token-outer ordering.
     let prefill_start = std::time::Instant::now();
-    for (i, &token_id) in input_ids.iter().enumerate() {
-        let pos = start_pos + i;
-        matmul::extract_row(embd_raw, embd_type, n_embd, token_id as usize, &mut hidden);
+    let n_prefill = input_ids.len();
 
+    if n_prefill > 0 {
+        // Extract all token embeddings into a flat [n_tokens × n_embd] matrix.
+        let mut hidden_states = vec![0.0f32; n_prefill * n_embd];
+        for (i, &token_id) in input_ids.iter().enumerate() {
+            matmul::extract_row(
+                embd_raw,
+                embd_type,
+                n_embd,
+                token_id as usize,
+                &mut hidden_states[i * n_embd..(i + 1) * n_embd],
+            );
+        }
+
+        // Process all tokens through each layer before moving to the next.
         for layer in 0..cfg.n_layers {
             let attn_name = format!("blk.{layer}.attn_norm.weight");
             let ffn_name = format!("blk.{layer}.ffn_norm.weight");
             load_norm!(&attn_name, &mut attn_norm_buf);
             load_norm!(&ffn_name, &mut ffn_norm_buf);
 
-            if let Err(e) = attention::attention_layer(
-                &mut hidden,
-                tc,
-                layer,
-                pos,
-                kv_cache.layer_mut(layer),
-                cfg,
-                rope_table,
-                &attn_norm_buf,
-                &mut buf,
-            ) {
-                let _ = tx.blocking_send(Err(e));
-                return;
-            }
-            if let Err(e) = ffn::ffn_layer(
-                &mut hidden,
-                tc,
-                layer,
-                cfg,
-                activation,
-                &ffn_norm_buf,
-                &mut buf,
-            ) {
-                let _ = tx.blocking_send(Err(e));
-                return;
+            for i in 0..n_prefill {
+                let pos = start_pos + i;
+                let h = &mut hidden_states[i * n_embd..(i + 1) * n_embd];
+
+                if let Err(e) = attention::attention_layer(
+                    h,
+                    tc,
+                    layer,
+                    pos,
+                    kv_cache.layer_mut(layer),
+                    cfg,
+                    rope_table,
+                    &attn_norm_buf,
+                    &mut buf,
+                ) {
+                    let _ = tx.blocking_send(Err(e));
+                    return;
+                }
+                if let Err(e) = ffn::ffn_layer(
+                    h,
+                    tc,
+                    layer,
+                    cfg,
+                    activation,
+                    &ffn_norm_buf,
+                    &mut buf,
+                ) {
+                    let _ = tx.blocking_send(Err(e));
+                    return;
+                }
             }
 
-            // Release physical pages for this layer's weights + norms.
+            // Release physical pages for this layer's weights + norms (once per layer).
             let _ = tc.release_layer(gguf, layer);
             let _ = gguf.advise_dontneed(&attn_name);
             let _ = gguf.advise_dontneed(&ffn_name);
         }
+
+        // Copy the last token's hidden state for decode phase.
+        hidden.copy_from_slice(
+            &hidden_states[(n_prefill - 1) * n_embd..n_prefill * n_embd],
+        );
     }
     let prefill_elapsed = prefill_start.elapsed();
     let prefill_tok_per_sec = if prefill_elapsed.as_secs_f64() > 0.0 {
@@ -438,6 +473,11 @@ fn forward_pass_streaming(
             params.frequency_penalty,
             params.presence_penalty,
         );
+
+        // Apply grammar constraint for structured output (JSON).
+        if let Some(ref gs) = grammar_sampler {
+            gs.mask_logits(&mut buf.logits, tokenizer);
+        }
 
         // Sample.
         let next_token = sample_token(
@@ -487,6 +527,48 @@ fn forward_pass_streaming(
             }
             Some(piece) => {
                 generated_text.push_str(&piece);
+
+                // Feed generated characters to grammar sampler for structured output.
+                if let Some(ref mut gs) = grammar_sampler {
+                    for ch in piece.chars() {
+                        gs.feed(ch);
+                    }
+                    // If grammar is complete (valid JSON produced), stop generation.
+                    if gs.is_complete() {
+                        // Send the final piece, then the done chunk.
+                        let _ = tx.blocking_send(Ok(ChatResponseChunk {
+                            content: piece,
+                            thinking_content: None,
+                            done: false,
+                            prompt_tokens: None,
+                            done_reason: None,
+                            prompt_eval_duration_ns: None,
+                            tool_calls: None,
+                        }));
+                        let decode_elapsed = decode_start.elapsed();
+                        let decode_tok_per_sec = if decode_elapsed.as_secs_f64() > 0.0 {
+                            decode_count as f64 / decode_elapsed.as_secs_f64()
+                        } else {
+                            0.0
+                        };
+                        tracing::debug!(
+                            tokens = decode_count,
+                            elapsed_ms = decode_elapsed.as_millis() as u64,
+                            tok_per_sec = format!("{:.1}", decode_tok_per_sec),
+                            "picolm: decode complete (grammar complete)"
+                        );
+                        let _ = tx.blocking_send(Ok(ChatResponseChunk {
+                            content: String::new(),
+                            thinking_content: None,
+                            done: true,
+                            prompt_tokens: Some(input_ids.len() as u32),
+                            done_reason: Some("stop".to_string()),
+                            prompt_eval_duration_ns: None,
+                            tool_calls: None,
+                        }));
+                        return;
+                    }
+                }
 
                 // Check stop sequences
                 let mut hit_stop = false;
@@ -928,6 +1010,7 @@ impl Backend for PicolmBackend {
             let frequency_penalty = request.frequency_penalty.unwrap_or(0.0);
             let presence_penalty = request.presence_penalty.unwrap_or(0.0);
             let has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
+            let response_format = request.response_format.clone();
 
             let (tx, rx) = mpsc::channel::<Result<ChatResponseChunk>>(128);
 
@@ -960,6 +1043,7 @@ impl Backend for PicolmBackend {
                     frequency_penalty,
                     presence_penalty,
                     has_tools,
+                    response_format,
                 };
                 forward_pass_streaming(&mut params, &tx);
                 // Put KV cache back into the slot so the return task can pick it up.
