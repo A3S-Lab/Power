@@ -393,13 +393,18 @@ mod neon {
         sumf
     }
 
-    /// NEON Q4_K dot product: dequant nibbles, FMA with x.
+    /// NEON Q4_K dot product: dequant nibbles via integer NEON, FMA with x.
+    ///
+    /// Optimized inner loop: loads 8 bytes at once via `vld1_u8`, extracts
+    /// lo/hi nibbles with `vand`/`vshr` in registers, converts to f32 via
+    /// `vcvtq_f32_u32` — no stack-based f32 array construction.
     ///
     /// # Safety
     /// NEON is mandatory on all AArch64 CPUs.
     pub unsafe fn vec_dot_q4_k_neon(row_raw: &[u8], x: &[f32], n: usize) -> f32 {
         let nb = n / 256;
         let mut total = vdupq_n_f32(0.0);
+        let mask_lo = vdup_n_u8(0x0F);
 
         for i in 0..nb {
             let blk = i * 144;
@@ -426,41 +431,60 @@ mod neon {
                 let mut sum_qx2 = vdupq_n_f32(0.0);
                 let mut sum_x2 = vdupq_n_f32(0.0);
 
-                // Process 32 elements in 8 groups of 4
-                for g in 0..8 {
+                // Process 32 quant bytes in 4 iterations of 2×4 bytes each.
+                // Each iteration: load 4 bytes → extract lo/hi nibbles → FMA with x,
+                // then repeat for the next 4 bytes. 4 iters × 8 bytes = 32 bytes total.
+                for g in (0..8).step_by(2) {
                     let base = g * 4;
-                    // Load 4 bytes, extract lo/hi nibbles
-                    let b0 = *qs.add(q_off + base);
-                    let b1 = *qs.add(q_off + base + 1);
-                    let b2 = *qs.add(q_off + base + 2);
-                    let b3 = *qs.add(q_off + base + 3);
 
-                    let lo = vld1q_f32(
-                        [
-                            (b0 & 0x0F) as f32,
-                            (b1 & 0x0F) as f32,
-                            (b2 & 0x0F) as f32,
-                            (b3 & 0x0F) as f32,
-                        ]
-                        .as_ptr(),
-                    );
-                    let hi = vld1q_f32(
-                        [
-                            (b0 >> 4) as f32,
-                            (b1 >> 4) as f32,
-                            (b2 >> 4) as f32,
-                            (b3 >> 4) as f32,
-                        ]
-                        .as_ptr(),
-                    );
+                    // Load 4 quant bytes, extract lo/hi nibbles in integer NEON
+                    let raw4 =
+                        vld1_lane_u32::<0>(qs.add(q_off + base) as *const u32, vdup_n_u32(0));
+                    let bytes4 = vreinterpret_u8_u32(raw4);
+                    let lo_u8 = vand_u8(bytes4, mask_lo);
+                    let hi_u8 = vshr_n_u8::<4>(bytes4);
+
+                    // Widen u8→u16→u32→f32 for lo nibbles (first 4 bytes → 4 floats)
+                    let lo_u16 = vget_low_u16(vmovl_u8(lo_u8));
+                    let lo_u32 = vmovl_u16(lo_u16);
+                    let lo_f32 = vcvtq_f32_u32(lo_u32);
+
+                    // Same for hi nibbles
+                    let hi_u16 = vget_low_u16(vmovl_u8(hi_u8));
+                    let hi_u32 = vmovl_u16(hi_u16);
+                    let hi_f32 = vcvtq_f32_u32(hi_u32);
 
                     let xlo = vld1q_f32(xp.add(x_off + base));
                     let xhi = vld1q_f32(xp.add(x_off + base + 32));
 
-                    sum_qx1 = vfmaq_f32(sum_qx1, lo, xlo);
+                    sum_qx1 = vfmaq_f32(sum_qx1, lo_f32, xlo);
                     sum_x1 = vaddq_f32(sum_x1, xlo);
-                    sum_qx2 = vfmaq_f32(sum_qx2, hi, xhi);
+                    sum_qx2 = vfmaq_f32(sum_qx2, hi_f32, xhi);
                     sum_x2 = vaddq_f32(sum_x2, xhi);
+
+                    // Second group of 4 bytes
+                    let base2 = base + 4;
+                    let raw4b =
+                        vld1_lane_u32::<0>(qs.add(q_off + base2) as *const u32, vdup_n_u32(0));
+                    let bytes4b = vreinterpret_u8_u32(raw4b);
+                    let lo_u8b = vand_u8(bytes4b, mask_lo);
+                    let hi_u8b = vshr_n_u8::<4>(bytes4b);
+
+                    let lo_u16b = vget_low_u16(vmovl_u8(lo_u8b));
+                    let lo_u32b = vmovl_u16(lo_u16b);
+                    let lo_f32b = vcvtq_f32_u32(lo_u32b);
+
+                    let hi_u16b = vget_low_u16(vmovl_u8(hi_u8b));
+                    let hi_u32b = vmovl_u16(hi_u16b);
+                    let hi_f32b = vcvtq_f32_u32(hi_u32b);
+
+                    let xlo2 = vld1q_f32(xp.add(x_off + base2));
+                    let xhi2 = vld1q_f32(xp.add(x_off + base2 + 32));
+
+                    sum_qx1 = vfmaq_f32(sum_qx1, lo_f32b, xlo2);
+                    sum_x1 = vaddq_f32(sum_x1, xlo2);
+                    sum_qx2 = vfmaq_f32(sum_qx2, hi_f32b, xhi2);
+                    sum_x2 = vaddq_f32(sum_x2, xhi2);
                 }
 
                 // d1*sum_qx1 - m1*sum_x1 + d2*sum_qx2 - m2*sum_x2

@@ -472,12 +472,20 @@ fn forward_pass_streaming(
     // Track all generated token IDs for speculative decoding n-gram matching.
     let mut generated_token_ids: Vec<u32> = Vec::new();
 
+    // ── Profiling accumulators (zero-cost when not logged) ──
+    let mut prof_embed_ns = 0u64;
+    let mut prof_attn_ns = 0u64;
+    let mut prof_ffn_ns = 0u64;
+    let mut prof_logit_ns = 0u64;
+    let mut prof_sample_ns = 0u64;
+
     for _step in 0..params.max_new_tokens {
         // Final norm — write into buf.normed_final, then copy to buf.normed_final.
         buf.normed_final[..n_embd].copy_from_slice(&hidden);
         norm::rms_norm_f32(&mut buf.normed_final[..n_embd], output_norm_w, cfg.norm_eps);
 
         // Logit projection into pre-allocated buf.logits.
+        let _tl = std::time::Instant::now();
         matmul::matvec(
             out_raw,
             out_type,
@@ -486,6 +494,7 @@ fn forward_pass_streaming(
             &buf.normed_final[..n_embd],
             &mut buf.logits,
         );
+        prof_logit_ns += _tl.elapsed().as_nanos() as u64;
 
         // Apply repeat/frequency/presence penalty before sampling.
         apply_repeat_penalty(
@@ -502,6 +511,7 @@ fn forward_pass_streaming(
         }
 
         // Sample.
+        let _ts = std::time::Instant::now();
         let next_token = sample_token(
             &buf.logits,
             params.temperature,
@@ -510,6 +520,7 @@ fn forward_pass_streaming(
             &mut buf.sampler_probs,
             &mut buf.sampler_indices,
         ) as u32;
+        prof_sample_ns += _ts.elapsed().as_nanos() as u64;
 
         // Track recent tokens for penalty (ring buffer, keep last 64).
         if recent_tokens.len() >= 64 {
@@ -534,6 +545,22 @@ fn forward_pass_streaming(
                     tok_per_sec = format!("{:.1}", decode_tok_per_sec),
                     "picolm: decode complete (eos)"
                 );
+                if decode_count > 0 {
+                    let total_us = decode_elapsed.as_micros() as u64;
+                    let embed_pct = prof_embed_ns as f64 / (total_us as f64 * 10.0);
+                    let attn_pct = prof_attn_ns as f64 / (total_us as f64 * 10.0);
+                    let ffn_pct = prof_ffn_ns as f64 / (total_us as f64 * 10.0);
+                    let logit_pct = prof_logit_ns as f64 / (total_us as f64 * 10.0);
+                    let sample_pct = prof_sample_ns as f64 / (total_us as f64 * 10.0);
+                    tracing::debug!(
+                        embed = format!("{:.1}%", embed_pct),
+                        attn = format!("{:.1}%", attn_pct),
+                        ffn = format!("{:.1}%", ffn_pct),
+                        logit = format!("{:.1}%", logit_pct),
+                        sample = format!("{:.1}%", sample_pct),
+                        "picolm: decode profile breakdown"
+                    );
+                }
                 let tool_calls = if params.has_tools {
                     super::tool_parser::parse_tool_calls(&generated_text)
                 } else {
@@ -670,6 +697,7 @@ fn forward_pass_streaming(
         }
 
         // Forward pass for the new token.
+        let _t0 = std::time::Instant::now();
         matmul::extract_row(
             embd_raw,
             embd_type,
@@ -677,6 +705,7 @@ fn forward_pass_streaming(
             next_token as usize,
             &mut hidden,
         );
+        prof_embed_ns += _t0.elapsed().as_nanos() as u64;
 
         for layer in 0..cfg.n_layers {
             let attn_name = format!("blk.{layer}.attn_norm.weight");
@@ -684,6 +713,7 @@ fn forward_pass_streaming(
             load_norm!(&attn_name, &mut attn_norm_buf);
             load_norm!(&ffn_name, &mut ffn_norm_buf);
 
+            let _ta = std::time::Instant::now();
             if let Err(e) = attention::attention_layer(
                 &mut hidden,
                 tc,
@@ -698,6 +728,9 @@ fn forward_pass_streaming(
                 let _ = tx.blocking_send(Err(e));
                 return;
             }
+            prof_attn_ns += _ta.elapsed().as_nanos() as u64;
+
+            let _tf = std::time::Instant::now();
             if let Err(e) = ffn::ffn_layer(
                 &mut hidden,
                 tc,
@@ -710,6 +743,7 @@ fn forward_pass_streaming(
                 let _ = tx.blocking_send(Err(e));
                 return;
             }
+            prof_ffn_ns += _tf.elapsed().as_nanos() as u64;
 
             // Release physical pages for this layer's weights + norms.
             let _ = tc.release_layer(gguf, layer);
@@ -917,6 +951,22 @@ fn forward_pass_streaming(
         tok_per_sec = format!("{:.1}", decode_tok_per_sec),
         "picolm: decode complete (max tokens)"
     );
+    if decode_count > 0 {
+        let total_us = decode_elapsed.as_micros() as u64;
+        let embed_pct = prof_embed_ns as f64 / (total_us as f64 * 10.0);
+        let attn_pct = prof_attn_ns as f64 / (total_us as f64 * 10.0);
+        let ffn_pct = prof_ffn_ns as f64 / (total_us as f64 * 10.0);
+        let logit_pct = prof_logit_ns as f64 / (total_us as f64 * 10.0);
+        let sample_pct = prof_sample_ns as f64 / (total_us as f64 * 10.0);
+        tracing::debug!(
+            embed = format!("{:.1}%", embed_pct),
+            attn = format!("{:.1}%", attn_pct),
+            ffn = format!("{:.1}%", ffn_pct),
+            logit = format!("{:.1}%", logit_pct),
+            sample = format!("{:.1}%", sample_pct),
+            "picolm: decode profile breakdown"
+        );
+    }
     let tool_calls = if params.has_tools {
         super::tool_parser::parse_tool_calls(&generated_text)
     } else {
@@ -1602,6 +1652,7 @@ mod tests {
         assert!(p.contains("<|im_start|>"));
     }
 
+    #[cfg(feature = "picolm")]
     #[test]
     fn test_repeat_penalty_reduces_repeated_token_logit() {
         let mut logits = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
@@ -1616,6 +1667,7 @@ mod tests {
         assert!((logits[1] - 2.0).abs() < 0.01);
     }
 
+    #[cfg(feature = "picolm")]
     #[test]
     fn test_frequency_penalty_proportional_to_count() {
         let mut logits = vec![5.0f32, 5.0, 5.0];
@@ -1629,6 +1681,7 @@ mod tests {
         assert!((logits[2] - 5.0).abs() < 0.01);
     }
 
+    #[cfg(feature = "picolm")]
     #[test]
     fn test_presence_penalty_flat() {
         let mut logits = vec![5.0f32, 5.0, 5.0];
@@ -1642,6 +1695,7 @@ mod tests {
         assert!((logits[2] - 5.0).abs() < 0.01);
     }
 
+    #[cfg(feature = "picolm")]
     #[test]
     fn test_no_penalty_when_defaults() {
         let mut logits = vec![1.0f32, 2.0, 3.0];
