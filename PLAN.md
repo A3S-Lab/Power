@@ -78,9 +78,11 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 - Q6_K: 6-bit reconstruct (ql low4 + qh high2) + vmull
 - Parity tests for all 4 kernel types
 
-### 5.3 — 🚧 Batch Prefill (Priority: MEDIUM)
-- Batch Q/K/V projections: matmul instead of matvec for prefill
-- Only for prefill phase; decode stays single-token
+### 5.3 — ✅ Batch Prefill
+- Layer-outer, token-inner loop ordering: O(n_layers) page faults instead of O(n_layers × n_tokens)
+- Each layer's mmap pages loaded once for all tokens, then released
+- `matmul_batch` function for batched matrix-vector multiply
+- Hidden states matrix `[n_tokens × n_embd]` flows through layers
 
 ### 5.4 — 🚧 Speculative Decoding (Priority: LOW)
 - Evaluate after 5.1-5.3
@@ -107,7 +109,7 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 
 ---
 
-## Phase 7: Ecosystem Integration — Partially Complete
+## Phase 7: Ecosystem Integration ✅
 
 **Goal**: Make Power useful in the broader A3S platform.
 
@@ -117,9 +119,12 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 - `has_tools` flag in GenerateParams, set from ChatRequest.tools
 - Matches llamacpp/mistralrs backend pattern
 
-### 7.2 — 🚧 picolm Structured Output (JSON Schema) (Priority: MEDIUM)
-- Implement grammar-constrained sampling in picolm
-- Wire `json_schema.rs` grammar into the token sampling loop
+### 7.2 — ✅ picolm Structured Output (JSON Grammar)
+- `JsonGrammarSampler`: stack-based JSON validator for grammar-constrained sampling
+- Tracks structural state (object/array/string/number/keyword nesting)
+- `mask_logits`: filters tokens whose first character violates grammar
+- Wired into decode loop via `response_format` field from ChatRequest
+- Auto-stops generation when complete JSON value is produced
 
 ### 7.3 — ✅ picolm Repeat/Frequency Penalty
 - 64-token ring buffer tracking recent generated tokens
@@ -168,14 +173,14 @@ Phase 6 (TEE Hardening):                     ✅ ALL COMPLETE
 Phase 5 (Performance):                       🚧 PARTIAL
   5.1 AVX2/AVX-512 vec_dot                   ✅ (F32, Q8_0, Q4_K, Q6_K)
   5.2 NEON vec_dot                           ✅ (F32, Q8_0, Q4_K, Q6_K)
-  5.3 Batch prefill                          🚧 (not started)
+  5.3 Batch prefill                          ✅ (layer-outer loop, matmul_batch)
   5.4 Speculative decoding                   🚧 (not started, low priority)
 
-Phase 7 (Ecosystem):                         🚧 PARTIAL
+Phase 7 (Ecosystem):                         ✅ ALL COMPLETE
   7.3 Repeat penalty                         ✅
   7.1 Tool/function calling                  ✅
-  7.2 Structured output                      🚧 (not started)
+  7.2 Structured output                      ✅ (JsonGrammarSampler)
 ```
 
-**872 tests total** (unit + integration + real model).
-**Recommended next**: 5.3 Batch prefill → 7.2 Structured output.
+**895 tests total** (unit + integration + real model).
+**Recommended next**: 5.4 Speculative decoding (low priority — evaluate based on real-world benchmarks).
