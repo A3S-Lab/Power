@@ -52,6 +52,51 @@ pub fn matvec(
     }
 }
 
+/// Dual matrix-vector multiply: compute two matvecs on the same input vector.
+///
+/// `out_a[i] = dot(row_i(weight_a), x)` and `out_b[i] = dot(row_i(weight_b), x)`
+/// for `i` in `0..out_rows`.
+///
+/// This is more cache-friendly than two separate `matvec` calls because the input
+/// vector `x` stays in L1/L2 cache while both weight rows are processed. For FFN
+/// gate+up projections (the biggest compute bottleneck), this avoids reading `x`
+/// from RAM twice.
+pub fn matvec_dual(
+    weight_a: &[u8],
+    weight_b: &[u8],
+    ggml_type_a: u32,
+    ggml_type_b: u32,
+    out_rows: usize,
+    in_cols: usize,
+    x: &[f32],
+    out_a: &mut [f32],
+    out_b: &mut [f32],
+) {
+    let rb_a = row_byte_size(ggml_type_a, in_cols);
+    let rb_b = row_byte_size(ggml_type_b, in_cols);
+
+    if out_rows > 64 {
+        // Parallel: zip both outputs and process row pairs together.
+        out_a[..out_rows]
+            .par_iter_mut()
+            .zip(out_b[..out_rows].par_iter_mut())
+            .enumerate()
+            .for_each(|(row, (a_val, b_val))| {
+                let row_a = &weight_a[row * rb_a..row * rb_a + rb_a];
+                let row_b = &weight_b[row * rb_b..row * rb_b + rb_b];
+                *a_val = vec_dot(row_a, x, in_cols, ggml_type_a);
+                *b_val = vec_dot(row_b, x, in_cols, ggml_type_b);
+            });
+    } else {
+        for row in 0..out_rows {
+            let row_a = &weight_a[row * rb_a..row * rb_a + rb_a];
+            let row_b = &weight_b[row * rb_b..row * rb_b + rb_b];
+            out_a[row] = vec_dot(row_a, x, in_cols, ggml_type_a);
+            out_b[row] = vec_dot(row_b, x, in_cols, ggml_type_b);
+        }
+    }
+}
+
 /// Extract a single row from a 2D quantized tensor and dequantize it.
 ///
 /// Used for embedding lookup: extract row `token_id` from `[vocab_size × n_embd]`.
@@ -260,5 +305,55 @@ mod tests {
         let mut out: [f32; 0] = [];
         matmul_batch(&weight, 0, 2, 2, &xs, &mut out, 0);
         // Should not panic
+    }
+
+    #[test]
+    fn test_matvec_dual_matches_separate() {
+        // Verify matvec_dual produces same results as two separate matvec calls.
+        let mut weight_a = Vec::new();
+        let mut weight_b = Vec::new();
+        for v in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            weight_a.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [7.0f32, 8.0, 9.0, 10.0, 11.0, 12.0] {
+            weight_b.extend_from_slice(&v.to_le_bytes());
+        }
+        let x = [1.0f32, 1.0];
+
+        // Separate matvec
+        let mut out_a1 = [0.0f32; 3];
+        let mut out_b1 = [0.0f32; 3];
+        matvec(&weight_a, 0, 3, 2, &x, &mut out_a1);
+        matvec(&weight_b, 0, 3, 2, &x, &mut out_b1);
+
+        // Dual matvec
+        let mut out_a2 = [0.0f32; 3];
+        let mut out_b2 = [0.0f32; 3];
+        matvec_dual(
+            &weight_a,
+            &weight_b,
+            0,
+            0,
+            3,
+            2,
+            &x,
+            &mut out_a2,
+            &mut out_b2,
+        );
+
+        for i in 0..3 {
+            assert!(
+                (out_a1[i] - out_a2[i]).abs() < 1e-6,
+                "a[{i}]: separate={}, dual={}",
+                out_a1[i],
+                out_a2[i]
+            );
+            assert!(
+                (out_b1[i] - out_b2[i]).abs() < 1e-6,
+                "b[{i}]: separate={}, dual={}",
+                out_b1[i],
+                out_b2[i]
+            );
+        }
     }
 }

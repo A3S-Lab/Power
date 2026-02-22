@@ -332,9 +332,40 @@ fn forward_pass_streaming(
         params.max_seq_len,
     );
 
-    // Scratch buffers for on-the-fly norm dequantization (n_embd floats each).
-    let mut attn_norm_buf = vec![0.0f32; n_embd];
-    let mut ffn_norm_buf = vec![0.0f32; n_embd];
+    // Pre-dequantize all layer norm weights at load time.
+    // This eliminates 2×n_layers string formats, HashMap lookups, and dequantizations
+    // per generated token. Norm tensors are tiny (n_embd floats each), so the total
+    // memory cost is 2 × n_layers × n_embd × 4 bytes (e.g., 2×24×896×4 = 172 KB).
+    let mut attn_norm_weights: Vec<Vec<f32>> = Vec::with_capacity(cfg.n_layers as usize);
+    let mut ffn_norm_weights: Vec<Vec<f32>> = Vec::with_capacity(cfg.n_layers as usize);
+    for layer in 0..cfg.n_layers {
+        let mut attn_buf = vec![0.0f32; n_embd];
+        let mut ffn_buf = vec![0.0f32; n_embd];
+        let attn_name = format!("blk.{layer}.attn_norm.weight");
+        let ffn_name = format!("blk.{layer}.ffn_norm.weight");
+        match gguf.tensor_bytes(&attn_name) {
+            Ok(raw) => {
+                let t = gguf.tensor_type(&attn_name).unwrap_or(0);
+                matmul::extract_row(raw, t, n_embd, 0, &mut attn_buf);
+            }
+            Err(e) => {
+                let _ = tx.blocking_send(Err(e));
+                return;
+            }
+        }
+        match gguf.tensor_bytes(&ffn_name) {
+            Ok(raw) => {
+                let t = gguf.tensor_type(&ffn_name).unwrap_or(0);
+                matmul::extract_row(raw, t, n_embd, 0, &mut ffn_buf);
+            }
+            Err(e) => {
+                let _ = tx.blocking_send(Err(e));
+                return;
+            }
+        }
+        attn_norm_weights.push(attn_buf);
+        ffn_norm_weights.push(ffn_buf);
+    }
 
     let mut rng_state: u64 = if params.seed == 0 {
         0xDEAD_BEEF_CAFE_1234
@@ -366,23 +397,6 @@ fn forward_pass_streaming(
 
     let start_pos = kv_cache.seq_len();
 
-    /// Dequantize a single norm weight vector from the GGUF file into `out`.
-    /// Norm tensors are tiny (n_embd floats) so this is microseconds.
-    macro_rules! load_norm {
-        ($name:expr, $buf:expr) => {
-            match gguf.tensor_bytes($name) {
-                Ok(raw) => {
-                    let t = gguf.tensor_type($name).unwrap_or(0);
-                    matmul::extract_row(raw, t, n_embd, 0, $buf);
-                }
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(e));
-                    return;
-                }
-            }
-        };
-    }
-
     // Prefill: process all input tokens through each layer (batch prefill).
     //
     // Layer-outer, token-inner ordering: each layer's mmap pages are loaded once,
@@ -406,10 +420,8 @@ fn forward_pass_streaming(
 
         // Process all tokens through each layer before moving to the next.
         for layer in 0..cfg.n_layers {
-            let attn_name = format!("blk.{layer}.attn_norm.weight");
-            let ffn_name = format!("blk.{layer}.ffn_norm.weight");
-            load_norm!(&attn_name, &mut attn_norm_buf);
-            load_norm!(&ffn_name, &mut ffn_norm_buf);
+            let attn_norm_w = &attn_norm_weights[layer as usize];
+            let ffn_norm_w = &ffn_norm_weights[layer as usize];
 
             for i in 0..n_prefill {
                 let pos = start_pos + i;
@@ -423,14 +435,13 @@ fn forward_pass_streaming(
                     kv_cache.layer_mut(layer),
                     cfg,
                     rope_table,
-                    &attn_norm_buf,
+                    attn_norm_w,
                     &mut buf,
                 ) {
                     let _ = tx.blocking_send(Err(e));
                     return;
                 }
-                if let Err(e) =
-                    ffn::ffn_layer(h, tc, layer, cfg, activation, &ffn_norm_buf, &mut buf)
+                if let Err(e) = ffn::ffn_layer(h, tc, layer, cfg, activation, ffn_norm_w, &mut buf)
                 {
                     let _ = tx.blocking_send(Err(e));
                     return;
@@ -439,6 +450,8 @@ fn forward_pass_streaming(
 
             // Release physical pages for this layer's weights + norms (once per layer).
             let _ = tc.release_layer(gguf, layer);
+            let attn_name = format!("blk.{layer}.attn_norm.weight");
+            let ffn_name = format!("blk.{layer}.ffn_norm.weight");
             let _ = gguf.advise_dontneed(&attn_name);
             let _ = gguf.advise_dontneed(&ffn_name);
         }
@@ -708,10 +721,8 @@ fn forward_pass_streaming(
         prof_embed_ns += _t0.elapsed().as_nanos() as u64;
 
         for layer in 0..cfg.n_layers {
-            let attn_name = format!("blk.{layer}.attn_norm.weight");
-            let ffn_name = format!("blk.{layer}.ffn_norm.weight");
-            load_norm!(&attn_name, &mut attn_norm_buf);
-            load_norm!(&ffn_name, &mut ffn_norm_buf);
+            let attn_norm_w = &attn_norm_weights[layer as usize];
+            let ffn_norm_w = &ffn_norm_weights[layer as usize];
 
             let _ta = std::time::Instant::now();
             if let Err(e) = attention::attention_layer(
@@ -722,7 +733,7 @@ fn forward_pass_streaming(
                 kv_cache.layer_mut(layer),
                 cfg,
                 rope_table,
-                &attn_norm_buf,
+                attn_norm_w,
                 &mut buf,
             ) {
                 let _ = tx.blocking_send(Err(e));
@@ -737,7 +748,7 @@ fn forward_pass_streaming(
                 layer,
                 cfg,
                 activation,
-                &ffn_norm_buf,
+                ffn_norm_w,
                 &mut buf,
             ) {
                 let _ = tx.blocking_send(Err(e));
@@ -745,10 +756,8 @@ fn forward_pass_streaming(
             }
             prof_ffn_ns += _tf.elapsed().as_nanos() as u64;
 
-            // Release physical pages for this layer's weights + norms.
+            // Release physical pages for this layer's weights.
             let _ = tc.release_layer(gguf, layer);
-            let _ = gguf.advise_dontneed(&attn_name);
-            let _ = gguf.advise_dontneed(&ffn_name);
         }
 
         gen_pos += 1;
@@ -778,10 +787,8 @@ fn forward_pass_streaming(
                         &mut hidden,
                     );
                     for layer in 0..cfg.n_layers {
-                        let attn_name = format!("blk.{layer}.attn_norm.weight");
-                        let ffn_name = format!("blk.{layer}.ffn_norm.weight");
-                        load_norm!(&attn_name, &mut attn_norm_buf);
-                        load_norm!(&ffn_name, &mut ffn_norm_buf);
+                        let attn_norm_w = &attn_norm_weights[layer as usize];
+                        let ffn_norm_w = &ffn_norm_weights[layer as usize];
 
                         if let Err(e) = attention::attention_layer(
                             &mut hidden,
@@ -791,7 +798,7 @@ fn forward_pass_streaming(
                             kv_cache.layer_mut(layer),
                             cfg,
                             rope_table,
-                            &attn_norm_buf,
+                            attn_norm_w,
                             &mut buf,
                         ) {
                             let _ = tx.blocking_send(Err(e));
@@ -803,15 +810,13 @@ fn forward_pass_streaming(
                             layer,
                             cfg,
                             activation,
-                            &ffn_norm_buf,
+                            ffn_norm_w,
                             &mut buf,
                         ) {
                             let _ = tx.blocking_send(Err(e));
                             return;
                         }
                         let _ = tc.release_layer(gguf, layer);
-                        let _ = gguf.advise_dontneed(&attn_name);
-                        let _ = gguf.advise_dontneed(&ffn_name);
                     }
 
                     // Compute logits for this draft position.

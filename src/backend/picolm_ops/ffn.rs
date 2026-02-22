@@ -8,7 +8,7 @@
 //! Gemma uses GeGLU (GELU instead of SiLU). Controlled by `FfnActivation`.
 
 use super::buffers::ForwardBuffers;
-use super::matmul::matvec;
+use super::matmul::{matvec, matvec_dual};
 use super::norm::rms_norm_out_f32;
 use super::tensor_cache::{TensorCache, SLOT_FFN_DOWN, SLOT_FFN_GATE, SLOT_FFN_UP};
 use crate::error::Result;
@@ -43,27 +43,22 @@ pub fn ffn_layer(
     // 1. RMSNorm (pre-FFN) — uses pre-dequantized weights, writes into buf.normed
     rms_norm_out_f32(hidden, ffn_norm_w, cfg.norm_eps, &mut buf.normed);
 
-    // 2. Gate and Up projections — tensor bytes from cache (zero HashMap lookups)
+    // 2. Gate and Up projections — fused dual matvec for cache-friendly x reuse
     let gate_e = tc.get(layer, SLOT_FFN_GATE);
     let up_e = tc.get(layer, SLOT_FFN_UP);
 
     let gate_buf = &mut buf.gate[..n_ff];
     let up_buf = &mut buf.up[..n_ff];
 
-    matvec(
+    matvec_dual(
         gate_e.bytes().unwrap(),
-        gate_e.ggml_type,
-        n_ff,
-        n_embd,
-        &buf.normed,
-        gate_buf,
-    );
-    matvec(
         up_e.bytes().unwrap(),
+        gate_e.ggml_type,
         up_e.ggml_type,
         n_ff,
         n_embd,
         &buf.normed,
+        gate_buf,
         up_buf,
     );
 
