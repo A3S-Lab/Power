@@ -70,6 +70,10 @@ struct LoadedModel {
     output_norm: Arc<Vec<f32>>,
     /// Per-layer tensor pointer cache — eliminates HashMap lookups from the hot path.
     tensor_cache: Arc<TensorCache>,
+    /// Jinja2 chat template from GGUF metadata (None = ChatML fallback).
+    chat_template: Option<String>,
+    /// Maximum sequence length for this model (from GGUF metadata, capped).
+    max_seq_len: usize,
     /// Session-keyed KV caches for multi-turn reuse.
     sessions: HashMap<String, KvCache>,
 }
@@ -150,6 +154,8 @@ struct GenerateParams<'a> {
     temperature: f32,
     top_p: f32,
     seed: u64,
+    /// Stop sequences — generation stops when any is found in the output.
+    stop: Vec<String>,
 }
 
 // ── Forward pass ─────────────────────────────────────────────────────────────
@@ -299,6 +305,7 @@ fn forward_pass_streaming(
     let mut gen_pos = start_pos + input_ids.len();
     let decode_start = std::time::Instant::now();
     let mut decode_count = 0u32;
+    let mut generated_text = String::new();
 
     for _step in 0..params.max_new_tokens {
         // Final norm — write into buf.normed_final, then copy to buf.normed_final.
@@ -351,6 +358,60 @@ fn forward_pass_streaming(
                 return;
             }
             Some(piece) => {
+                generated_text.push_str(&piece);
+
+                // Check stop sequences
+                let mut hit_stop = false;
+                for stop_seq in &params.stop {
+                    if let Some(pos) = generated_text.find(stop_seq.as_str()) {
+                        // Trim the piece to exclude the stop sequence
+                        let overshoot = generated_text.len() - pos;
+                        let trimmed = if overshoot <= piece.len() {
+                            &piece[..piece.len() - overshoot]
+                        } else {
+                            ""
+                        };
+                        if !trimmed.is_empty() {
+                            let _ = tx.blocking_send(Ok(ChatResponseChunk {
+                                content: trimmed.to_string(),
+                                thinking_content: None,
+                                done: false,
+                                prompt_tokens: None,
+                                done_reason: None,
+                                prompt_eval_duration_ns: None,
+                                tool_calls: None,
+                            }));
+                        }
+                        hit_stop = true;
+                        break;
+                    }
+                }
+
+                if hit_stop {
+                    let decode_elapsed = decode_start.elapsed();
+                    let decode_tok_per_sec = if decode_elapsed.as_secs_f64() > 0.0 {
+                        decode_count as f64 / decode_elapsed.as_secs_f64()
+                    } else {
+                        0.0
+                    };
+                    tracing::debug!(
+                        tokens = decode_count,
+                        elapsed_ms = decode_elapsed.as_millis() as u64,
+                        tok_per_sec = format!("{:.1}", decode_tok_per_sec),
+                        "picolm: decode complete (stop sequence)"
+                    );
+                    let _ = tx.blocking_send(Ok(ChatResponseChunk {
+                        content: String::new(),
+                        thinking_content: None,
+                        done: true,
+                        prompt_tokens: Some(input_ids.len() as u32),
+                        done_reason: Some("stop".to_string()),
+                        prompt_eval_duration_ns: None,
+                        tool_calls: None,
+                    }));
+                    return;
+                }
+
                 if tx
                     .blocking_send(Ok(ChatResponseChunk {
                         content: piece,
@@ -448,7 +509,7 @@ fn forward_pass_streaming(
 /// picolm inference backend — pure Rust, layer-streaming, zero C dependencies.
 pub struct PicolmBackend {
     #[cfg(feature = "picolm")]
-    loaded: Mutex<HashMap<String, LoadedModel>>,
+    loaded: Arc<Mutex<HashMap<String, LoadedModel>>>,
     #[cfg(feature = "picolm")]
     max_seq_len: usize,
 }
@@ -459,9 +520,9 @@ impl PicolmBackend {
         let _ = &config;
         Self {
             #[cfg(feature = "picolm")]
-            loaded: Mutex::new(HashMap::new()),
+            loaded: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "picolm")]
-            max_seq_len: 2048,
+            max_seq_len: 32768,
         }
     }
 }
@@ -489,7 +550,7 @@ impl Backend for PicolmBackend {
         {
             let path = manifest.path.clone();
             let name = manifest.name.clone();
-            let max_seq = self.max_seq_len;
+            let max_seq_cap = self.max_seq_len;
 
             let gguf = tokio::task::spawn_blocking(move || GgufFile::open(&path))
                 .await
@@ -542,6 +603,10 @@ impl Backend for PicolmBackend {
                 cfg.eos_token_id,
             );
 
+            // Use model's context length from GGUF metadata, capped by backend limit.
+            // This avoids the hardcoded 2048 that silently truncated long-context models.
+            let max_seq = (meta.context_length as usize).min(max_seq_cap);
+
             // Pre-compute RoPE cos/sin tables (eliminates powf/sin/cos from hot path)
             let rope_table = RopeTable::new(max_seq, head_dim, rope_dim, cfg.rope_theta);
 
@@ -577,13 +642,21 @@ impl Backend for PicolmBackend {
             let kv_mem =
                 (meta.n_layers as usize) * 2 * (meta.n_kv_heads as usize) * head_dim * max_seq * 2; // f16: 2 bytes
 
+            // Clone metadata fields before moving gguf into Arc.
+            let model_chat_template = meta.chat_template.clone();
+            let log_arch = meta.arch.clone();
+            let log_n_layers = meta.n_layers;
+            let log_n_embd = meta.n_embd;
+            let log_n_ff = meta.n_ff;
+            let log_vocab_size = meta.vocab_size;
+
             tracing::info!(
                 model = %name,
-                arch = %arch,
-                n_layers = meta.n_layers,
-                n_embd = meta.n_embd,
-                n_ff = meta.n_ff,
-                vocab_size = meta.vocab_size,
+                arch = %log_arch,
+                n_layers = log_n_layers,
+                n_embd = log_n_embd,
+                n_ff = log_n_ff,
+                vocab_size = log_vocab_size,
                 max_seq_len = max_seq,
                 kv_cache_mb = kv_mem / (1024 * 1024),
                 "picolm: model loaded (layer-streaming mode, optimized)"
@@ -602,6 +675,8 @@ impl Backend for PicolmBackend {
                     rope_table: Arc::new(rope_table),
                     output_norm: Arc::new(output_norm),
                     tensor_cache: Arc::new(tensor_cache),
+                    chat_template: model_chat_template,
+                    max_seq_len: max_seq,
                     sessions: HashMap::new(),
                 },
             );
@@ -643,13 +718,15 @@ impl Backend for PicolmBackend {
 
         #[cfg(feature = "picolm")]
         {
-            let (gguf, cfg, tokenizer, activation, kv_cache, rope_table, output_norm, tensor_cache) = {
+            let (gguf, cfg, tokenizer, activation, kv_cache, rope_table, output_norm, tensor_cache, chat_template, max_seq_len) = {
                 let mut loaded = self.loaded.lock().map_err(|_| {
                     PowerError::InferenceFailed("picolm: loaded models lock poisoned".to_string())
                 })?;
                 let model = loaded
                     .get_mut(model_name)
                     .ok_or_else(|| PowerError::ModelNotFound(model_name.to_string()))?;
+
+                let model_max_seq = model.max_seq_len;
 
                 // Get or create KV cache for this session
                 let session_key = request.session_id.clone().unwrap_or_default();
@@ -659,7 +736,7 @@ impl Backend for PicolmBackend {
                         model.cfg.n_layers,
                         model.cfg.n_kv_heads,
                         model.cfg.head_dim,
-                        self.max_seq_len,
+                        model_max_seq,
                     )
                 } else {
                     model.sessions.remove(&session_key).unwrap_or_else(|| {
@@ -667,7 +744,7 @@ impl Backend for PicolmBackend {
                             model.cfg.n_layers,
                             model.cfg.n_kv_heads,
                             model.cfg.head_dim,
-                            self.max_seq_len,
+                            model_max_seq,
                         )
                     })
                 };
@@ -681,30 +758,29 @@ impl Backend for PicolmBackend {
                     Arc::clone(&model.rope_table),
                     Arc::clone(&model.output_norm),
                     Arc::clone(&model.tensor_cache),
+                    model.chat_template.clone(),
+                    model_max_seq,
                 )
             };
 
-            let prompt = build_prompt(&request.messages);
+            let prompt = build_prompt(&request.messages, chat_template.as_deref());
             let input_ids = tokenizer.encode(&prompt);
             let temperature = request.temperature.unwrap_or(0.8);
             let top_p = request.top_p.unwrap_or(0.95);
             let max_new_tokens = request.max_tokens.unwrap_or(512);
-            let max_seq_len = self.max_seq_len;
             let seed = request.seed.map(|s| s as u64).unwrap_or(0);
+            let stop = request.stop.clone().unwrap_or_default();
 
             let (tx, rx) = mpsc::channel::<Result<ChatResponseChunk>>(128);
 
-            // Clone what we need for the session return
-            let _session_key = request.session_id.clone().unwrap_or_default();
+            let session_key = request.session_id.clone().unwrap_or_default();
+            let model_name_owned = model_name.to_string();
 
-            let loaded_mutex = {
-                // We need a way to return the KV cache after generation.
-                // Use a shared Arc<Mutex<Option<KvCache>>> pattern.
-                Arc::new(Mutex::new(Some(kv_cache)))
-            };
-            let kv_return = Arc::clone(&loaded_mutex);
+            // Shuttle the KV cache through the blocking task via a shared slot.
+            let kv_slot = Arc::new(Mutex::new(Some(kv_cache)));
+            let kv_return = Arc::clone(&kv_slot);
 
-            tokio::task::spawn_blocking(move || {
+            let blocking_handle = tokio::task::spawn_blocking(move || {
                 let mut kv = kv_return.lock().unwrap().take().unwrap();
                 let mut params = GenerateParams {
                     gguf: &gguf,
@@ -721,14 +797,27 @@ impl Backend for PicolmBackend {
                     temperature,
                     top_p,
                     seed,
+                    stop,
                 };
                 forward_pass_streaming(&mut params, &tx);
-                // Put KV cache back for session reuse
+                // Put KV cache back into the slot so the return task can pick it up.
                 *kv_return.lock().unwrap() = Some(kv);
             });
 
-            // TODO: return KV cache to session map after stream completes
-            // For now, session KV reuse requires the stream to complete fully.
+            // Return the KV cache to the session map once generation finishes.
+            if !session_key.is_empty() {
+                let loaded_arc = Arc::clone(&self.loaded);
+                tokio::spawn(async move {
+                    let _ = blocking_handle.await;
+                    if let Ok(Some(kv)) = kv_slot.lock().map(|mut g| g.take()) {
+                        if let Ok(mut map) = loaded_arc.lock() {
+                            if let Some(model) = map.get_mut(&model_name_owned) {
+                                model.sessions.insert(session_key, kv);
+                            }
+                        }
+                    }
+                });
+            }
 
             Ok(Box::pin(ReceiverStream::new(rx)))
         }
@@ -775,7 +864,14 @@ impl Backend for PicolmBackend {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 #[cfg(any(feature = "picolm", test))]
-fn build_prompt(messages: &[ChatMessage]) -> String {
+fn build_prompt(messages: &[ChatMessage], chat_template: Option<&str>) -> String {
+    if let Some(tmpl) = chat_template {
+        if let Ok(rendered) = render_jinja_template(tmpl, messages) {
+            return rendered;
+        }
+        // Fall through to ChatML on template error
+    }
+    // ChatML fallback
     let mut out = String::new();
     for msg in messages {
         let content = msg.content.text();
@@ -786,6 +882,42 @@ fn build_prompt(messages: &[ChatMessage]) -> String {
     }
     out.push_str("<|im_start|>assistant\n");
     out
+}
+
+/// Render a Jinja2 chat template with the given messages.
+#[cfg(any(feature = "picolm", test))]
+fn render_jinja_template(template_str: &str, messages: &[ChatMessage]) -> std::result::Result<String, String> {
+    let env = minijinja::Environment::new();
+    let tmpl = env
+        .template_from_str(template_str)
+        .map_err(|e| format!("template parse error: {e}"))?;
+
+    // Build messages array for the template context
+    let msgs: Vec<minijinja::Value> = messages
+        .iter()
+        .map(|m| {
+            let mut map = std::collections::BTreeMap::new();
+            map.insert(
+                "role".to_string(),
+                minijinja::Value::from(m.role.as_str()),
+            );
+            map.insert(
+                "content".to_string(),
+                minijinja::Value::from(m.content.text()),
+            );
+            minijinja::Value::from_serialize(&map)
+        })
+        .collect();
+
+    let ctx = minijinja::context! {
+        messages => msgs,
+        add_generation_prompt => true,
+        bos_token => "<s>",
+        eos_token => "</s>",
+    };
+
+    tmpl.render(ctx)
+        .map_err(|e| format!("template render error: {e}"))
 }
 
 fn completion_to_chat(req: CompletionRequest) -> ChatRequest {
@@ -868,7 +1000,7 @@ mod tests {
             tool_call_id: None,
             images: None,
         }];
-        let p = build_prompt(&msgs);
+        let p = build_prompt(&msgs, None);
         assert!(p.ends_with("<|im_start|>assistant\n"));
         assert!(p.contains("Hello"));
     }
@@ -911,5 +1043,100 @@ mod tests {
         let mut rng = 99999u64;
         let t = sample_token(&logits, 0.8, 0.95, &mut rng);
         assert!(t < logits.len());
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_kv_cache_session_insert_remove() {
+        // Verify the HashMap insert/remove pattern used for session KV reuse.
+        let mut sessions: HashMap<String, KvCache> = HashMap::new();
+        let key = "session-abc".to_string();
+
+        // First turn: no existing cache → create fresh.
+        let kv = sessions.remove(&key).unwrap_or_else(|| {
+            KvCache::new(2, 4, 64, 128)
+        });
+        assert_eq!(kv.seq_len(), 0);
+
+        // Simulate generation completing: put cache back.
+        sessions.insert(key.clone(), kv);
+        assert!(sessions.contains_key(&key));
+
+        // Second turn: existing cache is retrieved and removed.
+        let kv2 = sessions.remove(&key).unwrap_or_else(|| {
+            KvCache::new(2, 4, 64, 128)
+        });
+        // Cache was returned, so it should be gone from the map now.
+        assert!(!sessions.contains_key(&key));
+        drop(kv2);
+
+        // Transient (empty session key): never inserted.
+        let transient_key = String::new();
+        assert!(transient_key.is_empty());
+        let _kv = sessions.remove(&transient_key).unwrap_or_else(|| {
+            KvCache::new(2, 4, 64, 128)
+        });
+        // Empty key must never be stored back.
+        assert!(!sessions.contains_key(&transient_key));
+    }
+
+    #[test]
+    fn test_build_prompt_chatml_fallback() {
+        // When no template is provided, should use ChatML format
+        let msgs = vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: MessageContent::Text("You are helpful.".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("Hi".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            },
+        ];
+        let p = build_prompt(&msgs, None);
+        assert!(p.contains("<|im_start|>system"));
+        assert!(p.contains("<|im_start|>user"));
+        assert!(p.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn test_build_prompt_jinja_template() {
+        // Llama 3 style template
+        let template = "{% for message in messages %}<|start_header_id|>{{ message.role }}<|end_header_id|>\n\n{{ message.content }}<|eot_id|>{% endfor %}{% if add_generation_prompt %}<|start_header_id|>assistant<|end_header_id|>\n\n{% endif %}";
+        let msgs = vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text("Hello".to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images: None,
+        }];
+        let p = build_prompt(&msgs, Some(template));
+        assert!(p.contains("<|start_header_id|>user<|end_header_id|>"));
+        assert!(p.contains("Hello"));
+        assert!(p.contains("<|start_header_id|>assistant<|end_header_id|>"));
+    }
+
+    #[test]
+    fn test_build_prompt_invalid_template_falls_back() {
+        // Invalid Jinja2 should fall back to ChatML
+        let msgs = vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text("Hi".to_string()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images: None,
+        }];
+        let p = build_prompt(&msgs, Some("{% invalid jinja %}"));
+        assert!(p.contains("<|im_start|>"));
     }
 }

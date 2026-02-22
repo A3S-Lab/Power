@@ -86,6 +86,8 @@ pub struct GgufMeta {
     pub rope_theta: f32,
     /// RoPE dimension count (None = full head_dim).
     pub rope_dim: Option<u32>,
+    /// Chat template (Jinja2) from GGUF metadata, if present.
+    pub chat_template: Option<String>,
     /// Tokenizer vocabulary strings.
     pub vocab_tokens: Vec<String>,
     /// Tokenizer merge priority scores.
@@ -375,6 +377,12 @@ fn parse_gguf_header(data: *const u8, len: usize) -> Result<GgufMeta> {
         .and_then(|v| v.as_i32_array())
         .unwrap_or_default();
 
+    // Chat template (Jinja2 format) — used for prompt formatting
+    let chat_template = kv
+        .get("tokenizer.chat_template")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     // Parse tensor descriptors
     // Alignment: tensor data starts at next multiple of alignment after descriptors
     let alignment = kv
@@ -429,6 +437,7 @@ fn parse_gguf_header(data: *const u8, len: usize) -> Result<GgufMeta> {
         norm_eps,
         rope_theta,
         rope_dim,
+        chat_template,
         vocab_tokens,
         vocab_scores,
         vocab_types,
