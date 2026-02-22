@@ -350,6 +350,11 @@ pub async fn handler(
                     .into_response()
             } else {
                 // Non-streaming: collect full response
+                // Timing padding: delay before processing to prevent
+                // prompt-length inference from response latency.
+                if let Some(pad) = state.timing_padding() {
+                    tokio::time::sleep(pad).await;
+                }
                 let start = Instant::now();
                 let mut full_content = String::new();
                 let mut full_thinking = String::new();

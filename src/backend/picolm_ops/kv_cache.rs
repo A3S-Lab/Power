@@ -5,6 +5,11 @@
 //!
 //! Memory layout is position-major for cache-friendly sequential access
 //! during attention score computation.
+//!
+//! # TEE Security
+//!
+//! All KV data is zeroized on drop to prevent cached conversation context
+//! from persisting in TEE memory after session cleanup.
 
 use half::f16;
 
@@ -96,14 +101,29 @@ impl LayerKvCache {
         self.len == 0
     }
 
-    /// Clear all cached positions.
+    /// Clear all cached positions and zeroize the data.
     pub fn clear(&mut self) {
+        self.zeroize_data();
         self.len = 0;
     }
 
     /// Memory usage in bytes (f16 = 2 bytes/element).
     pub fn memory_bytes(&self) -> usize {
         self.k.len() * 2 + self.v.len() * 2
+    }
+
+    /// Zeroize all KV data in-place (overwrites with f16::ZERO).
+    fn zeroize_data(&mut self) {
+        self.k.fill(f16::ZERO);
+        self.v.fill(f16::ZERO);
+    }
+}
+
+/// Zeroize all cached K/V data on drop to prevent conversation context
+/// from persisting in TEE memory after session cleanup.
+impl Drop for LayerKvCache {
+    fn drop(&mut self) {
+        self.zeroize_data();
     }
 }
 
@@ -132,10 +152,11 @@ impl KvCache {
         self.layers.iter().map(|l| l.memory_bytes()).sum()
     }
 
-    /// Clear all cached positions across all layers.
+    /// Clear all cached positions across all layers and zeroize the data.
     pub fn clear(&mut self) {
         for layer in &mut self.layers {
-            layer.clear();
+            layer.zeroize_data();
+            layer.len = 0;
         }
     }
 

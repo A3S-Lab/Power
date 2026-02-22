@@ -718,7 +718,18 @@ impl Backend for PicolmBackend {
 
         #[cfg(feature = "picolm")]
         {
-            let (gguf, cfg, tokenizer, activation, kv_cache, rope_table, output_norm, tensor_cache, chat_template, max_seq_len) = {
+            let (
+                gguf,
+                cfg,
+                tokenizer,
+                activation,
+                kv_cache,
+                rope_table,
+                output_norm,
+                tensor_cache,
+                chat_template,
+                max_seq_len,
+            ) = {
                 let mut loaded = self.loaded.lock().map_err(|_| {
                     PowerError::InferenceFailed("picolm: loaded models lock poisoned".to_string())
                 })?;
@@ -886,7 +897,10 @@ fn build_prompt(messages: &[ChatMessage], chat_template: Option<&str>) -> String
 
 /// Render a Jinja2 chat template with the given messages.
 #[cfg(any(feature = "picolm", test))]
-fn render_jinja_template(template_str: &str, messages: &[ChatMessage]) -> std::result::Result<String, String> {
+fn render_jinja_template(
+    template_str: &str,
+    messages: &[ChatMessage],
+) -> std::result::Result<String, String> {
     let env = minijinja::Environment::new();
     let tmpl = env
         .template_from_str(template_str)
@@ -897,10 +911,7 @@ fn render_jinja_template(template_str: &str, messages: &[ChatMessage]) -> std::r
         .iter()
         .map(|m| {
             let mut map = std::collections::BTreeMap::new();
-            map.insert(
-                "role".to_string(),
-                minijinja::Value::from(m.role.as_str()),
-            );
+            map.insert("role".to_string(), minijinja::Value::from(m.role.as_str()));
             map.insert(
                 "content".to_string(),
                 minijinja::Value::from(m.content.text()),
@@ -1053,9 +1064,9 @@ mod tests {
         let key = "session-abc".to_string();
 
         // First turn: no existing cache → create fresh.
-        let kv = sessions.remove(&key).unwrap_or_else(|| {
-            KvCache::new(2, 4, 64, 128)
-        });
+        let kv = sessions
+            .remove(&key)
+            .unwrap_or_else(|| KvCache::new(2, 4, 64, 128));
         assert_eq!(kv.seq_len(), 0);
 
         // Simulate generation completing: put cache back.
@@ -1063,9 +1074,9 @@ mod tests {
         assert!(sessions.contains_key(&key));
 
         // Second turn: existing cache is retrieved and removed.
-        let kv2 = sessions.remove(&key).unwrap_or_else(|| {
-            KvCache::new(2, 4, 64, 128)
-        });
+        let kv2 = sessions
+            .remove(&key)
+            .unwrap_or_else(|| KvCache::new(2, 4, 64, 128));
         // Cache was returned, so it should be gone from the map now.
         assert!(!sessions.contains_key(&key));
         drop(kv2);
@@ -1073,9 +1084,9 @@ mod tests {
         // Transient (empty session key): never inserted.
         let transient_key = String::new();
         assert!(transient_key.is_empty());
-        let _kv = sessions.remove(&transient_key).unwrap_or_else(|| {
-            KvCache::new(2, 4, 64, 128)
-        });
+        let _kv = sessions
+            .remove(&transient_key)
+            .unwrap_or_else(|| KvCache::new(2, 4, 64, 128));
         // Empty key must never be stored back.
         assert!(!sessions.contains_key(&transient_key));
     }

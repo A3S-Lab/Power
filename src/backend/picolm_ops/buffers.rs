@@ -14,6 +14,13 @@
 //! - `n_ff`    — gate, up
 //! - `vocab_size` — logits
 //! - `max_seq_len` — attention scores (grows with context)
+//!
+//! # TEE Security
+//!
+//! All buffers are zeroized on drop to prevent sensitive inference data
+//! (prompts, activations, logits) from persisting in TEE memory.
+
+use zeroize::Zeroize;
 
 pub struct ForwardBuffers {
     /// Pre-attention / pre-FFN RMSNorm output  [n_embd]
@@ -68,6 +75,26 @@ impl ForwardBuffers {
             normed_final: vec![0.0f32; n_embd],
             logits: vec![0.0f32; vocab_size],
         }
+    }
+}
+
+/// Zeroize all buffers on drop to prevent sensitive inference data
+/// (prompts, intermediate activations, logits) from persisting in memory.
+/// Critical for TEE environments where memory pages may be inspected.
+impl Drop for ForwardBuffers {
+    fn drop(&mut self) {
+        self.normed.zeroize();
+        self.q.zeroize();
+        self.k.zeroize();
+        self.v.zeroize();
+        self.attn_out.zeroize();
+        self.scores.zeroize();
+        self.proj.zeroize();
+        self.gate.zeroize();
+        self.up.zeroize();
+        self.down.zeroize();
+        self.normed_final.zeroize();
+        self.logits.zeroize();
     }
 }
 
