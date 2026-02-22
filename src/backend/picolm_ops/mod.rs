@@ -22,6 +22,8 @@ pub mod norm;
 #[cfg(feature = "picolm")]
 pub mod rope;
 #[cfg(feature = "picolm")]
+pub mod speculative;
+#[cfg(feature = "picolm")]
 pub mod tensor_cache;
 #[cfg(feature = "picolm")]
 pub mod tokenizer;

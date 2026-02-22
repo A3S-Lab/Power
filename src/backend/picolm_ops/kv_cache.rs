@@ -101,6 +101,14 @@ impl LayerKvCache {
         self.len == 0
     }
 
+    /// Truncate the cache to `new_len` positions.
+    /// Used by speculative decoding to roll back rejected draft tokens.
+    #[inline]
+    pub fn truncate(&mut self, new_len: usize) {
+        debug_assert!(new_len <= self.len);
+        self.len = new_len;
+    }
+
     /// Clear all cached positions and zeroize the data.
     pub fn clear(&mut self) {
         self.zeroize_data();
@@ -163,6 +171,14 @@ impl KvCache {
     /// Number of cached positions (same across all layers).
     pub fn seq_len(&self) -> usize {
         self.layers.first().map(|l| l.len()).unwrap_or(0)
+    }
+
+    /// Truncate all layers to `new_len` positions.
+    /// Used by speculative decoding to roll back rejected draft tokens.
+    pub fn truncate(&mut self, new_len: usize) {
+        for layer in &mut self.layers {
+            layer.truncate(new_len);
+        }
     }
 }
 

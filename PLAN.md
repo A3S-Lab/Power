@@ -60,7 +60,7 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 
 ---
 
-## Phase 5: Performance & Scalability — Partially Complete
+## Phase 5: Performance & Scalability ✅
 
 **Goal**: Close the remaining performance gaps vs. llama.cpp for TEE-constrained environments.
 
@@ -84,8 +84,14 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 - `matmul_batch` function for batched matrix-vector multiply
 - Hidden states matrix `[n_tokens × n_embd]` flows through layers
 
-### 5.4 — 🚧 Speculative Decoding (Priority: LOW)
-- Evaluate after 5.1-5.3
+### 5.4 — ✅ Speculative Decoding (Prompt-Lookup)
+- Prompt-lookup decoding: matches n-grams (2–5) from generated text against input tokens
+- Zero draft cost — no extra model or layer-skipping needed
+- `count_accepted` greedy verification against full-model logits
+- KV cache rollback via `truncate()` for rejected draft tokens
+- Wired into decode loop with hidden-state backup/restore
+- Disabled during grammar-constrained generation (structured output)
+- Works well for tasks where output overlaps input (summarization, JSON, code completion)
 
 ---
 
@@ -170,11 +176,11 @@ Phase 6 (TEE Hardening):                     ✅ ALL COMPLETE
   6.2 Memory zeroization audit               ✅
   6.3 Startup self-test                      ✅
 
-Phase 5 (Performance):                       🚧 PARTIAL
+Phase 5 (Performance):                       ✅ ALL COMPLETE
   5.1 AVX2/AVX-512 vec_dot                   ✅ (F32, Q8_0, Q4_K, Q6_K)
   5.2 NEON vec_dot                           ✅ (F32, Q8_0, Q4_K, Q6_K)
   5.3 Batch prefill                          ✅ (layer-outer loop, matmul_batch)
-  5.4 Speculative decoding                   🚧 (not started, low priority)
+  5.4 Speculative decoding                   ✅ (prompt-lookup, KV rollback)
 
 Phase 7 (Ecosystem):                         ✅ ALL COMPLETE
   7.3 Repeat penalty                         ✅
@@ -183,4 +189,4 @@ Phase 7 (Ecosystem):                         ✅ ALL COMPLETE
 ```
 
 **895 tests total** (unit + integration + real model).
-**Recommended next**: 5.4 Speculative decoding (low priority — evaluate based on real-world benchmarks).
+**All phases complete.** Phases 4–7 fully implemented.

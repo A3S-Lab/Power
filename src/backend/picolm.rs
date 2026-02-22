@@ -271,7 +271,7 @@ fn forward_pass_streaming(
     params: &mut GenerateParams<'_>,
     tx: &mpsc::Sender<Result<ChatResponseChunk>>,
 ) {
-    use super::picolm_ops::{attention, ffn, matmul, norm};
+    use super::picolm_ops::{attention, ffn, matmul, norm, speculative};
 
     let cfg = params.cfg;
     let gguf = params.gguf;
@@ -402,15 +402,9 @@ fn forward_pass_streaming(
                     let _ = tx.blocking_send(Err(e));
                     return;
                 }
-                if let Err(e) = ffn::ffn_layer(
-                    h,
-                    tc,
-                    layer,
-                    cfg,
-                    activation,
-                    &ffn_norm_buf,
-                    &mut buf,
-                ) {
+                if let Err(e) =
+                    ffn::ffn_layer(h, tc, layer, cfg, activation, &ffn_norm_buf, &mut buf)
+                {
                     let _ = tx.blocking_send(Err(e));
                     return;
                 }
@@ -423,9 +417,7 @@ fn forward_pass_streaming(
         }
 
         // Copy the last token's hidden state for decode phase.
-        hidden.copy_from_slice(
-            &hidden_states[(n_prefill - 1) * n_embd..n_prefill * n_embd],
-        );
+        hidden.copy_from_slice(&hidden_states[(n_prefill - 1) * n_embd..n_prefill * n_embd]);
     }
     let prefill_elapsed = prefill_start.elapsed();
     let prefill_tok_per_sec = if prefill_elapsed.as_secs_f64() > 0.0 {
@@ -449,6 +441,9 @@ fn forward_pass_streaming(
     // Recent token ring buffer for repeat/frequency/presence penalty.
     // Tracks last 64 generated tokens (sufficient for most repetition patterns).
     let mut recent_tokens: Vec<u32> = Vec::with_capacity(64);
+
+    // Track all generated token IDs for speculative decoding n-gram matching.
+    let mut generated_token_ids: Vec<u32> = Vec::new();
 
     for _step in 0..params.max_new_tokens {
         // Final norm — write into buf.normed_final, then copy to buf.normed_final.
@@ -492,6 +487,7 @@ fn forward_pass_streaming(
             recent_tokens.remove(0);
         }
         recent_tokens.push(next_token);
+        generated_token_ids.push(next_token);
 
         // Decode and send.
         decode_count += 1;
@@ -693,6 +689,190 @@ fn forward_pass_streaming(
         }
 
         gen_pos += 1;
+
+        // ── Speculative decoding: prompt-lookup draft ────────────────────
+        // Try to find n-gram continuations from the input tokens and verify
+        // them in batch. Accepted tokens skip individual forward passes.
+        if grammar_sampler.is_none() {
+            let draft_tokens = speculative::prompt_lookup_draft(
+                input_ids,
+                &generated_token_ids,
+                speculative::DRAFT_K,
+            );
+            if !draft_tokens.is_empty() {
+                let kv_pos_before = gen_pos;
+                let mut verify_logits: Vec<Vec<f32>> = Vec::with_capacity(draft_tokens.len());
+                // Save hidden state so we can restore if all drafts are rejected.
+                let hidden_backup = hidden.clone();
+
+                // Run each draft token through the full model to get verify logits.
+                for &draft_tok in &draft_tokens {
+                    matmul::extract_row(
+                        embd_raw,
+                        embd_type,
+                        n_embd,
+                        draft_tok as usize,
+                        &mut hidden,
+                    );
+                    for layer in 0..cfg.n_layers {
+                        let attn_name = format!("blk.{layer}.attn_norm.weight");
+                        let ffn_name = format!("blk.{layer}.ffn_norm.weight");
+                        load_norm!(&attn_name, &mut attn_norm_buf);
+                        load_norm!(&ffn_name, &mut ffn_norm_buf);
+
+                        if let Err(e) = attention::attention_layer(
+                            &mut hidden,
+                            tc,
+                            layer,
+                            gen_pos,
+                            kv_cache.layer_mut(layer),
+                            cfg,
+                            rope_table,
+                            &attn_norm_buf,
+                            &mut buf,
+                        ) {
+                            let _ = tx.blocking_send(Err(e));
+                            return;
+                        }
+                        if let Err(e) = ffn::ffn_layer(
+                            &mut hidden,
+                            tc,
+                            layer,
+                            cfg,
+                            activation,
+                            &ffn_norm_buf,
+                            &mut buf,
+                        ) {
+                            let _ = tx.blocking_send(Err(e));
+                            return;
+                        }
+                        let _ = tc.release_layer(gguf, layer);
+                        let _ = gguf.advise_dontneed(&attn_name);
+                        let _ = gguf.advise_dontneed(&ffn_name);
+                    }
+
+                    // Compute logits for this draft position.
+                    buf.normed_final[..n_embd].copy_from_slice(&hidden);
+                    norm::rms_norm_f32(
+                        &mut buf.normed_final[..n_embd],
+                        output_norm_w,
+                        cfg.norm_eps,
+                    );
+                    matmul::matvec(
+                        out_raw,
+                        out_type,
+                        cfg.vocab_size,
+                        n_embd,
+                        &buf.normed_final[..n_embd],
+                        &mut buf.logits,
+                    );
+                    verify_logits.push(buf.logits[..cfg.vocab_size].to_vec());
+                    gen_pos += 1;
+                }
+
+                let n_accepted = speculative::count_accepted(&draft_tokens, &verify_logits);
+
+                // Roll back KV cache for rejected draft tokens.
+                let rollback_to = kv_pos_before + n_accepted;
+                if rollback_to < gen_pos {
+                    kv_cache.truncate(rollback_to);
+                    gen_pos = rollback_to;
+                }
+
+                // If no drafts accepted, restore hidden state from before speculation.
+                if n_accepted == 0 {
+                    hidden.copy_from_slice(&hidden_backup);
+                }
+
+                // Stream accepted draft tokens.
+                for &tok in &draft_tokens[..n_accepted] {
+                    decode_count += 1;
+                    generated_token_ids.push(tok);
+                    if recent_tokens.len() >= 64 {
+                        recent_tokens.remove(0);
+                    }
+                    recent_tokens.push(tok);
+
+                    match tokenizer.decode(tok) {
+                        None => {
+                            // EOS from speculative token
+                            let tool_calls = if params.has_tools {
+                                super::tool_parser::parse_tool_calls(&generated_text)
+                            } else {
+                                None
+                            };
+                            let _ = tx.blocking_send(Ok(ChatResponseChunk {
+                                content: String::new(),
+                                thinking_content: None,
+                                done: true,
+                                prompt_tokens: Some(input_ids.len() as u32),
+                                done_reason: Some("stop".to_string()),
+                                prompt_eval_duration_ns: None,
+                                tool_calls,
+                            }));
+                            return;
+                        }
+                        Some(piece) => {
+                            generated_text.push_str(&piece);
+
+                            // Check stop sequences.
+                            let mut hit_stop = false;
+                            for stop_seq in &params.stop {
+                                if generated_text.contains(stop_seq.as_str()) {
+                                    hit_stop = true;
+                                    break;
+                                }
+                            }
+                            if hit_stop {
+                                let tool_calls = if params.has_tools {
+                                    super::tool_parser::parse_tool_calls(&generated_text)
+                                } else {
+                                    None
+                                };
+                                let _ = tx.blocking_send(Ok(ChatResponseChunk {
+                                    content: String::new(),
+                                    thinking_content: None,
+                                    done: true,
+                                    prompt_tokens: Some(input_ids.len() as u32),
+                                    done_reason: Some("stop".to_string()),
+                                    prompt_eval_duration_ns: None,
+                                    tool_calls,
+                                }));
+                                return;
+                            }
+
+                            if tx
+                                .blocking_send(Ok(ChatResponseChunk {
+                                    content: piece,
+                                    thinking_content: None,
+                                    done: false,
+                                    prompt_tokens: None,
+                                    done_reason: None,
+                                    prompt_eval_duration_ns: None,
+                                    tool_calls: None,
+                                }))
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // If we accepted tokens, the hidden state is already set from
+                // the last accepted draft's forward pass. If none accepted,
+                // hidden state is from the original token (unchanged).
+                // The next loop iteration will use the correct hidden state.
+
+                if n_accepted > 0 {
+                    tracing::trace!(
+                        drafted = draft_tokens.len(),
+                        accepted = n_accepted,
+                        "picolm: speculative accepted"
+                    );
+                }
+            }
+        }
     }
 
     // Max tokens reached.

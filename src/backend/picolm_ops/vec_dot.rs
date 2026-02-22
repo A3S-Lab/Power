@@ -445,8 +445,13 @@ mod neon {
                         .as_ptr(),
                     );
                     let hi = vld1q_f32(
-                        [(b0 >> 4) as f32, (b1 >> 4) as f32, (b2 >> 4) as f32, (b3 >> 4) as f32]
-                            .as_ptr(),
+                        [
+                            (b0 >> 4) as f32,
+                            (b1 >> 4) as f32,
+                            (b2 >> 4) as f32,
+                            (b3 >> 4) as f32,
+                        ]
+                        .as_ptr(),
                     );
 
                     let xlo = vld1q_f32(xp.add(x_off + base));
@@ -504,14 +509,11 @@ mod neon {
 
                 for l in 0..16 {
                     let q1 = ((*ql_c.add(l) & 0xF) | ((*qh_c.add(l) & 3) << 4)) as i8 - 32;
-                    let q2 = ((*ql_c.add(l + 32) & 0xF) | (((*qh_c.add(l) >> 2) & 3) << 4))
-                        as i8
-                        - 32;
-                    let q3 =
-                        ((*ql_c.add(l) >> 4) | (((*qh_c.add(l) >> 4) & 3) << 4)) as i8 - 32;
-                    let q4 = ((*ql_c.add(l + 32) >> 4) | (((*qh_c.add(l) >> 6) & 3) << 4))
-                        as i8
-                        - 32;
+                    let q2 =
+                        ((*ql_c.add(l + 32) & 0xF) | (((*qh_c.add(l) >> 2) & 3) << 4)) as i8 - 32;
+                    let q3 = ((*ql_c.add(l) >> 4) | (((*qh_c.add(l) >> 4) & 3) << 4)) as i8 - 32;
+                    let q4 =
+                        ((*ql_c.add(l + 32) >> 4) | (((*qh_c.add(l) >> 6) & 3) << 4)) as i8 - 32;
 
                     sums[is] += q1 as f32 * *xp_c.add(l);
                     sums[is + 2] += q2 as f32 * *xp_c.add(l + 32);
@@ -520,14 +522,11 @@ mod neon {
                 }
                 for l in 16..32 {
                     let q1 = ((*ql_c.add(l) & 0xF) | ((*qh_c.add(l) & 3) << 4)) as i8 - 32;
-                    let q2 = ((*ql_c.add(l + 32) & 0xF) | (((*qh_c.add(l) >> 2) & 3) << 4))
-                        as i8
-                        - 32;
-                    let q3 =
-                        ((*ql_c.add(l) >> 4) | (((*qh_c.add(l) >> 4) & 3) << 4)) as i8 - 32;
-                    let q4 = ((*ql_c.add(l + 32) >> 4) | (((*qh_c.add(l) >> 6) & 3) << 4))
-                        as i8
-                        - 32;
+                    let q2 =
+                        ((*ql_c.add(l + 32) & 0xF) | (((*qh_c.add(l) >> 2) & 3) << 4)) as i8 - 32;
+                    let q3 = ((*ql_c.add(l) >> 4) | (((*qh_c.add(l) >> 4) & 3) << 4)) as i8 - 32;
+                    let q4 =
+                        ((*ql_c.add(l + 32) >> 4) | (((*qh_c.add(l) >> 6) & 3) << 4)) as i8 - 32;
 
                     sums[is + 1] += q1 as f32 * *xp_c.add(l);
                     sums[is + 3] += q2 as f32 * *xp_c.add(l + 32);

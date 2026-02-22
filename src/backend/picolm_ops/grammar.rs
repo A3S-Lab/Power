@@ -71,8 +71,8 @@ impl JsonGrammarSampler {
             JsonState::Value => {
                 // Any JSON value can start with: { [ " - 0-9 t f n or whitespace
                 Some(vec![
-                    '{', '[', '"', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 't',
-                    'f', 'n', ' ', '\t', '\n', '\r',
+                    '{', '[', '"', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 't', 'f',
+                    'n', ' ', '\t', '\n', '\r',
                 ])
             }
             JsonState::ObjectStart => {
@@ -84,8 +84,8 @@ impl JsonGrammarSampler {
             JsonState::ArrayStart => {
                 // Expecting value or closing ']'
                 Some(vec![
-                    '{', '[', '"', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 't',
-                    'f', 'n', ']', ' ', '\t', '\n', '\r',
+                    '{', '[', '"', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 't', 'f',
+                    'n', ']', ' ', '\t', '\n', '\r',
                 ])
             }
             JsonState::ArrayComma => Some(vec![',', ']', ' ', '\t', '\n', '\r']),
@@ -93,9 +93,7 @@ impl JsonGrammarSampler {
                 // Any printable character except unescaped control chars
                 None // Allow all printable chars inside strings
             }
-            JsonState::InStringEscape => {
-                Some(vec!['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'])
-            }
+            JsonState::InStringEscape => Some(vec!['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u']),
             JsonState::Keyword { expected } => {
                 if let Some(ch) = expected.chars().next() {
                     Some(vec![ch])
@@ -107,8 +105,8 @@ impl JsonGrammarSampler {
             JsonState::InNumber => {
                 // Digits, '.', 'e', 'E', '+', '-', or structural end
                 Some(vec![
-                    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', 'e', 'E', '+', '-',
-                    ',', '}', ']', ' ', '\t', '\n', '\r',
+                    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', 'e', 'E', '+', '-', ',',
+                    '}', ']', ' ', '\t', '\n', '\r',
                 ])
             }
             JsonState::Done => None,
@@ -561,7 +559,8 @@ mod tests {
     #[test]
     fn test_complex_nested() {
         let mut s = JsonGrammarSampler::new();
-        let input = r#"{"users":[{"name":"Alice","active":true},{"name":"Bob","active":false}],"count":2}"#;
+        let input =
+            r#"{"users":[{"name":"Alice","active":true},{"name":"Bob","active":false}],"count":2}"#;
         for ch in input.chars() {
             assert!(s.feed(ch), "failed at char '{ch}'");
         }
