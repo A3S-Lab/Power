@@ -208,9 +208,9 @@ fn softmax_neon(x: &mut [f32]) {
             max_v = vmaxq_f32(max_v, v);
         }
         let mut max_val = vmaxvq_f32(max_v);
-        for i in (chunks * 4)..n {
-            if x[i] > max_val {
-                max_val = x[i];
+        for val in &x[(chunks * 4)..n] {
+            if *val > max_val {
+                max_val = *val;
             }
         }
 
@@ -233,9 +233,9 @@ fn softmax_neon(x: &mut [f32]) {
             sum_v = vaddq_f32(sum_v, exp_v);
         }
         let mut sum = vaddvq_f32(sum_v);
-        for i in (chunks * 4)..n {
-            x[i] = (x[i] - max_val).exp();
-            sum += x[i];
+        for val in x[(chunks * 4)..n].iter_mut() {
+            *val = (*val - max_val).exp();
+            sum += *val;
         }
 
         // Pass 3: normalize
@@ -247,8 +247,8 @@ fn softmax_neon(x: &mut [f32]) {
                 let v = vld1q_f32(x.as_ptr().add(off));
                 vst1q_f32(x.as_mut_ptr().add(off), vmulq_f32(v, inv_v));
             }
-            for i in (chunks * 4)..n {
-                x[i] *= inv_sum;
+            for val in x[(chunks * 4)..n].iter_mut() {
+                *val *= inv_sum;
             }
         }
     }

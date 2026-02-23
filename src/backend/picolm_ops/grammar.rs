@@ -50,6 +50,12 @@ pub struct JsonGrammarSampler {
     number_buf: String,
 }
 
+impl Default for JsonGrammarSampler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JsonGrammarSampler {
     /// Create a new sampler expecting a JSON value.
     pub fn new() -> Self {
@@ -62,10 +68,7 @@ impl JsonGrammarSampler {
     /// Return the set of characters valid at the current parse position.
     /// Returns `None` if any character is valid (unconstrained / done).
     pub fn allowed_chars(&self) -> Option<Vec<char>> {
-        let state = match self.stack.last() {
-            Some(s) => s,
-            None => return None, // empty stack = done, allow anything (EOS)
-        };
+        let state = self.stack.last()?;
 
         match state {
             JsonState::Value => {

@@ -75,8 +75,8 @@ fn rms_norm_f32_neon(x: &mut [f32], weight: &[f32], eps: f32) {
             sum_v = vfmaq_f32(sum_v, xv, xv);
         }
         let mut ss = vaddvq_f32(sum_v);
-        for i in (chunks * 4)..n {
-            ss += x[i] * x[i];
+        for val in &x[(chunks * 4)..n] {
+            ss += val * val;
         }
         let rms_inv = 1.0 / (ss / n as f32 + eps).sqrt();
         let rms_inv_v = vdupq_n_f32(rms_inv);
@@ -89,8 +89,8 @@ fn rms_norm_f32_neon(x: &mut [f32], weight: &[f32], eps: f32) {
             let scaled = vmulq_f32(vmulq_f32(xv, rms_inv_v), wv);
             vst1q_f32(x.as_mut_ptr().add(off), scaled);
         }
-        for i in (chunks * 4)..n {
-            x[i] = x[i] * rms_inv * weight[i];
+        for (xv, wv) in x[(chunks * 4)..n].iter_mut().zip(&weight[(chunks * 4)..n]) {
+            *xv = *xv * rms_inv * wv;
         }
     }
 }

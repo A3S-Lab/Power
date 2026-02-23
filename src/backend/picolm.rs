@@ -160,9 +160,9 @@ fn apply_repeat_penalty(
 
     for &tok in recent_tokens {
         let mut found = false;
-        for i in 0..n_seen {
-            if seen[i].0 == tok {
-                seen[i].1 += 1;
+        for entry in seen[..n_seen].iter_mut() {
+            if entry.0 == tok {
+                entry.1 += 1;
                 found = true;
                 break;
             }
@@ -173,8 +173,7 @@ fn apply_repeat_penalty(
         }
     }
 
-    for i in 0..n_seen {
-        let (tok, count) = seen[i];
+    for &(tok, count) in &seen[..n_seen] {
         let idx = tok as usize;
         if idx >= logits.len() {
             continue;

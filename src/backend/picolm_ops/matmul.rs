@@ -61,6 +61,7 @@ pub fn matvec(
 /// vector `x` stays in L1/L2 cache while both weight rows are processed. For FFN
 /// gate+up projections (the biggest compute bottleneck), this avoids reading `x`
 /// from RAM twice.
+#[allow(clippy::too_many_arguments)]
 pub fn matvec_dual(
     weight_a: &[u8],
     weight_b: &[u8],

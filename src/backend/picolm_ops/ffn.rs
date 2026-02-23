@@ -191,7 +191,7 @@ fn silu(x: f32) -> f32 {
 /// GELU activation (approximate): 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
 #[inline]
 fn gelu(x: f32) -> f32 {
-    const C: f32 = 0.7978845608; // sqrt(2/π)
+    const C: f32 = 0.797_884_6; // sqrt(2/π)
     0.5 * x * (1.0 + (C * (x + 0.044715 * x * x * x)).tanh())
 }
 
