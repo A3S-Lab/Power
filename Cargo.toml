@@ -1,6 +1,6 @@
 [package]
 name = "a3s-power"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 authors = ["A3S Lab"]
 license = "MIT"
@@ -174,7 +174,7 @@ name = "layer_stream"
 harness = false
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 strip = true
