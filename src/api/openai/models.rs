@@ -660,7 +660,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_pull_model_already_exists_no_force() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
         let state = test_state_with_mock(MockBackend::success());
         state
             .registry
@@ -683,6 +687,8 @@ mod tests {
             .unwrap();
         let body_str = String::from_utf8_lossy(&bytes);
         assert!(body_str.contains("already_exists"));
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 
     #[tokio::test]
