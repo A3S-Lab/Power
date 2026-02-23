@@ -53,8 +53,7 @@ fn init_tracing() {
 async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
     match cmd {
         ModelsCommand::List(args) => {
-            let resp: serde_json::Value =
-                http_get(&format!("{}/v1/models", args.url)).await?;
+            let resp: serde_json::Value = http_get(&format!("{}/v1/models", args.url)).await?;
             if let Some(data) = resp.get("data").and_then(|d| d.as_array()) {
                 if data.is_empty() {
                     println!("No models registered.");
@@ -63,10 +62,7 @@ async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
                 println!("{:<40} {:<12} {:<10}", "NAME", "FORMAT", "SIZE");
                 for m in data {
                     let name = m.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let format = m
-                        .get("format")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
+                    let format = m.get("format").and_then(|v| v.as_str()).unwrap_or("?");
                     let size = m
                         .get("size")
                         .and_then(|v| v.as_u64())
@@ -111,16 +107,23 @@ async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
                     buf = buf[pos + 2..].to_string();
                     if let Some(data) = event.strip_prefix("data: ") {
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                            let status = v
-                                .get("status")
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("");
+                            let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
                             match status {
                                 "downloading" => {
-                                    let completed = v.get("completed").and_then(|c| c.as_u64()).unwrap_or(0);
-                                    let total = v.get("total").and_then(|t| t.as_u64()).unwrap_or(1);
-                                    let pct = if total > 0 { completed * 100 / total } else { 0 };
-                                    print!("\rDownloading... {pct}% ({}/{})", format_bytes(completed), format_bytes(total));
+                                    let completed =
+                                        v.get("completed").and_then(|c| c.as_u64()).unwrap_or(0);
+                                    let total =
+                                        v.get("total").and_then(|t| t.as_u64()).unwrap_or(1);
+                                    let pct = if total > 0 {
+                                        completed * 100 / total
+                                    } else {
+                                        0
+                                    };
+                                    print!(
+                                        "\rDownloading... {pct}% ({}/{})",
+                                        format_bytes(completed),
+                                        format_bytes(total)
+                                    );
                                 }
                                 "success" => {
                                     println!("\rPull complete: {}", args.name);
@@ -256,16 +259,11 @@ async fn run_chat(args: ChatArgs) -> anyhow::Result<()> {
 // ── Ps ───────────────────────────────────────────────────────────────────────
 
 async fn run_ps(args: PsArgs) -> anyhow::Result<()> {
-    let resp: serde_json::Value =
-        http_get(&format!("{}/v1/models", args.url)).await?;
+    let resp: serde_json::Value = http_get(&format!("{}/v1/models", args.url)).await?;
     if let Some(data) = resp.get("data").and_then(|d| d.as_array()) {
         let loaded: Vec<_> = data
             .iter()
-            .filter(|m| {
-                m.get("loaded")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            })
+            .filter(|m| m.get("loaded").and_then(|v| v.as_bool()).unwrap_or(false))
             .collect();
         if loaded.is_empty() {
             println!("No models currently loaded.");
