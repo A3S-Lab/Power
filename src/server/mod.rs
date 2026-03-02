@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod auth;
+pub mod log_stream;
 pub(crate) mod lock;
 pub mod metrics;
 pub mod request_context;
@@ -15,13 +16,27 @@ use crate::config::PowerConfig;
 use crate::dirs;
 use crate::error::{PowerError, Result};
 use crate::model::registry::ModelRegistry;
+use crate::server::log_stream::LogBuffer;
 use crate::tee;
 use crate::tee::attestation::TeeProvider;
 use crate::tee::key_provider;
 use crate::tee::policy::{DefaultTeePolicy, TeePolicy};
 
 /// Start the HTTP server with the given configuration.
-pub async fn start(mut config: PowerConfig) -> Result<()> {
+///
+/// If `log_buffer` is provided the server will expose captured log entries via
+/// the `GET /v1/logs` SSE endpoint.  Pass a `LogBuffer` whose `LogBufferLayer`
+/// has already been installed in the global tracing subscriber so that startup
+/// logs are also captured.
+pub async fn start(config: PowerConfig) -> Result<()> {
+    start_with_log_buffer(config, None).await
+}
+
+/// Start the HTTP server, injecting an existing `LogBuffer`.
+pub async fn start_with_log_buffer(
+    mut config: PowerConfig,
+    log_buffer: Option<LogBuffer>,
+) -> Result<()> {
     // Ensure storage directories exist
     dirs::ensure_dirs()?;
 
@@ -98,7 +113,10 @@ pub async fn start(mut config: PowerConfig) -> Result<()> {
         "Initialized backends"
     );
 
-    let mut app_state = state::AppState::new(registry, backends, config.clone());
+    let mut app_state = match log_buffer {
+        Some(buf) => state::AppState::with_log_buffer(registry, backends, config.clone(), buf),
+        None => state::AppState::new(registry, backends, config.clone()),
+    };
     if let Some(provider) = tee_provider {
         app_state = app_state.with_tee_provider(provider);
     }

@@ -1,4 +1,4 @@
-/// HuggingFace Hub model pull support.
+/// Model hub pull support (default: ModelScope).
 ///
 /// Parses model references of the form:
 ///   `<owner>/<repo>:<quantization>`  e.g. `bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M`
@@ -7,7 +7,7 @@
 /// Features:
 /// - Streams download progress via a channel (SSE-friendly)
 /// - Resume interrupted downloads via HTTP Range requests
-/// - HuggingFace token support for private/gated models (`HF_TOKEN` env or request field)
+/// - Hub token support for private/gated models (`MODELSCOPE_TOKEN`/`HF_TOKEN` env or request field)
 /// - SHA-256 verified, content-addressed blob store
 #[cfg(feature = "hf")]
 pub mod hf {
@@ -20,8 +20,41 @@ pub mod hf {
     use crate::model::manifest::{ModelFormat, ModelManifest};
     use crate::model::storage;
 
-    /// HuggingFace Hub base URL.
-    const HF_BASE: &str = "https://huggingface.co";
+    /// Supported model hubs for remote pull.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum HubSource {
+        ModelScope,
+        HuggingFace,
+    }
+
+    impl HubSource {
+        /// Select hub source from env var, defaulting to ModelScope.
+        fn from_env() -> Self {
+            match std::env::var("A3S_POWER_MODEL_SOURCE")
+                .ok()
+                .unwrap_or_else(|| "modelscope".to_string())
+                .to_lowercase()
+                .as_str()
+            {
+                "hf" | "huggingface" => Self::HuggingFace,
+                _ => Self::ModelScope,
+            }
+        }
+
+        fn base_url(self) -> &'static str {
+            match self {
+                Self::ModelScope => "https://modelscope.cn",
+                Self::HuggingFace => "https://huggingface.co",
+            }
+        }
+
+        fn resolve_revision(self) -> &'static str {
+            match self {
+                Self::ModelScope => "master",
+                Self::HuggingFace => "main",
+            }
+        }
+    }
 
     /// Progress event emitted during a pull operation.
     #[derive(Debug, Clone)]
@@ -36,7 +69,7 @@ pub mod hf {
         Done,
     }
 
-    /// Parsed HuggingFace model reference.
+    /// Parsed model reference.
     #[derive(Debug, Clone)]
     pub struct HfRef {
         /// HuggingFace repo id, e.g. `bartowski/Llama-3.2-3B-Instruct-GGUF`.
@@ -80,13 +113,41 @@ pub mod hf {
         }
 
         /// Build the direct download URL for this model file.
-        pub fn download_url(&self) -> String {
-            format!("{HF_BASE}/{}/resolve/main/{}", self.repo, self.filename)
+        pub fn download_url(&self, source: HubSource) -> String {
+            match source {
+                HubSource::ModelScope => format!(
+                    "{}/models/{}/resolve/{}/{}",
+                    source.base_url(),
+                    self.repo,
+                    source.resolve_revision(),
+                    self.filename
+                ),
+                HubSource::HuggingFace => format!(
+                    "{}/{}/resolve/{}/{}",
+                    source.base_url(),
+                    self.repo,
+                    source.resolve_revision(),
+                    self.filename
+                ),
+            }
         }
 
         /// Build the HF API URL to list repo files (used to resolve quantization → filename).
-        pub fn api_files_url(&self) -> String {
-            format!("{HF_BASE}/api/models/{}/tree/main", self.repo)
+        pub fn api_files_url(&self, source: HubSource) -> String {
+            match source {
+                HubSource::ModelScope => format!(
+                    "{}/api/v1/models/{}/repo/files?Revision={}",
+                    source.base_url(),
+                    self.repo,
+                    source.resolve_revision()
+                ),
+                HubSource::HuggingFace => format!(
+                    "{}/api/models/{}/tree/{}",
+                    source.base_url(),
+                    self.repo,
+                    source.resolve_revision()
+                ),
+            }
         }
 
         /// Stable partial-download filename derived from the download URL.
@@ -96,16 +157,28 @@ pub mod hf {
         pub fn partial_filename(&self) -> String {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
-            h.update(self.download_url().as_bytes());
+            let source = HubSource::from_env();
+            h.update(self.download_url(source).as_bytes());
             let digest = h.finalize();
             format!("partial-{:x}", digest)
         }
     }
 
-    /// Resolve the effective HF token: explicit arg → `HF_TOKEN` env var → None.
+    /// Resolve effective hub token.
+    /// Priority: explicit arg -> MODELSCOPE_TOKEN -> A3S_POWER_HUB_TOKEN -> HF_TOKEN.
     fn resolve_token(token: Option<&str>) -> Option<String> {
         token
             .map(|t| t.to_string())
+            .or_else(|| {
+                std::env::var("MODELSCOPE_TOKEN")
+                    .ok()
+                    .filter(|t| !t.is_empty())
+            })
+            .or_else(|| {
+                std::env::var("A3S_POWER_HUB_TOKEN")
+                    .ok()
+                    .filter(|t| !t.is_empty())
+            })
             .or_else(|| std::env::var("HF_TOKEN").ok().filter(|t| !t.is_empty()))
     }
 
@@ -128,7 +201,11 @@ pub mod hf {
 
     /// Resolve a quantization tag (e.g. `Q4_K_M`) to an actual filename by
     /// querying the HuggingFace repo file listing.
-    async fn resolve_filename(client: &Client, hf_ref: &HfRef) -> Result<String> {
+    async fn resolve_filename(
+        client: &Client,
+        hf_ref: &HfRef,
+        source: HubSource,
+    ) -> Result<String> {
         let quant = &hf_ref.filename;
 
         // If it already looks like a filename (has extension), use as-is.
@@ -136,7 +213,7 @@ pub mod hf {
             return Ok(quant.clone());
         }
 
-        let url = hf_ref.api_files_url();
+        let url = hf_ref.api_files_url(source);
         let resp = client
             .get(&url)
             .send()
@@ -160,16 +237,27 @@ pub mod hf {
             )));
         }
 
-        let files: Vec<serde_json::Value> = resp
-            .json()
-            .await
-            .map_err(|e| PowerError::Server(format!("HF API response parse failed: {e}")))?;
+        let files: Vec<serde_json::Value> = match source {
+            HubSource::ModelScope => {
+                let payload: serde_json::Value = resp.json().await.map_err(|e| {
+                    PowerError::Server(format!("ModelScope API response parse failed: {e}"))
+                })?;
+                payload["Data"]["Files"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            }
+            HubSource::HuggingFace => resp
+                .json()
+                .await
+                .map_err(|e| PowerError::Server(format!("HF API response parse failed: {e}")))?,
+        };
 
         // Find a GGUF file whose name contains the quantization tag (case-insensitive).
         let quant_upper = quant.to_uppercase();
         let matched = files
             .iter()
-            .filter_map(|f| f["path"].as_str())
+            .filter_map(|f| f["path"].as_str().or_else(|| f["Path"].as_str()))
             .filter(|p| p.ends_with(".gguf"))
             .find(|p| p.to_uppercase().contains(&quant_upper))
             .map(|s| s.to_string());
@@ -198,16 +286,17 @@ pub mod hf {
         tx: tokio::sync::mpsc::Sender<PullProgress>,
     ) -> Result<ModelManifest> {
         let (client, _effective_token) = build_client(token)?;
+        let source = HubSource::from_env();
 
         let mut hf_ref = HfRef::parse(name)?;
 
         // Resolve quantization tag → actual filename if needed.
         if !hf_ref.filename.contains('.') {
-            hf_ref.filename = resolve_filename(&client, &hf_ref).await?;
+            hf_ref.filename = resolve_filename(&client, &hf_ref, source).await?;
         }
 
-        let url = hf_ref.download_url();
-        tracing::info!(url = %url, "Pulling model from HuggingFace Hub");
+        let url = hf_ref.download_url(source);
+        tracing::info!(url = %url, source = ?source, "Pulling model from remote hub");
 
         // Stable partial file path — same across restarts for the same URL.
         let blobs_dir = dirs::blobs_dir();
@@ -386,7 +475,11 @@ pub mod hf {
                 filename: "Llama-3.2-3B-Instruct-Q4_K_M.gguf".to_string(),
             };
             assert_eq!(
-                r.download_url(),
+                r.download_url(HubSource::ModelScope),
+                "https://modelscope.cn/models/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/master/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+            );
+            assert_eq!(
+                r.download_url(HubSource::HuggingFace),
                 "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
             );
         }
@@ -398,7 +491,11 @@ pub mod hf {
                 filename: "Q4_K_M".to_string(),
             };
             assert_eq!(
-                r.api_files_url(),
+                r.api_files_url(HubSource::ModelScope),
+                "https://modelscope.cn/api/v1/models/bartowski/Llama-3.2-3B-Instruct-GGUF/repo/files?Revision=master"
+            );
+            assert_eq!(
+                r.api_files_url(HubSource::HuggingFace),
                 "https://huggingface.co/api/models/bartowski/Llama-3.2-3B-Instruct-GGUF/tree/main"
             );
         }
@@ -495,8 +592,8 @@ pub mod hf {
 // Re-export for non-hf builds so callers can always reference the module.
 #[cfg(not(feature = "hf"))]
 pub mod hf {
-    /// Stub: HuggingFace pull is not available without the `hf` feature.
+    /// Stub: remote model pull is not available without the `hf` feature.
     pub fn not_available() -> &'static str {
-        "compile with --features hf to enable HuggingFace model pull"
+        "compile with --features hf to enable model hub pull"
     }
 }

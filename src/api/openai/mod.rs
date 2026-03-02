@@ -30,6 +30,44 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/embeddings", post(embeddings::handler))
         .route("/attestation", get(attestation::handler))
+        .route("/logs", get(logs_handler))
+}
+
+/// GET /v1/logs — Stream server log entries as SSE.
+///
+/// Sends the last `N` buffered entries immediately, then streams new entries in
+/// real-time as they are emitted by the tracing subscriber.
+///
+/// Each event data is a JSON object:
+/// ```json
+/// { "ts": "2024-01-01T00:00:00.000Z", "level": "INFO",
+///   "target": "a3s_power::model::pull", "message": "Pulling model ..." }
+/// ```
+async fn logs_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> impl axum::response::IntoResponse {
+    use axum::response::sse::Event;
+    use futures::StreamExt;
+    use tokio_stream::wrappers::BroadcastStream;
+
+    let recent = state.log_buffer.recent();
+    let rx = state.log_buffer.subscribe();
+
+    let recent_stream = futures::stream::iter(recent).map(|entry| {
+        Ok::<_, std::convert::Infallible>(
+            Event::default().json_data(&entry).unwrap_or_default(),
+        )
+    });
+
+    let live_stream = BroadcastStream::new(rx)
+        .filter_map(|r| async move { r.ok() })
+        .map(|entry| {
+            Ok::<_, std::convert::Infallible>(
+                Event::default().json_data(&entry).unwrap_or_default(),
+            )
+        });
+
+    axum::response::Sse::new(recent_stream.chain(live_stream))
 }
 
 /// Return a standard OpenAI-compatible error JSON response with the appropriate HTTP status.

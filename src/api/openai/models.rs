@@ -277,13 +277,13 @@ pub struct PullModelRequest {
     /// If true, re-download even if already registered.
     #[serde(default)]
     pub force: bool,
-    /// HuggingFace API token for private/gated models.
-    /// Falls back to the `HF_TOKEN` environment variable if not set.
+    /// Model hub API token for private/gated models.
+    /// Falls back to `MODELSCOPE_TOKEN` / `A3S_POWER_HUB_TOKEN` / `HF_TOKEN`.
     #[serde(default)]
     pub token: Option<String>,
 }
 
-/// POST /v1/models/pull — Pull a GGUF model from HuggingFace Hub.
+/// POST /v1/models/pull — Pull a GGUF model from remote model hub.
 ///
 /// Streams SSE progress events while downloading:
 /// ```json

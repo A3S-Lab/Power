@@ -10,6 +10,7 @@ use crate::model::registry::ModelRegistry;
 use crate::server::audit::AuditLogger;
 use crate::server::auth::AuthProvider;
 use crate::server::lock::{read_lock, write_lock};
+use crate::server::log_stream::LogBuffer;
 use crate::server::metrics::Metrics;
 use crate::tee::attestation::TeeProvider;
 use crate::tee::encrypted_model::{
@@ -32,6 +33,7 @@ pub struct AppState {
     pub backends: Arc<BackendRegistry>,
     pub config: Arc<PowerConfig>,
     pub metrics: Arc<Metrics>,
+    pub log_buffer: LogBuffer,
     pub tee_provider: Option<Arc<dyn TeeProvider>>,
     pub privacy: Option<Arc<dyn PrivacyProvider>>,
     pub auth: Option<Arc<dyn AuthProvider>>,
@@ -55,11 +57,25 @@ impl AppState {
         backends: Arc<BackendRegistry>,
         config: Arc<PowerConfig>,
     ) -> Self {
+        Self::with_log_buffer(registry, backends, config, LogBuffer::new())
+    }
+
+    /// Create a new `AppState` with a pre-existing `LogBuffer`.
+    ///
+    /// Use this variant when the buffer was created before the server started
+    /// (e.g., to capture startup logs via a tracing Layer installed earlier).
+    pub fn with_log_buffer(
+        registry: Arc<ModelRegistry>,
+        backends: Arc<BackendRegistry>,
+        config: Arc<PowerConfig>,
+        log_buffer: LogBuffer,
+    ) -> Self {
         Self {
             registry,
             backends,
             config,
             metrics: Arc::new(Metrics::new()),
+            log_buffer,
             tee_provider: None,
             privacy: None,
             auth: None,
