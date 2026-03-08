@@ -113,7 +113,7 @@ pub mod hf {
         }
 
         /// Build the direct download URL for this model file.
-        pub fn download_url(&self, source: HubSource) -> String {
+        pub(super) fn download_url(&self, source: HubSource) -> String {
             match source {
                 HubSource::ModelScope => format!(
                     "{}/models/{}/resolve/{}/{}",
@@ -133,7 +133,7 @@ pub mod hf {
         }
 
         /// Build the HF API URL to list repo files (used to resolve quantization → filename).
-        pub fn api_files_url(&self, source: HubSource) -> String {
+        pub(super) fn api_files_url(&self, source: HubSource) -> String {
             match source {
                 HubSource::ModelScope => format!(
                     "{}/api/v1/models/{}/repo/files?Revision={}",
