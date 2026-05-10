@@ -93,7 +93,7 @@ The bottom half of this table is Power's moat. No other inference server has a t
 
 **A3S Power** is a privacy-preserving LLM inference server designed to run inside Trusted Execution Environments (TEE). It provides an OpenAI-compatible API for chat completions, text completions, and embeddings — with hardware-enforced memory encryption, model integrity verification, and automatic log redaction.
 
-Power is built to run inside [a3s-box](https://github.com/A3S-Lab/Box) MicroVMs with AMD SEV-SNP or Intel TDX, ensuring that inference data (prompts, responses, model weights) never leaves the encrypted enclave.
+Power is built to run inside [a3s-box](https://github.com/AI45Lab/Box) MicroVMs with AMD SEV-SNP or Intel TDX, ensuring that inference data (prompts, responses, model weights) never leaves the encrypted enclave.
 
 ## Features
 
