@@ -59,8 +59,6 @@ pub fn model_exceeds_epc(model_size_bytes: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_model_fits_when_epc_unknown() {
         // When EPC info is unavailable, model_exceeds_epc returns false
@@ -116,7 +114,7 @@ mod tests {
     #[test]
     fn test_available_epc_bytes_returns_some_on_linux() {
         // On Linux, /proc/meminfo should always be readable
-        let result = available_epc_bytes();
+        let result = super::available_epc_bytes();
         assert!(
             result.is_some(),
             "available_epc_bytes() should return Some on Linux"

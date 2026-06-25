@@ -5,6 +5,8 @@
 //!
 //! To run: cargo test --features picolm --test picolm_real -- --nocapture
 
+#![cfg(feature = "picolm")]
+
 use std::sync::Arc;
 
 use a3s_power::backend::picolm::PicolmBackend;
@@ -90,7 +92,6 @@ fn make_chat_request(prompt: &str, max_tokens: u32, temperature: f32) -> ChatReq
     }
 }
 
-#[cfg(feature = "picolm")]
 #[tokio::test]
 async fn test_real_model_load_and_metadata() {
     if !model_available() {
@@ -110,7 +111,6 @@ async fn test_real_model_load_and_metadata() {
     backend.unload("qwen2.5:0.5b-q4_k_m").await.unwrap();
 }
 
-#[cfg(feature = "picolm")]
 #[tokio::test]
 async fn test_real_model_greedy_generation() {
     if !model_available() {

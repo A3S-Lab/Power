@@ -66,9 +66,9 @@ pub fn attention_layer(
     let k_e = tc.get(layer, SLOT_ATTN_K);
     let v_e = tc.get(layer, SLOT_ATTN_V);
 
-    let q_raw = q_e.bytes().unwrap();
-    let k_raw = k_e.bytes().unwrap();
-    let v_raw = v_e.bytes().unwrap();
+    let q_raw = q_e.required_bytes("attention q projection")?;
+    let k_raw = k_e.required_bytes("attention k projection")?;
+    let v_raw = v_e.required_bytes("attention v projection")?;
 
     let q_buf = &mut buf.q[..n_heads * head_dim];
     let k_buf = &mut buf.k[..kv_dim];
@@ -132,7 +132,7 @@ pub fn attention_layer(
 
     // 6. Output projection + residual
     let o_e = tc.get(layer, SLOT_ATTN_O);
-    let o_raw = o_e.bytes().unwrap();
+    let o_raw = o_e.required_bytes("attention output projection")?;
     let proj = &mut buf.proj[..n_embd];
     matvec(
         o_raw,
@@ -154,8 +154,7 @@ pub fn attention_layer(
 #[inline]
 fn add_bias_if_cached(tc: &TensorCache, layer: u32, slot: usize, out: &mut [f32]) {
     let entry = tc.get(layer, slot);
-    if entry.is_present() {
-        let bias_raw = entry.bytes().unwrap();
+    if let Some(bias_raw) = entry.bytes() {
         // Bias is always a 1-D F32 or F16 vector; use extract_row (row 0).
         let mut tmp = vec![0.0f32; out.len()];
         extract_row(bias_raw, entry.ggml_type, out.len(), 0, &mut tmp);

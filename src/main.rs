@@ -66,7 +66,7 @@ async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
                     let size = m
                         .get("size")
                         .and_then(|v| v.as_u64())
-                        .map(|s| format_bytes(s))
+                        .map(format_bytes)
                         .unwrap_or_else(|| "?".to_string());
                     println!("{:<40} {:<12} {:<10}", name, format, size);
                 }
@@ -91,8 +91,7 @@ async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("Failed to connect: {e}"))?;
 
             if !resp.status().is_success() {
-                let text = resp.text().await.unwrap_or_default();
-                anyhow::bail!("Pull failed: {text}");
+                anyhow::bail!("Pull failed: {}", response_error_text(resp).await);
             }
 
             // Stream SSE events
@@ -150,8 +149,7 @@ async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
             if resp.status().is_success() {
                 println!("Deleted model: {}", args.name);
             } else {
-                let text = resp.text().await.unwrap_or_default();
-                anyhow::bail!("Delete failed: {text}");
+                anyhow::bail!("Delete failed: {}", response_error_text(resp).await);
             }
             Ok(())
         }
@@ -204,15 +202,14 @@ async fn run_chat(args: ChatArgs) -> anyhow::Result<()> {
         });
 
         let resp = client
-            .post(&format!("{}/v1/chat/completions", args.url))
+            .post(format!("{}/v1/chat/completions", args.url))
             .json(&body)
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to connect: {e}"))?;
 
         if !resp.status().is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            eprintln!("Error: {text}");
+            eprintln!("Error: {}", response_error_text(resp).await);
             messages.pop(); // remove failed user message
             continue;
         }
@@ -276,7 +273,7 @@ async fn run_ps(args: PsArgs) -> anyhow::Result<()> {
             let size = m
                 .get("size")
                 .and_then(|v| v.as_u64())
-                .map(|s| format_bytes(s))
+                .map(format_bytes)
                 .unwrap_or_else(|| "?".to_string());
             println!("{:<40} {:<12} {:<10}", name, format, size);
         }
@@ -296,14 +293,32 @@ async fn http_get(url: &str) -> anyhow::Result<serde_json::Value> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to connect to {url}: {e}"))?;
     if !resp.status().is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("HTTP {}: {text}", url);
+        anyhow::bail!("HTTP {}: {}", url, response_error_text(resp).await);
     }
     let body = resp
         .json()
         .await
         .map_err(|e| anyhow::anyhow!("Invalid JSON from {url}: {e}"))?;
     Ok(body)
+}
+
+async fn response_error_text(resp: reqwest::Response) -> String {
+    let status = resp.status();
+    match resp.text().await {
+        Ok(text) => format_response_error(status, Ok(text)),
+        Err(e) => format_response_error(status, Err(e.to_string())),
+    }
+}
+
+fn format_response_error(
+    status: reqwest::StatusCode,
+    body: std::result::Result<String, String>,
+) -> String {
+    match body {
+        Ok(text) if !text.trim().is_empty() => format!("{status}: {text}"),
+        Ok(_) => status.to_string(),
+        Err(e) => format!("{status} (failed to read response body: {e})"),
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -315,5 +330,36 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_response_error_includes_body() {
+        let msg = format_response_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            Ok("bad request".to_string()),
+        );
+        assert_eq!(msg, "400 Bad Request: bad request");
+    }
+
+    #[test]
+    fn test_format_response_error_handles_empty_body() {
+        let msg = format_response_error(reqwest::StatusCode::NOT_FOUND, Ok("   ".to_string()));
+        assert_eq!(msg, "404 Not Found");
+    }
+
+    #[test]
+    fn test_format_response_error_reports_body_read_error() {
+        let msg = format_response_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            Err("connection reset".to_string()),
+        );
+        assert!(msg.contains("500 Internal Server Error"));
+        assert!(msg.contains("failed to read response body"));
+        assert!(msg.contains("connection reset"));
     }
 }

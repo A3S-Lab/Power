@@ -16,6 +16,8 @@ use tracing::Subscriber;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
 
+use crate::server::lock::mutex_lock;
+
 /// Maximum entries kept in the ring buffer.
 const BUFFER_CAPACITY: usize = 500;
 
@@ -53,7 +55,7 @@ impl LogBuffer {
     /// Push a new entry into the ring buffer and broadcast it to live subscribers.
     pub fn push(&self, entry: LogEntry) {
         {
-            let mut buf = self.inner.lock().unwrap();
+            let mut buf = mutex_lock(&self.inner);
             if buf.len() >= BUFFER_CAPACITY {
                 buf.pop_front();
             }
@@ -65,7 +67,7 @@ impl LogBuffer {
 
     /// Return a snapshot of all buffered entries (oldest first).
     pub fn recent(&self) -> Vec<LogEntry> {
-        self.inner.lock().unwrap().iter().cloned().collect()
+        mutex_lock(&self.inner).iter().cloned().collect()
     }
 
     /// Subscribe to the live broadcast channel for new entries.
@@ -115,8 +117,7 @@ impl<S: Subscriber> Layer<S> for LogBufferLayer {
         event.record(&mut visitor);
 
         self.buffer.push(LogEntry {
-            ts: chrono::Utc::now()
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             level,
             target: target.to_string(),
             message: visitor.0,

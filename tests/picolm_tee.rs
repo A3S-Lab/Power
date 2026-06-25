@@ -4,7 +4,9 @@
 //! verifying that layer-streaming inference works correctly end-to-end
 //! and that TEE mode (log redaction, model integrity) integrates cleanly.
 
-use std::path::PathBuf;
+#![cfg(feature = "picolm")]
+
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -16,7 +18,7 @@ mod gguf_builder;
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Write a minimal but valid GGUF file with real tensors (uses the shared builder).
-fn write_fake_gguf(path: &PathBuf) {
+fn write_fake_gguf(path: &Path) {
     gguf_builder::build_tiny_gguf(path, &gguf_builder::TinyModelConfig::default());
 }
 
@@ -44,7 +46,6 @@ fn fake_manifest(name: &str, path: PathBuf) -> ModelManifest {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(feature = "picolm")]
 mod picolm_tests {
     use super::*;
     use a3s_power::backend::picolm::PicolmBackend;
@@ -345,7 +346,6 @@ mod picolm_tests {
 
 // ── TEE mode integration ──────────────────────────────────────────────────────
 
-#[cfg(feature = "picolm")]
 mod tee_integration {
     use super::*;
     use a3s_power::backend::picolm::PicolmBackend;
@@ -358,9 +358,11 @@ mod tee_integration {
         write_fake_gguf(&model_path);
 
         // Enable TEE mode in config
-        let mut config = PowerConfig::default();
-        config.tee_mode = true;
-        config.redact_logs = true;
+        let config = PowerConfig {
+            tee_mode: true,
+            redact_logs: true,
+            ..Default::default()
+        };
 
         let backend = PicolmBackend::new(Arc::new(config));
         let manifest = fake_manifest("tee-model", model_path);

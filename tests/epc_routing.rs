@@ -4,15 +4,8 @@
 //! picolm backend when model size exceeds the EPC threshold, and falls back
 //! to the normal priority order when the model fits comfortably.
 
-use std::sync::Arc;
-
 use a3s_power::backend::BackendRegistry;
-use a3s_power::config::PowerConfig;
 use a3s_power::model::manifest::ModelFormat;
-
-fn test_config() -> Arc<PowerConfig> {
-    Arc::new(PowerConfig::default())
-}
 
 // ── Tests without picolm ──────────────────────────────────────────────────────
 
@@ -41,6 +34,12 @@ fn test_find_for_tee_small_model_uses_normal_priority() {
 mod picolm_routing {
     use super::*;
     use a3s_power::backend::picolm::PicolmBackend;
+    use a3s_power::config::PowerConfig;
+    use std::sync::Arc;
+
+    fn test_config() -> Arc<PowerConfig> {
+        Arc::new(PowerConfig::default())
+    }
 
     fn registry_with_picolm() -> BackendRegistry {
         let config = test_config();

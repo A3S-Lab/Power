@@ -361,12 +361,12 @@ mod tests {
         // f16 has ~3 decimal digits of precision; values used in attention
         // are typically in [-10, 10] range where f16 error is < 0.01.
         let mut cache = LayerKvCache::new(1, 1, 4);
-        cache.store(&[3.14159f32], &[2.71828f32]);
+        cache.store(&[1.2345f32], &[2.3456f32]);
         let mut out = vec![0.0f32; 1];
         cache.k_at_into(0, 0, &mut out);
-        assert!((out[0] - 3.14159).abs() < 0.01);
+        assert!((out[0] - 1.2345).abs() < 0.01);
         cache.v_at_into(0, 0, &mut out);
-        assert!((out[0] - 2.71828).abs() < 0.01);
+        assert!((out[0] - 2.3456).abs() < 0.01);
     }
 
     #[test]

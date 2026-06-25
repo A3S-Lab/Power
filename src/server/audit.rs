@@ -5,6 +5,8 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use crate::server::lock::mutex_lock;
+
 /// Open or create an audit log file with restricted permissions.
 ///
 /// On Unix, the file is created with mode 0600 (owner read/write only),
@@ -158,9 +160,13 @@ impl AuditLogger for JsonLinesAuditLogger {
     fn log(&self, event: &AuditEvent) {
         match serde_json::to_string(event) {
             Ok(line) => {
-                if let Ok(mut file) = self.file.lock() {
-                    let _ = writeln!(file, "{}", line);
-                    let _ = file.flush();
+                let mut file = mutex_lock(&self.file);
+                if let Err(e) = writeln!(file, "{line}") {
+                    tracing::warn!(error = %e, path = %self.path.display(), "Failed to write audit event");
+                    return;
+                }
+                if let Err(e) = file.flush() {
+                    tracing::warn!(error = %e, path = %self.path.display(), "Failed to flush audit log");
                 }
             }
             Err(e) => {
@@ -252,13 +258,25 @@ impl EncryptedAuditLogger {
 
 impl AuditLogger for EncryptedAuditLogger {
     fn log(&self, event: &AuditEvent) {
-        if let Ok(json) = serde_json::to_string(event) {
-            if let Some(encrypted_line) = self.encrypt_line(&json) {
-                if let Ok(mut file) = self.inner.file.lock() {
-                    let _ = writeln!(file, "{}", encrypted_line);
-                    let _ = file.flush();
-                }
+        let json = match serde_json::to_string(event) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to serialize encrypted audit event");
+                return;
             }
+        };
+        let Some(encrypted_line) = self.encrypt_line(&json) else {
+            tracing::warn!("Failed to encrypt audit event");
+            return;
+        };
+
+        let mut file = mutex_lock(&self.inner.file);
+        if let Err(e) = writeln!(file, "{encrypted_line}") {
+            tracing::warn!(error = %e, path = %self.inner.path.display(), "Failed to write encrypted audit event");
+            return;
+        }
+        if let Err(e) = file.flush() {
+            tracing::warn!(error = %e, path = %self.inner.path.display(), "Failed to flush encrypted audit log");
         }
     }
 }
@@ -296,12 +314,22 @@ impl AsyncJsonLinesAuditLogger {
             while let Some(msg) = rx.recv().await {
                 match msg {
                     AsyncAuditMsg::Line(line) => {
-                        let _ = async_file.write_all(line.as_bytes()).await;
-                        let _ = async_file.write_all(b"\n").await;
-                        let _ = async_file.flush().await;
+                        if let Err(e) = async_file.write_all(line.as_bytes()).await {
+                            tracing::warn!(error = %e, "Failed to write async audit event");
+                            continue;
+                        }
+                        if let Err(e) = async_file.write_all(b"\n").await {
+                            tracing::warn!(error = %e, "Failed to write async audit newline");
+                            continue;
+                        }
+                        if let Err(e) = async_file.flush().await {
+                            tracing::warn!(error = %e, "Failed to flush async audit log");
+                        }
                     }
                     AsyncAuditMsg::Flush(reply) => {
-                        let _ = async_file.flush().await;
+                        if let Err(e) = async_file.flush().await {
+                            tracing::warn!(error = %e, "Failed to flush async audit log");
+                        }
                         let _ = reply.send(());
                     }
                 }
@@ -319,8 +347,15 @@ impl AsyncJsonLinesAuditLogger {
 
 impl AuditLogger for AsyncJsonLinesAuditLogger {
     fn log(&self, event: &AuditEvent) {
-        if let Ok(line) = serde_json::to_string(event) {
-            let _ = self.sender.send(AsyncAuditMsg::Line(line));
+        match serde_json::to_string(event) {
+            Ok(line) => {
+                if self.sender.send(AsyncAuditMsg::Line(line)).is_err() {
+                    tracing::warn!("Failed to enqueue audit event; background task is closed");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to serialize async audit event");
+            }
         }
     }
 
@@ -329,7 +364,13 @@ impl AuditLogger for AsyncJsonLinesAuditLogger {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<()>> + Send + '_>>
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self.sender.send(AsyncAuditMsg::Flush(tx));
+        if self.sender.send(AsyncAuditMsg::Flush(tx)).is_err() {
+            return Box::pin(async {
+                Err(crate::error::PowerError::Server(
+                    "Audit logger background task exited before flush was queued".to_string(),
+                ))
+            });
+        }
         Box::pin(async move {
             rx.await.map_err(|_| {
                 crate::error::PowerError::Server(
@@ -450,6 +491,30 @@ mod tests {
     }
 
     #[test]
+    fn test_json_lines_logger_recovers_poisoned_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("poisoned_audit.jsonl");
+        let logger = JsonLinesAuditLogger::open(log_path.clone()).unwrap();
+
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = logger.file.lock().unwrap();
+            panic!("poison audit file lock");
+        });
+
+        logger.log(&AuditEvent::success(
+            "req-poison",
+            None,
+            "chat",
+            None,
+            None,
+            None,
+        ));
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("req-poison"));
+    }
+
+    #[test]
     fn test_noop_logger_does_nothing() {
         let logger = NoopAuditLogger;
         // Should not panic
@@ -515,7 +580,7 @@ mod tests {
 
         for i in 0..10 {
             let event = AuditEvent::success(
-                &format!("req-{i}"),
+                format!("req-{i}"),
                 None,
                 "chat",
                 Some("model".to_string()),
@@ -612,6 +677,33 @@ mod tests {
     }
 
     #[test]
+    fn test_encrypted_logger_recovers_poisoned_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("encrypted_poisoned_audit.log");
+        let key = test_key();
+        let logger = EncryptedAuditLogger::open(log_path.clone(), key).unwrap();
+
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = logger.inner.file.lock().unwrap();
+            panic!("poison encrypted audit file lock");
+        });
+
+        logger.log(&AuditEvent::success(
+            "req-enc-poison",
+            None,
+            "chat",
+            None,
+            None,
+            None,
+        ));
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        let line = content.lines().next().unwrap();
+        let decrypted = EncryptedAuditLogger::decrypt_line(line, &key).unwrap();
+        assert!(decrypted.contains("req-enc-poison"));
+    }
+
+    #[test]
     fn test_encrypted_logger_each_entry_has_unique_nonce() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("nonce_test.log");
@@ -620,7 +712,7 @@ mod tests {
         let logger = EncryptedAuditLogger::open(log_path.clone(), key).unwrap();
         for i in 0..5 {
             logger.log(&AuditEvent::success(
-                &format!("req-{i}"),
+                format!("req-{i}"),
                 None,
                 "chat",
                 None,

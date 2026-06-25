@@ -4,7 +4,6 @@
 //! verifying that the streaming decryptor integrates correctly with the
 //! encrypted model pipeline.
 
-use std::sync::Arc;
 use tempfile::TempDir;
 
 use a3s_power::tee::encrypted_model::{
@@ -212,8 +211,10 @@ fn test_streaming_decrypt_config_field_defaults_false() {
 
 #[test]
 fn test_streaming_decrypt_config_field_serializes() {
-    let mut config = a3s_power::config::PowerConfig::default();
-    config.streaming_decrypt = true;
+    let config = a3s_power::config::PowerConfig {
+        streaming_decrypt: true,
+        ..Default::default()
+    };
     let hcl = config.to_hcl();
     assert!(
         hcl.contains("streaming_decrypt = true"),

@@ -191,8 +191,7 @@ pub async fn handler(
                 };
 
                 let first_event = futures::stream::once(async move {
-                    let data = serde_json::to_string(&first_chunk).unwrap_or_default();
-                    Ok::<_, Infallible>(Event::default().data(data))
+                    Ok::<_, Infallible>(super::sse_json_event(&first_chunk))
                 });
 
                 let eval_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -260,12 +259,11 @@ pub async fn handler(
                                     finish_reason,
                                 }],
                             };
-                            serde_json::to_string(&chunk_resp).unwrap_or_default()
+                            super::sse_json_data(&chunk_resp)
                         }
-                        Err(e) => serde_json::to_string(&serde_json::json!({
+                        Err(e) => super::sse_json_data(&serde_json::json!({
                             "error": { "message": e.to_string() }
-                        }))
-                        .unwrap_or_default(),
+                        })),
                     };
                     Ok::<_, Infallible>(Event::default().data(event_data))
                 });
@@ -288,14 +286,22 @@ pub async fn handler(
                             model: model_for_done2,
                             choices: vec![],
                         };
-                        let mut val = serde_json::to_value(&usage_chunk).unwrap_or_default();
+                        let mut val = match serde_json::to_value(&usage_chunk) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                return Ok::<_, Infallible>(super::sse_json_event(
+                                    &serde_json::json!({
+                                        "error": { "message": format!("failed to serialize usage chunk: {e}") }
+                                    }),
+                                ));
+                            }
+                        };
                         val["usage"] = serde_json::json!({
                             "prompt_tokens": rp,
                             "completion_tokens": rc,
                             "total_tokens": rp + rc
                         });
-                        let data = serde_json::to_string(&val).unwrap_or_default();
-                        Ok::<_, Infallible>(Event::default().data(data))
+                        Ok::<_, Infallible>(super::sse_json_event(&val))
                     })
                     .left_stream()
                 } else {
@@ -313,16 +319,22 @@ pub async fn handler(
                     metrics_done.record_tokens(&model_for_done, "output", eval_count as u64);
 
                     // Request isolation: clean up backend resources
-                    backend_cleanup
-                        .cleanup_request(&model_for_cleanup, &ctx_cleanup)
-                        .await
-                        .ok();
+                    crate::api::autoload::cleanup_after_request(
+                        &model_for_cleanup,
+                        &ctx_cleanup,
+                        &backend_cleanup,
+                    )
+                    .await;
                     metrics_cleanup.decrement_active_requests();
 
                     // Unload model if keep_alive=0 (after inference, not before)
                     if unload_after_use {
-                        let _ = backend_cleanup.unload(&model_for_unload).await;
-                        state_cleanup.mark_unloaded(&model_for_unload);
+                        crate::api::autoload::unload_after_request(
+                            &state_cleanup,
+                            &model_for_unload,
+                            &backend_cleanup,
+                        )
+                        .await;
                     }
 
                     // Audit: log successful streaming inference
@@ -456,13 +468,12 @@ pub async fn handler(
                 }
 
                 // Request isolation: clean up backend resources
-                backend.cleanup_request(&model_name, &ctx).await.ok();
+                crate::api::autoload::cleanup_after_request(&model_name, &ctx, &backend).await;
                 state.metrics.decrement_active_requests();
 
                 // Unload model if keep_alive=0 (after inference, not before)
                 if unload_after_use {
-                    let _ = backend.unload(&model_name).await;
-                    state.mark_unloaded(&model_name);
+                    crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
                 }
 
                 // Audit: log successful inference

@@ -1,12 +1,15 @@
 pub mod audit;
 pub mod auth;
-pub mod log_stream;
 pub(crate) mod lock;
+pub mod log_stream;
 pub mod metrics;
 pub mod request_context;
 pub mod router;
 pub mod state;
-#[cfg(all(feature = "vsock", target_os = "linux"))]
+#[cfg(any(
+    all(feature = "vsock", target_os = "linux"),
+    all(feature = "vsock", test)
+))]
 pub(crate) mod vsock;
 
 use std::sync::Arc;
@@ -243,7 +246,9 @@ async fn spawn_tls_server(
     app: axum::Router,
     tee_provider: Option<&std::sync::Arc<dyn crate::tee::attestation::TeeProvider>>,
 ) -> Result<()> {
-    let tls_port = config.tls_port.expect("tls_port checked by caller");
+    let tls_port = config.tls_port.ok_or_else(|| {
+        PowerError::Config("tls_port must be configured before starting TLS server".to_string())
+    })?;
 
     // Optionally get an attestation report to embed in the certificate.
     let attestation = if config.ra_tls && config.tee_mode {
@@ -303,46 +308,36 @@ async fn spawn_tls_server(
 /// 1. Unload all loaded models — triggers RAII zeroize of decrypted weights
 /// 2. Flush audit log — ensures no events are lost on shutdown
 async fn shutdown_signal(state: state::AppState) {
-    // Wait for either SIGTERM (systemd/Kubernetes) or Ctrl-C
+    // Wait for either SIGTERM (systemd/Kubernetes) or Ctrl-C.
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm =
-            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-        tokio::select! {
-            _ = sigterm.recv() => {
-                tracing::info!("SIGTERM received, starting graceful shutdown");
+
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    received = sigterm.recv() => {
+                        if received.is_some() {
+                            tracing::info!("SIGTERM received, starting graceful shutdown");
+                        } else {
+                            tracing::warn!("SIGTERM handler closed; starting graceful shutdown");
+                        }
+                    }
+                    _ = wait_for_ctrl_c_signal() => {}
+                }
             }
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("Ctrl-C received, starting graceful shutdown");
+            Err(e) => {
+                tracing::warn!("Failed to register SIGTERM handler; waiting for Ctrl-C only: {e}");
+                wait_for_ctrl_c_signal().await;
             }
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
-        tracing::info!("Ctrl-C received, starting graceful shutdown");
+        wait_for_ctrl_c_signal().await;
     }
 
-    // Unload all models to trigger RAII cleanup (zeroize decrypted weights)
-    let loaded = state.loaded_model_names();
-    if !loaded.is_empty() {
-        tracing::info!(count = loaded.len(), "Unloading all models before shutdown");
-        for model_name in &loaded {
-            let format = state
-                .registry
-                .get(model_name)
-                .map(|m| m.format.clone())
-                .unwrap_or(crate::model::manifest::ModelFormat::Gguf);
-            if let Ok(backend) = state.backends.find_for_format(&format) {
-                if let Err(e) = backend.unload(model_name).await {
-                    tracing::warn!(model = %model_name, "Failed to unload model on shutdown: {e}");
-                }
-            }
-            state.mark_unloaded(model_name);
-            tracing::info!(model = %model_name, "Model unloaded on shutdown");
-        }
-    }
+    unload_models_for_shutdown(&state).await;
 
     // Flush audit log to ensure no events are lost
     if let Some(ref audit) = state.audit {
@@ -356,6 +351,55 @@ async fn shutdown_signal(state: state::AppState) {
     tracing::info!("Graceful shutdown complete");
 }
 
+// Unload all models to trigger RAII cleanup (zeroize decrypted weights).
+async fn unload_models_for_shutdown(state: &state::AppState) {
+    let loaded = state.loaded_model_names();
+    if !loaded.is_empty() {
+        tracing::info!(count = loaded.len(), "Unloading all models before shutdown");
+        for model_name in &loaded {
+            let format = state
+                .registry
+                .get(model_name)
+                .map(|m| m.format.clone())
+                .unwrap_or(crate::model::manifest::ModelFormat::Gguf);
+
+            let backend = match state.backends.find_for_format(&format) {
+                Ok(backend) => backend,
+                Err(e) => {
+                    tracing::warn!(
+                        model = %model_name,
+                        error = %e,
+                        "Failed to find backend for shutdown unload"
+                    );
+                    continue;
+                }
+            };
+
+            if let Err(e) = backend.unload(model_name).await {
+                tracing::warn!(
+                    model = %model_name,
+                    error = %e,
+                    "Failed to unload model on shutdown"
+                );
+                continue;
+            }
+
+            state.mark_unloaded(model_name);
+            tracing::info!(model = %model_name, "Model unloaded on shutdown");
+        }
+    }
+}
+
+async fn wait_for_ctrl_c_signal() {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => tracing::info!("Ctrl-C received, starting graceful shutdown"),
+        Err(e) => {
+            tracing::warn!("Failed to wait for Ctrl-C; graceful shutdown signal disabled: {e}");
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
 /// Spawn a background task that periodically checks for models whose keep_alive
 /// has expired and unloads them to free memory.
 fn spawn_keep_alive_reaper(state: state::AppState) {
@@ -365,35 +409,49 @@ fn spawn_keep_alive_reaper(state: state::AppState) {
 
         loop {
             interval.tick().await;
-
-            let expired = state.expired_models();
-            for model_name in expired {
-                // Look up the model's actual format to find the right backend.
-                let format = state
-                    .registry
-                    .get(&model_name)
-                    .map(|m| m.format.clone())
-                    .unwrap_or(crate::model::manifest::ModelFormat::Gguf);
-
-                if let Ok(backend) = state.backends.find_for_format(&format) {
-                    if let Err(e) = backend.unload(&model_name).await {
-                        tracing::warn!(
-                            model = %model_name,
-                            "Failed to unload expired model: {e}"
-                        );
-                        continue;
-                    }
-                }
-                state.mark_unloaded(&model_name);
-                state.metrics.increment_evictions();
-                state.metrics.remove_model_memory(&model_name);
-                tracing::info!(
-                    model = %model_name,
-                    "Unloaded model (keep_alive expired)"
-                );
-            }
+            reap_expired_models_once(&state).await;
         }
     });
+}
+
+async fn reap_expired_models_once(state: &state::AppState) {
+    let expired = state.expired_models();
+    for model_name in expired {
+        // Look up the model's actual format to find the right backend.
+        let format = state
+            .registry
+            .get(&model_name)
+            .map(|m| m.format.clone())
+            .unwrap_or(crate::model::manifest::ModelFormat::Gguf);
+
+        let backend = match state.backends.find_for_format(&format) {
+            Ok(backend) => backend,
+            Err(e) => {
+                tracing::warn!(
+                    model = %model_name,
+                    error = %e,
+                    "Failed to find backend for expired model"
+                );
+                continue;
+            }
+        };
+
+        if let Err(e) = backend.unload(&model_name).await {
+            tracing::warn!(
+                model = %model_name,
+                "Failed to unload expired model: {e}"
+            );
+            continue;
+        }
+
+        state.mark_unloaded(&model_name);
+        state.metrics.increment_evictions();
+        state.metrics.remove_model_memory(&model_name);
+        tracing::info!(
+            model = %model_name,
+            "Unloaded model (keep_alive expired)"
+        );
+    }
 }
 
 /// Spawn a SIGHUP handler that triggers key rotation.
@@ -405,10 +463,21 @@ fn spawn_keep_alive_reaper(state: state::AppState) {
 fn spawn_key_rotation_handler(state: state::AppState) {
     tokio::spawn(async move {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut sighup = signal(SignalKind::hangup()).expect("failed to register SIGHUP handler");
+        let mut sighup = match signal(SignalKind::hangup()) {
+            Ok(sighup) => sighup,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to register SIGHUP handler; key rotation signal disabled: {e}"
+                );
+                return;
+            }
+        };
 
         loop {
-            sighup.recv().await;
+            if sighup.recv().await.is_none() {
+                tracing::warn!("SIGHUP handler closed; key rotation signal disabled");
+                return;
+            }
             tracing::info!("SIGHUP received, attempting key rotation");
 
             if let Some(ref kp) = state.key_provider {
@@ -433,6 +502,8 @@ fn spawn_key_rotation_handler(state: state::AppState) {
 mod tests {
     use super::*;
     use crate::backend::test_utils::{test_state_with_mock, MockBackend};
+    use crate::backend::BackendRegistry;
+    use crate::model::registry::ModelRegistry;
     use serial_test::serial;
 
     #[test]
@@ -494,6 +565,66 @@ mod tests {
         assert!(state.is_model_loaded("long-lived"));
 
         std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    async fn test_reap_expired_models_preserves_loaded_state_without_backend() {
+        let state = state::AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        state.mark_loaded_with_keep_alive("orphaned-model", std::time::Duration::from_millis(1));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        reap_expired_models_once(&state).await;
+
+        assert!(state.is_model_loaded("orphaned-model"));
+    }
+
+    #[tokio::test]
+    async fn test_reap_expired_models_preserves_loaded_state_when_unload_fails() {
+        let state = test_state_with_mock(MockBackend::unload_fails());
+        state.mark_loaded_with_keep_alive("sticky-model", std::time::Duration::from_millis(1));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        reap_expired_models_once(&state).await;
+
+        assert!(state.is_model_loaded("sticky-model"));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_unload_marks_unloaded_on_success() {
+        let state = test_state_with_mock(MockBackend::success());
+        state.mark_loaded("shutdown-model");
+
+        unload_models_for_shutdown(&state).await;
+
+        assert!(!state.is_model_loaded("shutdown-model"));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_unload_preserves_loaded_state_without_backend() {
+        let state = state::AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        state.mark_loaded("orphaned-shutdown-model");
+
+        unload_models_for_shutdown(&state).await;
+
+        assert!(state.is_model_loaded("orphaned-shutdown-model"));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_unload_preserves_loaded_state_when_unload_fails() {
+        let state = test_state_with_mock(MockBackend::unload_fails());
+        state.mark_loaded("sticky-shutdown-model");
+
+        unload_models_for_shutdown(&state).await;
+
+        assert!(state.is_model_loaded("sticky-shutdown-model"));
     }
 
     #[test]

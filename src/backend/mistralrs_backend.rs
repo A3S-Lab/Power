@@ -45,6 +45,23 @@ struct LoadedModel {
     raw_template: Option<String>,
 }
 
+#[cfg(feature = "mistralrs")]
+async fn send_mistralrs_chat_result(
+    tx: &tokio::sync::mpsc::Sender<Result<ChatResponseChunk>>,
+    result: Result<ChatResponseChunk>,
+) -> bool {
+    match tx.send(result).await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                "mistral.rs chat receiver dropped; stopping stream task"
+            );
+            false
+        }
+    }
+}
+
 impl MistralRsBackend {
     pub fn new(config: Arc<PowerConfig>) -> Self {
         Self {
@@ -262,7 +279,7 @@ impl Backend for MistralRsBackend {
             }
         }
 
-        for msg in &request.messages {
+        for (message_index, msg) in request.messages.iter().enumerate() {
             let role = match msg.role.as_str() {
                 "system" => TextMessageRole::System,
                 "user" => TextMessageRole::User,
@@ -296,32 +313,12 @@ impl Backend for MistralRsBackend {
             if all_images.is_empty() {
                 req_builder = req_builder.add_message(role, msg.content.text());
             } else {
-                // Decode base64 images and add as multimodal message.
-                use image::DynamicImage;
-                let decoded: Vec<DynamicImage> = all_images
-                    .iter()
-                    .filter_map(|img_str| {
-                        // Strip data URI prefix if present (e.g. "data:image/png;base64,...")
-                        let b64 = if let Some(pos) = img_str.find(',') {
-                            &img_str[pos + 1..]
-                        } else {
-                            img_str.as_str()
-                        };
-                        use base64::Engine;
-                        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-                        image::load_from_memory(&bytes).ok()
-                    })
-                    .collect();
-
-                if decoded.is_empty() {
-                    req_builder = req_builder.add_message(role, msg.content.text());
-                } else {
-                    req_builder = req_builder
-                        .add_image_message(role, msg.content.text(), decoded, &model)
-                        .map_err(|e| {
-                            PowerError::InferenceFailed(format!("failed to add image message: {e}"))
-                        })?;
-                }
+                let decoded = decode_mistralrs_images(message_index, &all_images)?;
+                req_builder = req_builder
+                    .add_image_message(role, msg.content.text(), decoded, &model)
+                    .map_err(|e| {
+                        PowerError::InferenceFailed(format!("failed to add image message: {e}"))
+                    })?;
             }
         }
 
@@ -336,11 +333,13 @@ impl Backend for MistralRsBackend {
             let mut stream = match model.stream_chat_request(req_builder).await {
                 Ok(s) => s,
                 Err(e) => {
-                    let _ = tx
-                        .send(Err(PowerError::InferenceFailed(format!(
+                    send_mistralrs_chat_result(
+                        &tx,
+                        Err(PowerError::InferenceFailed(format!(
                             "mistral.rs stream init failed: {e}"
-                        ))))
-                        .await;
+                        ))),
+                    )
+                    .await;
                     return;
                 }
             };
@@ -414,7 +413,7 @@ impl Backend for MistralRsBackend {
                                 tool_calls,
                             };
 
-                            if tx.send(Ok(chat_chunk)).await.is_err() {
+                            if !send_mistralrs_chat_result(&tx, Ok(chat_chunk)).await {
                                 return; // client disconnected
                             }
                         }
@@ -423,9 +422,10 @@ impl Backend for MistralRsBackend {
                         prompt_tokens = Some(resp.usage.prompt_tokens as u32);
                         // Send a final done chunk with token counts.
                         let (fc, ft) = think_parser.flush();
-                        if !fc.is_empty() || !ft.is_empty() {
-                            let _ = tx
-                                .send(Ok(ChatResponseChunk {
+                        if (!fc.is_empty() || !ft.is_empty())
+                            && !send_mistralrs_chat_result(
+                                &tx,
+                                Ok(ChatResponseChunk {
                                     content: fc,
                                     thinking_content: if ft.is_empty() { None } else { Some(ft) },
                                     done: true,
@@ -433,16 +433,21 @@ impl Backend for MistralRsBackend {
                                     done_reason: Some("stop".to_string()),
                                     prompt_eval_duration_ns: None,
                                     tool_calls: None,
-                                }))
-                                .await;
+                                }),
+                            )
+                            .await
+                        {
+                            return;
                         }
                     }
                     mistralrs::Response::ModelError(e, _) => {
-                        let _ = tx
-                            .send(Err(PowerError::InferenceFailed(format!(
+                        send_mistralrs_chat_result(
+                            &tx,
+                            Err(PowerError::InferenceFailed(format!(
                                 "mistral.rs model error: {e}"
-                            ))))
-                            .await;
+                            ))),
+                        )
+                        .await;
                         return;
                     }
                     _ => {} // CompletionChunk, etc. — not used in chat path
@@ -727,6 +732,59 @@ impl MistralRsBackend {
     }
 }
 
+#[cfg(feature = "mistralrs")]
+fn decode_mistralrs_images(
+    message_index: usize,
+    images: &[String],
+) -> Result<Vec<image::DynamicImage>> {
+    images
+        .iter()
+        .enumerate()
+        .map(|(image_index, image)| decode_mistralrs_image(message_index, image_index, image))
+        .collect()
+}
+
+#[cfg(feature = "mistralrs")]
+fn decode_mistralrs_image(
+    message_index: usize,
+    image_index: usize,
+    image: &str,
+) -> Result<image::DynamicImage> {
+    use base64::Engine;
+
+    let image = image.trim();
+    if image.starts_with("http://") || image.starts_with("https://") {
+        return Err(PowerError::InvalidFormat(format!(
+            "Unsupported image input at message {message_index}, image {image_index}: \
+             remote image URLs are not supported; provide base64 image data or a data URI"
+        )));
+    }
+
+    let b64 = image.split_once(',').map_or(image, |(_, data)| data).trim();
+
+    if b64.is_empty() {
+        return Err(PowerError::InvalidFormat(format!(
+            "Invalid image input at message {message_index}, image {image_index}: empty image data"
+        )));
+    }
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| {
+            PowerError::InvalidFormat(format!(
+                "Invalid image input at message {message_index}, image {image_index}: \
+                 base64 decode failed: {e}"
+            ))
+        })?;
+
+    image::load_from_memory(&bytes).map_err(|e| {
+        PowerError::InvalidFormat(format!(
+            "Invalid image input at message {message_index}, image {image_index}: \
+             image decode failed: {e}"
+        ))
+    })
+}
+
 // ============================================================================
 // Stub implementation when mistralrs feature is disabled
 // ============================================================================
@@ -838,11 +896,21 @@ mod tests {
 
     #[test]
     fn test_backend_does_not_support_unknown_format() {
-        // SafeTensors is now supported; only truly unknown formats should fail.
         let backend = MistralRsBackend::new(test_config());
         assert!(backend.supports(&ModelFormat::SafeTensors));
         assert!(backend.supports(&ModelFormat::Gguf));
+
+        #[cfg(feature = "mistralrs")]
         assert!(backend.supports(&ModelFormat::HuggingFace));
+
+        #[cfg(not(feature = "mistralrs"))]
+        assert!(!backend.supports(&ModelFormat::HuggingFace));
+
+        #[cfg(feature = "mistralrs")]
+        assert!(backend.supports(&ModelFormat::Vision));
+
+        #[cfg(not(feature = "mistralrs"))]
+        assert!(!backend.supports(&ModelFormat::Vision));
     }
 
     #[test]
@@ -992,9 +1060,12 @@ mod tests {
     }
 
     #[test]
-    fn test_supports_huggingface() {
+    fn test_supports_huggingface_matches_feature_flag() {
         let backend = MistralRsBackend::new(test_config());
-        assert!(backend.supports(&ModelFormat::HuggingFace));
+        assert_eq!(
+            backend.supports(&ModelFormat::HuggingFace),
+            cfg!(feature = "mistralrs")
+        );
     }
 
     #[tokio::test]
@@ -1033,6 +1104,114 @@ mod tests {
             let msg = result.unwrap_err().to_string();
             assert!(msg.contains("not loaded"), "error: {msg}");
         }
+    }
+
+    #[cfg(feature = "mistralrs")]
+    fn test_chat_chunk(done: bool) -> ChatResponseChunk {
+        ChatResponseChunk {
+            content: String::new(),
+            thinking_content: None,
+            done,
+            prompt_tokens: None,
+            done_reason: None,
+            prompt_eval_duration_ns: None,
+            tool_calls: None,
+        }
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[tokio::test]
+    async fn test_send_mistralrs_chat_result_sends_when_receiver_open() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+        assert!(send_mistralrs_chat_result(&tx, Ok(test_chat_chunk(true))).await);
+
+        let sent = rx.recv().await.unwrap().unwrap();
+        assert!(sent.done);
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[tokio::test]
+    async fn test_send_mistralrs_chat_result_reports_closed_receiver() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+
+        assert!(!send_mistralrs_chat_result(&tx, Ok(test_chat_chunk(false))).await);
+    }
+
+    #[cfg(feature = "mistralrs")]
+    fn test_png_base64() -> String {
+        use base64::Engine;
+        use std::io::Cursor;
+
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1,
+            1,
+            image::Rgba([255, 0, 0, 255]),
+        ));
+        let mut cursor = Cursor::new(Vec::new());
+        image
+            .write_to(&mut cursor, image::ImageFormat::Png)
+            .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(cursor.into_inner())
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_decode_mistralrs_images_accepts_base64_png() {
+        let images = vec![test_png_base64()];
+
+        let decoded = decode_mistralrs_images(0, &images).unwrap();
+
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].width(), 1);
+        assert_eq!(decoded[0].height(), 1);
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_decode_mistralrs_images_accepts_data_uri() {
+        let images = vec![format!("data:image/png;base64,{}", test_png_base64())];
+
+        let decoded = decode_mistralrs_images(0, &images).unwrap();
+
+        assert_eq!(decoded.len(), 1);
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_decode_mistralrs_images_rejects_invalid_base64() {
+        let images = vec!["not base64".to_string()];
+
+        let err = decode_mistralrs_images(3, &images).unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("message 3"), "error: {msg}");
+        assert!(msg.contains("base64 decode failed"), "error: {msg}");
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_decode_mistralrs_images_rejects_invalid_image_bytes() {
+        use base64::Engine;
+
+        let images = vec![base64::engine::general_purpose::STANDARD.encode(b"not an image")];
+
+        let err = decode_mistralrs_images(0, &images).unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("image decode failed"), "error: {msg}");
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_decode_mistralrs_images_rejects_remote_urls() {
+        let images = vec!["https://example.com/image.png".to_string()];
+
+        let err = decode_mistralrs_images(0, &images).unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("remote image URLs"), "error: {msg}");
     }
 
     // ========================================================================

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -228,37 +230,74 @@ fn default_num_parallel() -> usize {
 /// - `"0"` → Duration::ZERO (unload immediately)
 /// - `"-1"` → Duration::MAX (never unload)
 pub fn parse_keep_alive(s: &str) -> std::time::Duration {
+    parse_keep_alive_duration(s).unwrap_or_else(|| std::time::Duration::from_secs(300))
+}
+
+fn parse_keep_alive_duration(s: &str) -> Option<std::time::Duration> {
     let s = s.trim();
     if s == "0" {
-        return std::time::Duration::ZERO;
+        return Some(std::time::Duration::ZERO);
     }
     if s == "-1" {
-        return std::time::Duration::MAX;
+        return Some(std::time::Duration::MAX);
     }
 
     if let Some(num_str) = s.strip_suffix('s') {
         if let Ok(n) = num_str.parse::<u64>() {
-            return std::time::Duration::from_secs(n);
+            return Some(std::time::Duration::from_secs(n));
         }
     }
     if let Some(num_str) = s.strip_suffix('m') {
         if let Ok(n) = num_str.parse::<u64>() {
-            return std::time::Duration::from_secs(n * 60);
+            return n.checked_mul(60).map(std::time::Duration::from_secs);
         }
     }
     if let Some(num_str) = s.strip_suffix('h') {
         if let Ok(n) = num_str.parse::<u64>() {
-            return std::time::Duration::from_secs(n * 3600);
+            return n.checked_mul(3600).map(std::time::Duration::from_secs);
         }
     }
 
     // Fallback: try to parse as raw seconds
     if let Ok(n) = s.parse::<u64>() {
-        return std::time::Duration::from_secs(n);
+        return Some(std::time::Duration::from_secs(n));
     }
 
-    // Default to 5 minutes if unparsable
-    std::time::Duration::from_secs(300)
+    None
+}
+
+fn parse_env_override<T>(name: &str, value: &str) -> Option<T>
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    match value.trim().parse::<T>() {
+        Ok(parsed) => Some(parsed),
+        Err(e) => {
+            tracing::warn!(
+                env = name,
+                value,
+                error = %e,
+                "Invalid environment override; keeping configured value"
+            );
+            None
+        }
+    }
+}
+
+fn parse_bool_env_override(name: &str, value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => {
+            tracing::warn!(
+                env = name,
+                value,
+                "Invalid boolean environment override; expected true/false, 1/0, yes/no, or on/off"
+            );
+            None
+        }
+    }
 }
 
 fn default_host() -> String {
@@ -374,23 +413,9 @@ impl PowerConfig {
     /// None of these are fatal — the server will still start — but they indicate
     /// settings that will have no effect or produce unexpected behavior.
     pub fn validate(&self) {
-        // Warn if keep_alive is set to something unparseable (will silently fall back to 5m).
+        // Warn if keep_alive is set to something unparseable (will fall back to 5m).
         let ka = self.keep_alive.trim();
-        let parseable = ka == "0"
-            || ka == "-1"
-            || ka
-                .strip_suffix('s')
-                .and_then(|n| n.parse::<u64>().ok())
-                .is_some()
-            || ka
-                .strip_suffix('m')
-                .and_then(|n| n.parse::<u64>().ok())
-                .is_some()
-            || ka
-                .strip_suffix('h')
-                .and_then(|n| n.parse::<u64>().ok())
-                .is_some()
-            || ka.parse::<u64>().is_ok();
+        let parseable = parse_keep_alive_duration(ka).is_some();
         if !parseable {
             tracing::warn!(
                 keep_alive = %self.keep_alive,
@@ -451,7 +476,7 @@ impl PowerConfig {
         }
 
         if let Ok(port_str) = std::env::var("A3S_POWER_PORT") {
-            if let Ok(port) = port_str.parse::<u16>() {
+            if let Some(port) = parse_env_override::<u16>("A3S_POWER_PORT", &port_str) {
                 self.port = port;
             }
         }
@@ -461,7 +486,7 @@ impl PowerConfig {
         }
 
         if let Ok(max_str) = std::env::var("A3S_POWER_MAX_MODELS") {
-            if let Ok(max) = max_str.parse::<usize>() {
+            if let Some(max) = parse_env_override::<usize>("A3S_POWER_MAX_MODELS", &max_str) {
                 self.max_loaded_models = max;
             }
         }
@@ -471,20 +496,21 @@ impl PowerConfig {
         }
 
         if let Ok(gpu_str) = std::env::var("A3S_POWER_GPU_LAYERS") {
-            if let Ok(gpu) = gpu_str.parse::<i32>() {
+            if let Some(gpu) = parse_env_override::<i32>("A3S_POWER_GPU_LAYERS", &gpu_str) {
                 self.gpu.gpu_layers = gpu;
             }
         }
 
         if let Ok(tee_str) = std::env::var("A3S_POWER_TEE_MODE") {
-            if tee_str == "1" || tee_str.eq_ignore_ascii_case("true") {
-                self.tee_mode = true;
+            if let Some(tee_mode) = parse_bool_env_override("A3S_POWER_TEE_MODE", &tee_str) {
+                self.tee_mode = tee_mode;
             }
         }
 
         if let Ok(redact_str) = std::env::var("A3S_POWER_REDACT_LOGS") {
-            if redact_str == "1" || redact_str.eq_ignore_ascii_case("true") {
-                self.redact_logs = true;
+            if let Some(redact_logs) = parse_bool_env_override("A3S_POWER_REDACT_LOGS", &redact_str)
+            {
+                self.redact_logs = redact_logs;
             }
         }
 
@@ -494,19 +520,19 @@ impl PowerConfig {
         }
 
         if let Ok(tls_port_str) = std::env::var("A3S_POWER_TLS_PORT") {
-            if let Ok(port) = tls_port_str.parse::<u16>() {
+            if let Some(port) = parse_env_override::<u16>("A3S_POWER_TLS_PORT", &tls_port_str) {
                 self.tls_port = Some(port);
             }
         }
 
         if let Ok(ra_tls_str) = std::env::var("A3S_POWER_RA_TLS") {
-            if ra_tls_str == "1" || ra_tls_str.eq_ignore_ascii_case("true") {
-                self.ra_tls = true;
+            if let Some(ra_tls) = parse_bool_env_override("A3S_POWER_RA_TLS", &ra_tls_str) {
+                self.ra_tls = ra_tls;
             }
         }
 
         if let Ok(vsock_str) = std::env::var("A3S_POWER_VSOCK_PORT") {
-            if let Ok(port) = vsock_str.parse::<u32>() {
+            if let Some(port) = parse_env_override::<u32>("A3S_POWER_VSOCK_PORT", &vsock_str) {
                 self.vsock_port = Some(port);
             }
         }
@@ -848,6 +874,18 @@ mod tests {
         assert_eq!(parse_keep_alive("abc"), std::time::Duration::from_secs(300));
     }
 
+    #[test]
+    fn test_parse_keep_alive_overflow_defaults() {
+        assert_eq!(
+            parse_keep_alive("18446744073709551615m"),
+            std::time::Duration::from_secs(300)
+        );
+        assert_eq!(
+            parse_keep_alive("18446744073709551615h"),
+            std::time::Duration::from_secs(300)
+        );
+    }
+
     // ---------------------------------------------------------------
     // Environment variable override tests
     // ---------------------------------------------------------------
@@ -925,11 +963,37 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_env_a3s_power_tee_mode_false_overrides_true() {
+        std::env::set_var("A3S_POWER_TEE_MODE", "false");
+        let mut config = PowerConfig {
+            tee_mode: true,
+            ..Default::default()
+        };
+        config.apply_env_overrides();
+        assert!(!config.tee_mode);
+        std::env::remove_var("A3S_POWER_TEE_MODE");
+    }
+
+    #[test]
+    #[serial]
     fn test_env_a3s_power_redact_logs() {
         std::env::set_var("A3S_POWER_REDACT_LOGS", "1");
         let mut config = PowerConfig::default();
         config.apply_env_overrides();
         assert!(config.redact_logs);
+        std::env::remove_var("A3S_POWER_REDACT_LOGS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_redact_logs_false_overrides_true() {
+        std::env::set_var("A3S_POWER_REDACT_LOGS", "0");
+        let mut config = PowerConfig {
+            redact_logs: true,
+            ..Default::default()
+        };
+        config.apply_env_overrides();
+        assert!(!config.redact_logs);
         std::env::remove_var("A3S_POWER_REDACT_LOGS");
     }
 
@@ -944,6 +1008,23 @@ mod tests {
         assert_eq!(config.gpu.gpu_layers, 0); // unchanged
         std::env::remove_var("A3S_POWER_MAX_MODELS");
         std::env::remove_var("A3S_POWER_GPU_LAYERS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_invalid_bool_values_ignored() {
+        std::env::set_var("A3S_POWER_TEE_MODE", "definitely");
+        std::env::set_var("A3S_POWER_RA_TLS", "maybe");
+        let mut config = PowerConfig {
+            tee_mode: true,
+            ra_tls: true,
+            ..Default::default()
+        };
+        config.apply_env_overrides();
+        assert!(config.tee_mode);
+        assert!(config.ra_tls);
+        std::env::remove_var("A3S_POWER_TEE_MODE");
+        std::env::remove_var("A3S_POWER_RA_TLS");
     }
 
     #[test]
@@ -1085,6 +1166,19 @@ mod tests {
         let mut config = PowerConfig::default();
         config.apply_env_overrides();
         assert!(config.ra_tls);
+        std::env::remove_var("A3S_POWER_RA_TLS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_ra_tls_false_overrides_true() {
+        std::env::set_var("A3S_POWER_RA_TLS", "no");
+        let mut config = PowerConfig {
+            ra_tls: true,
+            ..Default::default()
+        };
+        config.apply_env_overrides();
+        assert!(!config.ra_tls);
         std::env::remove_var("A3S_POWER_RA_TLS");
     }
 
@@ -1360,6 +1454,16 @@ mod tests {
             };
             config.validate(); // must not panic
         }
+    }
+
+    #[test]
+    fn test_validate_keep_alive_overflow_does_not_panic() {
+        let config = PowerConfig {
+            keep_alive: "18446744073709551615h".to_string(),
+            ..Default::default()
+        };
+
+        config.validate();
     }
 
     #[test]

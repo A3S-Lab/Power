@@ -51,8 +51,8 @@ pub fn ffn_layer(
     let up_buf = &mut buf.up[..n_ff];
 
     matvec_dual(
-        gate_e.bytes().unwrap(),
-        up_e.bytes().unwrap(),
+        gate_e.required_bytes("ffn gate projection")?,
+        up_e.required_bytes("ffn up projection")?,
         gate_e.ggml_type,
         up_e.ggml_type,
         n_ff,
@@ -78,7 +78,7 @@ pub fn ffn_layer(
     let down_e = tc.get(layer, SLOT_FFN_DOWN);
     let down_buf = &mut buf.down[..n_embd];
     matvec(
-        down_e.bytes().unwrap(),
+        down_e.required_bytes("ffn down projection")?,
         down_e.ggml_type,
         n_embd,
         n_ff,

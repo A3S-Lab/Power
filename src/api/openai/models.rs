@@ -7,7 +7,11 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::api::types::{ModelInfo, ModelList};
+#[cfg(feature = "hf")]
+use crate::error::PowerError;
 use crate::model::manifest::{ModelFormat, ModelManifest};
+#[cfg(feature = "hf")]
+use crate::model::registry::ModelRegistry;
 use crate::server::state::AppState;
 
 /// GET /v1/models - OpenAI-compatible model listing.
@@ -89,8 +93,20 @@ pub async fn delete_handler(
             .get(&name)
             .map(|m| m.format.clone())
             .unwrap_or(ModelFormat::Gguf);
-        if let Ok(backend) = state.backends.find_for_format(&format) {
-            let _ = backend.unload(&name).await;
+        let backend = match state.backends.find_for_format(&format) {
+            Ok(backend) => backend,
+            Err(e) => {
+                return super::openai_error(
+                    "backend_unavailable",
+                    &state.sanitize_error(&e.to_string()),
+                )
+                .into_response();
+            }
+        };
+        if let Err(e) = backend.unload(&name).await {
+            tracing::warn!(model = %name, error = %e, "Failed to unload model before deletion");
+            return super::openai_error("server_error", &state.sanitize_error(&e.to_string()))
+                .into_response();
         }
         state.mark_unloaded(&name);
     }
@@ -179,10 +195,56 @@ pub async fn register_handler(
             )
                 .into_response();
         }
-        let size = dir_size(&path);
+        let size = match dir_size(&path) {
+            Ok(size) => size,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": format!("failed to inspect huggingface model directory {}: {e}", req.path),
+                            "type": "invalid_request_error",
+                            "code": "path_unreadable"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
         (size, String::new())
     } else {
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": format!("failed to inspect model file {}: {e}", req.path),
+                            "type": "invalid_request_error",
+                            "code": "path_unreadable"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        if !metadata.is_file() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!("model path must be a file: {}", req.path),
+                        "type": "invalid_request_error",
+                        "code": "not_a_file"
+                    }
+                })),
+            )
+                .into_response();
+        }
+
+        let size = metadata.len();
         let sha256 = match crate::model::storage::compute_sha256_file(&path) {
             Ok(h) => h,
             Err(e) => {
@@ -248,21 +310,22 @@ pub async fn register_handler(
 }
 
 /// Compute total size of a directory by summing all file sizes.
-fn dir_size(path: &std::path::Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return 0;
-    };
-    entries
-        .filter_map(|e| e.ok())
-        .map(|e| {
-            let p = e.path();
-            if p.is_dir() {
-                dir_size(&p)
-            } else {
-                std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
-            }
-        })
-        .sum()
+fn dir_size(path: &std::path::Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = std::fs::metadata(&path)?;
+        let size = if metadata.is_dir() {
+            dir_size(&path)?
+        } else {
+            metadata.len()
+        };
+        total = total
+            .checked_add(size)
+            .ok_or_else(|| std::io::Error::other("directory size overflow"))?;
+    }
+    Ok(total)
 }
 
 /// Request body for POST /v1/models/pull.
@@ -281,6 +344,118 @@ pub struct PullModelRequest {
     /// Falls back to `MODELSCOPE_TOKEN` / `A3S_POWER_HUB_TOKEN` / `HF_TOKEN`.
     #[serde(default)]
     pub token: Option<String>,
+}
+
+#[cfg(feature = "hf")]
+fn save_initial_pull_state(name: &str) {
+    let ps = crate::model::pull_state::PullState::new(name);
+    if let Err(e) = ps.save() {
+        tracing::warn!(
+            model = %name,
+            error = %e,
+            "Failed to persist initial pull state"
+        );
+    }
+}
+
+#[cfg(feature = "hf")]
+fn mark_pull_state_done(name: &str) {
+    let Some(mut ps) = crate::model::pull_state::PullState::load(name) else {
+        tracing::warn!(model = %name, "Pull state missing while marking pull as done");
+        return;
+    };
+
+    if let Err(e) = ps.mark_done() {
+        tracing::warn!(
+            model = %name,
+            error = %e,
+            "Failed to mark pull state as done"
+        );
+    }
+}
+
+#[cfg(feature = "hf")]
+fn mark_pull_state_failed(name: &str, error_message: &str) {
+    let Some(mut ps) = crate::model::pull_state::PullState::load(name) else {
+        tracing::warn!(
+            model = %name,
+            error = %error_message,
+            "Pull state missing while marking pull as failed"
+        );
+        return;
+    };
+
+    if let Err(e) = ps.mark_failed(error_message) {
+        tracing::warn!(
+            model = %name,
+            error = %e,
+            pull_error = %error_message,
+            "Failed to mark pull state as failed"
+        );
+    }
+}
+
+#[cfg(feature = "hf")]
+fn update_pull_state_progress(name: &str, completed: u64, total: u64) {
+    let Some(mut ps) = crate::model::pull_state::PullState::load(name) else {
+        tracing::warn!(
+            model = %name,
+            completed,
+            total,
+            "Pull state missing while updating progress"
+        );
+        return;
+    };
+
+    if let Err(e) = ps.update_progress(completed, total) {
+        tracing::warn!(
+            model = %name,
+            completed,
+            total,
+            error = %e,
+            "Failed to update pull state progress"
+        );
+    }
+}
+
+#[cfg(feature = "hf")]
+fn register_pulled_manifest(
+    registry: &ModelRegistry,
+    manifest: ModelManifest,
+    force: bool,
+    pull_name: &str,
+) -> bool {
+    let manifest_name = manifest.name.clone();
+
+    if force {
+        match registry.remove(&manifest_name) {
+            Ok(_) | Err(PowerError::ModelNotFound(_)) => {}
+            Err(e) => {
+                tracing::warn!(
+                    model = %manifest_name,
+                    error = %e,
+                    "Failed to remove existing model before forced pull registration"
+                );
+            }
+        }
+    }
+
+    match registry.register(manifest) {
+        Ok(()) => {
+            mark_pull_state_done(pull_name);
+            true
+        }
+        Err(e) => {
+            let message = format!("model registry update failed: {e}");
+            tracing::error!(
+                model = %manifest_name,
+                error = %e,
+                "Failed to register pulled model manifest"
+            );
+            mark_pull_state_failed(pull_name, &message);
+            false
+        }
+    }
 }
 
 /// POST /v1/models/pull — Pull a GGUF model from remote model hub.
@@ -303,14 +478,10 @@ pub async fn pull_handler(
     // Fast path: already registered and not forcing.
     if !req.force && state.registry.exists(&req.name) {
         return axum::response::Sse::new(futures::stream::once(async move {
-            Ok::<_, std::convert::Infallible>(
-                axum::response::sse::Event::default()
-                    .json_data(serde_json::json!({
-                        "status": "already_exists",
-                        "name": req.name
-                    }))
-                    .unwrap(),
-            )
+            Ok::<_, std::convert::Infallible>(super::sse_json_event(&serde_json::json!({
+                "status": "already_exists",
+                "name": req.name
+            })))
         }))
         .into_response();
     }
@@ -318,14 +489,10 @@ pub async fn pull_handler(
     // Concurrent pull guard: reject duplicate in-flight pulls for the same model.
     if state.is_pulling(&req.name) {
         return axum::response::Sse::new(futures::stream::once(async move {
-            Ok::<_, std::convert::Infallible>(
-                axum::response::sse::Event::default()
-                    .json_data(serde_json::json!({
-                        "status": "already_pulling",
-                        "name": req.name
-                    }))
-                    .unwrap(),
-            )
+            Ok::<_, std::convert::Infallible>(super::sse_json_event(&serde_json::json!({
+                "status": "already_pulling",
+                "name": req.name
+            })))
         }))
         .into_response();
     }
@@ -333,7 +500,6 @@ pub async fn pull_handler(
     #[cfg(feature = "hf")]
     {
         use crate::model::pull::hf::{pull, PullProgress};
-        use axum::response::sse::Event;
         use tokio_stream::wrappers::ReceiverStream;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<PullProgress>(32);
@@ -343,16 +509,20 @@ pub async fn pull_handler(
         let force = req.force;
 
         // Mark as in-flight before spawning.
-        state.start_pull(&name);
+        if !state.start_pull(&name) {
+            return axum::response::Sse::new(futures::stream::once(async move {
+                Ok::<_, std::convert::Infallible>(super::sse_json_event(&serde_json::json!({
+                    "status": "already_pulling",
+                    "name": req.name
+                })))
+            }))
+            .into_response();
+        }
         let state_for_cleanup = state.clone();
         let name_for_cleanup = name.clone();
 
         // Persist initial pull state.
-        {
-            use crate::model::pull_state::PullState;
-            let ps = PullState::new(&name);
-            let _ = ps.save();
-        }
+        save_initial_pull_state(&name);
 
         // Spawn download task; progress flows through the channel.
         tokio::spawn(async move {
@@ -361,22 +531,11 @@ pub async fn pull_handler(
             state_for_cleanup.finish_pull(&name_for_cleanup);
             match result {
                 Ok(manifest) => {
-                    use crate::model::pull_state::PullState;
-                    if force {
-                        let _ = registry.remove(&manifest.name);
-                    }
-                    let _ = registry.register(manifest);
-                    // Mark state as done; clean up after successful registration.
-                    if let Some(mut ps) = PullState::load(&name_for_cleanup) {
-                        let _ = ps.mark_done();
-                    }
+                    register_pulled_manifest(registry.as_ref(), manifest, force, &name_for_cleanup);
                 }
                 Err(e) => {
-                    use crate::model::pull_state::PullState;
                     tracing::error!(error = %e, model = %name_for_cleanup, "model pull failed");
-                    if let Some(mut ps) = PullState::load(&name_for_cleanup) {
-                        let _ = ps.mark_failed(&e.to_string());
-                    }
+                    mark_pull_state_failed(&name_for_cleanup, &e.to_string());
                 }
             }
         });
@@ -385,43 +544,38 @@ pub async fn pull_handler(
         let stream = ReceiverStream::new(rx).map(move |progress| {
             // Persist progress to disk on Downloading events (throttled to every 5%).
             if let PullProgress::Downloading { completed, total } = &progress {
-                use crate::model::pull_state::PullState;
                 if *total > 0 {
                     let pct = completed * 100 / total;
                     let prev_pct = completed.saturating_sub(1024 * 1024) * 100 / total;
                     if pct / 5 != prev_pct / 5 {
-                        if let Some(mut ps) = PullState::load(&pull_name) {
-                            let _ = ps.update_progress(*completed, *total);
-                        }
+                        update_pull_state_progress(&pull_name, *completed, *total);
                     }
                 }
             }
             let event = match progress {
-                PullProgress::Resuming { offset, total } => Event::default()
-                    .json_data(serde_json::json!({
+                PullProgress::Resuming { offset, total } => {
+                    super::sse_json_event(&serde_json::json!({
                         "status": "resuming",
                         "offset": offset,
                         "total": total
                     }))
-                    .unwrap(),
-                PullProgress::Downloading { completed, total } => Event::default()
-                    .json_data(serde_json::json!({
+                }
+                PullProgress::Downloading { completed, total } => {
+                    super::sse_json_event(&serde_json::json!({
                         "status": "downloading",
                         "completed": completed,
                         "total": total
                     }))
-                    .unwrap(),
-                PullProgress::Verifying => Event::default()
-                    .json_data(serde_json::json!({ "status": "verifying" }))
-                    .unwrap(),
-                PullProgress::Done => Event::default()
-                    .json_data(serde_json::json!({
-                        "status": "success",
-                        "id": req.name,
-                        "object": "model",
-                        "created": chrono::Utc::now().timestamp()
-                    }))
-                    .unwrap(),
+                }
+                PullProgress::Verifying => super::sse_json_event(&serde_json::json!({
+                    "status": "verifying"
+                })),
+                PullProgress::Done => super::sse_json_event(&serde_json::json!({
+                    "status": "success",
+                    "id": req.name,
+                    "object": "model",
+                    "created": chrono::Utc::now().timestamp()
+                })),
             };
             Ok::<_, std::convert::Infallible>(event)
         });
@@ -442,6 +596,31 @@ pub async fn pull_handler(
             })),
         )
             .into_response()
+    }
+}
+
+/// GET /v1/models/pull/:name/status — Query the persisted state of a pull operation.
+///
+/// Returns the last known state of a pull (pulling, done, or failed).
+/// Useful after a server restart to check whether a previous download completed.
+///
+/// Returns 404 if no pull state exists for the given model name.
+pub async fn pull_status_handler(Path(name): Path<String>) -> impl IntoResponse {
+    use crate::model::pull_state::PullState;
+
+    match PullState::load(&name) {
+        Some(state) => (StatusCode::OK, Json(state)).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": {
+                    "message": format!("no pull state found for model '{name}'"),
+                    "type": "not_found",
+                    "code": "pull_state_not_found"
+                }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -572,6 +751,33 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
+    async fn test_delete_loaded_model_keeps_registry_when_unload_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::unload_fails());
+        state
+            .registry
+            .register(sample_manifest("stays-loaded"))
+            .unwrap();
+        state.mark_loaded("stays-loaded");
+
+        let app = router::build(state.clone());
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/v1/models/stays-loaded")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(state.is_model_loaded("stays-loaded"));
+        assert!(state.registry.get("stays-loaded").is_ok());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
     async fn test_delete_model_not_found() {
         let state = test_state_with_mock(MockBackend::success());
         let app = router::build(state);
@@ -646,6 +852,7 @@ mod tests {
 
         // Verify SHA-256 was computed and stored (non-empty hash in the registry)
         let manifest = state.registry.get("local-model").unwrap();
+        assert_eq!(manifest.size, b"fake weights".len() as u64);
         assert!(
             !manifest.sha256.is_empty(),
             "register_handler must compute and store SHA-256"
@@ -657,6 +864,62 @@ mod tests {
         );
 
         std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_register_model_file_format_requires_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let model_dir = dir.path().join("not-a-file-model");
+        std::fs::create_dir_all(&model_dir).unwrap();
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let body = serde_json::json!({
+            "name": "bad-local-model",
+            "path": model_dir.to_str().unwrap()
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/models")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "not_a_file");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    fn test_dir_size_sums_nested_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(dir.path().join("config.json"), b"{}").unwrap();
+        std::fs::write(nested.join("weights.safetensors"), b"weights").unwrap();
+
+        let size = super::dir_size(dir.path()).unwrap();
+
+        assert_eq!(size, 9);
+    }
+
+    #[test]
+    fn test_dir_size_reports_read_dir_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("not-a-dir");
+        std::fs::write(&file_path, b"weights").unwrap();
+
+        let err = super::dir_size(&file_path).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
     }
 
     #[tokio::test]
@@ -715,6 +978,120 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn test_pull_model_already_pulling() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        assert!(state.start_pull("busy-model"));
+
+        let app = router::build(state);
+        let body = serde_json::json!({ "name": "busy-model" });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/models/pull")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8_lossy(&bytes);
+        assert!(body_str.contains("already_pulling"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_pull_status_found_for_encoded_model_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let mut pull_state = crate::model::pull_state::PullState::new("owner/repo:Q4_K_M");
+        pull_state.update_progress(1024, 4096).unwrap();
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .uri("/v1/models/pull/owner%2Frepo%3AQ4_K_M/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["name"], "owner/repo:Q4_K_M");
+        assert_eq!(json["status"], "pulling");
+        assert_eq!(json["completed"], 1024);
+        assert_eq!(json["total"], 4096);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_pull_status_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .uri("/v1/models/pull/missing/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "pull_state_not_found");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[cfg(feature = "hf")]
+    #[test]
+    #[serial]
+    fn test_register_pulled_manifest_marks_state_failed_when_registry_write_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let pull_name = "owner/repo:Q4_K_M";
+        crate::model::pull_state::PullState::new(pull_name)
+            .save()
+            .unwrap();
+
+        std::fs::write(dir.path().join("models"), b"not a directory").unwrap();
+
+        let registry = crate::model::registry::ModelRegistry::new();
+        assert!(!super::register_pulled_manifest(
+            &registry,
+            sample_manifest(pull_name),
+            false,
+            pull_name
+        ));
+
+        let state = crate::model::pull_state::PullState::load(pull_name).unwrap();
+        assert_eq!(state.status, crate::model::pull_state::PullStatus::Failed);
+        assert!(state
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("model registry update failed")));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn test_register_model_safetensors_format() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -743,6 +1120,7 @@ mod tests {
             manifest.format,
             crate::model::manifest::ModelFormat::SafeTensors
         );
+        assert_eq!(manifest.size, b"fake safetensors weights".len() as u64);
 
         std::env::remove_var("A3S_POWER_HOME");
     }
@@ -780,8 +1158,49 @@ mod tests {
             manifest.format,
             crate::model::manifest::ModelFormat::HuggingFace
         );
+        assert_eq!(manifest.size, 4);
         // SHA-256 is empty for directory-based models
         assert!(manifest.sha256.is_empty());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn test_register_model_huggingface_rejects_unreadable_directory_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let model_dir = dir.path().join("broken-embedding-model");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("config.json"), b"{}").unwrap();
+        std::os::unix::fs::symlink(
+            model_dir.join("missing.safetensors"),
+            model_dir.join("weights.safetensors"),
+        )
+        .unwrap();
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let body = serde_json::json!({
+            "name": "bad-embedding",
+            "path": model_dir.to_str().unwrap(),
+            "format": "huggingface"
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/models")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "path_unreadable");
 
         std::env::remove_var("A3S_POWER_HOME");
     }
@@ -818,32 +1237,5 @@ mod tests {
         assert_eq!(json["error"]["code"], "not_a_directory");
 
         std::env::remove_var("A3S_POWER_HOME");
-    }
-}
-
-/// GET /v1/models/pull/:name/status — Query the persisted state of a pull operation.
-///
-/// Returns the last known state of a pull (pulling, done, or failed).
-/// Useful after a server restart to check whether a previous download completed.
-///
-/// Returns 404 if no pull state exists for the given model name.
-pub async fn pull_status_handler(Path(name): Path<String>) -> impl IntoResponse {
-    use crate::model::pull_state::PullState;
-
-    match PullState::load(&name) {
-        Some(state) => {
-            (StatusCode::OK, Json(serde_json::to_value(&state).unwrap())).into_response()
-        }
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": {
-                    "message": format!("no pull state found for model '{name}'"),
-                    "type": "not_found",
-                    "code": "pull_state_not_found"
-                }
-            })),
-        )
-            .into_response(),
     }
 }

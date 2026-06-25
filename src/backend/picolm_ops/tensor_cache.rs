@@ -68,6 +68,13 @@ impl TensorEntry {
         }
     }
 
+    /// Returns required tensor bytes, or an inference error if the slot is absent.
+    #[inline]
+    pub fn required_bytes(&self, name: &str) -> Result<&[u8]> {
+        self.bytes()
+            .ok_or_else(|| PowerError::InferenceFailed(format!("tensor_cache: missing {name}")))
+    }
+
     #[inline]
     pub fn is_present(&self) -> bool {
         !self.ptr.is_null()
@@ -108,7 +115,11 @@ impl TensorCache {
                 let bytes = gguf.tensor_bytes(&name).map_err(|_| {
                     PowerError::InferenceFailed(format!("tensor_cache: missing {name}"))
                 })?;
-                let ggml_type = gguf.tensor_type(&name).unwrap();
+                let ggml_type = gguf.tensor_type(&name).map_err(|e| {
+                    PowerError::InferenceFailed(format!(
+                        "tensor_cache: missing type for {name}: {e}"
+                    ))
+                })?;
                 entries[base + slot] = TensorEntry {
                     ptr: bytes.as_ptr(),
                     len: bytes.len(),
@@ -202,6 +213,14 @@ mod tests {
         };
         assert!(entry.is_present());
         assert_eq!(entry.bytes().unwrap(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_tensor_entry_required_bytes_errors_when_absent() {
+        let err = TensorEntry::ABSENT
+            .required_bytes("missing projection")
+            .unwrap_err();
+        assert!(err.to_string().contains("missing projection"));
     }
 
     #[test]

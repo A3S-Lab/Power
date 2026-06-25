@@ -150,6 +150,14 @@ impl JsonGrammarSampler {
         }
     }
 
+    fn replace_top(&mut self, state: JsonState) -> bool {
+        let Some(top) = self.stack.last_mut() else {
+            return false;
+        };
+        *top = state;
+        true
+    }
+
     fn feed_value(&mut self, ch: char) -> bool {
         if ch.is_ascii_whitespace() {
             return true;
@@ -197,7 +205,9 @@ impl JsonGrammarSampler {
         match ch {
             '"' => {
                 // Key string
-                *self.stack.last_mut().unwrap() = JsonState::ObjectColon;
+                if !self.replace_top(JsonState::ObjectColon) {
+                    return false;
+                }
                 self.stack.push(JsonState::InString);
                 true
             }
@@ -215,7 +225,9 @@ impl JsonGrammarSampler {
             return true;
         }
         if ch == ':' {
-            *self.stack.last_mut().unwrap() = JsonState::ObjectComma;
+            if !self.replace_top(JsonState::ObjectComma) {
+                return false;
+            }
             self.stack.push(JsonState::Value);
             true
         } else {
@@ -230,16 +242,7 @@ impl JsonGrammarSampler {
         match ch {
             ',' => {
                 // Expect next key
-                *self.stack.last_mut().unwrap() = JsonState::ObjectColon;
-                self.stack.push(JsonState::InString);
-                // The next feed should see '"' to start the key string,
-                // but we need to push a Value-like state that expects '"'.
-                // Actually, after comma we expect a key string directly.
-                // Let's adjust: pop the InString we just pushed, and instead
-                // set state to ObjectStart which expects '"' or '}'.
-                self.stack.pop();
-                *self.stack.last_mut().unwrap() = JsonState::ObjectStart;
-                true
+                self.replace_top(JsonState::ObjectStart)
             }
             '}' => {
                 self.stack.pop();
@@ -260,7 +263,9 @@ impl JsonGrammarSampler {
             return true;
         }
         // First element — transition to ArrayComma and push Value
-        *self.stack.last_mut().unwrap() = JsonState::ArrayComma;
+        if !self.replace_top(JsonState::ArrayComma) {
+            return false;
+        }
         self.stack.push(JsonState::Value);
         self.feed_value(ch)
     }
@@ -290,10 +295,7 @@ impl JsonGrammarSampler {
                 self.complete_value();
                 true
             }
-            '\\' => {
-                *self.stack.last_mut().unwrap() = JsonState::InStringEscape;
-                true
-            }
+            '\\' => self.replace_top(JsonState::InStringEscape),
             // Control characters are invalid in JSON strings
             '\x00'..='\x1f' => false,
             _ => true,
@@ -303,7 +305,7 @@ impl JsonGrammarSampler {
     fn feed_in_string_escape(&mut self, ch: char) -> bool {
         let valid = matches!(ch, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u');
         if valid {
-            *self.stack.last_mut().unwrap() = JsonState::InString;
+            return self.replace_top(JsonState::InString);
         }
         valid
     }
@@ -316,9 +318,11 @@ impl JsonGrammarSampler {
                     self.stack.pop();
                     self.complete_value();
                 } else {
-                    *self.stack.last_mut().unwrap() = JsonState::Keyword {
+                    if !self.replace_top(JsonState::Keyword {
                         expected: remaining,
-                    };
+                    }) {
+                        return false;
+                    }
                 }
                 true
             } else {

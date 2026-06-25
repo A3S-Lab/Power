@@ -132,7 +132,7 @@ pub async fn handler(
     match report_result {
         Ok(report) => {
             state.metrics.increment_tee_attestation();
-            (StatusCode::OK, Json(serde_json::to_value(&report).unwrap())).into_response()
+            (StatusCode::OK, Json(report)).into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

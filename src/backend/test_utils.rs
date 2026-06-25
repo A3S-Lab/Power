@@ -20,6 +20,8 @@ use crate::server::state::AppState;
 /// A mock backend for testing handlers without real inference.
 pub struct MockBackend {
     load_succeeds: bool,
+    unload_succeeds: bool,
+    cleanup_succeeds: bool,
     /// When true, chat() emits chunks simulating `<think>reasoning</think>answer`.
     emit_thinking: bool,
     /// Counter for cleanup_request calls (for test verification).
@@ -31,6 +33,8 @@ impl MockBackend {
     pub fn success() -> Self {
         Self {
             load_succeeds: true,
+            unload_succeeds: true,
+            cleanup_succeeds: true,
             emit_thinking: false,
             cleanup_count: Arc::new(AtomicU32::new(0)),
         }
@@ -40,6 +44,30 @@ impl MockBackend {
     pub fn load_fails() -> Self {
         Self {
             load_succeeds: false,
+            unload_succeeds: true,
+            cleanup_succeeds: true,
+            emit_thinking: false,
+            cleanup_count: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Create a mock backend where `unload()` returns an error.
+    pub fn unload_fails() -> Self {
+        Self {
+            load_succeeds: true,
+            unload_succeeds: false,
+            cleanup_succeeds: true,
+            emit_thinking: false,
+            cleanup_count: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Create a mock backend where `cleanup_request()` returns an error.
+    pub fn cleanup_fails() -> Self {
+        Self {
+            load_succeeds: true,
+            unload_succeeds: true,
+            cleanup_succeeds: false,
             emit_thinking: false,
             cleanup_count: Arc::new(AtomicU32::new(0)),
         }
@@ -49,6 +77,8 @@ impl MockBackend {
     pub fn with_thinking() -> Self {
         Self {
             load_succeeds: true,
+            unload_succeeds: true,
+            cleanup_succeeds: true,
             emit_thinking: true,
             cleanup_count: Arc::new(AtomicU32::new(0)),
         }
@@ -74,7 +104,13 @@ impl Backend for MockBackend {
     }
 
     async fn unload(&self, _model_name: &str) -> Result<()> {
-        Ok(())
+        if self.unload_succeeds {
+            Ok(())
+        } else {
+            Err(PowerError::InferenceFailed(
+                "mock unload failure".to_string(),
+            ))
+        }
     }
 
     async fn chat(
@@ -174,7 +210,13 @@ impl Backend for MockBackend {
 
     async fn cleanup_request(&self, _model_name: &str, _ctx: &RequestContext) -> Result<()> {
         self.cleanup_count.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        if self.cleanup_succeeds {
+            Ok(())
+        } else {
+            Err(PowerError::InferenceFailed(
+                "mock cleanup failure".to_string(),
+            ))
+        }
     }
 }
 

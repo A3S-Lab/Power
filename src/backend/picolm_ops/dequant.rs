@@ -319,11 +319,11 @@ mod tests {
 
     #[test]
     fn test_f32_roundtrip() {
-        let val: f32 = 3.14;
+        let val: f32 = 1.25;
         let bytes = val.to_le_bytes();
         let mut out = [0.0f32; 1];
         dequant_f32(&bytes, &mut out);
-        assert!((out[0] - 3.14).abs() < 1e-6);
+        assert!((out[0] - val).abs() < 1e-6);
     }
 
     #[test]
@@ -439,8 +439,8 @@ mod tests {
             block[4 + i] = 1;
         } // scales[0..3] = 1
           // qs: all 0x11 so lo=1, hi=1
-        for i in 16..144 {
-            block[i] = 0x11;
+        for item in block.iter_mut().skip(16) {
+            *item = 0x11;
         }
 
         let mut out = [f32::NAN; 256];
@@ -519,8 +519,8 @@ mod tests {
         // value = -32 * 1.0 * 1.0 = -32.0
         let mut block = [0u8; 210];
         // scales: all 1 (as i8)
-        for i in 192..208 {
-            block[i] = 1;
+        for item in block.iter_mut().take(208).skip(192) {
+            *item = 1;
         }
         // d = 1.0 as f16
         let d = f16::from_f32(1.0);
@@ -543,12 +543,12 @@ mod tests {
         // Set d=1.0, scales=1, and put distinct patterns in ql
         let d = f16::from_f32(1.0);
         block[208..210].copy_from_slice(&d.to_le_bytes());
-        for i in 192..208 {
-            block[i] = 1;
+        for item in block.iter_mut().take(208).skip(192) {
+            *item = 1;
         }
         // Fill ql with 0x11 so lo=1, hi=1 → different from zero
-        for i in 0..128 {
-            block[i] = 0x11;
+        for item in block.iter_mut().take(128) {
+            *item = 0x11;
         }
 
         let mut out = [f32::NAN; 256];

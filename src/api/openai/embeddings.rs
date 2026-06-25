@@ -79,13 +79,12 @@ pub async fn handler(
                 .collect();
 
             // Request isolation: clean up backend resources
-            backend.cleanup_request(&model_name, &ctx).await.ok();
+            crate::api::autoload::cleanup_after_request(&model_name, &ctx, &backend).await;
             state.metrics.decrement_active_requests();
 
             // Unload model if keep_alive=0 (after inference, not before)
             if unload_after_use {
-                let _ = backend.unload(&model_name).await;
-                state.mark_unloaded(&model_name);
+                crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
             }
 
             // Audit: log successful embedding

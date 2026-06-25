@@ -28,7 +28,7 @@
 #[cfg(feature = "hw-verify")]
 use std::io::Read;
 #[cfg(feature = "hw-verify")]
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 #[cfg(feature = "hw-verify")]
 use std::time::{Duration, Instant};
 
@@ -41,7 +41,18 @@ use crate::verify::HardwareVerifier;
 
 /// Certificate cache: maps URL/key → (cert bytes, fetch time).
 #[cfg(feature = "hw-verify")]
-type CertCache = Arc<Mutex<std::collections::HashMap<String, (Vec<u8>, Instant)>>>;
+type CertMap = std::collections::HashMap<String, (Vec<u8>, Instant)>;
+#[cfg(feature = "hw-verify")]
+type CertCache = Arc<Mutex<CertMap>>;
+
+#[cfg(feature = "hw-verify")]
+fn lock_cert_cache<'a>(cache: &'a CertCache, vendor: &str) -> Result<MutexGuard<'a, CertMap>> {
+    cache.lock().map_err(|e| {
+        PowerError::AttestationVerificationFailed(format!(
+            "{vendor} certificate cache lock poisoned: {e}"
+        ))
+    })
+}
 
 // ============================================================================
 // AMD SEV-SNP verifier
@@ -126,7 +137,7 @@ impl SevSnpVerifier {
 
         // Check cache first
         {
-            let cache = self.cache.lock().unwrap();
+            let cache = lock_cert_cache(&self.cache, "AMD KDS")?;
             if let Some((cert, fetched_at)) = cache.get(&url) {
                 if fetched_at.elapsed() < self.cache_ttl {
                     return Ok(cert.clone());
@@ -155,10 +166,7 @@ impl SevSnpVerifier {
             })?;
 
         // Cache the result
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(url, (cert_bytes.clone(), Instant::now()));
+        lock_cert_cache(&self.cache, "AMD KDS")?.insert(url, (cert_bytes.clone(), Instant::now()));
 
         Ok(cert_bytes)
     }
@@ -332,7 +340,7 @@ impl TdxVerifier {
 
         // Check cache
         {
-            let cache = self.cache.lock().unwrap();
+            let cache = lock_cert_cache(&self.cache, "Intel PCS")?;
             if let Some((cert, fetched_at)) = cache.get(&fmspc) {
                 if fetched_at.elapsed() < self.cache_ttl {
                     return Ok(cert.clone());
@@ -362,9 +370,7 @@ impl TdxVerifier {
                 ))
             })?;
 
-        self.cache
-            .lock()
-            .unwrap()
+        lock_cert_cache(&self.cache, "Intel PCS")?
             .insert(fmspc, (cert_bytes.clone(), Instant::now()));
 
         Ok(cert_bytes)
@@ -473,9 +479,12 @@ impl HardwareVerifier for TdxVerifier {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "hw-verify")]
     use super::*;
+    #[cfg(feature = "hw-verify")]
     use crate::tee::attestation::{AttestationReport, TeeType};
 
+    #[cfg(feature = "hw-verify")]
     fn make_report(tee_type: TeeType, raw: Option<Vec<u8>>) -> AttestationReport {
         AttestationReport {
             version: "1.0".to_string(),
@@ -544,6 +553,40 @@ mod tests {
         let report = make_report(TeeType::Tdx, Some(vec![0u8; 10]));
         let err = verifier.verify_hardware_signature(&report).unwrap_err();
         assert!(err.to_string().contains("too short"));
+    }
+
+    #[cfg(feature = "hw-verify")]
+    #[test]
+    fn test_sev_snp_verifier_returns_error_when_cache_lock_poisoned() {
+        let verifier = SevSnpVerifier::new();
+        let cache = verifier.cache.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = cache.lock().unwrap();
+            panic!("poison cache");
+        });
+
+        let report = make_report(TeeType::SevSnp, Some(vec![0u8; 1184]));
+        let err = verifier.fetch_vcek_chain(&report).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("AMD KDS certificate cache lock poisoned"));
+    }
+
+    #[cfg(feature = "hw-verify")]
+    #[test]
+    fn test_tdx_verifier_returns_error_when_cache_lock_poisoned() {
+        let verifier = TdxVerifier::new();
+        let cache = verifier.cache.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = cache.lock().unwrap();
+            panic!("poison cache");
+        });
+
+        let report = make_report(TeeType::Tdx, Some(vec![0u8; 1024]));
+        let err = verifier.fetch_pck_chain(&report).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Intel PCS certificate cache lock poisoned"));
     }
 
     #[cfg(feature = "hw-verify")]

@@ -12,6 +12,12 @@ use crate::error::{PowerError, Result};
 /// Magic number for GGUF files: "GGUF" in little-endian.
 const GGUF_MAGIC: u32 = 0x46475547; // "GGUF"
 
+const MAX_METADATA_KV_COUNT: u64 = 1_000_000;
+const MAX_TENSOR_COUNT: u64 = 1_000_000;
+const MAX_TENSOR_DIMS: u32 = 16;
+const MAX_GGUF_STRING_BYTES: usize = 1_048_576;
+const MAX_GGUF_ARRAY_ITEMS: usize = 1_000_000;
+
 /// GGUF metadata value types.
 #[derive(Debug, Clone)]
 pub enum GgufValue {
@@ -72,7 +78,10 @@ impl GgufTensor {
         if self.dimensions.is_empty() {
             0
         } else {
-            self.dimensions.iter().product()
+            self.dimensions
+                .iter()
+                .try_fold(1u64, |acc, dim| acc.checked_mul(*dim))
+                .unwrap_or(u64::MAX)
         }
     }
 }
@@ -147,6 +156,16 @@ fn read_metadata_from_reader<R: Read + Seek>(reader: &mut R) -> Result<GgufMetad
     // 3. Read counts
     let tensor_count = read_u64(reader)?;
     let metadata_kv_count = read_u64(reader)?;
+    if metadata_kv_count > MAX_METADATA_KV_COUNT {
+        return Err(PowerError::Config(format!(
+            "GGUF metadata count too large: {metadata_kv_count} entries"
+        )));
+    }
+    if tensor_count > MAX_TENSOR_COUNT {
+        return Err(PowerError::Config(format!(
+            "GGUF tensor count too large: {tensor_count} tensors"
+        )));
+    }
 
     // 4. Read metadata key-value pairs
     let mut metadata = HashMap::new();
@@ -157,16 +176,34 @@ fn read_metadata_from_reader<R: Read + Seek>(reader: &mut R) -> Result<GgufMetad
     }
 
     // 5. Read tensor descriptors
-    let mut tensors = Vec::with_capacity(tensor_count as usize);
+    let tensor_capacity = usize::try_from(tensor_count).map_err(|_| {
+        PowerError::Config(format!("GGUF tensor count exceeds usize: {tensor_count}"))
+    })?;
+    let mut tensors = Vec::with_capacity(tensor_capacity);
     for _ in 0..tensor_count {
         let name = read_gguf_string(reader)?;
-        let n_dims = read_u32(reader)? as usize;
+        let n_dims_u32 = read_u32(reader)?;
+        if n_dims_u32 > MAX_TENSOR_DIMS {
+            return Err(PowerError::Config(format!(
+                "GGUF tensor '{name}' has too many dimensions: {n_dims_u32}"
+            )));
+        }
+        let n_dims = usize::try_from(n_dims_u32).map_err(|_| {
+            PowerError::Config(format!(
+                "GGUF tensor '{name}' dimension count exceeds usize: {n_dims_u32}"
+            ))
+        })?;
         let mut dimensions = Vec::with_capacity(n_dims);
         for _ in 0..n_dims {
             dimensions.push(read_u64(reader)?);
         }
+        let element_count = checked_tensor_element_count(&name, &dimensions)?;
         let tensor_type = read_u32(reader)?;
         let offset = read_u64(reader)?;
+        let byte_size = checked_tensor_byte_size(&name, tensor_type, &dimensions, element_count)?;
+        offset.checked_add(byte_size).ok_or_else(|| {
+            PowerError::Config(format!("GGUF tensor '{name}' byte range overflows u64"))
+        })?;
 
         tensors.push(GgufTensor {
             name,
@@ -181,6 +218,92 @@ fn read_metadata_from_reader<R: Read + Seek>(reader: &mut R) -> Result<GgufMetad
         tensor_count,
         metadata,
         tensors,
+    })
+}
+
+fn checked_tensor_byte_size(
+    name: &str,
+    tensor_type: u32,
+    dimensions: &[u64],
+    element_count: u64,
+) -> Result<u64> {
+    let (block_size, bytes_per_block) = gguf_type_size_factor(tensor_type);
+    checked_tensor_block_alignment(name, tensor_type, dimensions, element_count, block_size)?;
+    let blocks = element_count / block_size;
+    blocks.checked_mul(bytes_per_block).ok_or_else(|| {
+        PowerError::Config(format!(
+            "GGUF tensor '{name}' byte size overflows u64 for type {}",
+            gguf_type_name(tensor_type)
+        ))
+    })
+}
+
+fn gguf_type_size_factor(tensor_type: u32) -> (u64, u64) {
+    match tensor_type {
+        0 => (1, 4),      // F32
+        1 => (1, 2),      // F16
+        2 => (32, 18),    // Q4_0
+        3 => (32, 20),    // Q4_1
+        6 => (32, 22),    // Q5_0
+        7 => (32, 24),    // Q5_1
+        8 => (32, 34),    // Q8_0
+        9 => (32, 40),    // Q8_1
+        10 => (256, 84),  // Q2_K
+        11 => (256, 110), // Q3_K
+        12 => (256, 144), // Q4_K
+        13 => (256, 176), // Q5_K
+        14 => (256, 210), // Q6_K
+        23 => (1, 1),     // I8
+        24 => (1, 2),     // I16
+        25 => (1, 4),     // I32
+        26 => (1, 8),     // I64
+        27 => (1, 8),     // F64
+        29 => (1, 2),     // BF16
+        _ => (1, 4),      // conservative fallback for unknown types
+    }
+}
+
+fn checked_tensor_block_alignment(
+    name: &str,
+    tensor_type: u32,
+    dimensions: &[u64],
+    element_count: u64,
+    block_size: u64,
+) -> Result<()> {
+    if block_size == 1 {
+        return Ok(());
+    }
+
+    let first_dimension = dimensions.first().copied().ok_or_else(|| {
+        PowerError::Config(format!(
+            "GGUF quantized tensor '{name}' has no dimensions for block size {block_size}"
+        ))
+    })?;
+    if !first_dimension.is_multiple_of(block_size) {
+        return Err(PowerError::Config(format!(
+            "GGUF tensor '{name}' first dimension {first_dimension} is not a multiple of block size {block_size} for type {}",
+            gguf_type_name(tensor_type)
+        )));
+    }
+    if !element_count.is_multiple_of(block_size) {
+        return Err(PowerError::Config(format!(
+            "GGUF tensor '{name}' element count {element_count} is not a multiple of block size {block_size} for type {}",
+            gguf_type_name(tensor_type)
+        )));
+    }
+
+    Ok(())
+}
+
+fn checked_tensor_element_count(name: &str, dimensions: &[u64]) -> Result<u64> {
+    if dimensions.is_empty() {
+        return Ok(0);
+    }
+
+    dimensions.iter().try_fold(1u64, |acc, dim| {
+        acc.checked_mul(*dim).ok_or_else(|| {
+            PowerError::Config(format!("GGUF tensor '{name}' element count overflows u64"))
+        })
     })
 }
 
@@ -261,9 +384,12 @@ fn read_bool<R: Read>(r: &mut R) -> Result<bool> {
 
 /// Read a GGUF string: u64 length followed by UTF-8 bytes (no null terminator).
 fn read_gguf_string<R: Read>(r: &mut R) -> Result<String> {
-    let len = read_u64(r)? as usize;
+    let len_u64 = read_u64(r)?;
+    let len = usize::try_from(len_u64).map_err(|_| {
+        PowerError::Config(format!("GGUF string length exceeds usize: {len_u64} bytes"))
+    })?;
     // Sanity check: strings shouldn't be larger than 1MB in metadata
-    if len > 1_048_576 {
+    if len > MAX_GGUF_STRING_BYTES {
         return Err(PowerError::Config(format!(
             "GGUF string too long: {len} bytes"
         )));
@@ -296,9 +422,14 @@ fn read_gguf_value_of_type<R: Read>(r: &mut R, value_type: u32) -> Result<GgufVa
         9 => {
             // Array: element_type (u32) + count (u64) + elements
             let elem_type = read_u32(r)?;
-            let count = read_u64(r)? as usize;
+            let count_u64 = read_u64(r)?;
+            let count = usize::try_from(count_u64).map_err(|_| {
+                PowerError::Config(format!(
+                    "GGUF array length exceeds usize: {count_u64} elements"
+                ))
+            })?;
             // Sanity check: arrays shouldn't have more than 1M elements in metadata
-            if count > 1_000_000 {
+            if count > MAX_GGUF_ARRAY_ITEMS {
                 return Err(PowerError::Config(format!(
                     "GGUF array too large: {count} elements"
                 )));
@@ -418,12 +549,20 @@ pub fn estimate_memory(path: &Path, ctx_size: u32) -> Result<MemoryEstimate> {
 
     // KV cache size estimate: 2 (K+V) * n_layers * ctx_size * head_dim * n_head_kv * sizeof(f16)
     let head_dim = if n_head > 0 { n_embd / n_head } else { 128 };
-    let kv_cache_bytes = 2 * n_layers * (ctx_size as u64) * head_dim * n_head_kv * 2; // f16 = 2 bytes
+    let kv_cache_bytes = checked_product(
+        &[2, n_layers, ctx_size as u64, head_dim, n_head_kv, 2],
+        "GGUF KV cache memory estimate",
+    )?; // f16 = 2 bytes
 
     // Compute buffer overhead (~10% of model size for scratch buffers)
     let compute_overhead = file_size / 10;
 
-    let total = file_size + kv_cache_bytes + compute_overhead;
+    let total = file_size
+        .checked_add(kv_cache_bytes)
+        .and_then(|value| value.checked_add(compute_overhead))
+        .ok_or_else(|| {
+            PowerError::Config("GGUF total memory estimate overflows u64".to_string())
+        })?;
 
     Ok(MemoryEstimate {
         model_size: file_size,
@@ -431,6 +570,13 @@ pub fn estimate_memory(path: &Path, ctx_size: u32) -> Result<MemoryEstimate> {
         compute_overhead,
         total,
         context_size: ctx_size,
+    })
+}
+
+fn checked_product(values: &[u64], context: &str) -> Result<u64> {
+    values.iter().try_fold(1u64, |acc, value| {
+        acc.checked_mul(*value)
+            .ok_or_else(|| PowerError::Config(format!("{context} overflows u64")))
     })
 }
 
@@ -518,6 +664,24 @@ mod tests {
         buf.extend_from_slice(&0u64.to_le_bytes()); // offset
 
         buf
+    }
+
+    fn push_header(buf: &mut Vec<u8>, tensor_count: u64, metadata_kv_count: u64) {
+        buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&tensor_count.to_le_bytes());
+        buf.extend_from_slice(&metadata_kv_count.to_le_bytes());
+    }
+
+    fn push_string(buf: &mut Vec<u8>, value: &[u8]) {
+        buf.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        buf.extend_from_slice(value);
+    }
+
+    fn push_kv_u64(buf: &mut Vec<u8>, key: &[u8], value: u64) {
+        push_string(buf, key);
+        buf.extend_from_slice(&10u32.to_le_bytes());
+        buf.extend_from_slice(&value.to_le_bytes());
     }
 
     #[test]
@@ -656,6 +820,17 @@ mod tests {
             offset: 0,
         };
         assert_eq!(tensor.element_count(), 1);
+    }
+
+    #[test]
+    fn test_tensor_element_count_saturates_on_overflow() {
+        let tensor = GgufTensor {
+            name: "huge".to_string(),
+            dimensions: vec![u64::MAX, 2],
+            tensor_type: 0,
+            offset: 0,
+        };
+        assert_eq!(tensor.element_count(), u64::MAX);
     }
 
     #[test]
@@ -890,6 +1065,139 @@ mod tests {
     }
 
     #[test]
+    fn test_read_gguf_rejects_huge_metadata_count() {
+        let mut buf = Vec::new();
+        push_header(&mut buf, 0, MAX_METADATA_KV_COUNT + 1);
+
+        let mut cursor = Cursor::new(buf);
+        let err = read_metadata_from_reader(&mut cursor).unwrap_err();
+
+        assert!(err.to_string().contains("metadata count too large"));
+    }
+
+    #[test]
+    fn test_read_gguf_rejects_huge_tensor_count() {
+        let mut buf = Vec::new();
+        push_header(&mut buf, MAX_TENSOR_COUNT + 1, 0);
+
+        let mut cursor = Cursor::new(buf);
+        let err = read_metadata_from_reader(&mut cursor).unwrap_err();
+
+        assert!(err.to_string().contains("tensor count too large"));
+    }
+
+    #[test]
+    fn test_read_gguf_rejects_string_length_exceeding_usize() {
+        let mut buf = Vec::new();
+        push_header(&mut buf, 0, 1);
+        buf.extend_from_slice(&u64::MAX.to_le_bytes());
+
+        let mut cursor = Cursor::new(buf);
+        let err = read_metadata_from_reader(&mut cursor).unwrap_err();
+
+        assert!(
+            err.to_string().contains("string length exceeds usize")
+                || err.to_string().contains("GGUF string too long")
+        );
+    }
+
+    #[test]
+    fn test_read_gguf_rejects_array_length_exceeding_usize() {
+        let mut buf = Vec::new();
+        push_header(&mut buf, 0, 1);
+        push_string(&mut buf, b"test.array");
+        buf.extend_from_slice(&9u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&u64::MAX.to_le_bytes());
+
+        let mut cursor = Cursor::new(buf);
+        let err = read_metadata_from_reader(&mut cursor).unwrap_err();
+
+        assert!(
+            err.to_string().contains("array length exceeds usize")
+                || err.to_string().contains("GGUF array too large")
+        );
+    }
+
+    #[test]
+    fn test_read_gguf_rejects_too_many_tensor_dimensions() {
+        let mut buf = Vec::new();
+        push_header(&mut buf, 1, 0);
+        push_string(&mut buf, b"overshaped.weight");
+        buf.extend_from_slice(&(MAX_TENSOR_DIMS + 1).to_le_bytes());
+
+        let mut cursor = Cursor::new(buf);
+        let err = read_metadata_from_reader(&mut cursor).unwrap_err();
+
+        assert!(err.to_string().contains("too many dimensions"));
+    }
+
+    #[test]
+    fn test_read_gguf_rejects_tensor_element_count_overflow() {
+        let mut buf = Vec::new();
+        push_header(&mut buf, 1, 0);
+        push_string(&mut buf, b"overflow.weight");
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(&u64::MAX.to_le_bytes());
+        buf.extend_from_slice(&2u64.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+
+        let mut cursor = Cursor::new(buf);
+        let err = read_metadata_from_reader(&mut cursor).unwrap_err();
+
+        assert!(err.to_string().contains("element count overflows"));
+    }
+
+    #[test]
+    fn test_read_gguf_rejects_tensor_byte_size_overflow() {
+        let mut buf = Vec::new();
+        push_header(&mut buf, 1, 0);
+        push_string(&mut buf, b"huge.weight");
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&u64::MAX.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // F32
+        buf.extend_from_slice(&0u64.to_le_bytes());
+
+        let mut cursor = Cursor::new(buf);
+        let err = read_metadata_from_reader(&mut cursor).unwrap_err();
+
+        assert!(err.to_string().contains("byte size overflows"));
+    }
+
+    #[test]
+    fn test_read_gguf_rejects_quantized_tensor_unaligned_first_dimension() {
+        let mut buf = Vec::new();
+        push_header(&mut buf, 1, 0);
+        push_string(&mut buf, b"unaligned.weight");
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&31u64.to_le_bytes());
+        buf.extend_from_slice(&2u32.to_le_bytes()); // Q4_0, 32-element blocks
+        buf.extend_from_slice(&0u64.to_le_bytes());
+
+        let mut cursor = Cursor::new(buf);
+        let err = read_metadata_from_reader(&mut cursor).unwrap_err();
+
+        assert!(err.to_string().contains("block size"));
+    }
+
+    #[test]
+    fn test_read_gguf_rejects_tensor_offset_range_overflow() {
+        let mut buf = Vec::new();
+        push_header(&mut buf, 1, 0);
+        push_string(&mut buf, b"offset.weight");
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&1u64.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // F32, 4 bytes
+        buf.extend_from_slice(&u64::MAX.to_le_bytes());
+
+        let mut cursor = Cursor::new(buf);
+        let err = read_metadata_from_reader(&mut cursor).unwrap_err();
+
+        assert!(err.to_string().contains("byte range overflows"));
+    }
+
+    #[test]
     fn test_unknown_value_type() {
         let mut buf = Vec::new();
         // Magic + Version 3
@@ -998,6 +1306,24 @@ mod tests {
     fn test_estimate_memory_file_not_found() {
         let result = estimate_memory(Path::new("/nonexistent/model.gguf"), 2048);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_estimate_memory_rejects_overflowing_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.gguf");
+
+        let mut buf = Vec::new();
+        push_header(&mut buf, 0, 4);
+        push_kv_u64(&mut buf, b"llama.embedding_length", u64::MAX);
+        push_kv_u64(&mut buf, b"llama.block_count", u64::MAX);
+        push_kv_u64(&mut buf, b"llama.attention.head_count", 1);
+        push_kv_u64(&mut buf, b"llama.attention.head_count_kv", u64::MAX);
+        std::fs::write(&path, &buf).unwrap();
+
+        let err = estimate_memory(&path, u32::MAX).unwrap_err();
+
+        assert!(err.to_string().contains("memory estimate overflows"));
     }
 
     #[test]

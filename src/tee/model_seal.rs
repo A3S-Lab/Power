@@ -85,7 +85,13 @@ pub fn verify_model_signature(model_path: &Path, public_key_hex: &str) -> Result
             reason: format!("public key must be 32 bytes, got {}", key_bytes.len()),
         });
     }
-    let key_array: [u8; 32] = key_bytes.try_into().unwrap();
+    let key_array: [u8; 32] =
+        key_bytes
+            .try_into()
+            .map_err(|_| PowerError::SignatureVerificationFailed {
+                model: model_name.to_string(),
+                reason: "public key length changed after validation".to_string(),
+            })?;
     let verifying_key = VerifyingKey::from_bytes(&key_array).map_err(|e| {
         PowerError::SignatureVerificationFailed {
             model: model_name.to_string(),
@@ -110,7 +116,13 @@ pub fn verify_model_signature(model_path: &Path, public_key_hex: &str) -> Result
             reason: format!("signature must be 64 bytes, got {}", sig_bytes.len()),
         });
     }
-    let sig_array: [u8; 64] = sig_bytes.try_into().unwrap();
+    let sig_array: [u8; 64] =
+        sig_bytes
+            .try_into()
+            .map_err(|_| PowerError::SignatureVerificationFailed {
+                model: model_name.to_string(),
+                reason: "signature length changed after validation".to_string(),
+            })?;
     let signature = Signature::from_bytes(&sig_array);
 
     // Compute SHA-256 of the model file (the signed message)
@@ -352,6 +364,23 @@ mod tests {
         let result = verify_model_signature(&model_path, "deadbeefdeadbeefdeadbeefdeadbeef");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("32 bytes"));
+    }
+
+    #[test]
+    fn test_verify_model_signature_wrong_signature_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+        std::fs::write(&model_path, b"fake-model-data").unwrap();
+
+        let (_, public_key_hex) = generate_test_keypair();
+        let mut sig_os = model_path.as_os_str().to_owned();
+        sig_os.push(".sig");
+        let sig_path = std::path::PathBuf::from(sig_os);
+        std::fs::write(&sig_path, [0u8; 32]).unwrap();
+
+        let result = verify_model_signature(&model_path, &public_key_hex);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("64 bytes"));
     }
 
     #[test]

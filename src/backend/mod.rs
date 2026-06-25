@@ -204,6 +204,7 @@ pub fn default_backends(#[allow(unused)] config: Arc<PowerConfig>) -> BackendReg
 mod tests {
     use super::*;
 
+    #[cfg(any(feature = "mistralrs", feature = "llamacpp"))]
     fn test_config() -> Arc<PowerConfig> {
         Arc::new(PowerConfig::default())
     }
@@ -243,7 +244,9 @@ mod tests {
         let names = registry.list_names();
         assert!(names.contains(&"mistral.rs"));
         assert!(names.contains(&"llama.cpp"));
-        assert_eq!(names.len(), 2);
+        #[cfg(feature = "picolm")]
+        assert!(names.contains(&"picolm"));
+        assert_eq!(names.len(), 2 + usize::from(cfg!(feature = "picolm")));
     }
 
     #[cfg(all(feature = "mistralrs", feature = "llamacpp"))]

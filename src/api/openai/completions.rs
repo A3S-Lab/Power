@@ -201,12 +201,11 @@ pub async fn handler(
                                 },
                                 system_fingerprint: None,
                             };
-                            serde_json::to_string(&resp).unwrap_or_default()
+                            super::sse_json_data(&resp)
                         }
-                        Err(e) => serde_json::to_string(&serde_json::json!({
+                        Err(e) => super::sse_json_data(&serde_json::json!({
                             "error": { "message": e.to_string() }
-                        }))
-                        .unwrap_or_default(),
+                        })),
                     };
                     Ok::<_, Infallible>(Event::default().data(data))
                 });
@@ -222,16 +221,22 @@ pub async fn handler(
                     metrics_done.record_tokens(&model_for_done, "output", eval_count as u64);
 
                     // Request isolation: clean up backend resources
-                    backend_cleanup
-                        .cleanup_request(&model_for_cleanup, &ctx_cleanup)
-                        .await
-                        .ok();
+                    crate::api::autoload::cleanup_after_request(
+                        &model_for_cleanup,
+                        &ctx_cleanup,
+                        &backend_cleanup,
+                    )
+                    .await;
                     metrics_cleanup.decrement_active_requests();
 
                     // Unload model if keep_alive=0 (after inference, not before)
                     if unload_after_use {
-                        let _ = backend_cleanup.unload(&model_for_unload).await;
-                        state_cleanup.mark_unloaded(&model_for_unload);
+                        crate::api::autoload::unload_after_request(
+                            &state_cleanup,
+                            &model_for_unload,
+                            &backend_cleanup,
+                        )
+                        .await;
                     }
 
                     // Audit: log successful streaming inference
@@ -272,8 +277,7 @@ pub async fn handler(
                             },
                             system_fingerprint: None,
                         };
-                        let data = serde_json::to_string(&resp).unwrap_or_default();
-                        Ok::<_, Infallible>(Event::default().data(data))
+                        Ok::<_, Infallible>(super::sse_json_event(&resp))
                     })
                     .left_stream()
                 } else {
@@ -366,13 +370,12 @@ pub async fn handler(
                 }
 
                 // Request isolation: clean up backend resources
-                backend.cleanup_request(&model_name, &ctx).await.ok();
+                crate::api::autoload::cleanup_after_request(&model_name, &ctx, &backend).await;
                 state.metrics.decrement_active_requests();
 
                 // Unload model if keep_alive=0 (after inference, not before)
                 if unload_after_use {
-                    let _ = backend.unload(&model_name).await;
-                    state.mark_unloaded(&model_name);
+                    crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
                 }
 
                 // Audit: log successful inference

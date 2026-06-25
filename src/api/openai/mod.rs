@@ -5,6 +5,7 @@ pub mod embeddings;
 pub mod models;
 
 use axum::http::StatusCode;
+use axum::response::sse::Event;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
@@ -33,6 +34,24 @@ pub fn routes() -> Router<AppState> {
         .route("/logs", get(logs_handler))
 }
 
+pub(super) fn sse_json_data<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_string(value) {
+        Ok(data) => data,
+        Err(e) => serde_json::json!({
+            "error": {
+                "message": format!("failed to serialize SSE event: {e}"),
+                "type": "server_error",
+                "code": "sse_serialization_failed"
+            }
+        })
+        .to_string(),
+    }
+}
+
+pub(super) fn sse_json_event<T: serde::Serialize>(value: &T) -> Event {
+    Event::default().data(sse_json_data(value))
+}
+
 /// GET /v1/logs — Stream server log entries as SSE.
 ///
 /// Sends the last `N` buffered entries immediately, then streams new entries in
@@ -46,28 +65,35 @@ pub fn routes() -> Router<AppState> {
 async fn logs_handler(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> impl axum::response::IntoResponse {
-    use axum::response::sse::Event;
     use futures::StreamExt;
     use tokio_stream::wrappers::BroadcastStream;
 
     let recent = state.log_buffer.recent();
     let rx = state.log_buffer.subscribe();
 
-    let recent_stream = futures::stream::iter(recent).map(|entry| {
-        Ok::<_, std::convert::Infallible>(
-            Event::default().json_data(&entry).unwrap_or_default(),
-        )
-    });
+    let recent_stream = futures::stream::iter(recent)
+        .map(|entry| Ok::<_, std::convert::Infallible>(sse_json_event(&entry)));
 
     let live_stream = BroadcastStream::new(rx)
-        .filter_map(|r| async move { r.ok() })
-        .map(|entry| {
-            Ok::<_, std::convert::Infallible>(
-                Event::default().json_data(&entry).unwrap_or_default(),
-            )
-        });
+        .filter_map(|result| async move { log_entry_from_broadcast_result(result) })
+        .map(|entry| Ok::<_, std::convert::Infallible>(sse_json_event(&entry)));
 
     axum::response::Sse::new(recent_stream.chain(live_stream))
+}
+
+fn log_entry_from_broadcast_result(
+    result: Result<
+        crate::server::log_stream::LogEntry,
+        tokio_stream::wrappers::errors::BroadcastStreamRecvError,
+    >,
+) -> Option<crate::server::log_stream::LogEntry> {
+    match result {
+        Ok(entry) => Some(entry),
+        Err(e) => {
+            tracing::debug!(error = %e, "Log stream receiver lagged; dropped live log entries");
+            None
+        }
+    }
 }
 
 /// Return a standard OpenAI-compatible error JSON response with the appropriate HTTP status.
@@ -146,5 +172,52 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR
         );
         assert_eq!(openai_error("unknown_code", "").0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_sse_json_data_serializes_values() {
+        let data = sse_json_data(&serde_json::json!({"status": "ok"}));
+        assert_eq!(data, r#"{"status":"ok"}"#);
+    }
+
+    #[test]
+    fn test_sse_json_data_reports_serialization_failure() {
+        struct FailingSerialize;
+
+        impl serde::Serialize for FailingSerialize {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                Err(serde::ser::Error::custom("boom"))
+            }
+        }
+
+        let data = sse_json_data(&FailingSerialize);
+        assert!(data.contains("sse_serialization_failed"));
+        assert!(data.contains("boom"));
+    }
+
+    #[test]
+    fn test_log_entry_from_broadcast_result_passes_entries() {
+        let entry = crate::server::log_stream::LogEntry {
+            ts: "2026-01-01T00:00:00.000Z".to_string(),
+            level: "INFO".to_string(),
+            target: "a3s_power::test".to_string(),
+            message: "hello".to_string(),
+        };
+
+        let result = log_entry_from_broadcast_result(Ok(entry));
+
+        assert_eq!(result.unwrap().message, "hello");
+    }
+
+    #[test]
+    fn test_log_entry_from_broadcast_result_drops_lag_errors() {
+        let result = log_entry_from_broadcast_result(Err(
+            tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(3),
+        ));
+
+        assert!(result.is_none());
     }
 }

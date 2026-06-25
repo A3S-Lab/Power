@@ -8,14 +8,14 @@ A3S Power exists to solve one problem: **LLM inference where the infrastructure 
 ### What Makes Power Unique (The Moat)
 1. **Hardware-enforced privacy** — not policy promises, but CPU-level memory encryption
 2. **Verifiable inference** — client can cryptographically prove which model ran, unmodified
-3. **tee-minimal build** — ~1,220 deps, zero C, fully auditable supply chain
+3. **tee-minimal build** — ~1,220 deps, no C++ inference engine, reduced auditable supply chain
 4. **Layer-streaming** — O(layer_size) peak RAM, runs 7B+ models in 512MB EPC
 
-### Current State (v0.3.0)
+### Current State (v0.4.2)
 - 3 backends (mistralrs, llamacpp, picolm) — all functional
 - Full TEE stack (attestation, encrypted models, RA-TLS, privacy, audit)
 - OpenAI-compatible API with streaming
-- picolm: 14+ tok/s decode, pure Rust, layer-streaming, 868 tests
+- picolm: 14+ tok/s decode, pure Rust, layer-streaming, 900+ tests across current validation profiles
 
 ### First Principles Question: What Should We Build Next?
 
@@ -188,5 +188,5 @@ Phase 7 (Ecosystem):                         ✅ ALL COMPLETE
   7.2 Structured output                      ✅ (JsonGrammarSampler)
 ```
 
-**895 tests total** (unit + integration + real model).
+**900+ tests** across unit, integration, and real-model validation profiles.
 **All phases complete.** Phases 4–7 fully implemented.

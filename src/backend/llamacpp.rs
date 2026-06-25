@@ -12,6 +12,10 @@ use futures::Stream;
 #[cfg(feature = "llamacpp")]
 use std::collections::HashMap;
 #[cfg(feature = "llamacpp")]
+use std::num::NonZeroU32;
+#[cfg(feature = "llamacpp")]
+use std::sync::{Mutex, MutexGuard};
+#[cfg(feature = "llamacpp")]
 use tokio::sync::RwLock;
 
 use crate::config::PowerConfig;
@@ -60,13 +64,13 @@ struct LoadedModel {
     /// Anonymous requests (session_id = None) never touch this map — they always
     /// create a fresh context and discard it after use, preventing cross-request
     /// cache leakage in multi-tenant deployments.
-    session_cache: Arc<std::sync::Mutex<HashMap<String, CachedContext>>>,
+    session_cache: SessionCache,
     /// LoRA adapter loaded from manifest.adapter_path (if any).
-    lora_adapter: Option<Arc<std::sync::Mutex<SendableLoraAdapter>>>,
+    lora_adapter: Option<Arc<Mutex<SendableLoraAdapter>>>,
     /// Path to multimodal projector file (for vision models).
     projector_path: Option<String>,
     /// Multimodal context for vision/audio inference (initialized from projector_path).
-    mtmd_ctx: Option<Arc<std::sync::Mutex<SendableMtmdContext>>>,
+    mtmd_ctx: Option<Arc<Mutex<SendableMtmdContext>>>,
 }
 
 /// Newtype wrapper around MtmdContext to implement Send.
@@ -92,6 +96,9 @@ struct CachedContext {
     last_used: std::time::Instant,
 }
 
+#[cfg(feature = "llamacpp")]
+type SessionCache = Arc<Mutex<HashMap<String, CachedContext>>>;
+
 /// TTL for idle session KV caches. Sessions not used within this duration are evicted.
 #[cfg(feature = "llamacpp")]
 const SESSION_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
@@ -113,9 +120,153 @@ struct SendableLoraAdapter(llama_cpp_2::model::LlamaLoraAdapter);
 #[cfg(feature = "llamacpp")]
 unsafe impl Send for SendableLoraAdapter {}
 
+#[cfg(feature = "llamacpp")]
+fn lock_session_cache(
+    cache: &SessionCache,
+) -> Result<MutexGuard<'_, HashMap<String, CachedContext>>> {
+    cache.lock().map_err(|_| {
+        PowerError::InferenceFailed("llama.cpp: session cache lock poisoned".to_string())
+    })
+}
+
+#[cfg(feature = "llamacpp")]
+fn cache_session_context(cache: &SessionCache, session_id: &str, context: CachedContext) {
+    match lock_session_cache(cache) {
+        Ok(mut cache) => {
+            cache.insert(session_id.to_string(), context);
+        }
+        Err(e) => {
+            tracing::warn!(
+                session = %session_id,
+                error = %e,
+                "llama.cpp: failed to return context to session cache"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "llamacpp")]
+fn lock_lora_adapter(
+    adapter: &Arc<Mutex<SendableLoraAdapter>>,
+) -> Result<MutexGuard<'_, SendableLoraAdapter>> {
+    adapter.lock().map_err(|_| {
+        PowerError::InferenceFailed("llama.cpp: LoRA adapter lock poisoned".to_string())
+    })
+}
+
+#[cfg(feature = "llamacpp")]
+fn lock_mtmd_context(
+    ctx: &Arc<Mutex<SendableMtmdContext>>,
+) -> Result<MutexGuard<'_, SendableMtmdContext>> {
+    ctx.lock().map_err(|_| {
+        PowerError::InferenceFailed("llama.cpp: MTMD context lock poisoned".to_string())
+    })
+}
+
+#[cfg(feature = "llamacpp")]
+fn lock_collected_text(text: &Mutex<String>) -> MutexGuard<'_, String> {
+    match text.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::warn!("llama.cpp: collected tool-call text lock poisoned, recovering");
+            poisoned.into_inner()
+        }
+    }
+}
+
+#[cfg(feature = "llamacpp")]
+fn nonzero_context_size(ctx_size: u32) -> NonZeroU32 {
+    if let Some(size) = NonZeroU32::new(ctx_size) {
+        return size;
+    }
+
+    tracing::warn!(
+        fallback = DEFAULT_CTX_SIZE,
+        "llama.cpp: context size was zero; using default context size"
+    );
+    NonZeroU32::new(DEFAULT_CTX_SIZE).unwrap_or(NonZeroU32::MIN)
+}
+
+#[cfg(any(feature = "llamacpp", test))]
+fn collect_llamacpp_openai_images(
+    message_index: usize,
+    parts: &[super::types::ContentPart],
+) -> Result<Vec<String>> {
+    parts
+        .iter()
+        .enumerate()
+        .filter_map(|(part_index, part)| match part {
+            super::types::ContentPart::ImageUrl { image_url } => Some(
+                normalize_llamacpp_image_url(message_index, part_index, &image_url.url),
+            ),
+            super::types::ContentPart::Text { .. } => None,
+        })
+        .collect()
+}
+
+#[cfg(any(feature = "llamacpp", test))]
+fn normalize_llamacpp_image_url(
+    message_index: usize,
+    part_index: usize,
+    image_url: &str,
+) -> Result<String> {
+    let image_url = image_url.trim();
+    if image_url.starts_with("http://") || image_url.starts_with("https://") {
+        return Err(PowerError::InvalidFormat(format!(
+            "Unsupported image input at message {message_index}, part {part_index}: \
+             remote image URLs are not supported by llama.cpp; provide base64 image data or a data URI"
+        )));
+    }
+
+    let image_data = image_url
+        .split_once(',')
+        .map_or(image_url, |(_, data)| data)
+        .trim();
+    if image_data.is_empty() {
+        return Err(PowerError::InvalidFormat(format!(
+            "Invalid image input at message {message_index}, part {part_index}: empty image data"
+        )));
+    }
+
+    Ok(image_data.to_string())
+}
+
+#[cfg(feature = "llamacpp")]
+fn send_completion_result(
+    tx: &tokio::sync::mpsc::Sender<Result<CompletionResponseChunk>>,
+    result: Result<CompletionResponseChunk>,
+) -> bool {
+    match tx.blocking_send(result) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                "llama.cpp completion receiver dropped; stopping inference"
+            );
+            false
+        }
+    }
+}
+
+#[cfg(any(feature = "llamacpp", test))]
+fn ensure_llamacpp_images_supported(
+    model_name: &str,
+    has_images: bool,
+    has_projector: bool,
+) -> Result<()> {
+    if has_images && !has_projector {
+        return Err(PowerError::InvalidFormat(format!(
+            "llama.cpp model '{model_name}' was not loaded with a multimodal projector; \
+             image inputs cannot be processed"
+        )));
+    }
+
+    Ok(())
+}
+
 // NOTE: MtmdContext requires the `mtmd` feature on llama-cpp-2.
-// Vision/multimodal support is not yet wired up; the projector_path field
-// on LoadedModel is reserved for future use.
+// Requests with images are only accepted when the model has an initialized
+// multimodal projector; otherwise they fail instead of falling back to text-only.
 
 /// Create a dummy `LlamaBackend` reference for `new_context()`.
 ///
@@ -260,7 +411,7 @@ impl Backend for LlamaCppBackend {
                     adapter = %adapter_path,
                     "LoRA adapter loaded"
                 );
-                Some(Arc::new(std::sync::Mutex::new(adapter)))
+                Some(Arc::new(Mutex::new(adapter)))
             } else {
                 tracing::warn!(
                     model = %manifest.name,
@@ -299,7 +450,7 @@ impl Backend for LlamaCppBackend {
                         projector = %proj_path,
                         "Multimodal projector loaded"
                     );
-                    Some(Arc::new(std::sync::Mutex::new(ctx)))
+                    Some(Arc::new(Mutex::new(ctx)))
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(
@@ -329,7 +480,7 @@ impl Backend for LlamaCppBackend {
                 raw_template: raw_template_str,
                 load_mode: LoadMode::Inference,
                 n_ctx_train,
-                session_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                session_cache: Arc::new(Mutex::new(HashMap::new())),
                 lora_adapter,
                 projector_path: manifest.projector_path.clone(),
                 mtmd_ctx,
@@ -355,17 +506,15 @@ impl Backend for LlamaCppBackend {
         // Look up the chat template and projector path for this model
         let (template, raw_template, projector_path, _model_n_ctx_train) = {
             let models = self.models.read().await;
-            models
-                .get(model_name)
-                .map(|m| {
-                    (
-                        m.chat_template.clone(),
-                        m.raw_template.clone(),
-                        m.projector_path.clone(),
-                        m.n_ctx_train,
-                    )
-                })
-                .unwrap_or((ChatTemplateKind::Phi, None, None, 2048))
+            let model = models.get(model_name).ok_or_else(|| {
+                PowerError::InferenceFailed(format!("Model '{model_name}' not loaded"))
+            })?;
+            (
+                model.chat_template.clone(),
+                model.raw_template.clone(),
+                model.projector_path.clone(),
+                model.n_ctx_train,
+            )
         };
 
         // Render chat template in a blocking task to avoid blocking the async executor.
@@ -392,48 +541,24 @@ impl Backend for LlamaCppBackend {
                     if parts.iter().any(|p| matches!(p, super::types::ContentPart::ImageUrl { .. })))
         });
 
-        if has_images && projector_path.is_none() {
-            tracing::warn!(
-                "Vision/multimodal images detected but no projector file available; \
-                 images will be ignored and only text content will be processed. \
-                 Pull a vision model (e.g. llava) to enable image processing."
-            );
-        } else if has_images {
+        ensure_llamacpp_images_supported(model_name, has_images, projector_path.is_some())?;
+        if has_images {
             tracing::info!("Vision inference with multimodal projector");
         }
 
-        // Extract base64 images from messages for vision inference
-        let images: Vec<String> = if has_images {
-            request
-                .messages
-                .iter()
-                .flat_map(|m| {
-                    // Collect from Ollama-native `images` field
-                    let ollama_imgs = m.images.clone().unwrap_or_default();
-                    // Collect from OpenAI image_url content parts (extract base64 data URIs)
-                    let openai_imgs: Vec<String> = match &m.content {
-                        super::types::MessageContent::Parts(parts) => parts
-                            .iter()
-                            .filter_map(|p| match p {
-                                super::types::ContentPart::ImageUrl { image_url } => {
-                                    // Handle data:image/...;base64,<data> format
-                                    if let Some(data) = image_url.url.strip_prefix("data:") {
-                                        data.split_once(",").map(|(_, b64)| b64.to_string())
-                                    } else {
-                                        None // URL-based images not supported yet
-                                    }
-                                }
-                                _ => None,
-                            })
-                            .collect(),
-                        _ => vec![],
-                    };
-                    ollama_imgs.into_iter().chain(openai_imgs)
-                })
-                .collect()
-        } else {
-            vec![]
-        };
+        // Extract base64 images from messages for vision inference.
+        let mut images: Vec<String> = Vec::new();
+        if has_images {
+            for (message_index, message) in request.messages.iter().enumerate() {
+                if let Some(ollama_images) = &message.images {
+                    images.extend(ollama_images.iter().cloned());
+                }
+
+                if let super::types::MessageContent::Parts(parts) = &message.content {
+                    images.extend(collect_llamacpp_openai_images(message_index, parts)?);
+                }
+            }
+        }
 
         let completion_req = CompletionRequest {
             prompt,
@@ -482,7 +607,7 @@ impl Backend for LlamaCppBackend {
 
         // Map CompletionResponseChunk -> ChatResponseChunk with tool call and think block detection
         use futures::StreamExt;
-        let collected_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let collected_text = Arc::new(Mutex::new(String::new()));
         let text_clone = collected_text.clone();
         let has_tools = request.tools.is_some();
         let mut think_parser = super::think_parser::ThinkBlockParser::new();
@@ -490,9 +615,8 @@ impl Backend for LlamaCppBackend {
             chunk_result.map(|chunk| {
                 // Accumulate text for tool call detection
                 if has_tools && !chunk.text.is_empty() {
-                    if let Ok(mut t) = text_clone.lock() {
-                        t.push_str(&chunk.text);
-                    }
+                    let mut text = lock_collected_text(text_clone.as_ref());
+                    text.push_str(&chunk.text);
                 }
 
                 // Parse think blocks from the token stream
@@ -517,8 +641,8 @@ impl Backend for LlamaCppBackend {
 
                 // On the final chunk, try to parse tool calls from accumulated text
                 let tool_calls = if chunk.done && has_tools {
-                    let full_text = text_clone.lock().ok();
-                    full_text.and_then(|t| super::tool_parser::parse_tool_calls(&t))
+                    let full_text = lock_collected_text(text_clone.as_ref());
+                    super::tool_parser::parse_tool_calls(&full_text)
                 } else {
                     None
                 };
@@ -616,12 +740,14 @@ impl Backend for LlamaCppBackend {
         let typical_p = request.typical_p;
         let response_format = request.response_format.clone();
         let stop_sequences = request.stop.clone().unwrap_or_default();
+        let has_images = request.images.as_ref().is_some_and(|v| !v.is_empty());
+        ensure_llamacpp_images_supported(model_name, has_images, mtmd_ctx.is_some())?;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<CompletionResponseChunk>>(32);
 
         // Evict stale session caches before starting inference.
         {
-            let mut cache = session_cache.lock().unwrap();
+            let mut cache = lock_session_cache(&session_cache)?;
             cache.retain(|_, v| v.last_used.elapsed() < SESSION_CACHE_TTL);
         }
 
@@ -634,7 +760,6 @@ impl Backend for LlamaCppBackend {
 
             // Determine whether to use the MTMD (multimodal) path.
             // Conditions: images present in request AND mtmd_ctx loaded for this model.
-            let has_images = request.images.as_ref().map_or(false, |v| !v.is_empty());
             let use_mtmd = has_images && mtmd_ctx.is_some();
 
             // ----------------------------------------------------------------
@@ -643,7 +768,25 @@ impl Backend for LlamaCppBackend {
             if use_mtmd {
                 use llama_cpp_2::mtmd::{mtmd_default_marker, MtmdBitmap, MtmdInputText};
 
-                let mtmd_guard = mtmd_ctx.as_ref().unwrap().lock().unwrap();
+                let mtmd_guard = match mtmd_ctx.as_ref() {
+                    Some(ctx) => match lock_mtmd_context(ctx) {
+                        Ok(guard) => guard,
+                        Err(e) => {
+                            send_completion_result(&tx, Err(e));
+                            return;
+                        }
+                    },
+                    None => {
+                        send_completion_result(
+                            &tx,
+                            Err(PowerError::InferenceFailed(
+                                "llama.cpp: MTMD context missing for multimodal request"
+                                    .to_string(),
+                            )),
+                        );
+                        return;
+                    }
+                };
                 let mtmd = &mtmd_guard.0;
 
                 // Build bitmaps from base64-encoded images.
@@ -658,18 +801,24 @@ impl Backend for LlamaCppBackend {
                     ) {
                         Ok(b) => b,
                         Err(e) => {
-                            let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                                "Failed to decode base64 image: {e}"
-                            ))));
+                            send_completion_result(
+                                &tx,
+                                Err(PowerError::InferenceFailed(format!(
+                                    "Failed to decode base64 image: {e}"
+                                ))),
+                            );
                             return;
                         }
                     };
-                    match MtmdBitmap::from_buffer(mtmd, &raw) {
+                    match MtmdBitmap::from_buffer(mtmd, &raw, false) {
                         Ok(bm) => bitmaps.push(bm),
                         Err(e) => {
-                            let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                                "Failed to create bitmap from image data: {e}"
-                            ))));
+                            send_completion_result(
+                                &tx,
+                                Err(PowerError::InferenceFailed(format!(
+                                    "Failed to create bitmap from image data: {e}"
+                                ))),
+                            );
                             return;
                         }
                     }
@@ -677,8 +826,7 @@ impl Backend for LlamaCppBackend {
 
                 // Insert media markers into the prompt — one per image.
                 let marker = mtmd_default_marker();
-                let markers: String = std::iter::repeat(marker)
-                    .take(bitmaps.len())
+                let markers: String = std::iter::repeat_n(marker, bitmaps.len())
                     .collect::<Vec<_>>()
                     .join("\n");
                 let prompt_with_markers = format!("{markers}\n{}", request.prompt);
@@ -693,9 +841,12 @@ impl Backend for LlamaCppBackend {
                 let chunks = match mtmd.tokenize(input_text, &bitmap_refs) {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                            "MTMD tokenization failed: {e}"
-                        ))));
+                        send_completion_result(
+                            &tx,
+                            Err(PowerError::InferenceFailed(format!(
+                                "MTMD tokenization failed: {e}"
+                            ))),
+                        );
                         return;
                     }
                 };
@@ -704,10 +855,8 @@ impl Backend for LlamaCppBackend {
 
                 // Create a fresh context for multimodal inference (no KV cache reuse —
                 // image embeddings are request-specific and must not leak across sessions).
-                let ctx_params = LlamaContextParams::default().with_n_ctx(Some(
-                    std::num::NonZeroU32::new(ctx_size)
-                        .unwrap_or(std::num::NonZeroU32::new(2048).unwrap()),
-                ));
+                let ctx_params =
+                    LlamaContextParams::default().with_n_ctx(Some(nonzero_context_size(ctx_size)));
                 let mut ctx = match model_arc.new_context(backend_ref(), ctx_params) {
                     Ok(c) => {
                         let c: llama_cpp_2::context::LlamaContext<'static> =
@@ -715,9 +864,12 @@ impl Backend for LlamaCppBackend {
                         c
                     }
                     Err(e) => {
-                        let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                            "Failed to create MTMD context: {e}"
-                        ))));
+                        send_completion_result(
+                            &tx,
+                            Err(PowerError::InferenceFailed(format!(
+                                "Failed to create MTMD context: {e}"
+                            ))),
+                        );
                         return;
                     }
                 };
@@ -727,9 +879,12 @@ impl Backend for LlamaCppBackend {
                 let n_past = match chunks.eval_chunks(mtmd, &ctx, 0, 0, n_batch, true) {
                     Ok(n) => n,
                     Err(e) => {
-                        let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                            "MTMD eval_chunks failed: {e}"
-                        ))));
+                        send_completion_result(
+                            &tx,
+                            Err(PowerError::InferenceFailed(format!(
+                                "MTMD eval_chunks failed: {e}"
+                            ))),
+                        );
                         return;
                     }
                 };
@@ -753,14 +908,17 @@ impl Backend for LlamaCppBackend {
                 for _i in 0..max_tokens {
                     let new_token = sampler.sample(&ctx, -1);
                     if new_token == eos_token {
-                        let _ = tx.blocking_send(Ok(CompletionResponseChunk {
-                            text: String::new(),
-                            done: true,
-                            prompt_tokens: Some(prompt_token_count),
-                            done_reason: Some("stop".to_string()),
-                            prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
-                            token_id: None,
-                        }));
+                        send_completion_result(
+                            &tx,
+                            Ok(CompletionResponseChunk {
+                                text: String::new(),
+                                done: true,
+                                prompt_tokens: Some(prompt_token_count),
+                                done_reason: Some("stop".to_string()),
+                                prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
+                                token_id: None,
+                            }),
+                        );
                         return;
                     }
 
@@ -774,8 +932,9 @@ impl Backend for LlamaCppBackend {
 
                     let should_stop = stop_sequences.iter().any(|s| generated_text.ends_with(s));
 
-                    if tx
-                        .blocking_send(Ok(CompletionResponseChunk {
+                    if !send_completion_result(
+                        &tx,
+                        Ok(CompletionResponseChunk {
                             text,
                             done: should_stop,
                             prompt_tokens: if should_stop {
@@ -794,31 +953,45 @@ impl Backend for LlamaCppBackend {
                                 None
                             },
                             token_id: Some(new_token.0 as u32),
-                        }))
-                        .is_err()
-                        || should_stop
+                        }),
+                    ) || should_stop
                     {
                         return;
                     }
 
                     let mut batch = LlamaBatch::new(1, 1);
                     if batch.add(new_token, n_cur, &[0], true).is_err() {
+                        send_completion_result(
+                            &tx,
+                            Err(PowerError::InferenceFailed(
+                                "Failed to add generated token to MTMD batch".to_string(),
+                            )),
+                        );
                         return;
                     }
                     n_cur += 1;
-                    if ctx.decode(&mut batch).is_err() {
+                    if let Err(e) = ctx.decode(&mut batch) {
+                        send_completion_result(
+                            &tx,
+                            Err(PowerError::InferenceFailed(format!(
+                                "MTMD decode failed: {e}"
+                            ))),
+                        );
                         return;
                     }
                 }
 
-                let _ = tx.blocking_send(Ok(CompletionResponseChunk {
-                    text: String::new(),
-                    done: true,
-                    prompt_tokens: Some(prompt_token_count),
-                    done_reason: Some("length".to_string()),
-                    prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
-                    token_id: None,
-                }));
+                send_completion_result(
+                    &tx,
+                    Ok(CompletionResponseChunk {
+                        text: String::new(),
+                        done: true,
+                        prompt_tokens: Some(prompt_token_count),
+                        done_reason: Some("length".to_string()),
+                        prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
+                        token_id: None,
+                    }),
+                );
                 return;
             }
 
@@ -831,9 +1004,12 @@ impl Backend for LlamaCppBackend {
                 match model_arc.str_to_token(&request.prompt, llama_cpp_2::model::AddBos::Always) {
                     Ok(t) => t,
                     Err(e) => {
-                        let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                            "Tokenization failed: {e}"
-                        ))));
+                        send_completion_result(
+                            &tx,
+                            Err(PowerError::InferenceFailed(format!(
+                                "Tokenization failed: {e}"
+                            ))),
+                        );
                         return;
                     }
                 };
@@ -843,9 +1019,16 @@ impl Backend for LlamaCppBackend {
             // Try to reuse cached context with KV cache prefix matching.
             // Only reuse if the request carries a session_id — anonymous requests
             // always get a fresh context to prevent cross-request cache leakage.
-            let cached = session_id
-                .as_deref()
-                .and_then(|sid| session_cache.lock().unwrap().remove(sid));
+            let cached = match session_id.as_deref() {
+                Some(sid) => match lock_session_cache(&session_cache) {
+                    Ok(mut cache) => cache.remove(sid),
+                    Err(e) => {
+                        send_completion_result(&tx, Err(e));
+                        return;
+                    }
+                },
+                None => None,
+            };
             let (mut ctx, skip_tokens) = match cached {
                 Some(mut cached) if cached.ctx_size == ctx_size => {
                     // Find common prefix between cached tokens and new tokens
@@ -879,10 +1062,8 @@ impl Backend for LlamaCppBackend {
                 }
                 _ => {
                     // No cached context or size mismatch — create new
-                    let mut ctx_params = LlamaContextParams::default().with_n_ctx(Some(
-                        std::num::NonZeroU32::new(ctx_size)
-                            .unwrap_or(std::num::NonZeroU32::new(2048).unwrap()),
-                    ));
+                    let mut ctx_params = LlamaContextParams::default()
+                        .with_n_ctx(Some(nonzero_context_size(ctx_size)));
                     if let Some(batch) = num_batch {
                         ctx_params = ctx_params.with_n_batch(batch);
                     }
@@ -907,9 +1088,12 @@ impl Backend for LlamaCppBackend {
                             (c, 0)
                         }
                         Err(e) => {
-                            let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                                "Failed to create context: {e}"
-                            ))));
+                            send_completion_result(
+                                &tx,
+                                Err(PowerError::InferenceFailed(format!(
+                                    "Failed to create context: {e}"
+                                ))),
+                            );
                             return;
                         }
                     }
@@ -922,11 +1106,20 @@ impl Backend for LlamaCppBackend {
 
             // Apply LoRA adapter to context if available
             if let Some(ref adapter_arc) = lora_adapter {
-                let mut wrapper = adapter_arc.lock().unwrap();
+                let mut wrapper = match lock_lora_adapter(adapter_arc) {
+                    Ok(wrapper) => wrapper,
+                    Err(e) => {
+                        send_completion_result(&tx, Err(e));
+                        return;
+                    }
+                };
                 if let Err(e) = ctx.lora_adapter_set(&mut wrapper.0, 1.0) {
-                    let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                        "Failed to apply LoRA adapter: {e}"
-                    ))));
+                    send_completion_result(
+                        &tx,
+                        Err(PowerError::InferenceFailed(format!(
+                            "Failed to apply LoRA adapter: {e}"
+                        ))),
+                    );
                     return;
                 }
             }
@@ -939,17 +1132,21 @@ impl Backend for LlamaCppBackend {
                     let pos = (skip_tokens + i) as i32;
                     let is_last = i == tokens_to_eval.len() - 1;
                     if batch.add(token, pos, &[0], is_last).is_err() {
-                        let _ = tx.blocking_send(Err(PowerError::InferenceFailed(
-                            "Failed to add token to batch".to_string(),
-                        )));
+                        send_completion_result(
+                            &tx,
+                            Err(PowerError::InferenceFailed(
+                                "Failed to add token to batch".to_string(),
+                            )),
+                        );
                         return;
                     }
                 }
 
                 if let Err(e) = ctx.decode(&mut batch) {
-                    let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                        "Decode failed: {e}"
-                    ))));
+                    send_completion_result(
+                        &tx,
+                        Err(PowerError::InferenceFailed(format!("Decode failed: {e}"))),
+                    );
                     return;
                 }
             }
@@ -1036,19 +1233,23 @@ impl Backend for LlamaCppBackend {
                 let new_token = sampler.sample(&ctx, -1);
 
                 if new_token == eos_token {
-                    let _ = tx.blocking_send(Ok(CompletionResponseChunk {
-                        text: String::new(),
-                        done: true,
-                        prompt_tokens: Some(prompt_token_count),
-                        done_reason: Some("stop".to_string()),
-                        prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
-                        token_id: None,
-                    }));
+                    send_completion_result(
+                        &tx,
+                        Ok(CompletionResponseChunk {
+                            text: String::new(),
+                            done: true,
+                            prompt_tokens: Some(prompt_token_count),
+                            done_reason: Some("stop".to_string()),
+                            prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
+                            token_id: None,
+                        }),
+                    );
                     // Return context to session cache (only when session_id is set).
                     all_tokens.push(new_token);
                     if let Some(ref sid) = session_id {
-                        session_cache_for_return.lock().unwrap().insert(
-                            sid.clone(),
+                        cache_session_context(
+                            &session_cache_for_return,
+                            sid,
                             CachedContext {
                                 ctx,
                                 evaluated_tokens: all_tokens,
@@ -1080,8 +1281,9 @@ impl Backend for LlamaCppBackend {
                     }
                 }
 
-                if tx
-                    .blocking_send(Ok(CompletionResponseChunk {
+                if !send_completion_result(
+                    &tx,
+                    Ok(CompletionResponseChunk {
                         text,
                         done: should_stop,
                         prompt_tokens: if should_stop {
@@ -1100,13 +1302,13 @@ impl Backend for LlamaCppBackend {
                             None
                         },
                         token_id: Some(new_token.0 as u32),
-                    }))
-                    .is_err()
-                {
+                    }),
+                ) {
                     // Receiver dropped — cache context if session is set
                     if let Some(ref sid) = session_id {
-                        session_cache_for_return.lock().unwrap().insert(
-                            sid.clone(),
+                        cache_session_context(
+                            &session_cache_for_return,
+                            sid,
                             CachedContext {
                                 ctx,
                                 evaluated_tokens: all_tokens,
@@ -1121,8 +1323,9 @@ impl Backend for LlamaCppBackend {
                 if should_stop {
                     // Return context to session cache
                     if let Some(ref sid) = session_id {
-                        session_cache_for_return.lock().unwrap().insert(
-                            sid.clone(),
+                        cache_session_context(
+                            &session_cache_for_return,
+                            sid,
                             CachedContext {
                                 ctx,
                                 evaluated_tokens: all_tokens,
@@ -1137,30 +1340,41 @@ impl Backend for LlamaCppBackend {
                 // Prepare next batch
                 let mut batch = LlamaBatch::new(1, 1);
                 if batch.add(new_token, n_cur as i32, &[0], true).is_err() {
+                    send_completion_result(
+                        &tx,
+                        Err(PowerError::InferenceFailed(
+                            "Failed to add generated token to batch".to_string(),
+                        )),
+                    );
                     return;
                 }
                 n_cur += 1;
 
                 if let Err(e) = ctx.decode(&mut batch) {
-                    let _ = tx.blocking_send(Err(PowerError::InferenceFailed(format!(
-                        "Decode failed: {e}"
-                    ))));
+                    send_completion_result(
+                        &tx,
+                        Err(PowerError::InferenceFailed(format!("Decode failed: {e}"))),
+                    );
                     return;
                 }
             }
 
             // Max tokens reached — cache context if session is set
-            let _ = tx.blocking_send(Ok(CompletionResponseChunk {
-                text: String::new(),
-                done: true,
-                prompt_tokens: Some(prompt_token_count),
-                done_reason: Some("length".to_string()),
-                prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
-                token_id: None,
-            }));
+            send_completion_result(
+                &tx,
+                Ok(CompletionResponseChunk {
+                    text: String::new(),
+                    done: true,
+                    prompt_tokens: Some(prompt_token_count),
+                    done_reason: Some("length".to_string()),
+                    prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
+                    token_id: None,
+                }),
+            );
             if let Some(ref sid) = session_id {
-                session_cache_for_return.lock().unwrap().insert(
-                    sid.clone(),
+                cache_session_context(
+                    &session_cache_for_return,
+                    sid,
                     CachedContext {
                         ctx,
                         evaluated_tokens: all_tokens,
@@ -1248,7 +1462,7 @@ impl Backend for LlamaCppBackend {
                     raw_template,
                     load_mode: LoadMode::Embedding,
                     n_ctx_train,
-                    session_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                    session_cache: Arc::new(Mutex::new(HashMap::new())),
                     lora_adapter,
                     projector_path,
                     mtmd_ctx: None, // Embedding models don't use multimodal projectors
@@ -1381,6 +1595,7 @@ impl Backend for LlamaCppBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::types::{ContentPart, ImageUrl};
     use crate::backend::Backend;
     use crate::model::manifest::ModelFormat;
 
@@ -1413,6 +1628,181 @@ mod tests {
         let config = Arc::new(config);
         let backend = LlamaCppBackend::new(config.clone());
         assert_eq!(backend.config.gpu.gpu_layers, -1);
+    }
+
+    #[test]
+    fn test_collect_llamacpp_openai_images_accepts_data_uri() {
+        let parts = vec![
+            ContentPart::Text {
+                text: "describe this".to_string(),
+            },
+            ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,aGVsbG8=".to_string(),
+                    detail: None,
+                },
+            },
+        ];
+
+        let images = collect_llamacpp_openai_images(0, &parts).unwrap();
+
+        assert_eq!(images, vec!["aGVsbG8=".to_string()]);
+    }
+
+    #[test]
+    fn test_collect_llamacpp_openai_images_accepts_base64_data() {
+        let parts = vec![ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: " aGVsbG8= ".to_string(),
+                detail: None,
+            },
+        }];
+
+        let images = collect_llamacpp_openai_images(1, &parts).unwrap();
+
+        assert_eq!(images, vec!["aGVsbG8=".to_string()]);
+    }
+
+    #[test]
+    fn test_collect_llamacpp_openai_images_rejects_remote_urls() {
+        let parts = vec![ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: "https://example.com/image.png".to_string(),
+                detail: None,
+            },
+        }];
+
+        let err = collect_llamacpp_openai_images(2, &parts).unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("message 2"), "error: {msg}");
+        assert!(msg.contains("part 0"), "error: {msg}");
+        assert!(msg.contains("remote image URLs"), "error: {msg}");
+    }
+
+    #[test]
+    fn test_collect_llamacpp_openai_images_rejects_empty_data() {
+        let parts = vec![ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: "data:image/png;base64,".to_string(),
+                detail: None,
+            },
+        }];
+
+        let err = collect_llamacpp_openai_images(3, &parts).unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("message 3"), "error: {msg}");
+        assert!(msg.contains("empty image data"), "error: {msg}");
+    }
+
+    #[test]
+    fn test_ensure_llamacpp_images_supported_allows_text_only_without_projector() {
+        assert!(ensure_llamacpp_images_supported("llama3", false, false).is_ok());
+    }
+
+    #[test]
+    fn test_ensure_llamacpp_images_supported_allows_images_with_projector() {
+        assert!(ensure_llamacpp_images_supported("llava", true, true).is_ok());
+    }
+
+    #[test]
+    fn test_ensure_llamacpp_images_supported_rejects_images_without_projector() {
+        let err = ensure_llamacpp_images_supported("llama3", true, false).unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("llama3"), "error: {msg}");
+        assert!(msg.contains("multimodal projector"), "error: {msg}");
+        assert!(
+            msg.contains("image inputs cannot be processed"),
+            "error: {msg}"
+        );
+    }
+
+    #[cfg(feature = "llamacpp")]
+    fn test_completion_chunk(done: bool) -> CompletionResponseChunk {
+        CompletionResponseChunk {
+            text: String::new(),
+            done,
+            prompt_tokens: None,
+            done_reason: None,
+            prompt_eval_duration_ns: None,
+            token_id: None,
+        }
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_send_completion_result_sends_when_receiver_open() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+        assert!(send_completion_result(&tx, Ok(test_completion_chunk(true))));
+
+        let sent = rx.blocking_recv().unwrap().unwrap();
+        assert!(sent.done);
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_send_completion_result_reports_closed_receiver() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+
+        assert!(!send_completion_result(
+            &tx,
+            Ok(test_completion_chunk(false))
+        ));
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_session_cache_lock_poison_returns_error() {
+        let cache: SessionCache = Arc::new(Mutex::new(HashMap::new()));
+        let poison_cache = Arc::clone(&cache);
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = poison_cache.lock().unwrap();
+            panic!("poison session cache");
+        });
+
+        let err = match lock_session_cache(&cache) {
+            Ok(_) => panic!("expected poisoned session cache error"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("session cache lock poisoned"));
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_collected_text_lock_recovers_from_poison() {
+        let text = Arc::new(Mutex::new(String::from("prefix")));
+        let poison_text = Arc::clone(&text);
+        let _ = std::panic::catch_unwind(move || {
+            let mut guard = poison_text.lock().unwrap();
+            guard.push_str("-poisoned");
+            panic!("poison collected text");
+        });
+
+        {
+            let mut guard = lock_collected_text(text.as_ref());
+            guard.push_str("-recovered");
+        }
+
+        assert_eq!(
+            lock_collected_text(text.as_ref()).as_str(),
+            "prefix-poisoned-recovered"
+        );
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_nonzero_context_size_preserves_valid_value() {
+        assert_eq!(nonzero_context_size(4096).get(), 4096);
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_nonzero_context_size_falls_back_for_zero() {
+        assert_eq!(nonzero_context_size(0).get(), DEFAULT_CTX_SIZE);
     }
 
     #[cfg(not(feature = "llamacpp"))]

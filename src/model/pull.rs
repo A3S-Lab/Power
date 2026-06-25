@@ -69,6 +69,76 @@ pub mod hf {
         Done,
     }
 
+    async fn send_progress(tx: &tokio::sync::mpsc::Sender<PullProgress>, progress: PullProgress) {
+        if tx.send(progress).await.is_err() {
+            tracing::debug!("Model pull progress receiver closed");
+        }
+    }
+
+    async fn cleanup_temp_download(path: &std::path::Path, reason: &str) {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => tracing::debug!(
+                path = %path.display(),
+                reason,
+                "Removed temporary download"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => tracing::debug!(
+                path = %path.display(),
+                reason,
+                "Temporary download was already removed"
+            ),
+            Err(e) => tracing::warn!(
+                path = %path.display(),
+                reason,
+                error = %e,
+                "Failed to remove temporary download"
+            ),
+        }
+    }
+
+    fn file_size(path: &std::path::Path, purpose: &str) -> Result<u64> {
+        std::fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .map_err(|e| {
+                PowerError::Io(std::io::Error::other(format!(
+                    "failed to inspect {purpose} {}: {e}",
+                    path.display()
+                )))
+            })
+    }
+
+    fn existing_file_size(path: &std::path::Path, purpose: &str) -> Result<u64> {
+        match std::fs::metadata(path) {
+            Ok(metadata) => Ok(metadata.len()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(PowerError::Io(std::io::Error::other(format!(
+                "failed to inspect {purpose} {}: {e}",
+                path.display()
+            )))),
+        }
+    }
+
+    fn content_length_or_unknown(
+        headers: &reqwest::header::HeaderMap,
+        purpose: &str,
+    ) -> Result<u64> {
+        let Some(value) = headers.get(reqwest::header::CONTENT_LENGTH) else {
+            return Ok(0);
+        };
+
+        let value = value.to_str().map_err(|e| {
+            PowerError::Server(format!(
+                "{purpose} returned invalid Content-Length header: {e}"
+            ))
+        })?;
+
+        value.parse::<u64>().map_err(|e| {
+            PowerError::Server(format!(
+                "{purpose} returned invalid Content-Length value '{value}': {e}"
+            ))
+        })
+    }
+
     /// Parsed model reference.
     #[derive(Debug, Clone)]
     pub struct HfRef {
@@ -113,7 +183,7 @@ pub mod hf {
         }
 
         /// Build the direct download URL for this model file.
-        pub(super) fn download_url(&self, source: HubSource) -> String {
+        fn download_url(&self, source: HubSource) -> String {
             match source {
                 HubSource::ModelScope => format!(
                     "{}/models/{}/resolve/{}/{}",
@@ -133,7 +203,7 @@ pub mod hf {
         }
 
         /// Build the HF API URL to list repo files (used to resolve quantization → filename).
-        pub(super) fn api_files_url(&self, source: HubSource) -> String {
+        fn api_files_url(&self, source: HubSource) -> String {
             match source {
                 HubSource::ModelScope => format!(
                     "{}/api/v1/models/{}/repo/files?Revision={}",
@@ -192,7 +262,7 @@ pub mod hf {
             headers.insert(reqwest::header::AUTHORIZATION, value);
         }
         let client = Client::builder()
-            .user_agent("a3s-power/0.2")
+            .user_agent(concat!("a3s-power/", env!("CARGO_PKG_VERSION")))
             .default_headers(headers)
             .build()
             .map_err(|e| PowerError::Server(format!("failed to build HTTP client: {e}")))?;
@@ -237,37 +307,59 @@ pub mod hf {
             )));
         }
 
-        let files: Vec<serde_json::Value> = match source {
+        let payload: serde_json::Value = resp.json().await.map_err(|e| match source {
             HubSource::ModelScope => {
-                let payload: serde_json::Value = resp.json().await.map_err(|e| {
-                    PowerError::Server(format!("ModelScope API response parse failed: {e}"))
-                })?;
-                payload["Data"]["Files"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default()
+                PowerError::Server(format!("ModelScope API response parse failed: {e}"))
             }
-            HubSource::HuggingFace => resp
-                .json()
-                .await
-                .map_err(|e| PowerError::Server(format!("HF API response parse failed: {e}")))?,
+            HubSource::HuggingFace => {
+                PowerError::Server(format!("HF API response parse failed: {e}"))
+            }
+        })?;
+
+        let paths = extract_file_paths(source, &payload)?;
+        find_matching_gguf_file(&paths, quant, &hf_ref.repo)
+    }
+
+    fn extract_file_paths(source: HubSource, payload: &serde_json::Value) -> Result<Vec<String>> {
+        let files = match source {
+            HubSource::ModelScope => payload
+                .get("Data")
+                .and_then(|data| data.get("Files"))
+                .and_then(|files| files.as_array())
+                .ok_or_else(|| {
+                    PowerError::Server(
+                        "ModelScope API response missing Data.Files array".to_string(),
+                    )
+                })?,
+            HubSource::HuggingFace => payload.as_array().ok_or_else(|| {
+                PowerError::Server("HF API response missing file list array".to_string())
+            })?,
         };
 
-        // Find a GGUF file whose name contains the quantization tag (case-insensitive).
-        let quant_upper = quant.to_uppercase();
-        let matched = files
+        Ok(files
             .iter()
-            .filter_map(|f| f["path"].as_str().or_else(|| f["Path"].as_str()))
-            .filter(|p| p.ends_with(".gguf"))
-            .find(|p| p.to_uppercase().contains(&quant_upper))
-            .map(|s| s.to_string());
+            .filter_map(|file| {
+                file.get("path")
+                    .and_then(|path| path.as_str())
+                    .or_else(|| file.get("Path").and_then(|path| path.as_str()))
+            })
+            .map(str::to_string)
+            .collect())
+    }
 
-        matched.ok_or_else(|| {
-            PowerError::Server(format!(
-                "no GGUF file matching quantization '{}' found in repo '{}'",
-                quant, hf_ref.repo
-            ))
-        })
+    fn find_matching_gguf_file(paths: &[String], quant: &str, repo: &str) -> Result<String> {
+        let quant_upper = quant.to_uppercase();
+        paths
+            .iter()
+            .filter(|path| path.ends_with(".gguf"))
+            .find(|path| path.to_uppercase().contains(&quant_upper))
+            .cloned()
+            .ok_or_else(|| {
+                PowerError::Server(format!(
+                    "no GGUF file matching quantization '{}' found in repo '{}'",
+                    quant, repo
+                ))
+            })
     }
 
     /// Download a model from HuggingFace Hub, streaming progress via `tx`.
@@ -308,11 +400,7 @@ pub mod hf {
         let tmp_path = blobs_dir.join(hf_ref.partial_filename());
 
         // Check for an existing partial file to resume from.
-        let resume_offset = if tmp_path.exists() {
-            std::fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(0)
-        } else {
-            0
-        };
+        let resume_offset = existing_file_size(&tmp_path, "partial download")?;
 
         // HEAD request to get total content-length (always without Range).
         let head: reqwest::Response = client
@@ -330,12 +418,7 @@ pub mod hf {
             )));
         }
 
-        let total = head
-            .headers()
-            .get(reqwest::header::CONTENT_LENGTH)
-            .and_then(|v: &reqwest::header::HeaderValue| v.to_str().ok())
-            .and_then(|s: &str| s.parse::<u64>().ok())
-            .unwrap_or(0);
+        let total = content_length_or_unknown(head.headers(), "model pull HEAD request")?;
 
         // If partial file is already complete, skip download.
         if resume_offset > 0 && total > 0 && resume_offset >= total {
@@ -346,12 +429,14 @@ pub mod hf {
             if resume_offset > 0 {
                 req = req.header(reqwest::header::RANGE, format!("bytes={resume_offset}-"));
                 tracing::info!(offset = resume_offset, total, "Resuming download");
-                let _ = tx
-                    .send(PullProgress::Resuming {
+                send_progress(
+                    &tx,
+                    PullProgress::Resuming {
                         offset: resume_offset,
                         total,
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
 
             let resp: reqwest::Response = req
@@ -362,7 +447,7 @@ pub mod hf {
             // 206 Partial Content = server supports resume; 200 = server ignored Range.
             let server_supports_resume = resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
             if !resp.status().is_success() {
-                let _ = tokio::fs::remove_file(&tmp_path).await;
+                cleanup_temp_download(&tmp_path, "download failed").await;
                 return Err(PowerError::Server(format!(
                     "download failed with HTTP {}: {}",
                     resp.status(),
@@ -400,9 +485,7 @@ pub mod hf {
                     PowerError::Io(std::io::Error::other(format!("write error: {e}")))
                 })?;
                 completed += chunk.len() as u64;
-                let _ = tx
-                    .send(PullProgress::Downloading { completed, total })
-                    .await;
+                send_progress(&tx, PullProgress::Downloading { completed, total }).await;
             }
 
             tmp_file
@@ -412,12 +495,16 @@ pub mod hf {
         }
 
         // Verify and store in content-addressed blob store.
-        let _ = tx.send(PullProgress::Verifying).await;
-        let (blob_path, sha256) = storage::store_blob_from_temp(&tmp_path).inspect_err(|_| {
-            let _ = std::fs::remove_file(&tmp_path);
-        })?;
+        send_progress(&tx, PullProgress::Verifying).await;
+        let (blob_path, sha256) = match storage::store_blob_from_temp(&tmp_path) {
+            Ok(stored) => stored,
+            Err(e) => {
+                cleanup_temp_download(&tmp_path, "blob store failed").await;
+                return Err(e);
+            }
+        };
 
-        let size = std::fs::metadata(&blob_path).map(|m| m.len()).unwrap_or(0);
+        let size = file_size(&blob_path, "stored model blob")?;
 
         let manifest = ModelManifest {
             name: name.to_string(),
@@ -439,7 +526,7 @@ pub mod hf {
             families: None,
         };
 
-        let _ = tx.send(PullProgress::Done).await;
+        send_progress(&tx, PullProgress::Done).await;
         Ok(manifest)
     }
 
@@ -497,6 +584,143 @@ pub mod hf {
             assert_eq!(
                 r.api_files_url(HubSource::HuggingFace),
                 "https://huggingface.co/api/models/bartowski/Llama-3.2-3B-Instruct-GGUF/tree/main"
+            );
+        }
+
+        #[test]
+        fn test_extract_modelscope_file_paths() {
+            let payload = serde_json::json!({
+                "Data": {
+                    "Files": [
+                        { "Path": "model-Q4_K_M.gguf" },
+                        { "Path": "README.md" }
+                    ]
+                }
+            });
+
+            let paths = extract_file_paths(HubSource::ModelScope, &payload).unwrap();
+
+            assert_eq!(paths, vec!["model-Q4_K_M.gguf", "README.md"]);
+        }
+
+        #[test]
+        fn test_extract_modelscope_file_paths_reports_missing_files_array() {
+            let payload = serde_json::json!({
+                "Data": {
+                    "Items": []
+                }
+            });
+
+            let err = extract_file_paths(HubSource::ModelScope, &payload).unwrap_err();
+
+            assert!(err.to_string().contains("Data.Files array"), "error: {err}");
+        }
+
+        #[test]
+        fn test_extract_huggingface_file_paths_reports_non_array_payload() {
+            let payload = serde_json::json!({
+                "error": "temporarily unavailable"
+            });
+
+            let err = extract_file_paths(HubSource::HuggingFace, &payload).unwrap_err();
+
+            assert!(err.to_string().contains("file list array"), "error: {err}");
+        }
+
+        #[test]
+        fn test_find_matching_gguf_file_matches_quantization_case_insensitively() {
+            let paths = vec![
+                "README.md".to_string(),
+                "nested/model-q4_k_m.gguf".to_string(),
+                "nested/model-Q8_0.gguf".to_string(),
+            ];
+
+            let matched = find_matching_gguf_file(&paths, "Q4_K_M", "owner/repo").unwrap();
+
+            assert_eq!(matched, "nested/model-q4_k_m.gguf");
+        }
+
+        #[test]
+        fn test_find_matching_gguf_file_reports_missing_match() {
+            let paths = vec!["README.md".to_string(), "model-Q8_0.gguf".to_string()];
+
+            let err = find_matching_gguf_file(&paths, "Q4_K_M", "owner/repo").unwrap_err();
+
+            assert!(
+                err.to_string()
+                    .contains("no GGUF file matching quantization"),
+                "error: {err}"
+            );
+        }
+
+        #[test]
+        fn test_file_size_reports_metadata_errors() {
+            let dir = tempfile::tempdir().unwrap();
+            let missing = dir.path().join("missing.gguf");
+
+            let err = file_size(&missing, "stored model blob").unwrap_err();
+
+            assert!(
+                err.to_string()
+                    .contains("failed to inspect stored model blob"),
+                "error: {err}"
+            );
+            assert!(err.to_string().contains("missing.gguf"), "error: {err}");
+        }
+
+        #[test]
+        fn test_existing_file_size_missing_returns_zero() {
+            let dir = tempfile::tempdir().unwrap();
+            let missing = dir.path().join("partial-missing");
+
+            let size = existing_file_size(&missing, "partial download").unwrap();
+
+            assert_eq!(size, 0);
+        }
+
+        #[test]
+        fn test_existing_file_size_existing_returns_size() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("partial");
+            std::fs::write(&path, b"partial").unwrap();
+
+            let size = existing_file_size(&path, "partial download").unwrap();
+
+            assert_eq!(size, 7);
+        }
+
+        #[test]
+        fn test_content_length_missing_is_unknown() {
+            let headers = reqwest::header::HeaderMap::new();
+
+            let total = content_length_or_unknown(&headers, "test HEAD").unwrap();
+
+            assert_eq!(total, 0);
+        }
+
+        #[test]
+        fn test_content_length_parses_u64() {
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(reqwest::header::CONTENT_LENGTH, "4096".parse().unwrap());
+
+            let total = content_length_or_unknown(&headers, "test HEAD").unwrap();
+
+            assert_eq!(total, 4096);
+        }
+
+        #[test]
+        fn test_content_length_reports_invalid_value() {
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                reqwest::header::CONTENT_LENGTH,
+                "definitely-not-a-size".parse().unwrap(),
+            );
+
+            let err = content_length_or_unknown(&headers, "test HEAD").unwrap_err();
+
+            assert!(
+                err.to_string().contains("invalid Content-Length value"),
+                "error: {err}"
             );
         }
 
@@ -579,9 +803,7 @@ pub mod hf {
             // Write 1024 bytes of fake partial data.
             std::fs::write(&partial_path, vec![0u8; 1024]).unwrap();
 
-            let offset = std::fs::metadata(&partial_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let offset = existing_file_size(&partial_path, "partial download").unwrap();
             assert_eq!(offset, 1024);
 
             std::env::remove_var("A3S_POWER_HOME");

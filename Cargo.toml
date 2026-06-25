@@ -28,14 +28,14 @@ llamacpp = ["dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2?/mtmd"]
 mistralrs = ["dep:mistralrs"]
 tls = ["dep:axum-server", "dep:rcgen", "dep:time"]
 # vsock = Linux-only; requires AF_VSOCK kernel support (a3s-box MicroVMs)
-vsock = ["dep:tokio-vsock"]
+vsock = ["dep:tokio-vsock", "dep:hyper-util"]
 # hf = HuggingFace Hub model pull support (async HTTP download)
 hf = []
 # hw-verify = AMD KDS + Intel PCS hardware attestation signature verification
 hw-verify = ["dep:x509-cert", "dep:p384", "dep:p256"]
 # picolm = pure-Rust layer-streaming GGUF inference for TEE memory-constrained environments.
 # Streams transformer layers one at a time; peak RAM = O(layer_size) not O(model_size).
-# Ideal for 7B+ models inside 512MB EPC. No C dependencies — fully auditable.
+# Ideal for 7B+ models inside 512MB EPC. No C/C++ inference backend.
 picolm = ["dep:memmap2", "dep:half", "dep:rayon"]
 # tee-minimal = smallest auditable TEE build: picolm + full TEE stack, no large dep trees.
 tee-minimal = ["picolm", "tls", "vsock"]
@@ -68,6 +68,7 @@ futures = "0.3"
 # HTTP server
 axum = { version = "0.7", features = ["macros"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
+hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"], optional = true }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
@@ -152,26 +153,24 @@ rcgen = { version = "0.13", optional = true }
 time = { version = "0.3", optional = true }
 
 # Vsock transport (optional, requires `vsock` feature; Linux only)
-tokio-vsock = { version = "0.7", features = ["axum08"], optional = true }
+tokio-vsock = { version = "0.7", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
 serial_test = "3"
-a3s-box-sdk = { version = "0.6.0", path = "../box/src/sdk" }
 # Benchmarking
 criterion = { version = "0.5", features = ["async_tokio"] }
-
-[[example]]
-name = "box_integration"
 
 [[bench]]
 name = "tee_memory"
 harness = false
+required-features = ["picolm"]
 
 [[bench]]
 name = "layer_stream"
 harness = false
+required-features = ["picolm"]
 
 [profile.release]
 opt-level = "z"

@@ -97,15 +97,7 @@ fn parse_mistral_tool_calls(text: &str) -> Option<Vec<ToolCall>> {
         .into_iter()
         .filter_map(|v| {
             let name = v.get("name")?.as_str()?.to_string();
-            let arguments = if let Some(args) = v.get("arguments") {
-                if args.is_string() {
-                    args.as_str().unwrap().to_string()
-                } else {
-                    serde_json::to_string(args).ok()?
-                }
-            } else {
-                "{}".to_string()
-            };
+            let arguments = serialize_arguments(v.get("arguments"))?;
             Some(ToolCall {
                 id: generate_call_id(),
                 tool_type: "function".to_string(),
@@ -139,15 +131,7 @@ fn parse_json_tool_call(text: &str) -> Option<ToolCall> {
 
     // Format 1: {"name": "...", "arguments": {...}}
     if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
-        let arguments = if let Some(args) = v.get("arguments") {
-            if args.is_string() {
-                args.as_str().unwrap().to_string()
-            } else {
-                serde_json::to_string(args).ok()?
-            }
-        } else {
-            "{}".to_string()
-        };
+        let arguments = serialize_arguments(v.get("arguments"))?;
         return Some(ToolCall {
             id: generate_call_id(),
             tool_type: "function".to_string(),
@@ -162,15 +146,7 @@ fn parse_json_tool_call(text: &str) -> Option<ToolCall> {
     // Format 2: {"function": {"name": "...", "arguments": "..."}}
     if let Some(func) = v.get("function") {
         let name = func.get("name")?.as_str()?.to_string();
-        let arguments = if let Some(args) = func.get("arguments") {
-            if args.is_string() {
-                args.as_str().unwrap().to_string()
-            } else {
-                serde_json::to_string(args).ok()?
-            }
-        } else {
-            "{}".to_string()
-        };
+        let arguments = serialize_arguments(func.get("arguments"))?;
         return Some(ToolCall {
             id: generate_call_id(),
             tool_type: "function".to_string(),
@@ -180,6 +156,15 @@ fn parse_json_tool_call(text: &str) -> Option<ToolCall> {
     }
 
     None
+}
+
+/// Serialize tool-call arguments into the OpenAI-compatible string field.
+fn serialize_arguments(args: Option<&serde_json::Value>) -> Option<String> {
+    match args {
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(value) => serde_json::to_string(value).ok(),
+        None => Some("{}".to_string()),
+    }
 }
 
 /// Generate a unique call ID for tool calls.
@@ -282,6 +267,22 @@ Let me know if you need anything else."#;
         let calls = calls.unwrap();
         assert_eq!(calls[0].function.name, "calc");
         assert_eq!(calls[0].function.arguments, r#"{"x": 1, "y": 2}"#);
+    }
+
+    #[test]
+    fn test_parse_mistral_arguments_as_string() {
+        let text = r#"[TOOL_CALLS] [{"name": "search", "arguments": "{\"q\": \"rust\"}"}]"#;
+        let calls = parse_tool_calls(text).unwrap();
+        assert_eq!(calls[0].function.name, "search");
+        assert_eq!(calls[0].function.arguments, r#"{"q": "rust"}"#);
+    }
+
+    #[test]
+    fn test_parse_json_arguments_as_null_serializes() {
+        let text = r#"{"name": "maybe", "arguments": null}"#;
+        let calls = parse_tool_calls(text).unwrap();
+        assert_eq!(calls[0].function.name, "maybe");
+        assert_eq!(calls[0].function.arguments, "null");
     }
 
     #[test]

@@ -13,6 +13,7 @@ use tower_http::trace::TraceLayer;
 
 use super::state::AppState;
 use crate::api;
+use crate::server::lock::mutex_lock;
 use crate::server::{auth, metrics};
 
 /// Shared state for the rate limiter middleware.
@@ -52,7 +53,7 @@ impl RateLimiter {
     /// Concurrency is checked before consuming a token so that requests rejected
     /// by the concurrency limit do not silently drain the rate-limit bucket.
     fn try_acquire(&self) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = mutex_lock(&self.inner);
 
         // Check concurrency limit first — no token consumed if concurrency is at capacity.
         if self.max_concurrent > 0 && inner.concurrent >= self.max_concurrent {
@@ -79,7 +80,7 @@ impl RateLimiter {
     /// Release a concurrent request slot.
     fn release(&self) {
         if self.max_concurrent > 0 {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = mutex_lock(&self.inner);
             inner.concurrent = inner.concurrent.saturating_sub(1);
         }
     }
@@ -409,7 +410,7 @@ mod tests {
         assert!(!limiter.try_acquire());
         // Token bucket should still have 1 token (not 0).
         {
-            let inner = limiter.inner.lock().unwrap();
+            let inner = mutex_lock(&limiter.inner);
             assert!(
                 inner.tokens >= 1.0,
                 "concurrency rejection must not consume a rate-limit token"

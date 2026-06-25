@@ -39,7 +39,7 @@ use crate::model::manifest::{ModelFormat, ModelManifest};
 use crate::server::request_context::RequestContext;
 
 #[cfg(feature = "picolm")]
-use super::gguf_stream::GgufFile;
+use super::gguf_stream::{GgufFile, GgufMeta};
 #[cfg(feature = "picolm")]
 use super::picolm_ops::attention::ModelConfig;
 #[cfg(feature = "picolm")]
@@ -76,6 +76,210 @@ struct LoadedModel {
     max_seq_len: usize,
     /// Session-keyed KV caches for multi-turn reuse.
     sessions: HashMap<String, KvCache>,
+}
+
+#[cfg(feature = "picolm")]
+fn take_kv_cache_slot(slot: &Mutex<Option<KvCache>>) -> Result<Option<KvCache>> {
+    slot.lock()
+        .map(|mut guard| guard.take())
+        .map_err(|_| PowerError::InferenceFailed("picolm: KV cache slot lock poisoned".to_string()))
+}
+
+#[cfg(feature = "picolm")]
+fn store_kv_cache_slot(slot: &Mutex<Option<KvCache>>, kv: KvCache) -> Result<()> {
+    let mut guard = slot.lock().map_err(|_| {
+        PowerError::InferenceFailed("picolm: KV cache slot lock poisoned".to_string())
+    })?;
+    *guard = Some(kv);
+    Ok(())
+}
+
+#[cfg(feature = "picolm")]
+fn send_picolm_chat_result(
+    tx: &mpsc::Sender<Result<ChatResponseChunk>>,
+    result: Result<ChatResponseChunk>,
+) -> bool {
+    match tx.blocking_send(result) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                "picolm chat receiver dropped; stopping inference"
+            );
+            false
+        }
+    }
+}
+
+#[cfg(feature = "picolm")]
+fn observe_picolm_release_result(layer: u32, target: &str, result: Result<()>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                layer,
+                target,
+                error = %e,
+                "picolm failed to release layer pages"
+            );
+            false
+        }
+    }
+}
+
+#[cfg(feature = "picolm")]
+#[derive(Debug)]
+struct PicolmModelShape {
+    cfg: ModelConfig,
+    max_seq: usize,
+    kv_mem: usize,
+    derived_mem: usize,
+}
+
+#[cfg(feature = "picolm")]
+fn require_nonzero(value: usize, name: &str) -> Result<usize> {
+    if value == 0 {
+        return Err(PowerError::InvalidFormat(format!(
+            "picolm: GGUF metadata field {name} must be greater than zero"
+        )));
+    }
+    Ok(value)
+}
+
+#[cfg(feature = "picolm")]
+fn checked_shape_product(values: &[usize], context: &str) -> Result<usize> {
+    values.iter().try_fold(1usize, |acc, value| {
+        acc.checked_mul(*value)
+            .ok_or_else(|| PowerError::InvalidFormat(format!("picolm: {context} overflows usize")))
+    })
+}
+
+#[cfg(feature = "picolm")]
+fn checked_shape_sum(values: &[usize], context: &str) -> Result<usize> {
+    values.iter().try_fold(0usize, |acc, value| {
+        acc.checked_add(*value)
+            .ok_or_else(|| PowerError::InvalidFormat(format!("picolm: {context} overflows usize")))
+    })
+}
+
+#[cfg(feature = "picolm")]
+fn checked_token_id(value: i32, name: &str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| {
+        PowerError::InvalidFormat(format!(
+            "picolm: GGUF metadata field {name} must be non-negative"
+        ))
+    })
+}
+
+#[cfg(feature = "picolm")]
+fn require_positive_f32(value: f32, name: &str) -> Result<f32> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(PowerError::InvalidFormat(format!(
+            "picolm: GGUF metadata field {name} must be a finite positive number"
+        )));
+    }
+    Ok(value)
+}
+
+#[cfg(feature = "picolm")]
+fn build_picolm_model_shape(meta: &GgufMeta, max_seq_cap: usize) -> Result<PicolmModelShape> {
+    let n_embd = require_nonzero(meta.n_embd as usize, "embedding_length")?;
+    let n_heads = require_nonzero(meta.n_heads as usize, "attention.head_count")?;
+    let n_kv_heads = require_nonzero(meta.n_kv_heads as usize, "attention.head_count_kv")?;
+    let n_layers = require_nonzero(meta.n_layers as usize, "block_count")?;
+    let n_ff = require_nonzero(meta.n_ff as usize, "feed_forward_length")?;
+    let vocab_size = require_nonzero(meta.vocab_size as usize, "tokenizer.ggml.tokens")?;
+    let context_length = require_nonzero(meta.context_length as usize, "context_length")?;
+    let max_seq_cap = require_nonzero(max_seq_cap, "backend.max_seq_len")?;
+
+    if n_embd % n_heads != 0 {
+        return Err(PowerError::InvalidFormat(format!(
+            "picolm: embedding_length ({n_embd}) must be divisible by attention.head_count ({n_heads})"
+        )));
+    }
+    let head_dim = n_embd / n_heads;
+    if n_heads % n_kv_heads != 0 {
+        return Err(PowerError::InvalidFormat(format!(
+            "picolm: attention.head_count ({n_heads}) must be divisible by attention.head_count_kv ({n_kv_heads})"
+        )));
+    }
+
+    let rope_dim = match meta.rope_dim {
+        Some(value) => {
+            let value = require_nonzero(value as usize, "rope.dimension_count")?;
+            if value > head_dim {
+                return Err(PowerError::InvalidFormat(format!(
+                    "picolm: rope.dimension_count ({value}) must not exceed head_dim ({head_dim})"
+                )));
+            }
+            value
+        }
+        None => head_dim,
+    };
+
+    let max_seq = context_length.min(max_seq_cap);
+    let q_dim = checked_shape_product(&[n_heads, head_dim], "query buffer size")?;
+    let kv_dim = checked_shape_product(&[n_kv_heads, head_dim], "KV buffer size")?;
+    let f32_bytes = std::mem::size_of::<f32>();
+    let f16_bytes = std::mem::size_of::<half::f16>();
+    let usize_bytes = std::mem::size_of::<usize>();
+    let kv_mem = checked_shape_product(
+        &[n_layers, 2, n_kv_heads, head_dim, max_seq, f16_bytes],
+        "KV cache memory estimate",
+    )?;
+
+    let forward_f32_elements = checked_shape_sum(
+        &[
+            n_embd, q_dim, kv_dim, kv_dim, q_dim, max_seq, n_embd, n_ff, n_ff, n_embd, n_embd,
+            vocab_size, head_dim, vocab_size,
+        ],
+        "forward buffer element count",
+    )?;
+    let forward_f32_bytes =
+        checked_shape_product(&[forward_f32_elements, f32_bytes], "forward buffer size")?;
+    let sampler_index_bytes =
+        checked_shape_product(&[vocab_size, usize_bytes], "sampler index buffer size")?;
+    let rope_half_dim = rope_dim.min(head_dim) / 2;
+    let rope_entries = checked_shape_product(&[max_seq, rope_half_dim], "RoPE table size")?;
+    let rope_bytes = checked_shape_product(&[rope_entries, 2, f32_bytes], "RoPE table bytes")?;
+    let norm_cache_bytes = checked_shape_product(
+        &[n_layers, 2, n_embd, f32_bytes],
+        "per-layer norm cache bytes",
+    )?;
+    let worst_case_prefill_bytes =
+        checked_shape_product(&[max_seq, n_embd, f32_bytes], "prefill hidden-state bytes")?;
+    let derived_mem = checked_shape_sum(
+        &[
+            forward_f32_bytes,
+            sampler_index_bytes,
+            rope_bytes,
+            norm_cache_bytes,
+            worst_case_prefill_bytes,
+            kv_mem,
+        ],
+        "derived picolm memory estimate",
+    )?;
+
+    Ok(PicolmModelShape {
+        cfg: ModelConfig {
+            n_embd,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            n_layers: meta.n_layers,
+            n_ff,
+            vocab_size,
+            norm_eps: require_positive_f32(meta.norm_eps, "attention.layer_norm_rms_epsilon")?,
+            rope_theta: require_positive_f32(meta.rope_theta, "rope.freq_base")?,
+            rope_dim,
+            context_length,
+            bos_token_id: checked_token_id(meta.bos_token_id, "tokenizer.ggml.bos_token_id")?,
+            eos_token_id: checked_token_id(meta.eos_token_id, "tokenizer.ggml.eos_token_id")?,
+        },
+        max_seq,
+        kv_mem,
+        derived_mem,
+    })
 }
 
 // ── Startup self-test ────────────────────────────────────────────────────────
@@ -348,7 +552,7 @@ fn forward_pass_streaming(
                 matmul::extract_row(raw, t, n_embd, 0, &mut attn_buf);
             }
             Err(e) => {
-                let _ = tx.blocking_send(Err(e));
+                send_picolm_chat_result(tx, Err(e));
                 return;
             }
         }
@@ -358,7 +562,7 @@ fn forward_pass_streaming(
                 matmul::extract_row(raw, t, n_embd, 0, &mut ffn_buf);
             }
             Err(e) => {
-                let _ = tx.blocking_send(Err(e));
+                send_picolm_chat_result(tx, Err(e));
                 return;
             }
         }
@@ -376,14 +580,14 @@ fn forward_pass_streaming(
     let embd_raw = match gguf.tensor_bytes("token_embd.weight") {
         Ok(r) => r,
         Err(e) => {
-            let _ = tx.blocking_send(Err(e));
+            send_picolm_chat_result(tx, Err(e));
             return;
         }
     };
     let embd_type = match gguf.tensor_type("token_embd.weight") {
         Ok(t) => t,
         Err(e) => {
-            let _ = tx.blocking_send(Err(e));
+            send_picolm_chat_result(tx, Err(e));
             return;
         }
     };
@@ -437,22 +641,22 @@ fn forward_pass_streaming(
                     attn_norm_w,
                     &mut buf,
                 ) {
-                    let _ = tx.blocking_send(Err(e));
+                    send_picolm_chat_result(tx, Err(e));
                     return;
                 }
                 if let Err(e) = ffn::ffn_layer(h, tc, layer, cfg, activation, ffn_norm_w, &mut buf)
                 {
-                    let _ = tx.blocking_send(Err(e));
+                    send_picolm_chat_result(tx, Err(e));
                     return;
                 }
             }
 
             // Release physical pages for this layer's weights + norms (once per layer).
-            let _ = tc.release_layer(gguf, layer);
+            observe_picolm_release_result(layer, "layer weights", tc.release_layer(gguf, layer));
             let attn_name = format!("blk.{layer}.attn_norm.weight");
             let ffn_name = format!("blk.{layer}.ffn_norm.weight");
-            let _ = gguf.advise_dontneed(&attn_name);
-            let _ = gguf.advise_dontneed(&ffn_name);
+            observe_picolm_release_result(layer, &attn_name, gguf.advise_dontneed(&attn_name));
+            observe_picolm_release_result(layer, &ffn_name, gguf.advise_dontneed(&ffn_name));
         }
 
         // Copy the last token's hidden state for decode phase.
@@ -578,15 +782,18 @@ fn forward_pass_streaming(
                 } else {
                     None
                 };
-                let _ = tx.blocking_send(Ok(ChatResponseChunk {
-                    content: String::new(),
-                    thinking_content: None,
-                    done: true,
-                    prompt_tokens: Some(input_ids.len() as u32),
-                    done_reason: Some("stop".to_string()),
-                    prompt_eval_duration_ns: None,
-                    tool_calls,
-                }));
+                send_picolm_chat_result(
+                    tx,
+                    Ok(ChatResponseChunk {
+                        content: String::new(),
+                        thinking_content: None,
+                        done: true,
+                        prompt_tokens: Some(input_ids.len() as u32),
+                        done_reason: Some("stop".to_string()),
+                        prompt_eval_duration_ns: None,
+                        tool_calls,
+                    }),
+                );
                 return;
             }
             Some(piece) => {
@@ -600,15 +807,20 @@ fn forward_pass_streaming(
                     // If grammar is complete (valid JSON produced), stop generation.
                     if gs.is_complete() {
                         // Send the final piece, then the done chunk.
-                        let _ = tx.blocking_send(Ok(ChatResponseChunk {
-                            content: piece,
-                            thinking_content: None,
-                            done: false,
-                            prompt_tokens: None,
-                            done_reason: None,
-                            prompt_eval_duration_ns: None,
-                            tool_calls: None,
-                        }));
+                        if !send_picolm_chat_result(
+                            tx,
+                            Ok(ChatResponseChunk {
+                                content: piece,
+                                thinking_content: None,
+                                done: false,
+                                prompt_tokens: None,
+                                done_reason: None,
+                                prompt_eval_duration_ns: None,
+                                tool_calls: None,
+                            }),
+                        ) {
+                            return;
+                        }
                         let decode_elapsed = decode_start.elapsed();
                         let decode_tok_per_sec = if decode_elapsed.as_secs_f64() > 0.0 {
                             decode_count as f64 / decode_elapsed.as_secs_f64()
@@ -621,15 +833,18 @@ fn forward_pass_streaming(
                             tok_per_sec = format!("{:.1}", decode_tok_per_sec),
                             "picolm: decode complete (grammar complete)"
                         );
-                        let _ = tx.blocking_send(Ok(ChatResponseChunk {
-                            content: String::new(),
-                            thinking_content: None,
-                            done: true,
-                            prompt_tokens: Some(input_ids.len() as u32),
-                            done_reason: Some("stop".to_string()),
-                            prompt_eval_duration_ns: None,
-                            tool_calls: None,
-                        }));
+                        send_picolm_chat_result(
+                            tx,
+                            Ok(ChatResponseChunk {
+                                content: String::new(),
+                                thinking_content: None,
+                                done: true,
+                                prompt_tokens: Some(input_ids.len() as u32),
+                                done_reason: Some("stop".to_string()),
+                                prompt_eval_duration_ns: None,
+                                tool_calls: None,
+                            }),
+                        );
                         return;
                     }
                 }
@@ -645,16 +860,21 @@ fn forward_pass_streaming(
                         } else {
                             ""
                         };
-                        if !trimmed.is_empty() {
-                            let _ = tx.blocking_send(Ok(ChatResponseChunk {
-                                content: trimmed.to_string(),
-                                thinking_content: None,
-                                done: false,
-                                prompt_tokens: None,
-                                done_reason: None,
-                                prompt_eval_duration_ns: None,
-                                tool_calls: None,
-                            }));
+                        if !trimmed.is_empty()
+                            && !send_picolm_chat_result(
+                                tx,
+                                Ok(ChatResponseChunk {
+                                    content: trimmed.to_string(),
+                                    thinking_content: None,
+                                    done: false,
+                                    prompt_tokens: None,
+                                    done_reason: None,
+                                    prompt_eval_duration_ns: None,
+                                    tool_calls: None,
+                                }),
+                            )
+                        {
+                            return;
                         }
                         hit_stop = true;
                         break;
@@ -679,20 +899,24 @@ fn forward_pass_streaming(
                     } else {
                         None
                     };
-                    let _ = tx.blocking_send(Ok(ChatResponseChunk {
-                        content: String::new(),
-                        thinking_content: None,
-                        done: true,
-                        prompt_tokens: Some(input_ids.len() as u32),
-                        done_reason: Some("stop".to_string()),
-                        prompt_eval_duration_ns: None,
-                        tool_calls,
-                    }));
+                    send_picolm_chat_result(
+                        tx,
+                        Ok(ChatResponseChunk {
+                            content: String::new(),
+                            thinking_content: None,
+                            done: true,
+                            prompt_tokens: Some(input_ids.len() as u32),
+                            done_reason: Some("stop".to_string()),
+                            prompt_eval_duration_ns: None,
+                            tool_calls,
+                        }),
+                    );
                     return;
                 }
 
-                if tx
-                    .blocking_send(Ok(ChatResponseChunk {
+                if !send_picolm_chat_result(
+                    tx,
+                    Ok(ChatResponseChunk {
                         content: piece,
                         thinking_content: None,
                         done: false,
@@ -700,9 +924,8 @@ fn forward_pass_streaming(
                         done_reason: None,
                         prompt_eval_duration_ns: None,
                         tool_calls: None,
-                    }))
-                    .is_err()
-                {
+                    }),
+                ) {
                     return;
                 }
             }
@@ -735,7 +958,7 @@ fn forward_pass_streaming(
                 attn_norm_w,
                 &mut buf,
             ) {
-                let _ = tx.blocking_send(Err(e));
+                send_picolm_chat_result(tx, Err(e));
                 return;
             }
             prof_attn_ns += _ta.elapsed().as_nanos() as u64;
@@ -750,13 +973,13 @@ fn forward_pass_streaming(
                 ffn_norm_w,
                 &mut buf,
             ) {
-                let _ = tx.blocking_send(Err(e));
+                send_picolm_chat_result(tx, Err(e));
                 return;
             }
             prof_ffn_ns += _tf.elapsed().as_nanos() as u64;
 
             // Release physical pages for this layer's weights.
-            let _ = tc.release_layer(gguf, layer);
+            observe_picolm_release_result(layer, "layer weights", tc.release_layer(gguf, layer));
         }
 
         gen_pos += 1;
@@ -800,7 +1023,7 @@ fn forward_pass_streaming(
                             attn_norm_w,
                             &mut buf,
                         ) {
-                            let _ = tx.blocking_send(Err(e));
+                            send_picolm_chat_result(tx, Err(e));
                             return;
                         }
                         if let Err(e) = ffn::ffn_layer(
@@ -812,10 +1035,14 @@ fn forward_pass_streaming(
                             ffn_norm_w,
                             &mut buf,
                         ) {
-                            let _ = tx.blocking_send(Err(e));
+                            send_picolm_chat_result(tx, Err(e));
                             return;
                         }
-                        let _ = tc.release_layer(gguf, layer);
+                        observe_picolm_release_result(
+                            layer,
+                            "layer weights",
+                            tc.release_layer(gguf, layer),
+                        );
                     }
 
                     // Compute logits for this draft position.
@@ -868,15 +1095,18 @@ fn forward_pass_streaming(
                             } else {
                                 None
                             };
-                            let _ = tx.blocking_send(Ok(ChatResponseChunk {
-                                content: String::new(),
-                                thinking_content: None,
-                                done: true,
-                                prompt_tokens: Some(input_ids.len() as u32),
-                                done_reason: Some("stop".to_string()),
-                                prompt_eval_duration_ns: None,
-                                tool_calls,
-                            }));
+                            send_picolm_chat_result(
+                                tx,
+                                Ok(ChatResponseChunk {
+                                    content: String::new(),
+                                    thinking_content: None,
+                                    done: true,
+                                    prompt_tokens: Some(input_ids.len() as u32),
+                                    done_reason: Some("stop".to_string()),
+                                    prompt_eval_duration_ns: None,
+                                    tool_calls,
+                                }),
+                            );
                             return;
                         }
                         Some(piece) => {
@@ -896,20 +1126,24 @@ fn forward_pass_streaming(
                                 } else {
                                     None
                                 };
-                                let _ = tx.blocking_send(Ok(ChatResponseChunk {
-                                    content: String::new(),
-                                    thinking_content: None,
-                                    done: true,
-                                    prompt_tokens: Some(input_ids.len() as u32),
-                                    done_reason: Some("stop".to_string()),
-                                    prompt_eval_duration_ns: None,
-                                    tool_calls,
-                                }));
+                                send_picolm_chat_result(
+                                    tx,
+                                    Ok(ChatResponseChunk {
+                                        content: String::new(),
+                                        thinking_content: None,
+                                        done: true,
+                                        prompt_tokens: Some(input_ids.len() as u32),
+                                        done_reason: Some("stop".to_string()),
+                                        prompt_eval_duration_ns: None,
+                                        tool_calls,
+                                    }),
+                                );
                                 return;
                             }
 
-                            if tx
-                                .blocking_send(Ok(ChatResponseChunk {
+                            if !send_picolm_chat_result(
+                                tx,
+                                Ok(ChatResponseChunk {
                                     content: piece,
                                     thinking_content: None,
                                     done: false,
@@ -917,9 +1151,8 @@ fn forward_pass_streaming(
                                     done_reason: None,
                                     prompt_eval_duration_ns: None,
                                     tool_calls: None,
-                                }))
-                                .is_err()
-                            {
+                                }),
+                            ) {
                                 return;
                             }
                         }
@@ -976,15 +1209,18 @@ fn forward_pass_streaming(
     } else {
         None
     };
-    let _ = tx.blocking_send(Ok(ChatResponseChunk {
-        content: String::new(),
-        thinking_content: None,
-        done: true,
-        prompt_tokens: Some(input_ids.len() as u32),
-        done_reason: Some("length".to_string()),
-        prompt_eval_duration_ns: None,
-        tool_calls,
-    }));
+    send_picolm_chat_result(
+        tx,
+        Ok(ChatResponseChunk {
+            content: String::new(),
+            thinking_content: None,
+            done: true,
+            prompt_tokens: Some(input_ids.len() as u32),
+            done_reason: Some("length".to_string()),
+            prompt_eval_duration_ns: None,
+            tool_calls,
+        }),
+    );
 }
 
 // ── Backend implementation ────────────────────────────────────────────────────
@@ -1051,24 +1287,13 @@ impl Backend for PicolmBackend {
                 )));
             }
 
-            let head_dim = meta.n_embd as usize / meta.n_heads as usize;
-            let rope_dim = meta.rope_dim.map(|d| d as usize).unwrap_or(head_dim);
-
-            let cfg = ModelConfig {
-                n_embd: meta.n_embd as usize,
-                n_heads: meta.n_heads as usize,
-                n_kv_heads: meta.n_kv_heads as usize,
-                head_dim,
-                n_layers: meta.n_layers,
-                n_ff: meta.n_ff as usize,
-                vocab_size: meta.vocab_size as usize,
-                norm_eps: meta.norm_eps,
-                rope_theta: meta.rope_theta,
-                rope_dim,
-                context_length: meta.context_length as usize,
-                bos_token_id: meta.bos_token_id as u32,
-                eos_token_id: meta.eos_token_id as u32,
-            };
+            let shape = build_picolm_model_shape(meta, max_seq_cap)?;
+            let cfg = shape.cfg;
+            let head_dim = cfg.head_dim;
+            let rope_dim = cfg.rope_dim;
+            let max_seq = shape.max_seq;
+            let kv_mem = shape.kv_mem;
+            let derived_mem = shape.derived_mem;
 
             // Determine activation
             let activation = if arch.contains("gemma") {
@@ -1088,8 +1313,6 @@ impl Backend for PicolmBackend {
 
             // Use model's context length from GGUF metadata, capped by backend limit.
             // This avoids the hardcoded 2048 that silently truncated long-context models.
-            let max_seq = (meta.context_length as usize).min(max_seq_cap);
-
             // Pre-compute RoPE cos/sin tables (eliminates powf/sin/cos from hot path)
             let rope_table = RopeTable::new(max_seq, head_dim, rope_dim, cfg.rope_theta);
 
@@ -1127,9 +1350,6 @@ impl Backend for PicolmBackend {
             // this catches it at load time instead of silently producing garbage.
             startup_self_test()?;
 
-            let kv_mem =
-                (meta.n_layers as usize) * 2 * (meta.n_kv_heads as usize) * head_dim * max_seq * 2; // f16: 2 bytes
-
             // Clone metadata fields before moving gguf into Arc.
             let model_chat_template = meta.chat_template.clone();
             let log_arch = meta.arch.clone();
@@ -1147,6 +1367,7 @@ impl Backend for PicolmBackend {
                 vocab_size = log_vocab_size,
                 max_seq_len = max_seq,
                 kv_cache_mb = kv_mem / (1024 * 1024),
+                derived_mem_mb = derived_mem / (1024 * 1024),
                 "picolm: model loaded (layer-streaming mode, optimized)"
             );
 
@@ -1285,7 +1506,22 @@ impl Backend for PicolmBackend {
             let kv_return = Arc::clone(&kv_slot);
 
             let blocking_handle = tokio::task::spawn_blocking(move || {
-                let mut kv = kv_return.lock().unwrap().take().unwrap();
+                let mut kv = match take_kv_cache_slot(&kv_return) {
+                    Ok(Some(kv)) => kv,
+                    Ok(None) => {
+                        send_picolm_chat_result(
+                            &tx,
+                            Err(PowerError::InferenceFailed(
+                                "picolm: KV cache slot unexpectedly empty".to_string(),
+                            )),
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        send_picolm_chat_result(&tx, Err(e));
+                        return;
+                    }
+                };
                 let mut params = GenerateParams {
                     gguf: &gguf,
                     tensor_cache: &tensor_cache,
@@ -1310,19 +1546,51 @@ impl Backend for PicolmBackend {
                 };
                 forward_pass_streaming(&mut params, &tx);
                 // Put KV cache back into the slot so the return task can pick it up.
-                *kv_return.lock().unwrap() = Some(kv);
+                if let Err(e) = store_kv_cache_slot(&kv_return, kv) {
+                    tracing::warn!(
+                        error = %e,
+                        "picolm: failed to return KV cache after generation"
+                    );
+                }
             });
 
             // Return the KV cache to the session map once generation finishes.
             if !session_key.is_empty() {
                 let loaded_arc = Arc::clone(&self.loaded);
                 tokio::spawn(async move {
-                    let _ = blocking_handle.await;
-                    if let Ok(Some(kv)) = kv_slot.lock().map(|mut g| g.take()) {
-                        if let Ok(mut map) = loaded_arc.lock() {
+                    if let Err(e) = blocking_handle.await {
+                        tracing::warn!("picolm: blocking generation task failed: {e}");
+                    }
+
+                    let kv = match take_kv_cache_slot(&kv_slot) {
+                        Ok(Some(kv)) => kv,
+                        Ok(None) => {
+                            tracing::warn!(
+                                model = %model_name_owned,
+                                "picolm: KV cache slot empty; session cache not updated"
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "picolm: failed to recover KV cache for session reuse"
+                            );
+                            return;
+                        }
+                    };
+
+                    match loaded_arc.lock() {
+                        Ok(mut map) => {
                             if let Some(model) = map.get_mut(&model_name_owned) {
                                 model.sessions.insert(session_key, kv);
                             }
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                model = %model_name_owned,
+                                "picolm: loaded models lock poisoned; session cache not updated"
+                            );
                         }
                     }
                 });
@@ -1499,6 +1767,143 @@ mod tests {
         assert!(!b.supports(&ModelFormat::Vision));
     }
 
+    #[cfg(feature = "picolm")]
+    fn test_meta() -> GgufMeta {
+        GgufMeta {
+            arch: "llama".to_string(),
+            n_layers: 2,
+            n_embd: 16,
+            n_heads: 4,
+            n_kv_heads: 2,
+            context_length: 128,
+            vocab_size: 8,
+            bos_token_id: 1,
+            eos_token_id: 2,
+            n_ff: 32,
+            norm_eps: 1e-5,
+            rope_theta: 10000.0,
+            rope_dim: None,
+            chat_template: None,
+            vocab_tokens: vec!["<s>".to_string(), "</s>".to_string()],
+            vocab_scores: Vec::new(),
+            vocab_types: Vec::new(),
+            tensor_data_offset: 0,
+            tensors: std::collections::HashMap::new(),
+        }
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_build_picolm_model_shape_accepts_valid_metadata() {
+        let shape = build_picolm_model_shape(&test_meta(), 64).unwrap();
+
+        assert_eq!(shape.cfg.head_dim, 4);
+        assert_eq!(shape.cfg.rope_dim, 4);
+        assert_eq!(shape.max_seq, 64);
+        assert_eq!(shape.kv_mem, 2 * 2 * 2 * 4 * 64 * 2);
+        assert!(shape.derived_mem > shape.kv_mem);
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_build_picolm_model_shape_rejects_zero_heads() {
+        let mut meta = test_meta();
+        meta.n_heads = 0;
+
+        let err = build_picolm_model_shape(&meta, 64).unwrap_err();
+
+        assert!(err.to_string().contains("attention.head_count"));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_build_picolm_model_shape_rejects_non_divisible_embedding() {
+        let mut meta = test_meta();
+        meta.n_embd = 10;
+        meta.n_heads = 4;
+
+        let err = build_picolm_model_shape(&meta, 64).unwrap_err();
+
+        assert!(err.to_string().contains("must be divisible"));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_build_picolm_model_shape_rejects_invalid_kv_grouping() {
+        let mut meta = test_meta();
+        meta.n_heads = 4;
+        meta.n_kv_heads = 3;
+
+        let err = build_picolm_model_shape(&meta, 64).unwrap_err();
+
+        assert!(err.to_string().contains("attention.head_count_kv"));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_build_picolm_model_shape_rejects_rope_dim_over_head_dim() {
+        let mut meta = test_meta();
+        meta.rope_dim = Some(8);
+
+        let err = build_picolm_model_shape(&meta, 64).unwrap_err();
+
+        assert!(err.to_string().contains("rope.dimension_count"));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_build_picolm_model_shape_rejects_kv_memory_overflow() {
+        let mut meta = test_meta();
+        meta.n_layers = u32::MAX;
+        meta.n_embd = u32::MAX;
+        meta.n_heads = 1;
+        meta.n_kv_heads = 1;
+        meta.context_length = u32::MAX;
+        meta.rope_dim = None;
+
+        let err = build_picolm_model_shape(&meta, usize::MAX).unwrap_err();
+
+        assert!(err.to_string().contains("KV cache memory estimate"));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_build_picolm_model_shape_rejects_norm_cache_overflow() {
+        let mut meta = test_meta();
+        meta.n_layers = u32::MAX;
+        meta.n_embd = u32::MAX;
+        meta.n_heads = u32::MAX;
+        meta.n_kv_heads = 1;
+        meta.context_length = 1;
+        meta.rope_dim = None;
+
+        let err = build_picolm_model_shape(&meta, 1).unwrap_err();
+
+        assert!(err.to_string().contains("per-layer norm cache bytes"));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_build_picolm_model_shape_rejects_negative_token_ids() {
+        let mut meta = test_meta();
+        meta.eos_token_id = -1;
+
+        let err = build_picolm_model_shape(&meta, 64).unwrap_err();
+
+        assert!(err.to_string().contains("eos_token_id"));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_build_picolm_model_shape_rejects_non_finite_float_metadata() {
+        let mut meta = test_meta();
+        meta.rope_theta = f32::NAN;
+
+        let err = build_picolm_model_shape(&meta, 64).unwrap_err();
+
+        assert!(err.to_string().contains("rope.freq_base"));
+    }
+
     #[test]
     fn test_build_prompt_ends_with_assistant() {
         let msgs = vec![ChatMessage {
@@ -1594,6 +1999,87 @@ mod tests {
             .unwrap_or_else(|| KvCache::new(2, 4, 64, 128));
         // Empty key must never be stored back.
         assert!(!sessions.contains_key(&transient_key));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_kv_cache_slot_take_and_store() {
+        let slot = Mutex::new(Some(KvCache::new(2, 4, 64, 128)));
+
+        let kv = take_kv_cache_slot(&slot).unwrap();
+        assert!(kv.is_some());
+        assert!(take_kv_cache_slot(&slot).unwrap().is_none());
+
+        store_kv_cache_slot(&slot, KvCache::new(2, 4, 64, 128)).unwrap();
+        assert!(take_kv_cache_slot(&slot).unwrap().is_some());
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_kv_cache_slot_returns_error_when_lock_poisoned() {
+        let slot = Arc::new(Mutex::new(Some(KvCache::new(2, 4, 64, 128))));
+        let poison_slot = Arc::clone(&slot);
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = poison_slot.lock().unwrap();
+            panic!("poison KV slot");
+        });
+
+        let err = match take_kv_cache_slot(&slot) {
+            Ok(_) => panic!("expected poisoned KV cache slot error"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("KV cache slot lock poisoned"));
+    }
+
+    #[cfg(feature = "picolm")]
+    fn test_chat_chunk(done: bool) -> ChatResponseChunk {
+        ChatResponseChunk {
+            content: String::new(),
+            thinking_content: None,
+            done,
+            prompt_tokens: None,
+            done_reason: None,
+            prompt_eval_duration_ns: None,
+            tool_calls: None,
+        }
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_send_picolm_chat_result_sends_when_receiver_open() {
+        let (tx, mut rx) = mpsc::channel(1);
+
+        assert!(send_picolm_chat_result(&tx, Ok(test_chat_chunk(true))));
+
+        let sent = rx.blocking_recv().unwrap().unwrap();
+        assert!(sent.done);
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_send_picolm_chat_result_reports_closed_receiver() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+
+        assert!(!send_picolm_chat_result(&tx, Ok(test_chat_chunk(false))));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_observe_picolm_release_result_reports_success() {
+        assert!(observe_picolm_release_result(1, "layer weights", Ok(())));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_observe_picolm_release_result_reports_failure() {
+        let err = PowerError::InferenceFailed("release failed".to_string());
+
+        assert!(!observe_picolm_release_result(
+            2,
+            "blk.2.attn_norm.weight",
+            Err(err)
+        ));
     }
 
     #[test]

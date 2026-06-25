@@ -135,14 +135,57 @@ impl DecryptedModel {
 
 impl Drop for DecryptedModel {
     fn drop(&mut self) {
-        // Overwrite file contents with zeros before deleting
-        if let Ok(metadata) = fs::metadata(&self.path) {
-            let zeros = vec![0u8; metadata.len() as usize];
-            let _ = fs::write(&self.path, &zeros);
-        }
-        let _ = fs::remove_file(&self.path);
-        tracing::debug!(path = %self.path.display(), "Securely wiped decrypted model file");
+        secure_wipe_and_delete_file(&self.path);
     }
+}
+
+fn secure_wipe_and_delete_file(path: &Path) -> bool {
+    let mut ok = true;
+
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            let zeros = vec![0u8; metadata.len() as usize];
+            if let Err(e) = fs::write(path, &zeros) {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to overwrite decrypted model file before deletion"
+                );
+                ok = false;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(path = %path.display(), "Decrypted model file already removed");
+            return true;
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Failed to inspect decrypted model file before deletion"
+            );
+            ok = false;
+        }
+    }
+
+    match fs::remove_file(path) {
+        Ok(()) => {
+            tracing::debug!(path = %path.display(), "Securely wiped decrypted model file");
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(path = %path.display(), "Decrypted model file already removed");
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Failed to delete decrypted model file"
+            );
+            ok = false;
+        }
+    }
+
+    ok
 }
 
 /// A model decrypted entirely in memory, locked with mlock.
@@ -185,7 +228,7 @@ impl MemoryDecryptedModel {
         let cipher = Aes256Gcm::new_from_slice(key)
             .map_err(|e| PowerError::Config(format!("Invalid AES key: {e}")))?;
 
-        let mut plaintext =
+        let plaintext =
             cipher
                 .decrypt(nonce, ciphertext)
                 .map_err(|_| PowerError::IntegrityCheckFailed {
@@ -194,14 +237,10 @@ impl MemoryDecryptedModel {
                     actual: "decryption failed (wrong key or tampered data)".to_string(),
                 })?;
 
-        // Lock the plaintext in RAM to prevent swapping
-        if let Err(e) = mlock_bytes(&plaintext) {
+        let (locked, mlock_error) = lock_zeroizing_buffer(plaintext);
+        if let Some(e) = mlock_error {
             tracing::warn!(error = %e, "mlock failed — plaintext may be swapped to disk");
         }
-
-        let locked = zeroize::Zeroizing::new(plaintext.clone());
-        // Zeroize the intermediate buffer
-        plaintext.zeroize();
 
         tracing::debug!(model = %model_name, bytes = locked.len(), "Model decrypted into locked memory");
 
@@ -230,7 +269,13 @@ impl MemoryDecryptedModel {
 impl Drop for MemoryDecryptedModel {
     fn drop(&mut self) {
         // Unlock the memory pages before the Zeroizing<Vec<u8>> drops and zeroizes
-        munlock_bytes(&self.data);
+        if let Err(e) = munlock_bytes(&self.data) {
+            tracing::warn!(
+                model = %self.model_name,
+                error = %e,
+                "munlock failed for in-memory decrypted model"
+            );
+        }
         tracing::debug!(model = %self.model_name, "Zeroized and unlocked in-memory model");
     }
 }
@@ -239,6 +284,10 @@ impl Drop for MemoryDecryptedModel {
 ///
 /// On Linux, calls `mlock(2)`. On other platforms, this is a no-op.
 fn mlock_bytes(data: &[u8]) -> std::io::Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+
     #[cfg(target_os = "linux")]
     {
         // Safety: we pass a valid pointer and length from a live Vec<u8>.
@@ -254,21 +303,34 @@ fn mlock_bytes(data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+fn lock_zeroizing_buffer(
+    plaintext: Vec<u8>,
+) -> (zeroize::Zeroizing<Vec<u8>>, Option<std::io::Error>) {
+    let mlock_error = mlock_bytes(&plaintext).err();
+    (zeroize::Zeroizing::new(plaintext), mlock_error)
+}
+
 /// Unlock memory pages previously locked with mlock.
 ///
 /// On Linux, calls `munlock(2)`. On other platforms, this is a no-op.
-fn munlock_bytes(data: &[u8]) {
+fn munlock_bytes(data: &[u8]) -> std::io::Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+
     #[cfg(target_os = "linux")]
     {
         // Safety: we pass a valid pointer and length from a live Vec<u8>.
-        unsafe {
-            libc::munlock(data.as_ptr() as *const libc::c_void, data.len());
+        let ret = unsafe { libc::munlock(data.as_ptr() as *const libc::c_void, data.len()) };
+        if ret != 0 {
+            return Err(std::io::Error::last_os_error());
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = data;
     }
+    Ok(())
 }
 
 /// A streaming decryptor for encrypted model files used with the picolm backend.
@@ -340,7 +402,7 @@ impl LayerStreamingDecryptedModel {
         let cipher = Aes256Gcm::new_from_slice(key)
             .map_err(|e| PowerError::Config(format!("Invalid AES key: {e}")))?;
 
-        let mut plaintext =
+        let plaintext =
             cipher
                 .decrypt(nonce, ciphertext)
                 .map_err(|_| PowerError::IntegrityCheckFailed {
@@ -349,13 +411,11 @@ impl LayerStreamingDecryptedModel {
                     actual: "decryption failed (wrong key or tampered data)".to_string(),
                 })?;
 
-        if let Err(e) = mlock_bytes(&plaintext) {
+        let plaintext_size = plaintext.len();
+        let (locked, mlock_error) = lock_zeroizing_buffer(plaintext);
+        if let Some(e) = mlock_error {
             tracing::warn!(error = %e, "mlock failed for streaming decrypt — plaintext may be swapped");
         }
-
-        let plaintext_size = plaintext.len();
-        let locked = zeroize::Zeroizing::new(plaintext.clone());
-        plaintext.zeroize();
 
         tracing::debug!(
             model = %model_name,
@@ -410,7 +470,13 @@ impl LayerStreamingDecryptedModel {
 
 impl Drop for LayerStreamingDecryptedModel {
     fn drop(&mut self) {
-        munlock_bytes(&self.data);
+        if let Err(e) = munlock_bytes(&self.data) {
+            tracing::warn!(
+                model = %self.model_name,
+                error = %e,
+                "munlock failed for layer-streaming decrypted model"
+            );
+        }
         tracing::debug!(
             model = %self.model_name,
             "LayerStreamingDecryptedModel: zeroized and unlocked"
@@ -670,6 +736,26 @@ mod tests {
     }
 
     #[test]
+    fn test_secure_wipe_and_delete_file_removes_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.dec");
+        fs::write(&path, b"plaintext").unwrap();
+
+        assert!(secure_wipe_and_delete_file(&path));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_secure_wipe_and_delete_file_reports_delete_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("not-a-file");
+        fs::create_dir(&path).unwrap();
+
+        assert!(!secure_wipe_and_delete_file(&path));
+        assert!(path.exists());
+    }
+
+    #[test]
     fn test_load_key_from_file() {
         let dir = tempfile::tempdir().unwrap();
         let key = test_key();
@@ -760,6 +846,24 @@ mod tests {
         let key = test_key();
         let result = encrypt_model_file(Path::new("/nonexistent/model.gguf"), &key);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_memory_lock_helpers_treat_empty_buffers_as_noop() {
+        assert!(mlock_bytes(&[]).is_ok());
+        assert!(munlock_bytes(&[]).is_ok());
+    }
+
+    #[test]
+    fn test_lock_zeroizing_buffer_preserves_locked_allocation() {
+        let plaintext = vec![0xA5; 32];
+        let ptr = plaintext.as_ptr();
+
+        let (locked, _mlock_error) = lock_zeroizing_buffer(plaintext);
+
+        assert_eq!(locked.as_ptr(), ptr);
+        assert!(locked.iter().all(|b| *b == 0xA5));
+        let _ = munlock_bytes(&locked);
     }
 
     // --- MemoryDecryptedModel tests ---

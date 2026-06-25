@@ -115,6 +115,27 @@ pub fn store_blob_from_path(source: &std::path::Path) -> Result<(PathBuf, String
     Ok((blob_path, hash))
 }
 
+fn cleanup_temp_source(source: &std::path::Path, reason: &str) {
+    match std::fs::remove_file(source) {
+        Ok(()) => tracing::debug!(
+            path = %source.display(),
+            reason,
+            "Removed temporary blob source"
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => tracing::debug!(
+            path = %source.display(),
+            reason,
+            "Temporary blob source was already removed"
+        ),
+        Err(e) => tracing::warn!(
+            path = %source.display(),
+            reason,
+            error = %e,
+            "Failed to remove temporary blob source"
+        ),
+    }
+}
+
 /// Move a temporary file into the content-addressed blob store.
 ///
 /// Like `store_blob_from_path`, but tries to rename (move) the source file
@@ -130,18 +151,24 @@ pub fn store_blob_from_temp(source: &std::path::Path) -> Result<(PathBuf, String
 
     if !blob_path.exists() {
         // Try rename first (fast, same filesystem), fall back to copy
-        if std::fs::rename(source, &blob_path).is_err() {
+        if let Err(rename_err) = std::fs::rename(source, &blob_path) {
+            tracing::debug!(
+                source = %source.display(),
+                destination = %blob_path.display(),
+                error = %rename_err,
+                "Blob rename failed, falling back to copy"
+            );
             std::fs::copy(source, &blob_path).map_err(|e| {
                 PowerError::Io(std::io::Error::other(format!(
                     "Failed to copy '{}' to blob store: {e}",
                     source.display()
                 )))
             })?;
-            let _ = std::fs::remove_file(source);
+            cleanup_temp_source(source, "copied temp file into blob store");
         }
     } else {
         // Blob already exists, just clean up the temp source
-        let _ = std::fs::remove_file(source);
+        cleanup_temp_source(source, "blob already existed");
     }
 
     Ok((blob_path, hash))
@@ -188,7 +215,7 @@ pub fn prune_unused_blobs(manifests: &[ModelManifest]) -> Result<(usize, u64)> {
             continue;
         }
         if !referenced.contains(&path) {
-            let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+            let size = blob_file_size(&path)?;
             match std::fs::remove_file(&path) {
                 Ok(()) => {
                     tracing::info!(
@@ -211,6 +238,15 @@ pub fn prune_unused_blobs(manifests: &[ModelManifest]) -> Result<(usize, u64)> {
     }
 
     Ok((removed, freed))
+}
+
+fn blob_file_size(path: &std::path::Path) -> Result<u64> {
+    path.metadata().map(|metadata| metadata.len()).map_err(|e| {
+        PowerError::Io(std::io::Error::other(format!(
+            "Failed to inspect blob {} before pruning: {e}",
+            path.display()
+        )))
+    })
 }
 
 #[cfg(test)]
@@ -457,6 +493,20 @@ mod tests {
         // the function handles missing dirs gracefully by returning (0, 0).
         let result = prune_unused_blobs(&[]);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_blob_file_size_reports_metadata_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-blob");
+
+        let err = blob_file_size(&missing).unwrap_err();
+
+        assert!(
+            err.to_string().contains("Failed to inspect blob"),
+            "error: {err}"
+        );
+        assert!(err.to_string().contains("missing-blob"), "error: {err}");
     }
 
     #[test]

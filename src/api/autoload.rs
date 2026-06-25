@@ -5,6 +5,7 @@ use crate::backend::Backend;
 use crate::config::parse_keep_alive;
 use crate::error::Result;
 use crate::model::manifest::ModelManifest;
+use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 use crate::tee::encrypted_model::{
     load_key, DecryptedModel, LayerStreamingDecryptedModel, MemoryDecryptedModel,
@@ -205,6 +206,49 @@ pub async fn ensure_loaded_with_keep_alive(
     }
 }
 
+/// Unload a model after a request-scoped `keep_alive=0` inference completes.
+///
+/// The state is only marked unloaded after the backend confirms unload success.
+/// This avoids reporting the model as evicted while backend resources are still held.
+pub async fn unload_after_request(state: &AppState, model_name: &str, backend: &Arc<dyn Backend>) {
+    match backend.unload(model_name).await {
+        Ok(()) => {
+            state.mark_unloaded(model_name);
+            state.metrics.remove_model_memory(model_name);
+        }
+        Err(e) => {
+            tracing::warn!(
+                model = %model_name,
+                error = %e,
+                "Failed to unload model after request"
+            );
+        }
+    }
+}
+
+/// Clean up backend resources associated with one request.
+///
+/// Cleanup failures are logged and returned as `false`; callers should still
+/// finish normal response accounting because cleanup happens after inference.
+pub async fn cleanup_after_request(
+    model_name: &str,
+    ctx: &RequestContext,
+    backend: &Arc<dyn Backend>,
+) -> bool {
+    match backend.cleanup_request(model_name, ctx).await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                model = %model_name,
+                request_id = %ctx.request_id,
+                error = %e,
+                "Failed to clean up request resources"
+            );
+            false
+        }
+    }
+}
+
 /// Format bytes as a human-readable string for log messages.
 fn format_bytes(bytes: u64) -> String {
     const GB: u64 = 1_073_741_824;
@@ -225,9 +269,10 @@ mod tests {
     use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
     use crate::backend::BackendRegistry;
     use crate::config::PowerConfig;
-    use crate::model::manifest::{ModelFormat, ModelManifest};
+    use crate::model::manifest::ModelFormat;
     use crate::model::registry::ModelRegistry;
 
+    #[cfg(any(feature = "mistralrs", feature = "llamacpp"))]
     fn test_state() -> AppState {
         AppState::new(
             Arc::new(ModelRegistry::new()),
@@ -236,8 +281,9 @@ mod tests {
         )
     }
 
-    fn dummy_manifest() -> ModelManifest {
-        ModelManifest {
+    #[cfg(any(feature = "mistralrs", feature = "llamacpp"))]
+    fn dummy_manifest() -> crate::model::manifest::ModelManifest {
+        crate::model::manifest::ModelManifest {
             name: "test-model".to_string(),
             format: ModelFormat::Gguf,
             size: 0,
@@ -400,6 +446,48 @@ mod tests {
         assert!(state.is_model_loaded("zero-model"));
         // The caller is responsible for unloading after inference
         assert!(result.unwrap().unload_after_use);
+    }
+
+    #[tokio::test]
+    async fn test_unload_after_request_marks_unloaded_on_success() {
+        let state = test_state_with_mock(MockBackend::success());
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        state.mark_loaded("zero-model");
+        assert!(state.is_model_loaded("zero-model"));
+
+        unload_after_request(&state, "zero-model", &backend).await;
+        assert!(!state.is_model_loaded("zero-model"));
+    }
+
+    #[tokio::test]
+    async fn test_unload_after_request_keeps_state_loaded_on_failure() {
+        let state = test_state_with_mock(MockBackend::unload_fails());
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        state.mark_loaded("zero-model");
+        assert!(state.is_model_loaded("zero-model"));
+
+        unload_after_request(&state, "zero-model", &backend).await;
+        assert!(state.is_model_loaded("zero-model"));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_after_request_reports_success() {
+        let state = test_state_with_mock(MockBackend::success());
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+        let ctx = RequestContext::new(None);
+
+        assert!(cleanup_after_request("cleanup-model", &ctx, &backend).await);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_after_request_reports_failure() {
+        let state = test_state_with_mock(MockBackend::cleanup_fails());
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+        let ctx = RequestContext::new(None);
+
+        assert!(!cleanup_after_request("cleanup-model", &ctx, &backend).await);
     }
 
     #[tokio::test]

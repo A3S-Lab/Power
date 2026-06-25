@@ -67,8 +67,32 @@ impl PullState {
     /// Load state from disk. Returns `None` if no state file exists.
     pub fn load(name: &str) -> Option<Self> {
         let path = Self::path(name);
-        let content = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&content).ok()
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                tracing::warn!(
+                    model = %name,
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to read pull state"
+                );
+                return None;
+            }
+        };
+
+        match serde_json::from_str(&content) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!(
+                    model = %name,
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to parse pull state"
+                );
+                None
+            }
+        }
     }
 
     /// Persist state to disk.
@@ -112,7 +136,19 @@ impl PullState {
 
     /// Delete the state file (cleanup after successful registration).
     pub fn delete(name: &str) {
-        let _ = std::fs::remove_file(Self::path(name));
+        let path = Self::path(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(
+                    model = %name,
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to delete pull state"
+                );
+            }
+        }
     }
 }
 
@@ -195,6 +231,20 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_load_invalid_json_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        std::fs::create_dir_all(crate::dirs::pulls_dir()).unwrap();
+        std::fs::write(PullState::path("owner/repo:Q4_K_M"), b"not json").unwrap();
+
+        assert!(PullState::load("owner/repo:Q4_K_M").is_none());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
     fn test_path_is_deterministic() {
         assert_eq!(
             PullState::path("owner/repo:Q4_K_M"),
@@ -223,6 +273,17 @@ mod tests {
 
         PullState::delete("owner/repo:Q4_K_M");
         assert!(PullState::load("owner/repo:Q4_K_M").is_none());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_delete_ignores_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        PullState::delete("owner/repo:Q4_K_M");
 
         std::env::remove_var("A3S_POWER_HOME");
     }

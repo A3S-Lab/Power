@@ -35,6 +35,12 @@ jobs:
             features: "--no-default-features --features picolm"
           - label: hf-only
             features: "--no-default-features --features hf"
+          - label: llamacpp
+            features: "--no-default-features --features llamacpp"
+            native_deps: true
+          - label: tee-minimal
+            features: "--no-default-features --features tee-minimal"
+            native_deps: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -43,22 +49,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: clippy-${{ matrix.label }}
-      - name: Setup workspace
-        run: bash .github/setup-workspace.sh
-      - run: cargo clippy --lib ${{ matrix.features }} -- -D warnings
+      - name: Install native build dependencies
+        if: matrix.native_deps == true
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
+      - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
 
   test:
-    name: Test
+    name: Test (${{ matrix.label }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: default
+            args: "--lib"
+          - label: all-features
+            args: "--all-features --lib"
+            native_deps: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: test
-      - name: Setup workspace
-        run: bash .github/setup-workspace.sh
-      - run: cargo test --lib
+          key: test-${{ matrix.label }}
+      - name: Install native build dependencies
+        if: matrix.native_deps == true
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
+      - run: cargo test ${{ matrix.args }}
 
   cross-build:
     name: Cross (${{ matrix.target }})
@@ -90,8 +107,6 @@ jobs:
       - name: Install cross
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
-      - name: Setup workspace
-        run: bash .github/setup-workspace.sh
       - name: Build
         run: |
           BUILD_CMD="cargo"

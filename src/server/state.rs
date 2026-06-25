@@ -9,7 +9,7 @@ use crate::config::PowerConfig;
 use crate::model::registry::ModelRegistry;
 use crate::server::audit::AuditLogger;
 use crate::server::auth::AuthProvider;
-use crate::server::lock::{read_lock, write_lock};
+use crate::server::lock::{mutex_lock, read_lock, write_lock};
 use crate::server::log_stream::LogBuffer;
 use crate::server::metrics::Metrics;
 use crate::tee::attestation::TeeProvider;
@@ -24,6 +24,33 @@ use crate::tee::privacy::PrivacyProvider;
 struct LoadedModelEntry {
     last_used: Instant,
     keep_alive: Duration,
+}
+
+fn checked_keep_alive_expiry(remaining: Duration) -> Option<chrono::DateTime<chrono::Utc>> {
+    let delta = match chrono::Duration::from_std(remaining) {
+        Ok(delta) => delta,
+        Err(e) => {
+            tracing::warn!(
+                remaining_secs = remaining.as_secs(),
+                remaining_nanos = remaining.subsec_nanos(),
+                error = %e,
+                "keep_alive expiry is outside chrono's representable duration range"
+            );
+            return None;
+        }
+    };
+
+    match chrono::Utc::now().checked_add_signed(delta) {
+        Some(expires_at) => Some(expires_at),
+        None => {
+            tracing::warn!(
+                remaining_secs = remaining.as_secs(),
+                remaining_nanos = remaining.subsec_nanos(),
+                "keep_alive expiry timestamp is outside chrono's representable date range"
+            );
+            None
+        }
+    }
 }
 
 /// Shared application state accessible to all HTTP handlers.
@@ -333,32 +360,24 @@ impl AppState {
             } else {
                 let elapsed = entry.last_used.elapsed();
                 let remaining = entry.keep_alive.saturating_sub(elapsed);
-                Some(chrono::Utc::now() + chrono::Duration::from_std(remaining).unwrap_or_default())
+                checked_keep_alive_expiry(remaining)
             }
         })
     }
 
     /// Mark a model as currently being pulled. Returns `false` if already pulling.
     pub fn start_pull(&self, name: &str) -> bool {
-        self.pulling_models
-            .lock()
-            .map(|mut s| s.insert(name.to_string()))
-            .unwrap_or(false)
+        mutex_lock(&self.pulling_models).insert(name.to_string())
     }
 
     /// Mark a model pull as finished (success or failure).
     pub fn finish_pull(&self, name: &str) {
-        if let Ok(mut s) = self.pulling_models.lock() {
-            s.remove(name);
-        }
+        mutex_lock(&self.pulling_models).remove(name);
     }
 
     /// Whether a model is currently being pulled.
     pub fn is_pulling(&self, name: &str) -> bool {
-        self.pulling_models
-            .lock()
-            .map(|s| s.contains(name))
-            .unwrap_or(false)
+        mutex_lock(&self.pulling_models).contains(name)
     }
 }
 
@@ -386,6 +405,42 @@ mod tests {
         let state = AppState::new(registry, backends, config);
         let cloned = state.clone();
         assert_eq!(cloned.config.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_pull_tracking_rejects_duplicates() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+
+        assert!(state.start_pull("model-a"));
+        assert!(!state.start_pull("model-a"));
+        assert!(state.is_pulling("model-a"));
+
+        state.finish_pull("model-a");
+        assert!(!state.is_pulling("model-a"));
+    }
+
+    #[test]
+    fn test_pull_tracking_recovers_poisoned_lock() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+
+        let pulling_models = state.pulling_models.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = pulling_models.lock().unwrap();
+            panic!("poison pulling model lock");
+        });
+
+        assert!(state.start_pull("model-a"));
+        assert!(state.is_pulling("model-a"));
+        state.finish_pull("model-a");
+        assert!(!state.is_pulling("model-a"));
     }
 
     #[test]
@@ -565,6 +620,46 @@ mod tests {
     }
 
     #[test]
+    fn test_model_expires_at_returns_timestamp_for_finite_keep_alive() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+
+        state.mark_loaded_with_keep_alive("model-a", Duration::from_secs(60));
+
+        let expires_at = state.model_expires_at("model-a");
+        assert!(expires_at.is_some());
+    }
+
+    #[test]
+    fn test_model_expires_at_returns_none_for_never_expiring_model() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+
+        state.mark_loaded_with_keep_alive("model-a", Duration::MAX);
+
+        assert_eq!(state.model_expires_at("model-a"), None);
+    }
+
+    #[test]
+    fn test_model_expires_at_returns_none_for_unrepresentable_keep_alive() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+
+        state.mark_loaded_with_keep_alive("model-a", Duration::from_secs(u64::MAX));
+
+        assert_eq!(state.model_expires_at("model-a"), None);
+    }
+
+    #[test]
     fn test_expired_models_zero_duration_not_reaped() {
         let state = AppState::new(
             Arc::new(ModelRegistry::new()),
@@ -720,8 +815,10 @@ mod tests {
 
     #[test]
     fn test_timing_padding_zero_returns_none() {
-        let mut config = PowerConfig::default();
-        config.timing_padding_ms = Some(0);
+        let config = PowerConfig {
+            timing_padding_ms: Some(0),
+            ..Default::default()
+        };
         let state = AppState::new(
             Arc::new(ModelRegistry::new()),
             Arc::new(BackendRegistry::new()),
@@ -732,8 +829,10 @@ mod tests {
 
     #[test]
     fn test_timing_padding_returns_duration_within_jitter_range() {
-        let mut config = PowerConfig::default();
-        config.timing_padding_ms = Some(100);
+        let config = PowerConfig {
+            timing_padding_ms: Some(100),
+            ..Default::default()
+        };
         let state = AppState::new(
             Arc::new(ModelRegistry::new()),
             Arc::new(BackendRegistry::new()),
@@ -830,9 +929,10 @@ mod tests {
         let state = AppState::new(Arc::new(ModelRegistry::new()), backends, config);
         // Non-TEE mode: should use find_for_format (standard priority)
         let result = state.find_backend(&ModelFormat::Gguf, 1_000_000);
-        // Should succeed if any backend is registered
-        #[cfg(feature = "mistralrs")]
+        #[cfg(any(feature = "mistralrs", feature = "llamacpp", feature = "picolm"))]
         assert!(result.is_ok());
+        #[cfg(not(any(feature = "mistralrs", feature = "llamacpp", feature = "picolm")))]
+        assert!(result.is_err());
     }
 
     #[test]
@@ -846,8 +946,10 @@ mod tests {
         let state = AppState::new(Arc::new(ModelRegistry::new()), backends, config);
         // TEE mode: should use find_for_tee (EPC-aware routing)
         let result = state.find_backend(&ModelFormat::Gguf, 1_000_000);
-        #[cfg(feature = "mistralrs")]
+        #[cfg(any(feature = "mistralrs", feature = "llamacpp", feature = "picolm"))]
         assert!(result.is_ok());
+        #[cfg(not(any(feature = "mistralrs", feature = "llamacpp", feature = "picolm")))]
+        assert!(result.is_err());
     }
 
     #[test]
