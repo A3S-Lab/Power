@@ -17,6 +17,7 @@ use a3s_power::model::storage;
 use a3s_power::server::router;
 use a3s_power::server::state::AppState;
 use a3s_power::tee::attestation::{DefaultTeeProvider, TeeType};
+use serial_test::serial;
 use std::sync::Arc;
 
 // ============================================================================
@@ -32,6 +33,22 @@ fn isolated_state(dir: &std::path::Path) -> AppState {
         Arc::new(ModelRegistry::new()),
         Arc::new(backends),
         Arc::new(PowerConfig::default()),
+    )
+}
+
+/// Create an AppState with a concurrency admission limit applied.
+fn limited_state(dir: &std::path::Path, max_concurrent: u64) -> AppState {
+    std::env::set_var("A3S_POWER_HOME", dir);
+    let mut backends = BackendRegistry::new();
+    backends.register(Arc::new(MockBackend::success()));
+    let config = PowerConfig {
+        max_concurrent_requests: max_concurrent,
+        ..PowerConfig::default()
+    };
+    AppState::new(
+        Arc::new(ModelRegistry::new()),
+        Arc::new(backends),
+        Arc::new(config),
     )
 }
 
@@ -111,6 +128,7 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Valu
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_health_returns_ok() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -124,6 +142,7 @@ async fn test_health_returns_ok() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_metrics_returns_prometheus_format() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -147,6 +166,7 @@ async fn test_metrics_returns_prometheus_format() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v1_models_empty() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -158,6 +178,7 @@ async fn test_v1_models_empty() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v1_models_with_registered_model() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -176,6 +197,7 @@ async fn test_v1_models_with_registered_model() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v1_chat_model_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -196,6 +218,7 @@ async fn test_v1_chat_model_not_found() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v1_chat_non_streaming_success() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -219,11 +242,88 @@ async fn test_v1_chat_non_streaming_success() {
     assert!(json["choices"][0]["message"]["content"].is_string());
 }
 
+#[tokio::test]
+#[serial]
+async fn test_admission_control_allows_under_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = limited_state(dir.path(), 1);
+    let manifest = manifest_with_blob(dir.path(), "test", b"fake-gguf");
+    state.registry.register(manifest).unwrap();
+    state.mark_loaded("test");
+    let app = router::build(state);
+    let (status, json) = post_json(
+        app,
+        "/v1/chat/completions",
+        serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["object"], "chat.completion");
+}
+
+/// The admission permit must be released when a streamed response finishes —
+/// otherwise a second request at `max_concurrent_requests = 1` would deadlock.
+#[tokio::test]
+#[serial]
+async fn test_admission_permit_released_after_streaming() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = limited_state(dir.path(), 1);
+    let manifest = manifest_with_blob(dir.path(), "test", b"fake-gguf");
+    state.registry.register(manifest).unwrap();
+    state.mark_loaded("test");
+    let app = router::build(state);
+
+    // First request streams and is fully drained → its permit must be released.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "model": "test",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": true
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    // With limit=1, a second request must still be admitted promptly.
+    let req2 = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "model": "test",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": false
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp2 = tokio::time::timeout(std::time::Duration::from_secs(5), app.oneshot(req2))
+        .await
+        .expect("second request must not deadlock — permit should be released")
+        .unwrap();
+    assert_eq!(resp2.status(), StatusCode::OK);
+}
+
 // ============================================================================
 // /v1/completions
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v1_completions_model_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -244,6 +344,7 @@ async fn test_v1_completions_model_not_found() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v1_completions_non_streaming_success() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -273,6 +374,7 @@ async fn test_v1_completions_non_streaming_success() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_model_register_and_list() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -286,6 +388,7 @@ async fn test_model_register_and_list() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_model_delete_from_registry() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -302,6 +405,7 @@ async fn test_model_delete_from_registry() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_ollama_routes_return_404() {
     let dir = tempfile::tempdir().unwrap();
 
@@ -337,6 +441,7 @@ async fn test_ollama_routes_return_404() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_unknown_route_returns_404() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -354,6 +459,7 @@ async fn test_unknown_route_returns_404() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_attestation_returns_503_without_tee() {
     let dir = tempfile::tempdir().unwrap();
     let state = isolated_state(dir.path());
@@ -364,6 +470,7 @@ async fn test_attestation_returns_503_without_tee() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_attestation_returns_report_with_tee() {
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -386,4 +493,107 @@ async fn test_attestation_returns_report_with_tee() {
     assert!(json["report_data"].is_string());
     assert!(json["measurement"].is_string());
     assert!(json["timestamp"].is_string());
+}
+
+// ============================================================================
+// Streaming (SSE) + metrics-gauge lifecycle
+// ============================================================================
+
+/// A streaming chat must produce a well-formed SSE body (role → content → [DONE])
+/// and the active/running gauges must settle back to zero once it is consumed.
+#[tokio::test]
+#[serial]
+async fn test_streaming_chat_sse_structure_and_gauges_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let metrics = state.metrics.clone();
+    let manifest = manifest_with_blob(dir.path(), "test", b"fake-gguf");
+    state.registry.register(manifest).unwrap();
+    state.mark_loaded("test");
+    let app = router::build(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "model": "test",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": true
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(ct.contains("text/event-stream"), "must be SSE, got {ct}");
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let sse = String::from_utf8(body.to_vec()).unwrap();
+    assert!(sse.contains("data:"), "SSE must contain data lines");
+    assert!(
+        sse.contains("\"role\":\"assistant\""),
+        "first chunk must carry the assistant role"
+    );
+    assert!(sse.contains("Hello"), "mock content must stream through");
+    assert!(sse.contains("[DONE]"), "SSE must terminate with [DONE]");
+
+    // Stream fully consumed → the done_event ran → gauges released.
+    assert_eq!(
+        metrics.active_requests(),
+        0,
+        "active gauge must settle to 0"
+    );
+    assert_eq!(
+        metrics.running_requests(),
+        0,
+        "running gauge must settle to 0"
+    );
+}
+
+/// A streaming text completion must also produce an SSE body ending in [DONE].
+#[tokio::test]
+#[serial]
+async fn test_streaming_completion_sse_terminates() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = isolated_state(dir.path());
+    let metrics = state.metrics.clone();
+    let manifest = manifest_with_blob(dir.path(), "test", b"fake-gguf");
+    state.registry.register(manifest).unwrap();
+    state.mark_loaded("test");
+    let app = router::build(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"model": "test", "prompt": "hi", "stream": true}).to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let sse = String::from_utf8(body.to_vec()).unwrap();
+    assert!(sse.contains("data:"), "completion SSE must have data lines");
+    assert!(
+        sse.contains("[DONE]"),
+        "completion SSE must end with [DONE]"
+    );
+    assert_eq!(
+        metrics.active_requests(),
+        0,
+        "active gauge must settle to 0"
+    );
 }

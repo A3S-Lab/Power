@@ -114,6 +114,10 @@ pub struct Metrics {
     // --- Request isolation metrics ---
     /// Number of currently active inference requests.
     active_requests: AtomicU64,
+    /// Number of requests queued waiting for an admission permit.
+    waiting_requests: AtomicU64,
+    /// Number of admitted requests currently running (holding a permit).
+    running_requests: AtomicU64,
 }
 
 impl Default for Metrics {
@@ -141,6 +145,8 @@ impl Metrics {
             tee_redactions: AtomicU64::new(0),
             auth_failures: AtomicU64::new(0),
             active_requests: AtomicU64::new(0),
+            waiting_requests: AtomicU64::new(0),
+            running_requests: AtomicU64::new(0),
         }
     }
 
@@ -300,6 +306,36 @@ impl Metrics {
     /// Return the current number of active inference requests.
     pub fn active_requests(&self) -> u64 {
         self.active_requests.load(Ordering::Relaxed)
+    }
+
+    /// Increment the waiting (queued for admission) requests gauge.
+    pub fn increment_waiting_requests(&self) {
+        self.waiting_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement the waiting requests gauge.
+    pub fn decrement_waiting_requests(&self) {
+        self.waiting_requests.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Return the current number of requests queued for admission.
+    pub fn waiting_requests(&self) -> u64 {
+        self.waiting_requests.load(Ordering::Relaxed)
+    }
+
+    /// Increment the running (admitted, in-flight) requests gauge.
+    pub fn increment_running_requests(&self) {
+        self.running_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement the running requests gauge.
+    pub fn decrement_running_requests(&self) {
+        self.running_requests.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Return the current number of admitted, in-flight requests.
+    pub fn running_requests(&self) -> u64 {
+        self.running_requests.load(Ordering::Relaxed)
     }
 
     /// Render all metrics in Prometheus text exposition format.
@@ -543,6 +579,26 @@ impl Metrics {
         output.push_str(&format!(
             "power_active_requests {}\n",
             self.active_requests.load(Ordering::Relaxed)
+        ));
+
+        // power_requests_waiting
+        output.push_str(
+            "# HELP power_requests_waiting Number of requests queued waiting for an admission permit.\n",
+        );
+        output.push_str("# TYPE power_requests_waiting gauge\n");
+        output.push_str(&format!(
+            "power_requests_waiting {}\n",
+            self.waiting_requests.load(Ordering::Relaxed)
+        ));
+
+        // power_requests_running
+        output.push_str(
+            "# HELP power_requests_running Number of admitted requests currently running.\n",
+        );
+        output.push_str("# TYPE power_requests_running gauge\n");
+        output.push_str(&format!(
+            "power_requests_running {}\n",
+            self.running_requests.load(Ordering::Relaxed)
         ));
 
         output

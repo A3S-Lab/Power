@@ -6,6 +6,7 @@ pub mod llamacpp;
 pub mod mistralrs_backend;
 pub mod picolm;
 pub mod picolm_ops;
+pub mod proxy;
 /// Test utilities for integration tests. Not part of the public API.
 #[doc(hidden)]
 pub mod test_utils;
@@ -196,6 +197,12 @@ pub fn default_backends(#[allow(unused)] config: Arc<PowerConfig>) -> BackendReg
     // by memory-aware routing when model_size > EPC * 0.75.
     #[cfg(feature = "picolm")]
     registry.register(Arc::new(picolm::PicolmBackend::new(config.clone())));
+
+    // Register the proxy backend when any upstream is configured. Serves
+    // `ModelFormat::Remote` models by forwarding to an OpenAI-compatible server.
+    if !config.proxy_upstreams.is_empty() {
+        registry.register(Arc::new(proxy::ProxyBackend::new(config.clone())));
+    }
 
     registry
 }

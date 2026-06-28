@@ -82,6 +82,18 @@ impl ModelRegistry {
             .ok_or_else(|| PowerError::ModelNotFound(name.to_string()))
     }
 
+    /// Register a model in the in-memory index only (no disk persistence).
+    ///
+    /// Used for ephemeral, config-derived models such as proxied remotes, which
+    /// should not leave manifest files behind across restarts.
+    pub fn register_transient(&self, manifest: ModelManifest) -> Result<()> {
+        let mut models = self.models.write().map_err(|e| {
+            PowerError::Config(format!("Failed to acquire registry write lock: {e}"))
+        })?;
+        models.insert(manifest.name.clone(), manifest);
+        Ok(())
+    }
+
     /// Register a model manifest (writes to disk and adds to in-memory index).
     pub fn register(&self, manifest: ModelManifest) -> Result<()> {
         let manifest_dir = dirs::manifests_dir();

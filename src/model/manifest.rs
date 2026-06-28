@@ -89,6 +89,10 @@ pub enum ModelFormat {
     /// Loaded via `VisionModelBuilder`; supports image inputs in chat requests.
     /// `ModelManifest::path` points to the local model directory.
     Vision,
+    /// Remote model served by an upstream OpenAI-compatible server (vLLM, TGI,
+    /// SGLang, ...). Inference is proxied; the upstream URL is resolved from
+    /// `PowerConfig::proxy_upstreams` by model name. No local weights.
+    Remote,
 }
 
 impl std::fmt::Display for ModelFormat {
@@ -98,6 +102,7 @@ impl std::fmt::Display for ModelFormat {
             ModelFormat::SafeTensors => write!(f, "SafeTensors"),
             ModelFormat::HuggingFace => write!(f, "HuggingFace"),
             ModelFormat::Vision => write!(f, "Vision"),
+            ModelFormat::Remote => write!(f, "Remote"),
         }
     }
 }
@@ -119,6 +124,30 @@ pub struct ModelParameters {
 }
 
 impl ModelManifest {
+    /// Build a manifest for a remote (proxied) model. The upstream URL lives in
+    /// `PowerConfig::proxy_upstreams`; this carries no local weights.
+    pub fn remote(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            format: ModelFormat::Remote,
+            size: 0,
+            sha256: String::new(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: PathBuf::new(),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: Vec::new(),
+            family: None,
+            families: None,
+        }
+    }
+
     /// Returns the sanitized filename for the manifest file.
     /// Replaces ':' and '/' with '-' to produce a safe filename.
     pub fn manifest_filename(&self) -> String {

@@ -158,6 +158,10 @@ pub async fn handler(
             .map(|o| o.include_usage)
             .unwrap_or(false);
 
+    // Admission control: hold a permit for the whole request (including the
+    // streamed body). Releases on completion or early client disconnect.
+    let permit = state.limiter.acquire().await;
+
     match backend.chat(&model_name, backend_request).await {
         Ok(stream) => {
             if is_stream {
@@ -309,6 +313,9 @@ pub async fn handler(
                 };
 
                 let done_event = futures::stream::once(async move {
+                    // Hold the admission permit until the stream finishes, then
+                    // release it (also released if the client disconnects early).
+                    let _permit = permit;
                     // Record final metrics when stream completes
                     let duration = start.elapsed().as_secs_f64();
                     let eval_count = eval_counter.load(std::sync::atomic::Ordering::Relaxed);

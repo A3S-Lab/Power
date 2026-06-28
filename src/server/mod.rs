@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod auth;
+pub mod limiter;
 pub(crate) mod lock;
 pub mod log_stream;
 pub mod metrics;
@@ -115,6 +116,15 @@ pub async fn start_with_log_buffer(
         backends = ?backends.list_names(),
         "Initialized backends"
     );
+
+    // Register proxied (remote) models from config so they appear in /v1/models
+    // and route to the proxy backend. In-memory only (config is the source).
+    for name in config.proxy_upstreams.keys() {
+        match registry.register_transient(crate::model::manifest::ModelManifest::remote(name)) {
+            Ok(()) => tracing::info!(model = %name, "Registered proxy (remote) model"),
+            Err(e) => tracing::warn!(model = %name, error = %e, "Failed to register proxy model"),
+        }
+    }
 
     let mut app_state = match log_buffer {
         Some(buf) => state::AppState::with_log_buffer(registry, backends, config.clone(), buf),

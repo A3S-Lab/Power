@@ -492,6 +492,8 @@ struct GenerateParams<'a> {
     has_tools: bool,
     /// Response format constraint (JSON schema or "json" for generic JSON).
     response_format: Option<serde_json::Value>,
+    /// Speculative-decoding mode (server config).
+    spec_mode: super::picolm_ops::speculative::SpecMode,
 }
 
 // ── Forward pass ─────────────────────────────────────────────────────────────
@@ -695,7 +697,16 @@ fn forward_pass_streaming(
     let mut prof_logit_ns = 0u64;
     let mut prof_sample_ns = 0u64;
 
+    // Speculative decoding state — persists across the decode loop.
+    // `Off` yields no drafter; grammar-constrained output also disables it.
+    let spec_drafter = params.spec_mode.drafter();
+    let mut adaptive_k = speculative::AdaptiveK::new(speculative::DRAFT_K, 1, 8);
+
     for _step in 0..params.max_new_tokens {
+        // Speculation can emit several tokens per step; stop once the budget is met.
+        if decode_count >= params.max_new_tokens {
+            break;
+        }
         // Final norm — write into buf.normed_final, then copy to buf.normed_final.
         buf.normed_final[..n_embd].copy_from_slice(&hidden);
         norm::rms_norm_f32(&mut buf.normed_final[..n_embd], output_norm_w, cfg.norm_eps);
@@ -984,39 +995,58 @@ fn forward_pass_streaming(
 
         gen_pos += 1;
 
-        // ── Speculative decoding: prompt-lookup draft ────────────────────
-        // Try to find n-gram continuations from the input tokens and verify
-        // them in batch. Accepted tokens skip individual forward passes.
-        if grammar_sampler.is_none() {
-            let draft_tokens = speculative::prompt_lookup_draft(
-                input_ids,
-                &generated_token_ids,
-                speculative::DRAFT_K,
-            );
-            if !draft_tokens.is_empty() {
-                let kv_pos_before = gen_pos;
-                let mut verify_logits: Vec<Vec<f32>> = Vec::with_capacity(draft_tokens.len());
-                // Save hidden state so we can restore if all drafts are rejected.
-                let hidden_backup = hidden.clone();
+        // ── Speculative decoding (batched layer-streaming verify) ─────────
+        // Draft a block of likely continuation tokens, then verify the WHOLE
+        // block in one layer-streaming pass: each layer's weights are loaded
+        // once (layer-outer, token-inner, like prefill) instead of once per
+        // token. On the memory-bandwidth-bound streaming path this turns K
+        // tokens into ~one weight-streaming pass. Drafts are accepted by
+        // lossless rejection sampling — every emitted token equals a sample
+        // from the target distribution at its position, so output is identical
+        // to plain decoding (same seed). Disabled for grammar-constrained
+        // output: speculative drafts cannot respect the live JSON mask.
+        if let (Some(drafter), true) = (spec_drafter.as_deref(), grammar_sampler.is_none()) {
+            // Bound draft length by the adaptive controller, the remaining token
+            // budget (reserve 1 slot for the correction), and KV capacity.
+            let budget =
+                (params.max_new_tokens.saturating_sub(decode_count) as usize).saturating_sub(1);
+            let k = adaptive_k
+                .current()
+                .min(params.max_seq_len.saturating_sub(gen_pos + 1))
+                .min(budget);
+            let draft_tokens = if k == 0 {
+                Vec::new()
+            } else {
+                drafter.draft(input_ids, &generated_token_ids, k)
+            };
 
-                // Run each draft token through the full model to get verify logits.
-                for &draft_tok in &draft_tokens {
+            if !draft_tokens.is_empty() {
+                let k = draft_tokens.len();
+                let kv_pos_before = gen_pos;
+
+                // Batched verify forward (layer-outer, token-inner). Collect each
+                // draft position's output hidden state into `hs`.
+                let mut hs = vec![0.0f32; k * n_embd];
+                for (i, &tok) in draft_tokens.iter().enumerate() {
                     matmul::extract_row(
                         embd_raw,
                         embd_type,
                         n_embd,
-                        draft_tok as usize,
-                        &mut hidden,
+                        tok as usize,
+                        &mut hs[i * n_embd..(i + 1) * n_embd],
                     );
-                    for layer in 0..cfg.n_layers {
-                        let attn_norm_w = &attn_norm_weights[layer as usize];
-                        let ffn_norm_w = &ffn_norm_weights[layer as usize];
-
+                }
+                for layer in 0..cfg.n_layers {
+                    let attn_norm_w = &attn_norm_weights[layer as usize];
+                    let ffn_norm_w = &ffn_norm_weights[layer as usize];
+                    for i in 0..k {
+                        let pos = kv_pos_before + i;
+                        let h = &mut hs[i * n_embd..(i + 1) * n_embd];
                         if let Err(e) = attention::attention_layer(
-                            &mut hidden,
+                            h,
                             tc,
                             layer,
-                            gen_pos,
+                            pos,
                             kv_cache.layer_mut(layer),
                             cfg,
                             rope_table,
@@ -1026,27 +1056,37 @@ fn forward_pass_streaming(
                             send_picolm_chat_result(tx, Err(e));
                             return;
                         }
-                        if let Err(e) = ffn::ffn_layer(
-                            &mut hidden,
-                            tc,
-                            layer,
-                            cfg,
-                            activation,
-                            ffn_norm_w,
-                            &mut buf,
-                        ) {
+                        if let Err(e) =
+                            ffn::ffn_layer(h, tc, layer, cfg, activation, ffn_norm_w, &mut buf)
+                        {
                             send_picolm_chat_result(tx, Err(e));
                             return;
                         }
-                        observe_picolm_release_result(
-                            layer,
-                            "layer weights",
-                            tc.release_layer(gguf, layer),
-                        );
                     }
+                    observe_picolm_release_result(
+                        layer,
+                        "layer weights",
+                        tc.release_layer(gguf, layer),
+                    );
+                }
 
-                    // Compute logits for this draft position.
-                    buf.normed_final[..n_embd].copy_from_slice(&hidden);
+                // Lossless acceptance: at each draft position resample the target
+                // from the previous hidden state using the SAME penalties and
+                // sampler the main loop uses, and accept while the draft matches.
+                let mut spec_recent = recent_tokens.clone();
+                let mut n_accepted = 0usize;
+                let mut correction: u32 = 0;
+                for i in 0..k {
+                    {
+                        // Logits predicting draft position i come from the previous
+                        // hidden: pre-speculation `hidden` for i==0, else hs[i-1].
+                        let prev: &[f32] = if i == 0 {
+                            &hidden
+                        } else {
+                            &hs[(i - 1) * n_embd..i * n_embd]
+                        };
+                        buf.normed_final[..n_embd].copy_from_slice(prev);
+                    }
                     norm::rms_norm_f32(
                         &mut buf.normed_final[..n_embd],
                         output_norm_w,
@@ -1060,36 +1100,94 @@ fn forward_pass_streaming(
                         &buf.normed_final[..n_embd],
                         &mut buf.logits,
                     );
-                    verify_logits.push(buf.logits[..cfg.vocab_size].to_vec());
-                    gen_pos += 1;
+                    apply_repeat_penalty(
+                        &mut buf.logits,
+                        &spec_recent,
+                        params.repeat_penalty,
+                        params.frequency_penalty,
+                        params.presence_penalty,
+                    );
+                    let target = sample_token(
+                        &buf.logits,
+                        params.temperature,
+                        params.top_p,
+                        &mut rng_state,
+                        &mut buf.sampler_probs,
+                        &mut buf.sampler_indices,
+                    ) as u32;
+                    if target == draft_tokens[i] {
+                        n_accepted += 1;
+                        if spec_recent.len() >= 64 {
+                            spec_recent.remove(0);
+                        }
+                        spec_recent.push(target);
+                    } else {
+                        correction = target;
+                        break;
+                    }
+                }
+                // All drafts accepted → one free bonus token from the last hidden.
+                if n_accepted == k {
+                    buf.normed_final[..n_embd].copy_from_slice(&hs[(k - 1) * n_embd..k * n_embd]);
+                    norm::rms_norm_f32(
+                        &mut buf.normed_final[..n_embd],
+                        output_norm_w,
+                        cfg.norm_eps,
+                    );
+                    matmul::matvec(
+                        out_raw,
+                        out_type,
+                        cfg.vocab_size,
+                        n_embd,
+                        &buf.normed_final[..n_embd],
+                        &mut buf.logits,
+                    );
+                    apply_repeat_penalty(
+                        &mut buf.logits,
+                        &spec_recent,
+                        params.repeat_penalty,
+                        params.frequency_penalty,
+                        params.presence_penalty,
+                    );
+                    correction = sample_token(
+                        &buf.logits,
+                        params.temperature,
+                        params.top_p,
+                        &mut rng_state,
+                        &mut buf.sampler_probs,
+                        &mut buf.sampler_indices,
+                    ) as u32;
                 }
 
-                let n_accepted = speculative::count_accepted(&draft_tokens, &verify_logits);
+                adaptive_k.update(n_accepted, k);
 
-                // Roll back KV cache for rejected draft tokens.
-                let rollback_to = kv_pos_before + n_accepted;
-                if rollback_to < gen_pos {
-                    kv_cache.truncate(rollback_to);
-                    gen_pos = rollback_to;
+                // Drop rejected draft KV entries; keep the accepted prefix.
+                kv_cache.truncate(kv_pos_before + n_accepted);
+                gen_pos = kv_pos_before + n_accepted;
+
+                if n_accepted > 0 {
+                    tracing::trace!(
+                        drafted = k,
+                        accepted = n_accepted,
+                        "picolm: speculative accepted"
+                    );
                 }
 
-                // If no drafts accepted, restore hidden state from before speculation.
-                if n_accepted == 0 {
-                    hidden.copy_from_slice(&hidden_backup);
-                }
-
-                // Stream accepted draft tokens.
-                for &tok in &draft_tokens[..n_accepted] {
+                // Emit accepted drafts followed by the lossless correction/bonus.
+                let emit: Vec<u32> = draft_tokens[..n_accepted]
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(correction))
+                    .collect();
+                for &tok in &emit {
                     decode_count += 1;
                     generated_token_ids.push(tok);
                     if recent_tokens.len() >= 64 {
                         recent_tokens.remove(0);
                     }
                     recent_tokens.push(tok);
-
                     match tokenizer.decode(tok) {
                         None => {
-                            // EOS from speculative token
                             let tool_calls = if params.has_tools {
                                 super::tool_parser::parse_tool_calls(&generated_text)
                             } else {
@@ -1111,8 +1209,6 @@ fn forward_pass_streaming(
                         }
                         Some(piece) => {
                             generated_text.push_str(&piece);
-
-                            // Check stop sequences.
                             let mut hit_stop = false;
                             for stop_seq in &params.stop {
                                 if generated_text.contains(stop_seq.as_str()) {
@@ -1140,7 +1236,6 @@ fn forward_pass_streaming(
                                 );
                                 return;
                             }
-
                             if !send_picolm_chat_result(
                                 tx,
                                 Ok(ChatResponseChunk {
@@ -1159,18 +1254,51 @@ fn forward_pass_streaming(
                     }
                 }
 
-                // If we accepted tokens, the hidden state is already set from
-                // the last accepted draft's forward pass. If none accepted,
-                // hidden state is from the original token (unchanged).
-                // The next loop iteration will use the correct hidden state.
-
-                if n_accepted > 0 {
-                    tracing::trace!(
-                        drafted = draft_tokens.len(),
-                        accepted = n_accepted,
-                        "picolm: speculative accepted"
+                // Forward the correction/bonus token so `hidden` predicts the
+                // token *after* it for the next iteration, and write its KV.
+                matmul::extract_row(
+                    embd_raw,
+                    embd_type,
+                    n_embd,
+                    correction as usize,
+                    &mut hidden,
+                );
+                for layer in 0..cfg.n_layers {
+                    let attn_norm_w = &attn_norm_weights[layer as usize];
+                    let ffn_norm_w = &ffn_norm_weights[layer as usize];
+                    if let Err(e) = attention::attention_layer(
+                        &mut hidden,
+                        tc,
+                        layer,
+                        gen_pos,
+                        kv_cache.layer_mut(layer),
+                        cfg,
+                        rope_table,
+                        attn_norm_w,
+                        &mut buf,
+                    ) {
+                        send_picolm_chat_result(tx, Err(e));
+                        return;
+                    }
+                    if let Err(e) = ffn::ffn_layer(
+                        &mut hidden,
+                        tc,
+                        layer,
+                        cfg,
+                        activation,
+                        ffn_norm_w,
+                        &mut buf,
+                    ) {
+                        send_picolm_chat_result(tx, Err(e));
+                        return;
+                    }
+                    observe_picolm_release_result(
+                        layer,
+                        "layer weights",
+                        tc.release_layer(gguf, layer),
                     );
                 }
+                gen_pos += 1;
             }
         }
     }
@@ -1231,17 +1359,31 @@ pub struct PicolmBackend {
     loaded: Arc<Mutex<HashMap<String, LoadedModel>>>,
     #[cfg(feature = "picolm")]
     max_seq_len: usize,
+    #[cfg(feature = "picolm")]
+    spec_mode: super::picolm_ops::speculative::SpecMode,
 }
 
 impl PicolmBackend {
     pub fn new(config: Arc<PowerConfig>) -> Self {
         tracing::info!("picolm backend initialized — pure Rust layer-streaming inference");
+        #[cfg(feature = "picolm")]
+        let spec_mode = super::picolm_ops::speculative::SpecMode::parse(&config.spec_mode)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    spec_mode = %config.spec_mode,
+                    "unknown spec_mode, falling back to default (prompt-lookup)"
+                );
+                super::picolm_ops::speculative::SpecMode::default()
+            });
+        #[cfg(not(feature = "picolm"))]
         let _ = &config;
         Self {
             #[cfg(feature = "picolm")]
             loaded: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "picolm")]
             max_seq_len: 32768,
+            #[cfg(feature = "picolm")]
+            spec_mode,
         }
     }
 }
@@ -1495,6 +1637,7 @@ impl Backend for PicolmBackend {
             let presence_penalty = request.presence_penalty.unwrap_or(0.0);
             let has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
             let response_format = request.response_format.clone();
+            let spec_mode = self.spec_mode;
 
             let (tx, rx) = mpsc::channel::<Result<ChatResponseChunk>>(128);
 
@@ -1543,6 +1686,7 @@ impl Backend for PicolmBackend {
                     presence_penalty,
                     has_tools,
                     response_format,
+                    spec_mode,
                 };
                 forward_pass_streaming(&mut params, &tx);
                 // Put KV cache back into the slot so the return task can pick it up.

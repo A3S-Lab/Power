@@ -60,6 +60,8 @@ pub struct AppState {
     pub backends: Arc<BackendRegistry>,
     pub config: Arc<PowerConfig>,
     pub metrics: Arc<Metrics>,
+    /// Admission control: bounds concurrent in-flight inference requests.
+    pub limiter: Arc<crate::server::limiter::ConcurrencyLimiter>,
     pub log_buffer: LogBuffer,
     pub tee_provider: Option<Arc<dyn TeeProvider>>,
     pub privacy: Option<Arc<dyn PrivacyProvider>>,
@@ -97,11 +99,17 @@ impl AppState {
         config: Arc<PowerConfig>,
         log_buffer: LogBuffer,
     ) -> Self {
+        let metrics = Arc::new(Metrics::new());
+        let limiter = Arc::new(crate::server::limiter::ConcurrencyLimiter::new(
+            config.max_concurrent_requests,
+            metrics.clone(),
+        ));
         Self {
             registry,
             backends,
             config,
-            metrics: Arc::new(Metrics::new()),
+            metrics,
+            limiter,
             log_buffer,
             tee_provider: None,
             privacy: None,

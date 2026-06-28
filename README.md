@@ -112,7 +112,7 @@ These features exist in no other LLM inference server:
 - **Deep Log Redaction**: Strips inference content from all log output — 10 sensitive JSON keys (`content`, `prompt`, `text`, `arguments`, `input`, `delta`, `system`, `message`, `query`, `instruction`); `sanitize_error()` strips prompt fragments from error messages; `suppress_token_metrics` rounds token counts to nearest 10 to prevent side-channel inference
 - **Memory Zeroing**: `SensitiveString` wrapper auto-zeroizes on drop; all inference buffers cleared via `zeroize` crate — the operator cannot recover prompts or responses from memory dumps
 - **Model Integrity**: SHA-256 hash verification at startup + Ed25519 publisher signatures; fails fast on tampering
-- **picolm Layer-Streaming**: Pure Rust GGUF inference with true O(layer_size) peak RAM via `madvise(DONTNEED)` page release after each layer. Real transformer ops: multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm. FP16 KV cache with fused f16 dot/accumulate (no intermediate buffer). Fused dequant+dot kernels. NEON SIMD (aarch64) + AVX2 (x86_64). Rayon parallel matmul. Pre-computed RoPE tables. Batch prefill, speculative decoding, tool calling, grammar-constrained output. Zero-alloc hot path. 14+ tok/s decode on Apple Silicon. Enables 7B+ models inside 512MB TEE EPC. No C/C++ inference backend, ~4,500 lines of fully auditable Rust.
+- **picolm Layer-Streaming**: Pure Rust GGUF inference with true O(layer_size) peak RAM via `madvise(DONTNEED)` page release after each layer. Real transformer ops: multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm. FP16 KV cache with fused f16 dot/accumulate (no intermediate buffer). Fused dequant+dot kernels. NEON SIMD (aarch64) + AVX2 (x86_64). Rayon parallel matmul. Pre-computed RoPE tables. Batch prefill, tool calling, grammar-constrained output. Selectable speculative-decoding modes (`spec_mode`: `off` / `prompt-lookup` / DSpark-like `ngram-context`) with **batched layer-streaming verify** — a draft block is verified in one weight-streaming pass instead of one pass per token — adaptive draft length, and lossless rejection-sampling acceptance (output matches plain decoding for the same seed). Zero-alloc hot path. 14+ tok/s decode on Apple Silicon. Enables 7B+ models inside 512MB TEE EPC. No C/C++ inference backend, ~4,500 lines of fully auditable Rust.
 - **Pure Rust Inference Path**: Default backend via `mistralrs` (candle) — no C++ inference engine in the trusted computing base; the `tee-minimal` build (~1,220 dep tree lines) is the smallest auditable LLM inference stack that exists
 
 ### Inference Engine
@@ -121,7 +121,7 @@ Full-featured LLM inference, competitive with any standalone server:
 
 - **OpenAI-Compatible API**: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings` — works with any OpenAI SDK
 - **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
-- **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional)
+- **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional), proxy (forwards to an upstream OpenAI-compatible server — vLLM/TGI/SGLang/OpenAI — so Power can front an existing accelerated engine)
 - **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
@@ -135,7 +135,7 @@ Full-featured LLM inference, competitive with any standalone server:
 
 - **Content-Addressed Storage**: Model blobs stored by SHA-256 hash with automatic deduplication
 - **Automatic Model Lifecycle**: LRU eviction, configurable keep-alive, background reaper for idle models
-- **Rate Limiting**: Token-bucket + concurrency cap on `/v1/*`; returns `429` with OpenAI-style error
+- **Rate Limiting & Admission Control**: Per-second token-bucket on `/v1/*` returns `429` with an OpenAI-style error; concurrency (`max_concurrent_requests`) uses vLLM-style backpressure — excess requests **queue** for an admission permit (held across the streamed body) rather than being rejected, with a `power_requests_waiting` gauge
 - **Prometheus Metrics**: 16 metric groups — HTTP, inference, TTFT, GPU, TEE attestations, model decryptions, log redactions
 - **Audit Logging**: JSONL / Encrypted / Async / Noop; flushed on graceful shutdown
 - **Vsock Transport**: AF_VSOCK for a3s-box MicroVM guest-host communication (Linux only)
@@ -526,7 +526,8 @@ gpu {
 | `in_memory_decrypt` | `false` | Decrypt `.enc` models entirely in RAM with `mlock` (never writes plaintext to disk) |
 | `suppress_token_metrics` | `false` | Round token counts in responses to nearest 10 (prevents exact token-count side-channel) |
 | `rate_limit_rps` | `0` | Max requests per second for `/v1/*` endpoints (`0` = unlimited) |
-| `max_concurrent_requests` | `0` | Max concurrent requests for `/v1/*` endpoints (`0` = unlimited) |
+| `max_concurrent_requests` | `0` | Max concurrent in-flight inference requests; excess **queue** for an admission permit held across the streamed response (`0` = unlimited) |
+| `proxy_upstreams` | `{}` | Map of model name → upstream base URL to proxy to an OpenAI-compatible server (vLLM/TGI/SGLang/OpenAI), e.g. `{ "llama-70b" = "http://vllm:8000" }`. Proxied inference runs on the upstream, outside any TEE |
 | `tls_port` | `null` | TLS server port; when set, a TLS server starts in parallel (`tls` feature required) |
 | `ra_tls` | `false` | Embed TEE attestation in TLS cert (RA-TLS); requires `tls_port` + `tee_mode` |
 | `vsock_port` | `null` | Vsock port for guest-host communication (`vsock` feature, Linux only) |

@@ -17,12 +17,16 @@ use crate::server::lock::mutex_lock;
 use crate::server::{auth, metrics};
 
 /// Shared state for the rate limiter middleware.
+///
+/// This enforces a requests-per-second token bucket only. Concurrency is bounded
+/// separately by [`crate::server::limiter::ConcurrencyLimiter`], which (unlike a
+/// middleware that releases when the handler returns) holds its permit across the
+/// streamed response body and queues rather than rejecting — matching vLLM's
+/// `max_num_seqs` backpressure.
 #[derive(Clone)]
 struct RateLimiter {
     /// Max requests per second.
     rps: u64,
-    /// Max concurrent requests (0 = unlimited).
-    max_concurrent: u64,
     inner: Arc<Mutex<RateLimiterInner>>,
 }
 
@@ -31,62 +35,40 @@ struct RateLimiterInner {
     tokens: f64,
     /// Last refill time.
     last_refill: Instant,
-    /// Current concurrent request count.
-    concurrent: u64,
 }
 
 impl RateLimiter {
-    fn new(rps: u64, max_concurrent: u64) -> Self {
+    fn new(rps: u64) -> Self {
         Self {
             rps,
-            max_concurrent,
             inner: Arc::new(Mutex::new(RateLimiterInner {
                 tokens: rps as f64,
                 last_refill: Instant::now(),
-                concurrent: 0,
             })),
         }
     }
 
-    /// Try to acquire a request slot. Returns false if rate or concurrency limit exceeded.
-    ///
-    /// Concurrency is checked before consuming a token so that requests rejected
-    /// by the concurrency limit do not silently drain the rate-limit bucket.
+    /// Try to consume a token from the bucket. Returns false when the per-second
+    /// rate is exceeded.
     fn try_acquire(&self) -> bool {
+        if self.rps == 0 {
+            return true;
+        }
         let mut inner = mutex_lock(&self.inner);
+        let now = Instant::now();
+        let elapsed = now.duration_since(inner.last_refill).as_secs_f64();
+        inner.tokens = (inner.tokens + elapsed * self.rps as f64).min(self.rps as f64);
+        inner.last_refill = now;
 
-        // Check concurrency limit first — no token consumed if concurrency is at capacity.
-        if self.max_concurrent > 0 && inner.concurrent >= self.max_concurrent {
+        if inner.tokens < 1.0 {
             return false;
         }
-
-        // Refill and consume from the token bucket.
-        if self.rps > 0 {
-            let now = Instant::now();
-            let elapsed = now.duration_since(inner.last_refill).as_secs_f64();
-            inner.tokens = (inner.tokens + elapsed * self.rps as f64).min(self.rps as f64);
-            inner.last_refill = now;
-
-            if inner.tokens < 1.0 {
-                return false;
-            }
-            inner.tokens -= 1.0;
-        }
-
-        inner.concurrent += 1;
+        inner.tokens -= 1.0;
         true
-    }
-
-    /// Release a concurrent request slot.
-    fn release(&self) {
-        if self.max_concurrent > 0 {
-            let mut inner = mutex_lock(&self.inner);
-            inner.concurrent = inner.concurrent.saturating_sub(1);
-        }
     }
 }
 
-/// Middleware that enforces rate and concurrency limits.
+/// Middleware that enforces the per-second request rate limit.
 async fn rate_limit_middleware(
     State(limiter): State<RateLimiter>,
     request: Request<Body>,
@@ -105,15 +87,12 @@ async fn rate_limit_middleware(
         )
             .into_response();
     }
-    let response = next.run(request).await;
-    limiter.release();
-    response
+    next.run(request).await
 }
 
 /// Build the complete axum Router with all API routes.
 pub fn build(state: AppState) -> Router {
     let rate_limit_rps = state.config.rate_limit_rps;
-    let max_concurrent = state.config.max_concurrent_requests;
 
     // Apply auth middleware only to /v1/* routes
     let v1_routes = api::openai::routes().layer(middleware::from_fn_with_state(
@@ -134,9 +113,11 @@ pub fn build(state: AppState) -> Router {
         .layer(middleware::from_fn(request_id_middleware))
         .with_state(state);
 
-    // Apply rate/concurrency limiting as outermost middleware when configured
-    if rate_limit_rps > 0 || max_concurrent > 0 {
-        let limiter = RateLimiter::new(rate_limit_rps, max_concurrent);
+    // Apply per-second rate limiting as outermost middleware when configured.
+    // Concurrency is bounded by the ConcurrencyLimiter inside the inference
+    // handlers (see AppState::limiter), which spans the streamed response body.
+    if rate_limit_rps > 0 {
+        let limiter = RateLimiter::new(rate_limit_rps);
         router = router.layer(middleware::from_fn_with_state(
             limiter,
             rate_limit_middleware,
@@ -395,49 +376,24 @@ mod tests {
 
     #[test]
     fn test_rate_limiter_allows_within_limit() {
-        let limiter = RateLimiter::new(10, 0);
+        let limiter = RateLimiter::new(10);
         assert!(limiter.try_acquire());
-        limiter.release();
-    }
-
-    #[test]
-    fn test_rate_limiter_concurrency_limit_does_not_consume_token() {
-        // Set max_concurrent=1, rps=2 (so bucket starts with 2 tokens).
-        let limiter = RateLimiter::new(2, 1);
-        // First acquire: takes a token and increments concurrent.
-        assert!(limiter.try_acquire());
-        // At max concurrency — should reject WITHOUT consuming another token.
-        assert!(!limiter.try_acquire());
-        // Token bucket should still have 1 token (not 0).
-        {
-            let inner = mutex_lock(&limiter.inner);
-            assert!(
-                inner.tokens >= 1.0,
-                "concurrency rejection must not consume a rate-limit token"
-            );
-        }
-        // After release, a new acquire should succeed.
-        limiter.release();
-        assert!(limiter.try_acquire());
-        limiter.release();
     }
 
     #[test]
     fn test_rate_limiter_token_bucket_exhausted() {
-        // 1 RPS, no concurrency limit.
-        let limiter = RateLimiter::new(1, 0);
+        // 1 RPS rate limit.
+        let limiter = RateLimiter::new(1);
         assert!(limiter.try_acquire()); // uses the 1 token
-        limiter.release();
-        // Bucket is empty — second acquire should fail.
+                                        // Bucket is empty — second acquire should fail.
         assert!(!limiter.try_acquire());
     }
 
     #[test]
     fn test_rate_limiter_no_limits_always_allows() {
-        let limiter = RateLimiter::new(0, 0);
+        let limiter = RateLimiter::new(0);
         for _ in 0..100 {
             assert!(limiter.try_acquire());
-            limiter.release();
         }
     }
 }

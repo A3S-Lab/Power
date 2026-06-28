@@ -7,8 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Proxy backend — front any OpenAI-compatible upstream (vLLM / TGI / SGLang / OpenAI).** Configure `proxy_upstreams` (model name → base URL) and Power registers each as a `ModelFormat::Remote` model, forwarding chat (streamed), completions and embeddings to the upstream while applying its own routing, auth, rate-limiting and log-redaction. This lets Power *replace vLLM in the stack* without reimplementing CUDA kernels — it absorbs the accelerated engine as a swappable backend. Trust boundary: proxied inference runs on the upstream, outside any TEE (non-confidential fast path; no hardware attestation over proxied content).
+
+- **vLLM-style admission control for `max_concurrent_requests`.** Concurrency limiting moved out of the rate-limit middleware into a `ConcurrencyLimiter` (Tokio semaphore) inside the inference handlers. Excess requests now **queue** for a permit (backpressure, like vLLM's `max_num_seqs`) instead of being rejected with `429`, and the permit is held across the whole streamed response body — released on completion *or* early client disconnect. New `power_requests_waiting` and `power_requests_running` Prometheus gauges (vLLM-style `num_requests_waiting` / `num_requests_running` observability). The per-second `rate_limit_rps` token bucket still returns `429`.
+
 ### Fixed
 
+- Fixed `max_concurrent_requests` not actually bounding streaming generation: the old rate-limit middleware released the concurrency slot when the handler returned the response, which for streaming (SSE) happens *before* the body is generated — so concurrent streamed completions were effectively uncapped. The new handler-level permit spans the full stream.
+
+- **Selectable speculative-decoding modes for picolm** via `spec_mode` config (env `A3S_POWER_SPEC_MODE`): `off` (plain autoregressive), `prompt-lookup` (default, suffix n-gram matched against the prompt), and `ngram-context` (DSpark-like self-speculation — an online n-gram model over the full running sequence, so free-form generation is accelerated too, not just input-overlapping output). A new `Drafter` trait is the seam where a trained draft head can drop in later.
+- **Batched layer-streaming speculative verify.** Draft blocks are now verified in a single layer-outer/token-inner pass (each layer's weights loaded once for the whole block) instead of re-streaming every layer per draft token — turning K drafts into ~one weight-streaming pass on the memory-bandwidth-bound path. Acceptance uses lossless rejection sampling (respecting temperature/top-p/penalties), so output matches plain decoding for the same seed.
+- **Adaptive draft length** (DSpark's load-aware-scheduler analogue): an EMA of the per-round acceptance ratio grows the draft block when speculation pays off and shrinks it on a bad streak, bounding wasted verify work.
+
+### Fixed
+
+- Fixed a picolm speculative-decoding correctness bug: on *partial* draft acceptance the carried-forward hidden state desynced from the truncated KV cache (it was left as the last draft's output regardless of how many drafts were accepted). The new verify forwards the accepted prefix plus a lossless correction token, keeping hidden state and KV cache consistent.
 - Made mistral.rs backend capability tests respect the active feature set, so picolm-only TEE builds no longer expect HuggingFace/Vision support from the disabled mistralrs backend.
 - Cleaned up test-only warnings in lean feature profiles.
 - Updated the llama.cpp multimodal bitmap path for the current `llama-cpp-2` MTMD API.
