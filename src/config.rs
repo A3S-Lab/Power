@@ -50,6 +50,11 @@ pub struct PowerConfig {
     #[serde(default)]
     pub gpu: GpuConfig,
 
+    /// Speculative-decoding mode for the picolm backend: "off", "prompt-lookup",
+    /// or "ngram-context" (DSpark-like self-speculation). Default: "prompt-lookup".
+    #[serde(default = "default_spec_mode")]
+    pub spec_mode: String,
+
     /// Default model keep-alive duration (e.g. "5m", "1h", "0", "-1").
     /// "0" = unload immediately after request, "-1" = never unload.
     /// Default: "5m".
@@ -199,6 +204,14 @@ pub struct PowerConfig {
     #[serde(default)]
     pub max_concurrent_requests: u64,
 
+    /// Remote models proxied to upstream OpenAI-compatible servers (vLLM, TGI,
+    /// SGLang, ...). Maps served model name → upstream base URL (e.g.
+    /// `"llama-70b" = "http://vllm:8000"`). Power fronts these with its routing,
+    /// auth, rate-limit and log-redaction layers. Proxied inference runs on the
+    /// upstream (outside any TEE) — no hardware attestation covers its content.
+    #[serde(default)]
+    pub proxy_upstreams: HashMap<String, String>,
+
     // --- Timing Side-Channel Mitigation ---
     /// Minimum response time in milliseconds for all inference requests.
     ///
@@ -215,6 +228,10 @@ fn default_key_provider() -> String {
 
 fn default_keep_alive() -> String {
     "5m".to_string()
+}
+
+fn default_spec_mode() -> String {
+    "prompt-lookup".to_string()
 }
 
 fn default_num_parallel() -> usize {
@@ -320,6 +337,7 @@ impl Default for PowerConfig {
             data_dir: dirs::power_home(),
             max_loaded_models: default_max_loaded_models(),
             gpu: GpuConfig::default(),
+            spec_mode: default_spec_mode(),
             keep_alive: default_keep_alive(),
             use_mlock: false,
             num_thread: None,
@@ -348,6 +366,7 @@ impl Default for PowerConfig {
             suppress_token_metrics: false,
             rate_limit_rps: 0,
             max_concurrent_requests: 0,
+            proxy_upstreams: HashMap::new(),
             timing_padding_ms: None,
         }
     }
@@ -495,6 +514,10 @@ impl PowerConfig {
             self.keep_alive = keep_alive;
         }
 
+        if let Ok(spec_mode) = std::env::var("A3S_POWER_SPEC_MODE") {
+            self.spec_mode = spec_mode;
+        }
+
         if let Ok(gpu_str) = std::env::var("A3S_POWER_GPU_LAYERS") {
             if let Some(gpu) = parse_env_override::<i32>("A3S_POWER_GPU_LAYERS", &gpu_str) {
                 self.gpu.gpu_layers = gpu;
@@ -582,6 +605,7 @@ impl PowerConfig {
         out.push_str(&format!("data_dir = \"{}\"\n", self.data_dir.display()));
         out.push_str(&format!("max_loaded_models = {}\n", self.max_loaded_models));
         out.push_str(&format!("keep_alive = \"{}\"\n", self.keep_alive));
+        out.push_str(&format!("spec_mode = \"{}\"\n", self.spec_mode));
         out.push_str(&format!("use_mlock = {}\n", self.use_mlock));
         if let Some(nt) = self.num_thread {
             out.push_str(&format!("num_thread = {}\n", nt));
@@ -756,6 +780,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             max_loaded_models: 5,
             gpu: GpuConfig::default(),
+            spec_mode: "prompt-lookup".to_string(),
             keep_alive: "5m".to_string(),
             use_mlock: false,
             num_thread: None,
@@ -784,6 +809,7 @@ mod tests {
             suppress_token_metrics: false,
             rate_limit_rps: 0,
             max_concurrent_requests: 0,
+            proxy_upstreams: HashMap::new(),
             timing_padding_ms: None,
         };
         config.save().unwrap();

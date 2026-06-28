@@ -1,19 +1,37 @@
-//! Self-speculative decoding for picolm.
+//! Self-speculative decoding for picolm — multiple inference modes.
 //!
-//! Uses prompt-lookup decoding: matches n-grams from the generated text
-//! against the input prompt to predict likely continuations. Draft tokens
-//! are verified in batch through the full model.
+//! Speculative decoding drafts several continuation tokens cheaply, then
+//! verifies them in a **single batched layer-streaming pass** (load each
+//! layer's weights once, push the whole draft block through). On the
+//! memory-bandwidth-bound streaming path this turns K tokens into ~one
+//! weight-streaming pass — a near-Kx win when weight loading dominates.
 //!
-//! This approach has zero draft cost (no extra forward passes) and works
-//! well for tasks where output overlaps with input (summarization, JSON
-//! with known keys, code completion).
+//! Modes ([`SpecMode`]) select the draft strategy:
+//! - [`SpecMode::Off`] — plain autoregressive decoding, no draft.
+//! - [`SpecMode::PromptLookup`] — match the generated suffix n-gram against the
+//!   prompt. Zero draft cost; wins when output overlaps input (summarize,
+//!   JSON with known keys, code completion).
+//! - [`SpecMode::NgramContext`] — DSpark-like self-speculation: an online
+//!   n-gram model over the *full running sequence* (prompt + generated),
+//!   prefix-chained, so it also accelerates free-form generation.
+//!
+//! # Relationship to DSpark
+//!
+//! DSpark (DeepSeek, 2026) is "semi-parallel" speculative decoding: a parallel
+//! backbone proposes a whole block, a lightweight sequential head refines each
+//! position with a prefix-dependent bias, an adaptive scheduler sizes the
+//! verify length, and rejection sampling keeps it lossless. This module mirrors
+//! that *scaffold* with a statistical drafter ([`NgramContextDrafter`], a
+//! zero-weight stand-in for DSpark's trained head), an [`AdaptiveK`] scheduler,
+//! and lossless [`accept_block`] verification. The [`Drafter`] trait is the
+//! seam where a real trained draft head drops in when weights are available.
 //!
 //! # KV Cache Rollback
 //!
 //! Rejected draft tokens are rolled back via `KvCache::truncate()`.
 //! The verify pass re-populates the KV cache with correct values.
 
-/// Number of draft tokens to generate per speculation round.
+/// Default number of draft tokens to propose per speculation round.
 pub const DRAFT_K: usize = 4;
 
 /// Minimum n-gram size for prompt lookup matching.
@@ -21,6 +39,174 @@ const MIN_NGRAM: usize = 2;
 
 /// Maximum n-gram size to try for prompt lookup matching.
 const MAX_NGRAM: usize = 5;
+
+/// Speculation mode — selects the draft strategy for the decode loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpecMode {
+    /// No speculation — plain autoregressive decoding.
+    Off,
+    /// Prompt-lookup: match the generated suffix n-gram against the prompt only.
+    #[default]
+    PromptLookup,
+    /// DSpark-like: online n-gram over the full running sequence (prompt +
+    /// generated), so free-form output is accelerated too.
+    NgramContext,
+}
+
+impl SpecMode {
+    /// Parse a config string (case-insensitive). Unknown values fall back to
+    /// the default and are reported by the caller.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "false" => Some(Self::Off),
+            "prompt-lookup" | "prompt_lookup" | "lookup" | "true" => Some(Self::PromptLookup),
+            "ngram-context" | "ngram_context" | "context" | "dspark" => Some(Self::NgramContext),
+            _ => None,
+        }
+    }
+
+    /// Build the drafter for this mode. `Off` has no drafter.
+    pub fn drafter(self) -> Option<Box<dyn Drafter>> {
+        match self {
+            Self::Off => None,
+            Self::PromptLookup => Some(Box::new(PromptLookupDrafter)),
+            Self::NgramContext => Some(Box::new(NgramContextDrafter)),
+        }
+    }
+}
+
+/// A draft strategy: propose continuation tokens to verify speculatively.
+///
+/// Implementations must be cheap relative to a full forward pass — the whole
+/// point is to avoid per-token model passes. A trained draft head would
+/// implement this trait too (running its own small forward), replacing the
+/// statistical drafters without touching the decode loop.
+pub trait Drafter: Send + Sync {
+    /// Propose up to `max_draft` tokens continuing `generated_ids`, given the
+    /// original `input_ids` (prompt). Returns an empty vec when no confident
+    /// draft is available.
+    fn draft(&self, input_ids: &[u32], generated_ids: &[u32], max_draft: usize) -> Vec<u32>;
+}
+
+/// Prompt-lookup drafter: suffix n-gram matched against the prompt only.
+pub struct PromptLookupDrafter;
+
+impl Drafter for PromptLookupDrafter {
+    fn draft(&self, input_ids: &[u32], generated_ids: &[u32], max_draft: usize) -> Vec<u32> {
+        prompt_lookup_draft(input_ids, generated_ids, max_draft)
+    }
+}
+
+/// DSpark-like self-speculative drafter.
+///
+/// Searches the model's **own generated output** first (captures the
+/// self-repetition common in code, lists and structured text), then falls back
+/// to the prompt. The single n-gram lookup returns a prefix-consistent block of
+/// continuation tokens — the statistical analogue of DSpark's prefix-dependent
+/// sequential head, with zero trained weights.
+pub struct NgramContextDrafter;
+
+impl Drafter for NgramContextDrafter {
+    fn draft(&self, input_ids: &[u32], generated_ids: &[u32], max_draft: usize) -> Vec<u32> {
+        // Match the recent suffix inside earlier generated output. The trailing
+        // suffix itself is never matched (the search requires start <= len-n-1).
+        if generated_ids.len() > MIN_NGRAM {
+            let max_n = MAX_NGRAM.min(generated_ids.len());
+            for n in (MIN_NGRAM..=max_n).rev() {
+                let suffix = &generated_ids[generated_ids.len() - n..];
+                if let Some(c) = find_ngram_continuation(generated_ids, suffix, max_draft) {
+                    if !c.is_empty() {
+                        return c;
+                    }
+                }
+            }
+        }
+        // Fall back to prompt-lookup.
+        prompt_lookup_draft(input_ids, generated_ids, max_draft)
+    }
+}
+
+/// Adaptive draft-length controller — DSpark's load-aware scheduler analogue.
+///
+/// Tracks an exponential moving average of the per-round acceptance ratio and
+/// grows the draft length when speculation is paying off, shrinks it when
+/// drafts are mostly rejected (so a bad streak costs at most `min` wasted
+/// verify slots rather than a fixed large block).
+#[derive(Debug, Clone)]
+pub struct AdaptiveK {
+    k: usize,
+    min: usize,
+    max: usize,
+    ema: f32,
+}
+
+impl AdaptiveK {
+    /// EMA smoothing factor (higher = more reactive).
+    const ALPHA: f32 = 0.3;
+    /// Grow K above this acceptance ratio, shrink below `1 - GROW`.
+    const GROW: f32 = 0.6;
+
+    pub fn new(initial: usize, min: usize, max: usize) -> Self {
+        let min = min.max(1);
+        let max = max.max(min);
+        Self {
+            k: initial.clamp(min, max),
+            min,
+            max,
+            ema: 0.5,
+        }
+    }
+
+    /// Current draft length to propose.
+    pub fn current(&self) -> usize {
+        self.k
+    }
+
+    /// Update after a verify round: `accepted` of `drafted` tokens kept.
+    pub fn update(&mut self, accepted: usize, drafted: usize) {
+        if drafted == 0 {
+            return;
+        }
+        let ratio = accepted as f32 / drafted as f32;
+        self.ema = Self::ALPHA * ratio + (1.0 - Self::ALPHA) * self.ema;
+        if self.ema > Self::GROW && self.k < self.max {
+            self.k += 1;
+        } else if self.ema < 1.0 - Self::GROW && self.k > self.min {
+            self.k -= 1;
+        }
+    }
+}
+
+/// Lossless rejection-sampling acceptance over a verified draft block.
+///
+/// For each draft position, sample the target token from that position's logits
+/// with `sample` (which must apply the same temperature/top-p/rng the main loop
+/// uses). Accept the draft while it equals the freshly sampled target; at the
+/// first mismatch the sampled target token is the **lossless correction** and
+/// the walk stops. If every draft is accepted, `bonus_logits` is sampled for
+/// one free extra token.
+///
+/// This is distribution-exact: every emitted token (accepted draft, correction,
+/// or bonus) equals a sample from the target distribution at its position, so
+/// the output is identical to plain sampling. For greedy decoding `sample` is
+/// argmax and acceptance reduces to "draft matches the model's argmax".
+///
+/// Returns `(n_accepted, correction_or_bonus_token)`.
+pub fn accept_block(
+    drafts: &[u32],
+    target_logits: &[Vec<f32>],
+    bonus_logits: &[f32],
+    sample: &mut impl FnMut(&[f32]) -> u32,
+) -> (usize, u32) {
+    for (i, &d) in drafts.iter().enumerate() {
+        debug_assert!(i < target_logits.len(), "missing target logits for draft");
+        let target = sample(&target_logits[i]);
+        if target != d {
+            return (i, target);
+        }
+    }
+    (drafts.len(), sample(bonus_logits))
+}
 
 /// Look up the most recent n-gram in the generated token sequence and find
 /// a matching continuation in the input tokens.
@@ -66,26 +252,6 @@ fn find_ngram_continuation(tokens: &[u32], ngram: &[u32], max_count: usize) -> O
     }
 
     None
-}
-
-/// Compare draft tokens against verified tokens and return the number accepted.
-///
-/// Uses greedy comparison: accepts the longest prefix where draft and verify
-/// agree on the argmax token.
-pub fn count_accepted(draft_tokens: &[u32], verify_logits: &[Vec<f32>]) -> usize {
-    let mut accepted = 0;
-    for (i, draft_tok) in draft_tokens.iter().enumerate() {
-        if i >= verify_logits.len() {
-            break;
-        }
-        let verify_argmax = argmax_token(&verify_logits[i]);
-        if *draft_tok == verify_argmax {
-            accepted += 1;
-        } else {
-            break;
-        }
-    }
-    accepted
 }
 
 /// Get the argmax token from a logits vector (greedy selection).
@@ -153,54 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn test_count_accepted_all_match() {
-        let draft = vec![1, 2, 3, 4];
-        let verify = vec![
-            logits_with_max(1, 10),
-            logits_with_max(2, 10),
-            logits_with_max(3, 10),
-            logits_with_max(4, 10),
-        ];
-        assert_eq!(count_accepted(&draft, &verify), 4);
-    }
-
-    #[test]
-    fn test_count_accepted_none_match() {
-        let draft = vec![1, 2, 3, 4];
-        let verify = vec![
-            logits_with_max(5, 10),
-            logits_with_max(2, 10),
-            logits_with_max(3, 10),
-            logits_with_max(4, 10),
-        ];
-        assert_eq!(count_accepted(&draft, &verify), 0);
-    }
-
-    #[test]
-    fn test_count_accepted_partial() {
-        let draft = vec![1, 2, 3, 4];
-        let verify = vec![
-            logits_with_max(1, 10),
-            logits_with_max(2, 10),
-            logits_with_max(9, 10),
-            logits_with_max(4, 10),
-        ];
-        assert_eq!(count_accepted(&draft, &verify), 2);
-    }
-
-    #[test]
-    fn test_count_accepted_empty() {
-        assert_eq!(count_accepted(&[], &[]), 0);
-    }
-
-    #[test]
-    fn test_count_accepted_fewer_verify() {
-        let draft = vec![1, 2, 3, 4];
-        let verify = vec![logits_with_max(1, 10), logits_with_max(2, 10)];
-        assert_eq!(count_accepted(&draft, &verify), 2);
-    }
-
-    #[test]
     fn test_argmax_token() {
         assert_eq!(argmax_token(&logits_with_max(3, 10)), 3);
         assert_eq!(argmax_token(&logits_with_max(0, 10)), 0);
@@ -222,6 +340,133 @@ mod tests {
         let tokens = vec![1, 2, 3, 4, 5];
         // [4, 5] is at the end — no continuation
         assert_eq!(find_ngram_continuation(&tokens, &[4, 5], 3), None);
+    }
+
+    // ── New API: modes, drafters, adaptive-K, lossless accept ─────────────────
+
+    #[test]
+    fn test_spec_mode_parse() {
+        assert_eq!(SpecMode::parse("off"), Some(SpecMode::Off));
+        assert_eq!(
+            SpecMode::parse("Prompt-Lookup"),
+            Some(SpecMode::PromptLookup)
+        );
+        assert_eq!(SpecMode::parse("dspark"), Some(SpecMode::NgramContext));
+        assert_eq!(SpecMode::parse("context"), Some(SpecMode::NgramContext));
+        assert_eq!(SpecMode::parse("bogus"), None);
+        assert_eq!(SpecMode::default(), SpecMode::PromptLookup);
+    }
+
+    #[test]
+    fn test_spec_mode_drafter_presence() {
+        assert!(SpecMode::Off.drafter().is_none());
+        assert!(SpecMode::PromptLookup.drafter().is_some());
+        assert!(SpecMode::NgramContext.drafter().is_some());
+    }
+
+    #[test]
+    fn test_ngram_context_drafts_from_own_output() {
+        // No prompt overlap, but the generation repeats a pattern: "a b c ... a b ?"
+        // Generated: [1,2,3, 9, 1,2] — suffix [1,2] earlier continues with 3.
+        let input = vec![100, 101]; // unrelated prompt
+        let generated = vec![1, 2, 3, 9, 1, 2];
+        let draft = NgramContextDrafter.draft(&input, &generated, 4);
+        assert_eq!(draft, vec![3, 9, 1, 2]); // continuation after the earlier [1,2]
+    }
+
+    #[test]
+    fn test_ngram_context_falls_back_to_prompt() {
+        // Generation has no internal repetition, but the suffix matches the prompt.
+        let input = vec![1, 2, 3, 4, 5];
+        let generated = vec![7, 1, 2]; // suffix [1,2] not repeated in generated → use prompt
+        let draft = NgramContextDrafter.draft(&input, &generated, 3);
+        assert_eq!(draft, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn test_prompt_lookup_drafter_matches_function() {
+        let input = vec![1, 2, 3, 4, 1, 2, 5];
+        let generated = vec![1, 2];
+        assert_eq!(
+            PromptLookupDrafter.draft(&input, &generated, 4),
+            prompt_lookup_draft(&input, &generated, 4)
+        );
+    }
+
+    #[test]
+    fn test_adaptive_k_grows_on_high_acceptance() {
+        let mut a = AdaptiveK::new(4, 1, 8);
+        for _ in 0..10 {
+            a.update(4, 4); // perfect acceptance
+        }
+        assert!(a.current() > 4, "K should grow under high acceptance");
+        assert!(a.current() <= 8, "K must respect max");
+    }
+
+    #[test]
+    fn test_adaptive_k_shrinks_on_low_acceptance() {
+        let mut a = AdaptiveK::new(4, 1, 8);
+        for _ in 0..10 {
+            a.update(0, 4); // nothing accepted
+        }
+        assert!(a.current() < 4, "K should shrink under low acceptance");
+        assert!(a.current() >= 1, "K must respect min");
+    }
+
+    #[test]
+    fn test_adaptive_k_clamps_and_ignores_empty() {
+        let mut a = AdaptiveK::new(100, 2, 6);
+        assert_eq!(a.current(), 6, "initial clamped to max");
+        let before = a.current();
+        a.update(0, 0); // no draft → no change
+        assert_eq!(a.current(), before);
+    }
+
+    #[test]
+    fn test_accept_block_all_accepted_returns_bonus() {
+        let drafts = vec![1, 2, 3];
+        let targets = vec![
+            logits_with_max(1, 10),
+            logits_with_max(2, 10),
+            logits_with_max(3, 10),
+        ];
+        let bonus = logits_with_max(7, 10);
+        let mut argmax = |l: &[f32]| argmax_token(l);
+        let (n, tok) = accept_block(&drafts, &targets, &bonus, &mut argmax);
+        assert_eq!(n, 3);
+        assert_eq!(tok, 7, "bonus token sampled after full acceptance");
+    }
+
+    #[test]
+    fn test_accept_block_rejects_midway_with_correction() {
+        let drafts = vec![1, 2, 3, 4];
+        // Position 2 mismatches: target argmax is 9, not the drafted 3.
+        let targets = vec![
+            logits_with_max(1, 10),
+            logits_with_max(2, 10),
+            logits_with_max(9, 10),
+            logits_with_max(4, 10),
+        ];
+        let bonus = logits_with_max(0, 10);
+        let mut argmax = |l: &[f32]| argmax_token(l);
+        let (n, tok) = accept_block(&drafts, &targets, &bonus, &mut argmax);
+        assert_eq!(n, 2, "accept the matching prefix");
+        assert_eq!(tok, 9, "correction is the freshly sampled target token");
+    }
+
+    #[test]
+    fn test_accept_block_rejects_first() {
+        let drafts = vec![5, 2, 3];
+        let targets = vec![
+            logits_with_max(1, 10),
+            logits_with_max(2, 10),
+            logits_with_max(3, 10),
+        ];
+        let bonus = logits_with_max(0, 10);
+        let mut argmax = |l: &[f32]| argmax_token(l);
+        let (n, tok) = accept_block(&drafts, &targets, &bonus, &mut argmax);
+        assert_eq!(n, 0);
+        assert_eq!(tok, 1, "correction replaces the rejected first draft");
     }
 
     /// Helper: create a logits vector where `token_id` has the max value.

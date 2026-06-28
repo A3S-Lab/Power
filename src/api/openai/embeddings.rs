@@ -65,6 +65,9 @@ pub async fn handler(
         input: input_texts.clone(),
     };
 
+    // Admission control: hold a permit until this (non-streaming) request ends.
+    let _permit = state.limiter.acquire().await;
+
     match backend.embed(&model_name, backend_request).await {
         Ok(result) => {
             let data: Vec<EmbeddingData> = result
