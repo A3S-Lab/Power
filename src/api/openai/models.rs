@@ -28,6 +28,7 @@ pub async fn list_handler(State(state): State<AppState>) -> impl IntoResponse {
                     owned_by: "local".to_string(),
                     root: None,
                     parent: None,
+                    context_length: m.parameters.as_ref().and_then(|p| p.context_length),
                 })
                 .collect();
 
@@ -64,6 +65,7 @@ pub async fn get_handler(
             owned_by: "local".to_string(),
             root: None,
             parent: None,
+            context_length: m.parameters.as_ref().and_then(|p| p.context_length),
         })
         .into_response(),
         Err(_) => (
