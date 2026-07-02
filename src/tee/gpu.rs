@@ -983,9 +983,8 @@ fn validate_nras_rest_verdict_json(bytes: &[u8], nonce_hex: &str) -> Result<Vec<
 
     let mut claim_values = Vec::new();
     for token in tokens {
-        if let Some(payload) = decode_jwt_payload_json(&token)? {
-            collect_nvidia_device_claim_values(&payload, &mut claim_values);
-        }
+        let payload = decode_jwt_payload_json(&token)?;
+        collect_nvidia_device_claim_values(&payload, &mut claim_values);
     }
 
     if claim_values.is_empty() {
@@ -1028,56 +1027,72 @@ fn validate_configured_verdict_json(bytes: &[u8], nonce_hex: &str) -> Result<Vec
 
 fn collect_nras_eat_tokens(value: &serde_json::Value) -> Vec<String> {
     let mut tokens = Vec::new();
-    collect_nras_eat_tokens_inner(value, &mut tokens);
+    collect_nras_eat_tokens_inner(value, false, &mut tokens);
     tokens
 }
 
-fn collect_nras_eat_tokens_inner(value: &serde_json::Value, tokens: &mut Vec<String>) {
+fn collect_nras_eat_tokens_inner(
+    value: &serde_json::Value,
+    in_eat_field: bool,
+    tokens: &mut Vec<String>,
+) {
     match value {
         serde_json::Value::String(value) => {
-            if looks_like_jwt(value) {
+            if in_eat_field {
                 tokens.push(value.clone());
             }
         }
         serde_json::Value::Array(values) => {
             for value in values {
-                collect_nras_eat_tokens_inner(value, tokens);
+                collect_nras_eat_tokens_inner(value, in_eat_field, tokens);
             }
         }
         serde_json::Value::Object(values) => {
-            for value in values.values() {
-                collect_nras_eat_tokens_inner(value, tokens);
+            for (key, value) in values {
+                collect_nras_eat_tokens_inner(
+                    value,
+                    in_eat_field || is_nras_eat_field(key),
+                    tokens,
+                );
             }
         }
         _ => {}
     }
 }
 
-fn looks_like_jwt(value: &str) -> bool {
-    value.split('.').count() == 3
+fn is_nras_eat_field(key: &str) -> bool {
+    let normalized = key.replace(['-', '_'], "").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "detachedeat" | "detachedeats" | "eat" | "eats" | "eattoken" | "eattokens"
+    )
 }
 
-fn decode_jwt_payload_json(token: &str) -> Result<Option<serde_json::Value>> {
+fn decode_jwt_payload_json(token: &str) -> Result<serde_json::Value> {
     let mut parts = token.split('.');
-    let _header = parts.next();
-    let Some(payload) = parts.next() else {
-        return Ok(None);
-    };
-    let Some(_signature) = parts.next() else {
-        return Ok(None);
-    };
-    let Ok(bytes) = URL_SAFE_NO_PAD
+    let header = parts.next().unwrap_or_default();
+    let payload = parts.next().unwrap_or_default();
+    let signature = parts.next().unwrap_or_default();
+    if parts.next().is_some() || header.is_empty() || payload.is_empty() || signature.is_empty() {
+        return Err(PowerError::Config(
+            "NRAS REST returned a malformed detached EAT JWT".to_string(),
+        ));
+    }
+
+    let bytes = URL_SAFE_NO_PAD
         .decode(payload)
         .or_else(|_| URL_SAFE.decode(payload))
-    else {
-        return Ok(None);
-    };
+        .map_err(|e| {
+            PowerError::Config(format!(
+                "NRAS REST returned a detached EAT JWT with invalid base64url payload: {e}"
+            ))
+        })?;
     let value = serde_json::from_slice(&bytes).map_err(|e| {
         PowerError::Config(format!(
             "NRAS REST returned a JWT with invalid JSON payload: {e}"
         ))
     })?;
-    Ok(Some(value))
+    Ok(value)
 }
 
 fn collect_nvidia_device_claim_values(value: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
@@ -1634,6 +1649,16 @@ mod tests {
         .unwrap()
     }
 
+    fn nras_rest_verdict_with_detached_eat_payload(payload: serde_json::Value) -> Vec<u8> {
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let signature = URL_SAFE_NO_PAD.encode(b"signature");
+        serde_json::to_vec(&serde_json::json!({
+            "detached_eat": [format!("{header}.{payload}.{signature}")]
+        }))
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn configured_provider_hashes_hex_evidence_and_verdict() {
         let config = GpuAttestationConfig {
@@ -2087,6 +2112,44 @@ mod tests {
         assert!(err
             .to_string()
             .contains("certificate must be non-empty base64"));
+    }
+
+    #[test]
+    fn validate_nras_rest_verdict_extracts_claims_from_detached_eat_jwt() {
+        let verdict = nras_rest_verdict_with_detached_eat_payload(serde_json::json!({
+            "submods": {
+                "gpu0": nvidia_gpu_claim("010203")
+            }
+        }));
+
+        let devices = validate_nras_rest_verdict_json(&verdict, "010203").unwrap();
+
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device_type, "gpu");
+        assert_eq!(
+            devices[0].attestation_nonce.as_deref(),
+            Some(&[1, 2, 3][..])
+        );
+    }
+
+    #[test]
+    fn validate_nras_rest_verdict_rejects_malformed_detached_eat_jwt() {
+        let verdict = br#"{"detached_eat":["not-a-jwt"]}"#;
+
+        let err = validate_nras_rest_verdict_json(verdict, "010203").unwrap_err();
+
+        assert!(err.to_string().contains("malformed detached EAT JWT"));
+    }
+
+    #[test]
+    fn validate_nras_rest_verdict_ignores_non_eat_version_strings() {
+        let verdict = br#"{"firmware_version":"1.2.3"}"#;
+
+        let err = validate_nras_rest_verdict_json(verdict, "010203").unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("does not contain claims or detached EAT tokens"));
     }
 
     #[tokio::test]

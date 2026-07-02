@@ -707,7 +707,9 @@ the default NVIDIA NRAS endpoint is used when `nras_url` is omitted. Direct
 Power expands to `/v4/attest/gpu`, or the exact full `/v4/attest/gpu`
 endpoint; query strings, fragments, embedded credentials, and unsupported
 versioned paths are rejected. Direct NRAS REST response bodies are capped at
-16 MiB before JSON or detached-EAT parsing.
+16 MiB before JSON or detached-EAT parsing. Detached EAT values must appear in
+explicit EAT fields and contain JWTs with base64url JSON payloads; unrelated
+version strings elsewhere in the response are not treated as token candidates.
 If `nras_bearer_token_env` is configured, it names the environment variable
 holding the bearer token; Power trims the name and rejects empty names before
 making NRAS requests.
