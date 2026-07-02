@@ -209,7 +209,7 @@ pub fn completion_receipt_with_runtime_policy(
             parameters,
             stream_options_sha256: digest_optional_json(request.stream_options.as_ref())?,
             stop_tokens_sha256: digest_optional_json(request.stop.as_ref())?,
-            response_format_sha256: None,
+            response_format_sha256: digest_optional_json(request.response_format.as_ref())?,
             tools_sha256: None,
             tool_choice_sha256: None,
         },
@@ -583,6 +583,7 @@ mod tests {
             frequency_penalty: None,
             presence_penalty: None,
             seed: None,
+            response_format: None,
             keep_alive: None,
         };
 
@@ -616,6 +617,7 @@ mod tests {
             frequency_penalty: None,
             presence_penalty: None,
             seed: None,
+            response_format: None,
             keep_alive: None,
         };
 
@@ -659,11 +661,54 @@ mod tests {
             frequency_penalty: None,
             presence_penalty: None,
             seed: None,
+            response_format: None,
             keep_alive: None,
         };
 
         let receipt = completion_receipt(&request).unwrap();
 
         assert!(receipt.decoding.stream_options_sha256.is_some());
+    }
+
+    #[test]
+    fn completion_receipt_covers_response_format() {
+        let request = CompletionRequest {
+            model: "llama3".to_string(),
+            prompt: "hello".to_string(),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            stop: None,
+            stream: Some(false),
+            stream_options: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            response_format: Some(crate::api::types::ResponseFormat {
+                r#type: "json_schema".to_string(),
+                json_schema: Some(crate::api::types::JsonSchemaSpec {
+                    name: "Answer".to_string(),
+                    description: None,
+                    schema: Some(serde_json::json!({"type":"object"})),
+                    strict: Some(true),
+                }),
+            }),
+            keep_alive: None,
+        };
+
+        let receipt = completion_receipt(&request).unwrap();
+
+        assert!(receipt.decoding.response_format_sha256.is_some());
     }
 }

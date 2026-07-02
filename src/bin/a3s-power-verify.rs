@@ -1577,6 +1577,7 @@ mod tests {
             frequency_penalty: Some(0.1),
             presence_penalty: Some(0.0),
             seed: Some(7),
+            response_format: None,
             keep_alive: None,
         }
     }

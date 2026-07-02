@@ -9,6 +9,8 @@ use axum::response::sse::Event;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
+use crate::api::types::{JsonSchemaSpec, ResponseFormat};
+use crate::model::manifest::ModelFormat;
 use crate::server::state::AppState;
 
 /// Build the OpenAI-compatible API routes.
@@ -50,6 +52,59 @@ pub(super) fn sse_json_data<T: serde::Serialize>(value: &T) -> String {
 
 pub(super) fn sse_json_event<T: serde::Serialize>(value: &T) -> Event {
     Event::default().data(sse_json_data(value))
+}
+
+pub(super) fn backend_response_format(
+    format: &ModelFormat,
+    response_format: Option<&ResponseFormat>,
+) -> Option<serde_json::Value> {
+    response_format.map(|format_spec| {
+        if matches!(format, ModelFormat::Remote) {
+            openai_wire_response_format(format_spec)
+        } else {
+            local_backend_response_format(format_spec)
+        }
+    })
+}
+
+fn local_backend_response_format(format: &ResponseFormat) -> serde_json::Value {
+    if format.r#type == "json_schema" {
+        if let Some(ref spec) = format.json_schema {
+            if let Some(ref schema) = spec.schema {
+                return schema.clone();
+            }
+        }
+        serde_json::json!("json")
+    } else {
+        serde_json::json!({ "type": format.r#type })
+    }
+}
+
+fn openai_wire_response_format(format: &ResponseFormat) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    value.insert("type".to_string(), format.r#type.clone().into());
+    if let Some(json_schema) = &format.json_schema {
+        value.insert(
+            "json_schema".to_string(),
+            json_schema_spec_value(json_schema),
+        );
+    }
+    serde_json::Value::Object(value)
+}
+
+fn json_schema_spec_value(spec: &JsonSchemaSpec) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    value.insert("name".to_string(), spec.name.clone().into());
+    if let Some(description) = &spec.description {
+        value.insert("description".to_string(), description.clone().into());
+    }
+    if let Some(schema) = &spec.schema {
+        value.insert("schema".to_string(), schema.clone());
+    }
+    if let Some(strict) = spec.strict {
+        value.insert("strict".to_string(), strict.into());
+    }
+    serde_json::Value::Object(value)
 }
 
 /// GET /v1/logs — Stream server log entries as SSE.

@@ -1199,6 +1199,11 @@ fn build_completion_body(model_name: &str, request: &CompletionRequest) -> serde
         "prompt": request.prompt,
         "stream": true,
     });
+    if let Some(response_format) = &request.response_format {
+        body.as_object_mut()
+            .expect("body is a json object")
+            .insert("response_format".into(), response_format.clone());
+    }
     set_common(
         &mut body,
         request.temperature,
@@ -1501,6 +1506,60 @@ mod tests {
         assert_eq!(body["mirostat_eta"], 0.25);
         assert_eq!(body["tfs_z"], 0.75);
         assert_eq!(body["typical_p"], 0.5);
+    }
+
+    #[test]
+    fn build_completion_body_preserves_response_format() {
+        let request = CompletionRequest {
+            prompt: "hello".to_string(),
+            session_id: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop: None,
+            stream: true,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: Some(serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "Answer",
+                    "schema": { "type": "object" },
+                    "strict": true
+                }
+            })),
+            images: None,
+            projector_path: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
+            num_parallel: None,
+            suffix: None,
+            context: None,
+        };
+
+        let body = build_completion_body("llama-70b", &request);
+
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(body["response_format"]["json_schema"]["name"], "Answer");
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
     }
 
     #[test]

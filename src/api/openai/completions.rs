@@ -139,7 +139,10 @@ pub async fn handler(
         mirostat_eta: request.mirostat_eta,
         tfs_z: request.tfs_z,
         typical_p: request.typical_p,
-        response_format: None,
+        response_format: super::backend_response_format(
+            &manifest.format,
+            request.response_format.as_ref(),
+        ),
         images: None,
         projector_path: None,
         repeat_last_n: request.repeat_last_n,
@@ -742,6 +745,61 @@ mod tests {
             json["attestation_receipt"]["decoding"]["parameters"]["penalize_newline"],
             serde_json::json!(false)
         );
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_completions_forwards_response_format() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let mock = MockBackend::success();
+        let completion_request_capture = mock.completion_request_capture();
+        let state = test_state_with_mock(mock);
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"test",
+                    "prompt":"hi",
+                    "stream":false,
+                    "response_format":{
+                        "type":"json_schema",
+                        "json_schema":{
+                            "name":"Answer",
+                            "schema":{"type":"object","properties":{"answer":{"type":"string"}}},
+                            "strict":true
+                        }
+                    }
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let captured = completion_request_capture
+            .lock()
+            .expect("completion request lock poisoned")
+            .clone()
+            .expect("expected backend completion request to be captured");
+        let response_format = captured
+            .response_format
+            .expect("expected response format to be forwarded");
+        assert_eq!(response_format["type"], "object");
+        assert_eq!(response_format["properties"]["answer"]["type"], "string");
+        assert!(json["attestation_receipt"]["decoding"]["response_format_sha256"].is_string());
 
         std::env::remove_var("A3S_POWER_HOME");
     }

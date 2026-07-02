@@ -10,67 +10,13 @@ use zeroize::Zeroize;
 use super::openai_error;
 use crate::api::types::{
     ChatChoice, ChatChunkChoice, ChatCompletionChunk, ChatCompletionMessage, ChatCompletionRequest,
-    ChatCompletionResponse, ChatDelta, JsonSchemaSpec, ResponseFormat, Usage,
+    ChatCompletionResponse, ChatDelta, Usage,
 };
 use crate::backend::types::{ChatMessage, ChatRequest, MessageContent, ToolCall};
-use crate::model::manifest::ModelFormat;
 use crate::server::audit::AuditEvent;
 use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
-
-fn backend_response_format(
-    format: &ModelFormat,
-    response_format: Option<&ResponseFormat>,
-) -> Option<serde_json::Value> {
-    response_format.map(|format_spec| {
-        if matches!(format, ModelFormat::Remote) {
-            openai_wire_response_format(format_spec)
-        } else {
-            local_backend_response_format(format_spec)
-        }
-    })
-}
-
-fn local_backend_response_format(format: &ResponseFormat) -> serde_json::Value {
-    if format.r#type == "json_schema" {
-        if let Some(ref spec) = format.json_schema {
-            if let Some(ref schema) = spec.schema {
-                return schema.clone();
-            }
-        }
-        serde_json::json!("json")
-    } else {
-        serde_json::json!({ "type": format.r#type })
-    }
-}
-
-fn openai_wire_response_format(format: &ResponseFormat) -> serde_json::Value {
-    let mut value = serde_json::Map::new();
-    value.insert("type".to_string(), format.r#type.clone().into());
-    if let Some(json_schema) = &format.json_schema {
-        value.insert(
-            "json_schema".to_string(),
-            json_schema_spec_value(json_schema),
-        );
-    }
-    serde_json::Value::Object(value)
-}
-
-fn json_schema_spec_value(spec: &JsonSchemaSpec) -> serde_json::Value {
-    let mut value = serde_json::Map::new();
-    value.insert("name".to_string(), spec.name.clone().into());
-    if let Some(description) = &spec.description {
-        value.insert("description".to_string(), description.clone().into());
-    }
-    if let Some(schema) = &spec.schema {
-        value.insert("schema".to_string(), schema.clone());
-    }
-    if let Some(strict) = spec.strict {
-        value.insert("strict".to_string(), strict.into());
-    }
-    serde_json::Value::Object(value)
-}
 
 /// POST /v1/chat/completions - OpenAI-compatible chat completion.
 pub async fn handler(
@@ -148,7 +94,7 @@ pub async fn handler(
     let unload_after_use = load_result.unload_after_use;
 
     let response_format =
-        backend_response_format(&manifest.format, request.response_format.as_ref());
+        super::backend_response_format(&manifest.format, request.response_format.as_ref());
     let backend_request = ChatRequest {
         messages: request
             .messages
@@ -663,7 +609,8 @@ mod tests {
         }))
         .unwrap();
 
-        let value = super::backend_response_format(&ModelFormat::Remote, Some(&format)).unwrap();
+        let value =
+            super::super::backend_response_format(&ModelFormat::Remote, Some(&format)).unwrap();
 
         assert_eq!(value["type"], "json_schema");
         assert_eq!(value["json_schema"]["name"], "Weather");
@@ -691,7 +638,8 @@ mod tests {
         }))
         .unwrap();
 
-        let value = super::backend_response_format(&ModelFormat::Gguf, Some(&format)).unwrap();
+        let value =
+            super::super::backend_response_format(&ModelFormat::Gguf, Some(&format)).unwrap();
 
         assert_eq!(value["type"], "object");
         assert_eq!(value["properties"]["city"]["type"], "string");

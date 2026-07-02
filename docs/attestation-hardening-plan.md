@@ -125,6 +125,8 @@ Landed in the current working tree:
   `effective_prompt` digest.
 - Preserved OpenAI `json_schema` response-format wire shape for remote/proxy
   chat requests while keeping local backend schema extraction unchanged.
+- Added OpenAI completion `response_format` coverage through API parsing,
+  backend/proxy forwarding, and request receipt binding.
 - Added regression tests for strict policy, runtime model-hash binding, stale
   model-file rejection, GPU confidential fail-closed behavior, runtime policy
   digest binding, proxy and mistralrs effective-prompt digest handling, request

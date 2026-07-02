@@ -263,6 +263,8 @@ pub struct CompletionRequest {
     pub presence_penalty: Option<f32>,
     #[serde(default)]
     pub seed: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
     /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,
@@ -589,6 +591,29 @@ mod tests {
         let req: CompletionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.model, "llama3");
         assert_eq!(req.prompt, "Hello");
+    }
+
+    #[test]
+    fn test_completion_request_with_response_format() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "Hello",
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "Answer",
+                    "schema": { "type": "object" },
+                    "strict": true
+                }
+            }
+        }"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        let format = req.response_format.unwrap();
+        assert_eq!(format.r#type, "json_schema");
+        let schema = format.json_schema.unwrap();
+        assert_eq!(schema.name, "Answer");
+        assert_eq!(schema.schema.unwrap()["type"], "object");
+        assert_eq!(schema.strict, Some(true));
     }
 
     #[test]
