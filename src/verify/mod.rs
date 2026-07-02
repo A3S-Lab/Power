@@ -88,7 +88,7 @@ use crate::api::types::{ChatCompletionRequest, CompletionRequest};
 use crate::error::{PowerError, Result};
 use crate::tee::attestation::{
     build_claims_report_data, AttestationClaimsV2, AttestationReport, GpuDeviceClaim,
-    GpuDeviceValidationClaim, RuntimePolicyClaim, TeeType,
+    GpuDeviceValidationClaim, GpuEvidenceClaim, ModelDigestClaim, RuntimePolicyClaim, TeeType,
 };
 
 pub mod hw_verify;
@@ -913,39 +913,58 @@ fn verify_claims_well_formed(claims: &AttestationClaimsV2) -> Result<()> {
     }
 
     if let Some(model) = claims.model.as_ref() {
-        if model.name.trim().is_empty() {
-            return Err(PowerError::AttestationVerificationFailed(
-                "claims.model.name must not be empty".to_string(),
-            ));
-        }
-        require_sha256_digest_bytes("claims.model.digest", &model.digest)?;
-        require_optional_sha256_digest_bytes(
-            "claims.model.plaintext_digest",
-            model.plaintext_digest.as_deref(),
-        )?;
-        require_optional_sha256_digest_bytes(
-            "claims.model.ciphertext_digest",
-            model.ciphertext_digest.as_deref(),
-        )?;
+        verify_model_digest_claim_well_formed("claims.model", model)?;
     }
 
     if let Some(gpu) = claims.gpu.as_ref() {
-        if gpu.provider.trim().is_empty() {
-            return Err(PowerError::AttestationVerificationFailed(
-                "claims.gpu.provider must not be empty".to_string(),
-            ));
-        }
-        require_sha256_digest_bytes("claims.gpu.evidence_digest", &gpu.evidence_digest)?;
-        require_optional_sha256_digest_bytes(
-            "claims.gpu.verdict_digest",
-            gpu.verdict_digest.as_deref(),
-        )?;
+        verify_gpu_evidence_claim_well_formed("claims.gpu", gpu)?;
     }
 
     if let Some(runtime) = claims.runtime.as_ref() {
         verify_runtime_policy_well_formed("claims.runtime", runtime)?;
     }
 
+    Ok(())
+}
+
+fn verify_model_digest_claim_well_formed(
+    field_prefix: &str,
+    model: &ModelDigestClaim,
+) -> Result<()> {
+    if model.name.trim().is_empty() {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "{field_prefix}.name must not be empty"
+        )));
+    }
+    require_sha256_digest_bytes(&format!("{field_prefix}.digest"), &model.digest)?;
+    require_optional_sha256_digest_bytes(
+        &format!("{field_prefix}.plaintext_digest"),
+        model.plaintext_digest.as_deref(),
+    )?;
+    require_optional_sha256_digest_bytes(
+        &format!("{field_prefix}.ciphertext_digest"),
+        model.ciphertext_digest.as_deref(),
+    )?;
+    Ok(())
+}
+
+fn verify_gpu_evidence_claim_well_formed(field_prefix: &str, gpu: &GpuEvidenceClaim) -> Result<()> {
+    if gpu.provider.trim().is_empty() {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "{field_prefix}.provider must not be empty"
+        )));
+    }
+    require_sha256_digest_bytes(
+        &format!("{field_prefix}.evidence_digest"),
+        &gpu.evidence_digest,
+    )?;
+    require_optional_sha256_digest_bytes(
+        &format!("{field_prefix}.verdict_digest"),
+        gpu.verdict_digest.as_deref(),
+    )?;
+    if let Some(nonce) = gpu.nonce.as_deref() {
+        require_32_byte_nonce(&format!("{field_prefix}.nonce"), nonce)?;
+    }
     Ok(())
 }
 
@@ -978,6 +997,7 @@ pub fn verify_claims_model_hash_binding(
             "v2 claims do not include a model digest".to_string(),
         )
     })?;
+    verify_model_digest_claim_well_formed("claims.model", model)?;
 
     if !constant_time_eq(&model.digest, model_hash) {
         return Err(PowerError::AttestationVerificationFailed(format!(
@@ -1004,6 +1024,7 @@ pub fn verify_claims_gpu_evidence_binding(
             "v2 claims do not include a GPU evidence claim".to_string(),
         )
     })?;
+    verify_gpu_evidence_claim_well_formed("claims.gpu", gpu)?;
 
     if let Some(gpu_nonce) = gpu.nonce.as_deref() {
         let claim_nonce = claims.nonce.as_deref().ok_or_else(|| {
@@ -1573,6 +1594,7 @@ pub fn verify_claims_runtime_policy_binding(
             "v2 claims do not include a runtime policy claim".to_string(),
         )
     })?;
+    verify_runtime_policy_well_formed("claims.runtime", runtime)?;
 
     if let Some(expected) = expected_chat_template_digest {
         let prompt = runtime.prompt.as_ref().ok_or_else(|| {
@@ -4025,6 +4047,18 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_claims_model_hash_binding_rejects_short_claim_digest() {
+        let (_, mut claims) = make_claims_report(Some(b"nonce"), vec![0x02; 32]);
+        claims.model.as_mut().unwrap().digest = vec![0x02; 31];
+
+        let err = verify_claims_model_hash_binding(&claims, &[0x02; 32]).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.model.digest must be a 32-byte SHA-256 digest"));
+    }
+
+    #[test]
     fn test_verify_report_with_policy_requires_v2_claims() {
         let report = make_report(vec![0u8; 64], vec![0u8; 48]);
         let opts = VerifyOptions {
@@ -4069,6 +4103,28 @@ mod tests {
 
         let err = verify_claims_gpu_evidence_binding(&claims, Some(&[0x99; 32]), None).unwrap_err();
         assert!(err.to_string().contains("GPU evidence digest mismatch"));
+    }
+
+    #[test]
+    fn test_verify_claims_gpu_evidence_binding_rejects_short_claim_evidence_digest() {
+        let (_, claims) = make_gpu_claims_report(vec![0x11; 31], Some(vec![0x22; 32]));
+
+        let err = verify_claims_gpu_evidence_binding(&claims, Some(&[0x11; 32]), None).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.gpu.evidence_digest must be a 32-byte SHA-256 digest"));
+    }
+
+    #[test]
+    fn test_verify_claims_gpu_evidence_binding_rejects_short_claim_verdict_digest() {
+        let (_, claims) = make_gpu_claims_report(vec![0x11; 32], Some(vec![0x22; 31]));
+
+        let err = verify_claims_gpu_evidence_binding(&claims, None, Some(&[0x22; 32])).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.gpu.verdict_digest must be a 32-byte SHA-256 digest"));
     }
 
     #[test]
@@ -4664,6 +4720,18 @@ mod tests {
         let err = verify_claims_runtime_policy_binding(&claims, Some(&[0x99; 32]), None, None)
             .unwrap_err();
         assert!(err.to_string().contains("Chat template digest mismatch"));
+    }
+
+    #[test]
+    fn test_verify_claims_runtime_policy_binding_rejects_short_claim_decoding_digest() {
+        let (_, claims) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 31]);
+
+        let err = verify_claims_runtime_policy_binding(&claims, None, Some(&[0x44; 32]), None)
+            .unwrap_err();
+
+        assert!(err.to_string().contains(
+            "claims.runtime.decoding.parameters_sha256 must be a 32-byte SHA-256 digest"
+        ));
     }
 
     #[test]

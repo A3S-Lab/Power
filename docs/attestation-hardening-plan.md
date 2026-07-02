@@ -164,6 +164,9 @@ Landed in the current working tree:
   pins.
 - Tightened GPU freshness nonce validation so SDK GPU evidence and device-claim
   verification rejects malformed non-32-byte GPU/CPU nonce bindings.
+- Tightened v2 claims SDK verifier helpers so direct model, GPU, and runtime
+  policy binding checks reject malformed actual claim digest fields before
+  policy comparison.
 - Tightened runtime-policy SDK verifier pins so chat-template, decoding-policy,
   and GPU execution pins must be full 32-byte SHA-256 digests.
 - Tightened model-hash verifier pins so SDK and CLI verification require a full
