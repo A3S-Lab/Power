@@ -1079,7 +1079,7 @@ fn validate_nras_rest_verdict_json(bytes: &[u8], nonce_hex: &str) -> Result<Vec<
     let mut claim_values = Vec::new();
     for token in tokens {
         let payload = decode_jwt_payload_json(&token)?;
-        collect_nvidia_device_claim_values(&payload, &mut claim_values);
+        collect_nvidia_device_claim_values(&payload, &mut claim_values)?;
     }
 
     if claim_values.is_empty() {
@@ -1197,31 +1197,36 @@ fn decode_jwt_payload_json(token: &str) -> Result<serde_json::Value> {
     Ok(value)
 }
 
-fn collect_nvidia_device_claim_values(value: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
+fn collect_nvidia_device_claim_values(
+    value: &serde_json::Value,
+    out: &mut Vec<serde_json::Value>,
+) -> Result<()> {
     match value {
         serde_json::Value::Object(object) => {
             if object.contains_key("x-nvidia-device-type") {
+                validate_gpu_device_claim_count("NVIDIA device claims", out.len() + 1)?;
                 out.push(value.clone());
-                return;
+                return Ok(());
             }
             if let Some(claims) = object.get("claims").and_then(serde_json::Value::as_array) {
                 for claim in claims {
-                    collect_nvidia_device_claim_values(claim, out);
+                    collect_nvidia_device_claim_values(claim, out)?;
                 }
             }
             if let Some(submods) = object.get("submods").and_then(serde_json::Value::as_object) {
                 for submod in submods.values() {
-                    collect_nvidia_device_claim_values(submod, out);
+                    collect_nvidia_device_claim_values(submod, out)?;
                 }
             }
         }
         serde_json::Value::Array(values) => {
             for value in values {
-                collect_nvidia_device_claim_values(value, out);
+                collect_nvidia_device_claim_values(value, out)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 fn validate_nvattest_evidence_json(bytes: &[u8], nonce_hex: &str) -> Result<u32> {
@@ -2343,6 +2348,18 @@ mod tests {
             "claims": claims
         }))
         .unwrap();
+
+        let err = validate_nras_rest_verdict_json(&verdict, "010203").unwrap_err();
+
+        assert!(err.to_string().contains("must contain at most"));
+    }
+
+    #[test]
+    fn validate_nras_rest_verdict_rejects_too_many_detached_eat_device_claims() {
+        let claims = vec![nvidia_gpu_claim("010203"); MAX_GPU_DEVICE_CLAIMS + 1];
+        let verdict = nras_rest_verdict_with_detached_eat_payload(serde_json::json!({
+            "claims": claims
+        }));
 
         let err = validate_nras_rest_verdict_json(&verdict, "010203").unwrap_err();
 
