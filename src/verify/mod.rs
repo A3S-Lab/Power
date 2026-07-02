@@ -1786,26 +1786,7 @@ pub fn verify_receipt_digest_hex(
     receipt: &AttestationReceipt,
     expected_digest_hex: &str,
 ) -> Result<()> {
-    let digest_hex = expected_digest_hex
-        .strip_prefix("sha256:")
-        .unwrap_or(expected_digest_hex);
-    if digest_hex.len() != 64 {
-        return Err(PowerError::AttestationVerificationFailed(format!(
-            "receipt digest must be 64 hex characters, got {}",
-            digest_hex.len()
-        )));
-    }
-    if !digest_hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(PowerError::AttestationVerificationFailed(
-            "receipt digest contains non-hex characters".to_string(),
-        ));
-    }
-
-    let expected = hex::decode(digest_hex).map_err(|e| {
-        PowerError::AttestationVerificationFailed(format!(
-            "failed to decode expected receipt digest: {e}"
-        ))
-    })?;
+    let expected = decode_expected_sha256_digest_hex("receipt digest", expected_digest_hex)?;
     verify_receipt_digest(receipt, &expected)
 }
 
@@ -2261,6 +2242,25 @@ fn require_sha256_hex(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn decode_expected_sha256_digest_hex(field: &str, value: &str) -> Result<Vec<u8>> {
+    let digest_hex = value.trim().strip_prefix("sha256:").unwrap_or(value.trim());
+    if digest_hex.len() != 64 {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "{field} must be 64 hex characters, got {}",
+            digest_hex.len()
+        )));
+    }
+    if !digest_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "{field} contains non-hex characters"
+        )));
+    }
+
+    hex::decode(digest_hex).map_err(|e| {
+        PowerError::AttestationVerificationFailed(format!("failed to decode expected {field}: {e}"))
+    })
+}
+
 /// Verify that a receipt's effective prompt digest matches a 32-byte SHA-256 digest.
 pub fn verify_receipt_effective_prompt_digest(
     receipt: &AttestationReceipt,
@@ -2312,26 +2312,8 @@ pub fn verify_receipt_effective_prompt_digest_hex(
     receipt: &AttestationReceipt,
     expected_digest_hex: &str,
 ) -> Result<()> {
-    let digest_hex = expected_digest_hex
-        .strip_prefix("sha256:")
-        .unwrap_or(expected_digest_hex);
-    if digest_hex.len() != 64 {
-        return Err(PowerError::AttestationVerificationFailed(format!(
-            "effective prompt digest must be 64 hex characters, got {}",
-            digest_hex.len()
-        )));
-    }
-    if !digest_hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(PowerError::AttestationVerificationFailed(
-            "effective prompt digest contains non-hex characters".to_string(),
-        ));
-    }
-
-    let expected = hex::decode(digest_hex).map_err(|e| {
-        PowerError::AttestationVerificationFailed(format!(
-            "failed to decode expected effective prompt digest: {e}"
-        ))
-    })?;
+    let expected =
+        decode_expected_sha256_digest_hex("effective prompt digest", expected_digest_hex)?;
     verify_receipt_effective_prompt_digest(receipt, &expected)
 }
 
@@ -2932,6 +2914,14 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_receipt_digest_hex_trims_prefixed_digest() {
+        let receipt = make_receipt();
+        let digest = receipt_digest(&receipt).unwrap();
+
+        verify_receipt_digest_hex(&receipt, &format!(" sha256:{digest} ")).unwrap();
+    }
+
+    #[test]
     fn test_verify_receipt_digest_fails_when_mismatch() {
         let receipt = make_receipt();
         let wrong = vec![0x99; 32];
@@ -3362,6 +3352,15 @@ mod tests {
 
         verify_receipt_effective_prompt_digest_hex(&receipt, &digest).unwrap();
         verify_receipt_effective_prompt_digest_hex(&receipt, &format!("sha256:{digest}")).unwrap();
+    }
+
+    #[test]
+    fn test_verify_receipt_effective_prompt_digest_hex_trims_prefixed_digest() {
+        let receipt = make_receipt_with_effective_prompt();
+        let digest = receipt.effective_prompt.as_ref().unwrap().sha256.clone();
+
+        verify_receipt_effective_prompt_digest_hex(&receipt, &format!(" sha256:{digest} "))
+            .unwrap();
     }
 
     #[test]
