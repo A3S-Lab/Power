@@ -40,6 +40,13 @@ pub async fn handler(
             .into_response();
         }
     }
+    if request.suffix.is_some() {
+        return openai_error(
+            "unsupported_completion_suffix",
+            "completion suffix is not supported; omit suffix to use standard text completion",
+        )
+        .into_response();
+    }
 
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
@@ -560,6 +567,31 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("only n=1 is supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_completions_rejects_suffix_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","prompt":"prefix","suffix":"suffix"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_completion_suffix");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("suffix is not supported"));
     }
 
     #[tokio::test]

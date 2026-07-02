@@ -1580,6 +1580,7 @@ mod tests {
             presence_penalty: Some(0.0),
             seed: Some(7),
             response_format: None,
+            suffix: None,
             keep_alive: None,
         }
     }

@@ -168,6 +168,12 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
     runtime_policy: Option<RuntimePolicyClaim>,
     effective_prompt: Option<EffectivePromptDigest>,
 ) -> crate::error::Result<AttestationReceipt> {
+    if request.suffix.is_some() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "completion suffix requests are unsupported and cannot be receipt-bound".to_string(),
+        ));
+    }
+
     let input = ReceiptInputDigest {
         kind: "text.prompt".to_string(),
         sha256: digest_json(&request.prompt)?,
@@ -474,6 +480,7 @@ mod tests {
             presence_penalty: None,
             seed: None,
             response_format: None,
+            suffix: None,
             keep_alive: None,
         };
         let base = completion_receipt(&request).unwrap();
@@ -641,6 +648,7 @@ mod tests {
             presence_penalty: None,
             seed: None,
             response_format: None,
+            suffix: None,
             keep_alive: None,
         };
 
@@ -676,6 +684,7 @@ mod tests {
             presence_penalty: None,
             seed: None,
             response_format: None,
+            suffix: None,
             keep_alive: None,
         };
 
@@ -721,6 +730,7 @@ mod tests {
             presence_penalty: None,
             seed: None,
             response_format: None,
+            suffix: None,
             keep_alive: None,
         };
 
@@ -764,6 +774,7 @@ mod tests {
                     strict: Some(true),
                 }),
             }),
+            suffix: None,
             keep_alive: None,
         };
 

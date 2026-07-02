@@ -104,6 +104,9 @@ Landed in the current working tree:
   default single-choice output (`n = 1`) and reject unsupported multi-choice
   requests, with explicit `n` values covered by receipt decoding-parameter
   hashes.
+- OpenAI-compatible text completion requests now explicitly reject `suffix`
+  fill-in-the-middle requests instead of silently dropping the suffix before
+  backend inference or receipt comparison.
 - Added opt-in proxy upstream effective-prompt digest support. Proxy receipts
   remain non-overclaiming by default; when configured, Power asks the upstream
   digest endpoint for a `chat.rendered-prompt` SHA-256 before inference and can

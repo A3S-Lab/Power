@@ -2786,6 +2786,7 @@ mod tests {
             presence_penalty: Some(0.0),
             seed: Some(7),
             response_format: None,
+            suffix: None,
             keep_alive: None,
         }
     }
@@ -3395,6 +3396,19 @@ mod tests {
         assert!(err
             .to_string()
             .contains("receipt.decoding.stream_options_sha256 is absent"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_rejects_suffix_request() {
+        let mut request = completion_request();
+        let receipt = completion_receipt(&request).unwrap();
+        request.suffix = Some("suffix".to_string());
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("completion suffix requests are unsupported"));
     }
 
     #[test]

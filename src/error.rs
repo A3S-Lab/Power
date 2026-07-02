@@ -12,6 +12,9 @@ pub enum PowerError {
     #[error("Invalid model format: {0}")]
     InvalidFormat(String),
 
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -59,6 +62,7 @@ impl From<PowerError> for axum::response::Response {
             PowerError::BackendNotAvailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, err.to_string())
             }
+            PowerError::InvalidRequest(_) => (StatusCode::BAD_REQUEST, err.to_string()),
             PowerError::InvalidFormat(_) => (StatusCode::BAD_REQUEST, err.to_string()),
             PowerError::IntegrityCheckFailed { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
@@ -156,6 +160,16 @@ mod tests {
         use axum::response::Response;
 
         let err = PowerError::InvalidFormat("bad".to_string());
+        let resp: Response = err.into();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_error_to_response_invalid_request() {
+        use axum::http::StatusCode;
+        use axum::response::Response;
+
+        let err = PowerError::InvalidRequest("bad request".to_string());
         let resp: Response = err.into();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }

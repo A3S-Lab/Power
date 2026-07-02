@@ -271,6 +271,11 @@ pub struct CompletionRequest {
     pub seed: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
+    /// Suffix for fill-in-the-middle text completion. Power currently rejects
+    /// explicit suffix requests because backends do not expose a verified
+    /// fill-in-the-middle path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
     /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,
