@@ -162,6 +162,8 @@ Landed in the current working tree:
 - Tightened GPU evidence/verdict SDK verifier pins so callers must provide full
   32-byte SHA-256 digests instead of relying on mismatch behavior for malformed
   pins.
+- Tightened runtime-policy SDK verifier pins so chat-template, decoding-policy,
+  and GPU execution pins must be full 32-byte SHA-256 digests.
 - Tightened model-hash verifier pins so SDK and CLI verification require a full
   32-byte SHA-256 digest instead of accepting prefix-length legacy pins.
 - Tightened launch-measurement verification so SDK and CLI verification require

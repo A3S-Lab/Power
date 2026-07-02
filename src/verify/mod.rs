@@ -1548,6 +1548,19 @@ pub fn verify_claims_runtime_policy_binding(
     expected_decoding_parameters_digest: Option<&[u8]>,
     expected_gpu_execution_digest: Option<&[u8]>,
 ) -> Result<()> {
+    require_optional_sha256_digest_bytes(
+        "expected chat template digest",
+        expected_chat_template_digest,
+    )?;
+    require_optional_sha256_digest_bytes(
+        "expected decoding parameters digest",
+        expected_decoding_parameters_digest,
+    )?;
+    require_optional_sha256_digest_bytes(
+        "expected GPU execution digest",
+        expected_gpu_execution_digest,
+    )?;
+
     let runtime = claims.runtime.as_ref().ok_or_else(|| {
         PowerError::AttestationVerificationFailed(
             "v2 claims do not include a runtime policy claim".to_string(),
@@ -4583,6 +4596,30 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_claims_runtime_policy_binding_rejects_short_expected_chat_template_digest() {
+        let (_, claims) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 32]);
+
+        let err = verify_claims_runtime_policy_binding(&claims, Some(&[0x33; 31]), None, None)
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("expected chat template digest must be a 32-byte SHA-256 digest"));
+    }
+
+    #[test]
+    fn test_verify_claims_runtime_policy_binding_rejects_short_expected_decoding_digest() {
+        let (_, claims) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 32]);
+
+        let err = verify_claims_runtime_policy_binding(&claims, None, Some(&[0x44; 31]), None)
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("expected decoding parameters digest must be a 32-byte SHA-256 digest"));
+    }
+
+    #[test]
     fn test_verify_claims_runtime_policy_binding_checks_gpu_execution() {
         let gpu_execution_digest = vec![0x55; 32];
         let (_, claims) = make_runtime_execution_claims_report(gpu_execution_digest.clone());
@@ -4599,6 +4636,18 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("GPU execution digest mismatch"));
+    }
+
+    #[test]
+    fn test_verify_claims_runtime_policy_binding_rejects_short_expected_gpu_execution_digest() {
+        let (_, claims) = make_runtime_execution_claims_report(vec![0x55; 32]);
+
+        let err = verify_claims_runtime_policy_binding(&claims, None, None, Some(&[0x55; 31]))
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("expected GPU execution digest must be a 32-byte SHA-256 digest"));
     }
 
     #[test]
