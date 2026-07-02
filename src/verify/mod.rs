@@ -2757,6 +2757,10 @@ mod tests {
             presence_penalty: Some(0.0),
             seed: Some(7),
             response_format: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
             tools: None,
             tool_choice: None,
             functions: None,
@@ -3527,6 +3531,58 @@ mod tests {
         assert!(err
             .to_string()
             .contains("chat message thinking input is unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_unsupported_modalities() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.modalities = Some(vec!["text".to_string(), "audio".to_string()]);
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("chat completion modalities are unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_audio_request() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.audio = Some(serde_json::json!({"format": "wav"}));
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("chat completion audio output is unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_prediction_request() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.prediction = Some(serde_json::json!({"type": "content", "content": "hello"}));
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("chat completion prediction hints are unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_reasoning_effort_request() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.reasoning_effort = Some("high".to_string());
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("chat completion reasoning_effort is unsupported"));
     }
 
     #[test]

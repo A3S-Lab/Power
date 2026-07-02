@@ -123,6 +123,10 @@ Landed in the current working tree:
 - OpenAI-compatible chat requests now reject message-level `thinking` input
   instead of receipt-binding reasoning content that is not forwarded into
   backend prompt construction.
+- OpenAI-compatible chat requests now accept only the default text output
+  modality (`modalities = ["text"]`) and reject unsupported output controls
+  (`audio`, `prediction`, and `reasoning_effort`) instead of silently ignoring
+  response-shape requests that backend inference and receipts cannot honor.
 - Added opt-in proxy upstream effective-prompt digest support. Proxy receipts
   remain non-overclaiming by default; when configured, Power asks the upstream
   digest endpoint for a `chat.rendered-prompt` SHA-256 before inference and can

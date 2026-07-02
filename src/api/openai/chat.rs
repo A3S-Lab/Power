@@ -58,6 +58,34 @@ pub async fn handler(
         )
         .into_response();
     }
+    if request.has_unsupported_modalities() {
+        return openai_error(
+            "unsupported_chat_modalities",
+            r#"chat completion modalities are not supported except ["text"]"#,
+        )
+        .into_response();
+    }
+    if request.audio.is_some() {
+        return openai_error(
+            "unsupported_chat_audio",
+            "chat completion audio output is not supported; omit audio",
+        )
+        .into_response();
+    }
+    if request.prediction.is_some() {
+        return openai_error(
+            "unsupported_prediction",
+            "chat completion prediction hints are not supported; omit prediction",
+        )
+        .into_response();
+    }
+    if request.reasoning_effort.is_some() {
+        return openai_error(
+            "unsupported_reasoning_effort",
+            "chat completion reasoning_effort is not supported; omit reasoning_effort",
+        )
+        .into_response();
+    }
     if request.has_thinking_inputs() {
         return openai_error(
             "unsupported_message_thinking",
@@ -828,6 +856,127 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("logit_bias is not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_allows_text_modalities_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"modalities":["text"]}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "model_not_found");
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_unsupported_modalities_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"modalities":["text","audio"]}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_chat_modalities");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("modalities are not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_audio_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"audio":{"format":"wav","voice":"alloy"}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_chat_audio");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("audio output is not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_prediction_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"prediction":{"type":"content","content":"hi"}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_prediction");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("prediction hints are not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_reasoning_effort_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_reasoning_effort");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("reasoning_effort is not supported"));
     }
 
     #[tokio::test]

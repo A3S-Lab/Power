@@ -90,6 +90,20 @@ pub struct ChatCompletionRequest {
     pub seed: Option<i64>,
     #[serde(default)]
     pub response_format: Option<ResponseFormat>,
+    /// Desired output modalities. Power currently supports text output only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modalities: Option<Vec<String>>,
+    /// Audio output options. Power currently rejects audio output requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<serde_json::Value>,
+    /// Static prediction hints. Power currently rejects prediction hints because
+    /// backends do not consume them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction: Option<serde_json::Value>,
+    /// Reasoning-effort control. Power currently rejects this control because
+    /// backends do not expose a verified reasoning-effort path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,6 +152,13 @@ impl ChatCompletionRequest {
     /// Effective generated-token limit for backend requests.
     pub fn effective_max_tokens(&self) -> Option<u32> {
         self.max_tokens.or(self.max_completion_tokens)
+    }
+
+    /// Return true when a request asks for anything other than text output.
+    pub fn has_unsupported_modalities(&self) -> bool {
+        self.modalities
+            .as_ref()
+            .is_some_and(|modalities| modalities.len() != 1 || modalities[0] != "text")
     }
 
     /// Return true when both legacy and modern tool definitions are present.

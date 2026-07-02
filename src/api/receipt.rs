@@ -98,6 +98,28 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             "chat completion logit_bias is unsupported and cannot be receipt-bound".to_string(),
         ));
     }
+    if request.has_unsupported_modalities() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            r#"chat completion modalities are unsupported except ["text"] and cannot be receipt-bound"#.to_string(),
+        ));
+    }
+    if request.audio.is_some() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "chat completion audio output is unsupported and cannot be receipt-bound".to_string(),
+        ));
+    }
+    if request.prediction.is_some() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "chat completion prediction hints are unsupported and cannot be receipt-bound"
+                .to_string(),
+        ));
+    }
+    if request.reasoning_effort.is_some() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "chat completion reasoning_effort is unsupported and cannot be receipt-bound"
+                .to_string(),
+        ));
+    }
     if request.has_thinking_inputs() {
         return Err(crate::error::PowerError::InvalidRequest(
             "chat message thinking input is unsupported and cannot be receipt-bound".to_string(),
@@ -160,6 +182,14 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
     parameters.insert(
         "stream".to_string(),
         serde_json::Value::Bool(request.stream.unwrap_or(false)),
+    );
+    parameters.insert(
+        "modalities".to_string(),
+        request
+            .modalities
+            .as_ref()
+            .map(|modalities| serde_json::json!(modalities))
+            .unwrap_or(serde_json::Value::Null),
     );
     parameters.insert(
         "parallel_tool_calls".to_string(),
@@ -459,6 +489,10 @@ mod tests {
             presence_penalty: Some(0.0),
             seed: Some(7),
             response_format: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
             tools: None,
             tool_choice: None,
             functions: None,
@@ -690,6 +724,52 @@ mod tests {
 
         assert!(receipt.decoding.stream_options_sha256.is_some());
         assert_ne!(first, receipt_digest(&receipt).unwrap());
+    }
+
+    #[test]
+    fn chat_receipt_covers_text_modalities() {
+        let first = receipt_digest(&chat_receipt(&chat_request()).unwrap()).unwrap();
+        let mut changed = chat_request();
+        changed.modalities = Some(vec!["text".to_string()]);
+
+        let receipt = chat_receipt(&changed).unwrap();
+
+        assert_eq!(
+            receipt.decoding.parameters["modalities"],
+            serde_json::json!(["text"])
+        );
+        assert_ne!(first, receipt_digest(&receipt).unwrap());
+    }
+
+    #[test]
+    fn chat_receipt_rejects_unsupported_output_controls() {
+        let mut request = chat_request();
+        request.modalities = Some(vec!["text".to_string(), "audio".to_string()]);
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("modalities are unsupported"));
+
+        let mut request = chat_request();
+        request.audio = Some(serde_json::json!({"format": "wav"}));
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("audio output is unsupported"));
+
+        let mut request = chat_request();
+        request.prediction = Some(serde_json::json!({"type": "content", "content": "hello"}));
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("prediction hints are unsupported"));
+
+        let mut request = chat_request();
+        request.reasoning_effort = Some("high".to_string());
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("reasoning_effort is unsupported"));
     }
 
     #[test]
