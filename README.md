@@ -702,8 +702,9 @@ GPU confidential mode requires clients to send a 64-character hex nonce to
 array, or an `nvattest collect-evidence` wrapper whose embedded nonce matches
 the attestation nonce. Power validates `evidence` and `certificate` locally as
 non-empty base64/base64url before posting to NRAS, and rejects evidence lists
-with more than 1024 entries. In the production profile, the default NVIDIA NRAS
-endpoint is used when `nras_url` is omitted. Direct
+or structured verdict device-claim lists with more than 1024 entries. In the
+production profile, the default NVIDIA NRAS endpoint is used when `nras_url` is
+omitted. Direct
 `nras-rest` overrides must use HTTPS and may be a service root/base path that
 Power expands to `/v4/attest/gpu`, or the exact full `/v4/attest/gpu`
 endpoint; query strings, fragments, embedded credentials, and unsupported

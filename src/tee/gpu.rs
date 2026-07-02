@@ -30,6 +30,7 @@ const DEFAULT_NRAS_ATTEST_GPU_URL: &str = "https://nras.attestation.nvidia.com/v
 const MAX_GPU_EVIDENCE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_NRAS_REST_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_GPU_EVIDENCE_ENTRIES: usize = 1024;
+const MAX_GPU_DEVICE_CLAIMS: usize = 1024;
 
 /// Source of GPU CC evidence bytes.
 #[derive(Debug, Clone)]
@@ -1230,6 +1231,8 @@ fn parse_nvattest_device_claims(
     claims: &[serde_json::Value],
     nonce_hex: &str,
 ) -> Result<Vec<GpuDeviceClaim>> {
+    validate_gpu_device_claim_count("NVIDIA device claims", claims.len())?;
+
     let mut devices = Vec::with_capacity(claims.len());
     let mut gpu_count = 0usize;
 
@@ -1318,6 +1321,15 @@ fn parse_nvattest_device_claims(
     }
 
     Ok(devices)
+}
+
+fn validate_gpu_device_claim_count(context: &str, count: usize) -> Result<()> {
+    if count > MAX_GPU_DEVICE_CLAIMS {
+        return Err(PowerError::Config(format!(
+            "{context} must contain at most {MAX_GPU_DEVICE_CLAIMS} entries, got {count}"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_nvattest_device_security_state(
@@ -2255,6 +2267,19 @@ mod tests {
     }
 
     #[test]
+    fn validate_nras_rest_verdict_rejects_too_many_device_claims() {
+        let claims = vec![nvidia_gpu_claim("010203"); MAX_GPU_DEVICE_CLAIMS + 1];
+        let verdict = serde_json::to_vec(&serde_json::json!({
+            "claims": claims
+        }))
+        .unwrap();
+
+        let err = validate_nras_rest_verdict_json(&verdict, "010203").unwrap_err();
+
+        assert!(err.to_string().contains("must contain at most"));
+    }
+
+    #[test]
     fn validate_nras_rest_verdict_rejects_malformed_detached_eat_jwt() {
         let verdict = br#"{"detached_eat":["not-a-jwt"]}"#;
 
@@ -2496,6 +2521,18 @@ mod tests {
         assert_eq!(device.driver_version.as_deref(), Some("590.12"));
         assert_eq!(device.firmware_version.as_deref(), Some("96.00.A5.00.01"));
         assert_eq!(device.validation.attestation_report_nonce_match, Some(true));
+    }
+
+    #[test]
+    fn validate_nvattest_verdict_rejects_too_many_device_claims() {
+        let verdict = nvattest_verdict_with_claims(vec![
+            nvidia_gpu_claim("010203");
+            MAX_GPU_DEVICE_CLAIMS + 1
+        ]);
+
+        let err = validate_nvattest_verdict_json(&verdict, "010203").unwrap_err();
+
+        assert!(err.to_string().contains("must contain at most"));
     }
 
     #[test]

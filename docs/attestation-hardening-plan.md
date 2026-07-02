@@ -176,6 +176,8 @@ Landed in the current working tree:
   `evidence` and `certificate` fields must be non-empty base64/base64url before
   Power posts them to NVIDIA NRAS, and evidence lists are capped before request
   construction.
+- Capped structured NVIDIA GPU/NVSwitch device-claim arrays before verdict
+  parsing so nvattest and NRAS verdicts cannot force unbounded claim handling.
 - Added a 64 MiB cap for configured GPU evidence and verdict file/hex byte
   sources so malformed deployments fail before unbounded reads or hex decodes.
 - Tightened `nras-rest` bearer-token configuration so
@@ -550,7 +552,7 @@ Tests:
   evidence normalization, 32-byte nonce enforcement, NRAS verdict digest
   binding, structured device-claim extraction when claims are present, and
   fail-closed config validation, including oversized NRAS response bodies,
-  oversized evidence lists, and malformed detached EAT JWTs.
+  oversized evidence/device-claim lists, and malformed detached EAT JWTs.
 - Verifier policy `require_gpu_evidence()` now also requires an expected nonce
   and rejects GPU claim nonce mismatches.
 - Verifier policy `require_gpu_device_claims()` requires structured NVIDIA
