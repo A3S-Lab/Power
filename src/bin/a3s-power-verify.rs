@@ -1137,6 +1137,15 @@ fn decode_optional_hex_arg(name: &str, value: Option<&str>) -> anyhow::Result<Op
         return Ok(None);
     };
     let hex = value.trim().strip_prefix("sha256:").unwrap_or(value.trim());
+    if hex.len() != 64 {
+        anyhow::bail!(
+            "{name} must be a 64-character SHA-256 hex digest, got {} characters",
+            hex.len()
+        );
+    }
+    if !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        anyhow::bail!("{name} must contain only hexadecimal characters");
+    }
     hex::decode(hex)
         .map(Some)
         .map_err(|e| anyhow::anyhow!("invalid {name} hex: {e}"))
@@ -2546,6 +2555,46 @@ mod tests {
         let err = run(&args).unwrap_err();
 
         assert!(err.to_string().contains("require --receipt-file"));
+    }
+
+    #[test]
+    fn test_run_receipt_digest_rejects_short_hex() {
+        let (report_file, receipt_file, _) = write_report_and_receipt_files();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--receipt-file".to_string(),
+            receipt_file.path().display().to_string(),
+            "--receipt-digest".to_string(),
+            "abcd".to_string(),
+            "--allow-offline".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("--receipt-digest must be a 64-character SHA-256 hex digest"));
+    }
+
+    #[test]
+    fn test_run_effective_prompt_digest_rejects_non_hex() {
+        let (report_file, receipt_file, _) = write_report_and_receipt_files();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--receipt-file".to_string(),
+            receipt_file.path().display().to_string(),
+            "--effective-prompt-digest".to_string(),
+            "g".repeat(64),
+            "--allow-offline".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("--effective-prompt-digest must contain only hexadecimal characters"));
     }
 
     #[test]

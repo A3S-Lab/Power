@@ -896,7 +896,8 @@ pin receipt-level policy with `--receipt-model`, `--receipt-request-type`,
 `--receipt-input-digest`, `--receipt-decoding-parameters-digest`,
 `--receipt-stream-options-digest`, `--receipt-stop-tokens-digest`,
 `--receipt-response-format-digest`, `--receipt-tools-digest`,
-`--receipt-tool-choice-digest`, `--effective-prompt-digest`,
+`--receipt-tool-choice-digest`, `--effective-prompt-digest` (all digest pins
+are 64-character SHA-256 hex values),
 `--require-effective-prompt-absent`, `--effective-prompt-backend`, and
 `--effective-prompt-kind`. When the original request JSON is available,
 `--receipt-chat-request-file` or `--receipt-completion-request-file` recomputes
