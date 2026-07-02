@@ -539,7 +539,7 @@ Tests:
 - `nras-rest` provider tests verify official request-shape construction,
   evidence normalization, 32-byte nonce enforcement, NRAS verdict digest
   binding, structured device-claim extraction when claims are present, and
-  fail-closed config validation.
+  fail-closed config validation, including oversized NRAS response bodies.
 - Verifier policy `require_gpu_evidence()` now also requires an expected nonce
   and rejects GPU claim nonce mismatches.
 - Verifier policy `require_gpu_device_claims()` requires structured NVIDIA

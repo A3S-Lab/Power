@@ -28,6 +28,7 @@ use crate::tee::attestation::{GpuDeviceClaim, GpuDeviceValidationClaim, GpuEvide
 
 const DEFAULT_NRAS_ATTEST_GPU_URL: &str = "https://nras.attestation.nvidia.com/v4/attest/gpu";
 const MAX_GPU_EVIDENCE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_NRAS_REST_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Source of GPU CC evidence bytes.
 #[derive(Debug, Clone)]
@@ -591,9 +592,7 @@ impl GpuEvidenceProvider for NrasRestGpuEvidenceProvider {
             ))
         })?;
         let status = response.status();
-        let verdict = response.bytes().await.map_err(|e| {
-            PowerError::Config(format!("failed to read NRAS REST response body: {e}"))
-        })?;
+        let verdict = read_nras_rest_response_body(response).await?;
         if !status.is_success() {
             return Err(PowerError::Config(format!(
                 "NRAS REST request to {} failed with status {}: {}",
@@ -697,6 +696,27 @@ fn validate_evidence_source_size(field: &str, len: u64) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+async fn read_nras_rest_response_body(mut response: reqwest::Response) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| PowerError::Config(format!("failed to read NRAS REST response body: {e}")))?
+    {
+        let next_len = body.len().checked_add(chunk.len()).ok_or_else(|| {
+            PowerError::Config("NRAS REST response body length overflowed usize".to_string())
+        })?;
+        if next_len > MAX_NRAS_REST_RESPONSE_BYTES {
+            return Err(PowerError::Config(format!(
+                "NRAS REST response body must be at most {} bytes, got at least {next_len}",
+                MAX_NRAS_REST_RESPONSE_BYTES
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 fn normalize_optional_env_name(field: &str, value: Option<&str>) -> Result<Option<String>> {
@@ -2159,6 +2179,58 @@ mod tests {
         assert_eq!(received["evidence_list"][0]["evidence"], "ZXZpZGVuY2U");
         assert_eq!(received["evidence_list"][0]["certificate"], "Y2VydA");
         assert!(received["evidence_list"][0].get("nonce").is_none());
+    }
+
+    #[tokio::test]
+    async fn nras_rest_provider_rejects_oversized_response_body() {
+        let nonce = [0x11u8; 32];
+        let nonce_hex = hex::encode(nonce);
+        let evidence_bytes = format!(
+            r#"{{
+                "evidences": [{{
+                    "nonce": "{nonce_hex}",
+                    "evidence": "ZXZpZGVuY2U",
+                    "certificate": "Y2VydA"
+                }}],
+                "result_code": 0
+            }}"#
+        )
+        .into_bytes();
+
+        let dir = tempfile::tempdir().unwrap();
+        let evidence_path = dir.path().join("gpu-evidence.json");
+        std::fs::write(&evidence_path, &evidence_bytes).unwrap();
+
+        let app = axum::Router::new().route(
+            "/v4/attest/gpu",
+            axum::routing::post(|| async { vec![b'{'; MAX_NRAS_REST_RESPONSE_BYTES + 1] }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut provider = NrasRestGpuEvidenceProvider::from_config(&GpuAttestationConfig {
+            source: GpuAttestationSource::NrasRest,
+            evidence_path: Some(evidence_path),
+            nras_url: Some("https://nras.attestation.nvidia.com".to_string()),
+            nras_gpu_architecture: Some("hopper".to_string()),
+            nras_timeout_secs: 5,
+            ..Default::default()
+        })
+        .unwrap();
+        provider.endpoint = format!("http://{addr}/v4/attest/gpu");
+
+        let err = provider
+            .evidence_claim_for_nonce(Some(&nonce))
+            .await
+            .unwrap_err();
+        server.abort();
+
+        assert!(err
+            .to_string()
+            .contains("NRAS REST response body must be at most"));
     }
 
     #[test]

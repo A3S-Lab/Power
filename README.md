@@ -706,7 +706,8 @@ the default NVIDIA NRAS endpoint is used when `nras_url` is omitted. Direct
 `nras-rest` overrides must use HTTPS and may be a service root/base path that
 Power expands to `/v4/attest/gpu`, or the exact full `/v4/attest/gpu`
 endpoint; query strings, fragments, embedded credentials, and unsupported
-versioned paths are rejected.
+versioned paths are rejected. Direct NRAS REST response bodies are capped at
+16 MiB before JSON or detached-EAT parsing.
 If `nras_bearer_token_env` is configured, it names the environment variable
 holding the bearer token; Power trims the name and rejects empty names before
 making NRAS requests.
