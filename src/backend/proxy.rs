@@ -102,7 +102,7 @@ impl Backend for ProxyBackend {
         let (tx, rx) = mpsc::channel::<Result<ChatResponseChunk>>(64);
         tokio::spawn(async move {
             let mut stream = Box::pin(resp.bytes_stream());
-            let mut buf = String::new();
+            let mut buf = Vec::new();
             while let Some(event) = next_sse_event(&mut stream, &mut buf).await {
                 match event {
                     Err(e) => {
@@ -219,7 +219,7 @@ impl Backend for ProxyBackend {
         let (tx, rx) = mpsc::channel::<Result<CompletionResponseChunk>>(64);
         tokio::spawn(async move {
             let mut stream = Box::pin(resp.bytes_stream());
-            let mut buf = String::new();
+            let mut buf = Vec::new();
             while let Some(event) = next_sse_event(&mut stream, &mut buf).await {
                 match event {
                     Err(e) => {
@@ -479,7 +479,7 @@ async fn send_stream(
 /// (it is not a direct dependency).
 async fn next_sse_event<S, T>(
     stream: &mut S,
-    buf: &mut String,
+    buf: &mut Vec<u8>,
 ) -> Option<Result<Option<serde_json::Value>>>
 where
     S: Stream<Item = reqwest::Result<T>> + Unpin,
@@ -487,12 +487,19 @@ where
 {
     loop {
         // Emit any complete `data:` line already buffered.
-        while let Some(nl) = buf.find('\n') {
+        while let Some(nl) = buf.iter().position(|byte| *byte == b'\n') {
             if nl >= MAX_PROXY_SSE_BUFFER_BYTES {
                 return Some(Err(proxy_sse_buffer_limit_error()));
             }
-            let line: String = buf.drain(..=nl).collect();
-            let line = line.trim();
+            let line: Vec<u8> = buf.drain(..=nl).collect();
+            let line = match std::str::from_utf8(&line) {
+                Ok(line) => line.trim(),
+                Err(e) => {
+                    return Some(Err(PowerError::InferenceFailed(format!(
+                        "proxy SSE event line is not valid UTF-8: {e}"
+                    ))));
+                }
+            };
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
@@ -514,7 +521,7 @@ where
         }
         // Need more bytes.
         match stream.next().await {
-            Some(Ok(bytes)) => buf.push_str(&String::from_utf8_lossy(bytes.as_ref())),
+            Some(Ok(bytes)) => buf.extend_from_slice(bytes.as_ref()),
             Some(Err(e)) => {
                 return Some(Err(PowerError::InferenceFailed(format!(
                     "proxy stream error: {e}"
@@ -1180,7 +1187,7 @@ mod tests {
             b"tent\":\"Hi\"},\"finish_reason\":null}]}\n",
             b"\ndata: [DONE]\n\n",
         ]);
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         match next_sse_event(&mut s, &mut buf).await {
             Some(Ok(Some(json))) => {
                 assert_eq!(json["choices"][0]["delta"]["content"], "Hi");
@@ -1194,6 +1201,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sse_reassembles_utf8_split_across_chunks() {
+        let line = "data: {\"choices\":[{\"delta\":{\"content\":\"é\"}}]}\n\n"
+            .as_bytes()
+            .to_vec();
+        let split = line.iter().position(|byte| *byte == 0xc3).unwrap() + 1;
+        let mut s = byte_stream_owned(vec![line[..split].to_vec(), line[split..].to_vec()]);
+        let mut buf = Vec::new();
+
+        match next_sse_event(&mut s, &mut buf).await {
+            Some(Ok(Some(json))) => assert_eq!(json["choices"][0]["delta"]["content"], "é"),
+            other => panic!("expected UTF-8 data event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn sse_skips_comments_blanks_and_malformed() {
         // Keep-alive comment, blank line, malformed data, then a real event.
         let mut s = byte_stream(vec![
@@ -1202,7 +1224,7 @@ mod tests {
             b"data: not-json-at-all\n\n",
             b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
         ]);
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         match next_sse_event(&mut s, &mut buf).await {
             Some(Ok(Some(json))) => assert_eq!(json["choices"][0]["delta"]["content"], "ok"),
             other => panic!("expected the valid event, got {other:?}"),
@@ -1214,7 +1236,7 @@ mod tests {
         let mut s = byte_stream(vec![
             b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\r\n\r\n",
         ]);
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         match next_sse_event(&mut s, &mut buf).await {
             Some(Ok(Some(json))) => assert_eq!(json["choices"][0]["delta"]["content"], "x"),
             other => panic!("CRLF event not parsed, got {other:?}"),
@@ -1226,7 +1248,7 @@ mod tests {
         let mut s = byte_stream(vec![
             b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
         ]);
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         assert!(matches!(
             next_sse_event(&mut s, &mut buf).await,
             Some(Ok(Some(_)))
@@ -1244,7 +1266,7 @@ mod tests {
         let mut s = byte_stream(vec![
             b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n",
         ]);
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         let mut got = String::new();
         while let Some(Ok(Some(json))) = next_sse_event(&mut s, &mut buf).await {
             got.push_str(
@@ -1261,7 +1283,7 @@ mod tests {
         let mut chunk = b"data: ".to_vec();
         chunk.extend(std::iter::repeat_n(b'x', MAX_PROXY_SSE_BUFFER_BYTES + 1));
         let mut s = byte_stream_owned(vec![chunk]);
-        let mut buf = String::new();
+        let mut buf = Vec::new();
 
         let err = next_sse_event(&mut s, &mut buf)
             .await
@@ -1276,7 +1298,7 @@ mod tests {
         chunk.extend(std::iter::repeat_n(b'x', MAX_PROXY_SSE_BUFFER_BYTES + 1));
         chunk.extend_from_slice(b"\"\n\n");
         let mut s = byte_stream_owned(vec![chunk]);
-        let mut buf = String::new();
+        let mut buf = Vec::new();
 
         let err = next_sse_event(&mut s, &mut buf)
             .await
@@ -1294,7 +1316,7 @@ mod tests {
         ));
         chunk.extend_from_slice(b"\"\n\n");
         let mut s = byte_stream_owned(vec![chunk]);
-        let mut buf = String::new();
+        let mut buf = Vec::new();
 
         let err = next_sse_event(&mut s, &mut buf)
             .await

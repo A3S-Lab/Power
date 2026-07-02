@@ -164,6 +164,8 @@ Landed in the current working tree:
   percent-encoding configured effective-prompt digest path segments.
 - Tightened proxy SSE parsing so complete `data:` lines are rejected when the
   line plus newline would exceed the per-event buffer limit.
+- Made proxy SSE parsing buffer raw bytes and decode only complete event lines,
+  so multibyte UTF-8 split across network chunks is not silently corrupted.
 - Made proxy effective-prompt digest collection leave image-bearing chat
   requests absent by default and fail closed when the digest endpoint is
   required, avoiding text rendered-prompt overclaims for opaque multimodal
