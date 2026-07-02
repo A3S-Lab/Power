@@ -664,14 +664,17 @@ mod tests {
                 "function": {
                     "name": "get_weather",
                     "description": "Get weather",
-                    "parameters": {"type": "object"}
+                    "parameters": {"type": "object"},
+                    "strict": true
                 }
             }],
             "tool_choice": "auto"
         }"#;
         let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
         assert!(req.tools.is_some());
-        assert_eq!(req.tools.unwrap()[0].function.name, "get_weather");
+        let tool = &req.tools.unwrap()[0];
+        assert_eq!(tool.function.name, "get_weather");
+        assert_eq!(tool.function.strict, Some(true));
     }
 
     #[test]

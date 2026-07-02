@@ -119,8 +119,8 @@ Landed in the current working tree:
   `max_tokens`, and include both aliases in receipt decoding-parameter hashes.
 - OpenAI-compatible chat requests now map legacy `functions` and
   `function_call` fields onto modern `tools` and `tool_choice`, reject mixed
-  legacy/modern tool policy fields, and bind the effective tool policy in
-  receipts.
+  legacy/modern tool policy fields, preserve function `strict` schema flags,
+  and bind the effective tool policy in receipts.
 - OpenAI-compatible chat requests now reject local-backend tool-choice
   policies that Power cannot enforce (`tool_choice = "none"` with tools,
   `tool_choice = "required"`, or named tool/function choices), while preserving
@@ -156,8 +156,8 @@ Landed in the current working tree:
   rendering only the text parts.
 - Fixed proxy chat request bodies to preserve structured multimodal content,
   message images, tools, tool choice, parallel tool-call policy, response
-  format, and extended sampling controls when forwarding inference and when
-  requesting an upstream
+  format, function `strict` schema flags, and extended sampling controls when
+  forwarding inference and when requesting an upstream
   `effective_prompt` digest.
 - Preserved OpenAI `json_schema` response-format wire shape for remote/proxy
   chat requests while keeping local backend schema extraction unchanged.

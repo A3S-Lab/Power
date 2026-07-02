@@ -1525,6 +1525,7 @@ mod tests {
                 name: "lookup".to_string(),
                 description: Some("Look up a value".to_string()),
                 parameters: serde_json::json!({"type":"object"}),
+                strict: Some(true),
             },
         }]);
         request.tool_choice = Some(ToolChoice::String("auto".to_string()));
@@ -1554,6 +1555,7 @@ mod tests {
         assert_eq!(body["response_format"]["type"], "json_object");
         assert_eq!(body["stream_options"]["include_usage"], true);
         assert_eq!(body["tools"][0]["function"]["name"], "lookup");
+        assert_eq!(body["tools"][0]["function"]["strict"], true);
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["parallel_tool_calls"], false);
         assert_eq!(body["top_k"], 40);

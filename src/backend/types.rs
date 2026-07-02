@@ -76,6 +76,9 @@ pub struct FunctionDefinition {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub parameters: serde_json::Value,
+    /// OpenAI structured-output flag for strict function argument schemas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 /// How the model should choose tools.

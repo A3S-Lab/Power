@@ -3469,6 +3469,7 @@ mod tests {
             name: "lookup".to_string(),
             description: Some("Look up a value".to_string()),
             parameters: serde_json::json!({"type": "object"}),
+            strict: Some(true),
         }]);
         request.function_call = Some(crate::api::types::LegacyFunctionChoice::Specific(
             crate::api::types::LegacyFunctionChoiceSpecific {
@@ -3491,12 +3492,14 @@ mod tests {
                 name: "lookup".to_string(),
                 description: None,
                 parameters: serde_json::json!({"type": "object"}),
+                strict: None,
             },
         }]);
         request.functions = Some(vec![crate::backend::types::FunctionDefinition {
             name: "lookup".to_string(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            strict: None,
         }]);
         let receipt = chat_receipt(&chat_request()).unwrap();
 

@@ -1766,7 +1766,8 @@ mod tests {
                     "functions":[{
                         "name":"get_weather",
                         "description":"Get weather",
-                        "parameters":{"type":"object","properties":{"location":{"type":"string"}}}
+                        "parameters":{"type":"object","properties":{"location":{"type":"string"}}},
+                        "strict":true
                     }],
                     "function_call":{"name":"get_weather"}
                 }"#,
@@ -1788,6 +1789,7 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool_type, "function");
         assert_eq!(tools[0].function.name, "get_weather");
+        assert_eq!(tools[0].function.strict, Some(true));
         assert_eq!(
             serde_json::to_value(captured.tool_choice.expect("expected mapped tool choice"))
                 .unwrap(),

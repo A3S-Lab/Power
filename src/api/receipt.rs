@@ -745,6 +745,37 @@ mod tests {
     }
 
     #[test]
+    fn chat_receipt_covers_tool_function_strict_flag() {
+        let mut loose = chat_request();
+        loose.tools = Some(vec![crate::backend::types::Tool {
+            tool_type: "function".to_string(),
+            function: crate::backend::types::FunctionDefinition {
+                name: "lookup".to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+                strict: Some(false),
+            },
+        }]);
+
+        let mut strict = loose.clone();
+        strict.tools.as_mut().unwrap()[0].function.strict = Some(true);
+
+        let loose_receipt = chat_receipt(&loose).unwrap();
+        let strict_receipt = chat_receipt(&strict).unwrap();
+
+        assert!(loose_receipt.decoding.tools_sha256.is_some());
+        assert!(strict_receipt.decoding.tools_sha256.is_some());
+        assert_ne!(
+            loose_receipt.decoding.tools_sha256,
+            strict_receipt.decoding.tools_sha256
+        );
+        assert_ne!(
+            receipt_digest(&loose_receipt).unwrap(),
+            receipt_digest(&strict_receipt).unwrap()
+        );
+    }
+
+    #[test]
     fn chat_receipt_covers_text_modalities() {
         let first = receipt_digest(&chat_receipt(&chat_request()).unwrap()).unwrap();
         let mut changed = chat_request();
