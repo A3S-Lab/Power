@@ -218,6 +218,7 @@ pub struct GpuAttestationConfig {
     pub nras_claims_version: String,
 
     /// Environment variable containing an optional bearer token for NRAS REST.
+    /// Must be a portable ASCII name: `[A-Za-z_][A-Za-z0-9_]*`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nras_bearer_token_env: Option<String>,
 

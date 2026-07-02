@@ -727,12 +727,23 @@ fn normalize_optional_env_name(field: &str, value: Option<&str>) -> Result<Optio
     if value.is_empty() {
         return Err(PowerError::Config(format!("{field} must not be empty")));
     }
-    if value.contains('=') || value.contains('\0') {
+    if !is_portable_env_name(value) {
         return Err(PowerError::Config(format!(
-            "{field} must not contain '=' or NUL characters"
+            "{field} must be a portable ASCII environment variable name ([A-Za-z_][A-Za-z0-9_]*)"
         )));
     }
     Ok(Some(value.to_string()))
+}
+
+fn is_portable_env_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn sha256_bytes(bytes: &[u8]) -> Vec<u8> {
@@ -1940,6 +1951,23 @@ mod tests {
     }
 
     #[test]
+    fn nras_rest_provider_accepts_portable_bearer_token_env_name() {
+        let config = GpuAttestationConfig {
+            source: GpuAttestationSource::NrasRest,
+            evidence_hex: Some(hex::encode(
+                br#"{"evidence":"ZXZpZGVuY2U","certificate":"Y2VydA"}"#,
+            )),
+            nras_gpu_architecture: Some("HOPPER".to_string()),
+            nras_bearer_token_env: Some("_NRAS_TOKEN_1".to_string()),
+            ..Default::default()
+        };
+
+        let provider = NrasRestGpuEvidenceProvider::from_config(&config).unwrap();
+
+        assert_eq!(provider.bearer_token_env.as_deref(), Some("_NRAS_TOKEN_1"));
+    }
+
+    #[test]
     fn nras_rest_provider_rejects_empty_bearer_token_env_name() {
         let config = GpuAttestationConfig {
             source: GpuAttestationSource::NrasRest,
@@ -1972,7 +2000,32 @@ mod tests {
 
         let err = NrasRestGpuEvidenceProvider::from_config(&config).unwrap_err();
 
-        assert!(err.to_string().contains("must not contain '='"));
+        assert!(err
+            .to_string()
+            .contains("portable ASCII environment variable name"));
+    }
+
+    #[test]
+    fn nras_rest_provider_rejects_non_portable_bearer_token_env_names() {
+        for env_name in ["NRAS-TOKEN", "1NRAS_TOKEN", "NRAS TOKEN", "NRAS\0TOKEN"] {
+            let config = GpuAttestationConfig {
+                source: GpuAttestationSource::NrasRest,
+                evidence_hex: Some(hex::encode(
+                    br#"{"evidence":"ZXZpZGVuY2U","certificate":"Y2VydA"}"#,
+                )),
+                nras_gpu_architecture: Some("HOPPER".to_string()),
+                nras_bearer_token_env: Some(env_name.to_string()),
+                ..Default::default()
+            };
+
+            let err = NrasRestGpuEvidenceProvider::from_config(&config).unwrap_err();
+
+            assert!(
+                err.to_string()
+                    .contains("portable ASCII environment variable name"),
+                "unexpected error for {env_name:?}: {err}"
+            );
+        }
     }
 
     #[test]

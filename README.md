@@ -590,7 +590,7 @@ gpu_attestation {
 | `gpu_attestation.nras_url` | `null` | Optional NRAS URL. For `nvattest-cli`, passed to `nvattest attest --nras-url`; for `nras-rest`, may be a service root/base path or full `/v4/attest/gpu` endpoint. In `gpu-confidential` production policy, custom NRAS URLs must use HTTPS and must not include embedded credentials |
 | `gpu_attestation.nras_gpu_architecture` | `null` | GPU architecture for `nras-rest`: `"HOPPER"` or `"BLACKWELL"` |
 | `gpu_attestation.nras_claims_version` | `"3.0"` | NVIDIA NRAS REST claims version (`"2.0"` or `"3.0"`) |
-| `gpu_attestation.nras_bearer_token_env` | `null` | Optional environment variable name containing a bearer token for direct NRAS REST calls; the name is trimmed and must be non-empty; use this instead of embedding credentials in `nras_url` |
+| `gpu_attestation.nras_bearer_token_env` | `null` | Optional environment variable name containing a bearer token for direct NRAS REST calls; the name is trimmed and must be a portable ASCII identifier (`[A-Za-z_][A-Za-z0-9_]*`); use this instead of embedding credentials in `nras_url` |
 | `gpu_attestation.nras_timeout_secs` | `30` | Timeout for each direct NRAS REST request |
 | `gpu_attestation.rim_url` | `null` | Optional RIM URL passed to `nvattest attest --rim-url`; `gpu-confidential` production policy requires HTTPS when configured |
 | `gpu_attestation.ocsp_url` | `null` | Optional OCSP URL passed to `nvattest attest --ocsp-url`; `gpu-confidential` production policy requires HTTPS when configured |
@@ -712,8 +712,8 @@ MiB before JSON or detached-EAT parsing. Detached EAT values must appear in
 explicit EAT fields and contain JWTs with base64url JSON payloads; unrelated
 version strings elsewhere in the response are not treated as token candidates.
 If `nras_bearer_token_env` is configured, it names the environment variable
-holding the bearer token; Power trims the name and rejects empty names before
-making NRAS requests.
+holding the bearer token; Power trims the name and rejects empty or non-portable
+names before making NRAS requests.
 
 Verifiers can pin the exact GPU deployment identity with
 `ExpectedGpuEvidence` and `ExpectedGpuDevices` in the SDK or with CLI flags
