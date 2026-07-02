@@ -98,6 +98,11 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             "chat completion logit_bias is unsupported and cannot be receipt-bound".to_string(),
         ));
     }
+    if request.has_thinking_inputs() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "chat message thinking input is unsupported and cannot be receipt-bound".to_string(),
+        ));
+    }
     if request.has_conflicting_tool_definitions() {
         return Err(crate::error::PowerError::InvalidRequest(
             "tools and legacy functions cannot both be receipt-bound".to_string(),

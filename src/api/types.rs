@@ -120,6 +120,13 @@ impl ChatCompletionRequest {
             .any(ChatCompletionMessage::has_image_inputs)
     }
 
+    /// Return true when any request message carries unsupported thinking input.
+    pub fn has_thinking_inputs(&self) -> bool {
+        self.messages
+            .iter()
+            .any(ChatCompletionMessage::has_thinking_input)
+    }
+
     /// Return true when both generated-token limit aliases are present but disagree.
     pub fn has_conflicting_max_token_limits(&self) -> bool {
         matches!(
@@ -255,6 +262,11 @@ impl ChatCompletionMessage {
             .is_some_and(|images| !images.is_empty())
             || matches!(&self.content, MessageContent::Parts(parts)
                 if parts.iter().any(|part| matches!(part, ContentPart::ImageUrl { .. })))
+    }
+
+    /// Return true when this message carries reasoning/thinking request input.
+    pub fn has_thinking_input(&self) -> bool {
+        self.thinking.is_some()
     }
 }
 

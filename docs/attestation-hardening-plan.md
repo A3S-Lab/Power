@@ -120,6 +120,9 @@ Landed in the current working tree:
   `function_call` fields onto modern `tools` and `tool_choice`, reject mixed
   legacy/modern tool policy fields, and bind the effective tool policy in
   receipts.
+- OpenAI-compatible chat requests now reject message-level `thinking` input
+  instead of receipt-binding reasoning content that is not forwarded into
+  backend prompt construction.
 - Added opt-in proxy upstream effective-prompt digest support. Proxy receipts
   remain non-overclaiming by default; when configured, Power asks the upstream
   digest endpoint for a `chat.rendered-prompt` SHA-256 before inference and can

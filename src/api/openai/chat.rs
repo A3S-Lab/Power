@@ -58,6 +58,13 @@ pub async fn handler(
         )
         .into_response();
     }
+    if request.has_thinking_inputs() {
+        return openai_error(
+            "unsupported_message_thinking",
+            "chat message thinking input is not supported; omit message.thinking",
+        )
+        .into_response();
+    }
     if request.has_conflicting_tool_definitions() {
         return openai_error(
             "conflicting_tool_definitions",
@@ -821,6 +828,31 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("logit_bias is not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_message_thinking_input() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"assistant","content":"answer","thinking":"hidden reasoning"}]}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_message_thinking");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("message.thinking"));
     }
 
     #[tokio::test]

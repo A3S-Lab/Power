@@ -3517,6 +3517,19 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_message_thinking_input() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.messages[0].thinking = Some("hidden reasoning".to_string());
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("chat message thinking input is unsupported"));
+    }
+
+    #[test]
     fn test_verify_receipt_matches_completion_request_rejects_best_of_request() {
         let mut request = completion_request();
         let receipt = completion_receipt(&request).unwrap();
