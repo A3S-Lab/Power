@@ -176,6 +176,9 @@ Landed in the current working tree:
   digest endpoints cannot force unbounded memory growth before JSON parsing.
 - Bounded proxy embeddings response bodies before JSON parsing, including
   fail-closed `Content-Length` prechecks for oversized upstream responses.
+- Tightened proxy embeddings response parsing so malformed or out-of-range
+  embedding vectors fail closed instead of being silently converted to empty or
+  partial vectors.
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.

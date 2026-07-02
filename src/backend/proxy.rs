@@ -288,23 +288,7 @@ impl Backend for ProxyBackend {
             )));
         }
         let json = read_proxy_embeddings_response_json(resp).await?;
-        let embeddings = json["data"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .map(|item| {
-                        item["embedding"]
-                            .as_array()
-                            .map(|v| {
-                                v.iter()
-                                    .filter_map(|x| x.as_f64().map(|f| f as f32))
-                                    .collect()
-                            })
-                            .unwrap_or_default()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let embeddings = parse_proxy_embeddings_response(&json)?;
         Ok(EmbeddingResponse { embeddings })
     }
 }
@@ -362,6 +346,52 @@ async fn read_bounded_proxy_json_response(
 
     serde_json::from_slice(&body)
         .map_err(|e| PowerError::InferenceFailed(format!("{label} decode failed: {e}")))
+}
+
+fn parse_proxy_embeddings_response(json: &serde_json::Value) -> Result<Vec<Vec<f32>>> {
+    let data = json
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            PowerError::InferenceFailed(
+                "proxy embeddings response data must be an array".to_string(),
+            )
+        })?;
+
+    data.iter()
+        .enumerate()
+        .map(|(item_index, item)| {
+            let embedding = item
+                .get("embedding")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    PowerError::InferenceFailed(format!(
+                        "proxy embeddings response data[{item_index}].embedding must be an array"
+                    ))
+                })?;
+
+            embedding
+                .iter()
+                .enumerate()
+                .map(|(value_index, value)| {
+                    let value = value.as_f64().ok_or_else(|| {
+                        PowerError::InferenceFailed(format!(
+                            "proxy embeddings response data[{item_index}].embedding[{value_index}] must be a number"
+                        ))
+                    })?;
+                    if !value.is_finite()
+                        || value < f32::MIN as f64
+                        || value > f32::MAX as f64
+                    {
+                        return Err(PowerError::InferenceFailed(format!(
+                            "proxy embeddings response data[{item_index}].embedding[{value_index}] must be a finite f32 value"
+                        )));
+                    }
+                    Ok(value as f32)
+                })
+                .collect()
+        })
+        .collect()
 }
 
 fn proxy_endpoint_url(upstream: &str, segments: &[&str]) -> Result<String> {
@@ -1217,6 +1247,55 @@ mod tests {
 
         assert_eq!(response.embeddings, vec![vec![1.0, 2.5], vec![3.0]]);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn embed_rejects_malformed_embedding_values() {
+        let app = axum::Router::new().route(
+            "/v1/embeddings",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "data": [
+                        { "embedding": [1.0, "not-a-number"] }
+                    ]
+                }))
+            }),
+        );
+        let (upstream, server) = spawn_test_server(app).await;
+        let backend = ProxyBackend::new(Arc::new(proxy_config(upstream)));
+
+        let err = backend
+            .embed(
+                "llama-70b",
+                EmbeddingRequest {
+                    input: vec!["hello".to_string()],
+                },
+            )
+            .await
+            .unwrap_err();
+
+        let err = err.to_string();
+        assert!(err.contains("embedding"), "error: {err}");
+        assert!(err.contains("number"), "error: {err}");
+        server.abort();
+    }
+
+    #[test]
+    fn parse_proxy_embeddings_response_rejects_missing_data() {
+        let err = parse_proxy_embeddings_response(&serde_json::json!({}))
+            .expect_err("missing data must fail");
+
+        assert!(err.to_string().contains("data"));
+    }
+
+    #[test]
+    fn parse_proxy_embeddings_response_rejects_out_of_range_values() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"data":[{"embedding":[1e39]}]}"#).unwrap();
+        let err = parse_proxy_embeddings_response(&json)
+            .expect_err("out-of-range embedding values must fail");
+
+        assert!(err.to_string().contains("finite f32"));
     }
 
     #[tokio::test]
