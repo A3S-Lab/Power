@@ -851,9 +851,9 @@ Error messages that echo prompt content are also sanitized via `sanitize_error()
 | `POST` | `/v1/embeddings` | Generate embeddings |
 | `GET` | `/v1/models` | List all registered models |
 | `GET` | `/v1/models/:name` | Get a single model by name |
-| `POST` | `/v1/models` | Register a local model file (`name`, `path` body fields) |
+| `POST` | `/v1/models` | Register a local model artifact (`name`, `path`, optional `format` of `gguf`, `safetensors`, or `huggingface`); unsupported formats and unknown fields fail closed |
 | `DELETE` | `/v1/models/:name` | Unload and deregister a model |
-| `POST` | `/v1/models/pull` | Pull a GGUF model from HuggingFace Hub (`name`, `force` body fields); streams SSE progress events; requires `hf` feature; concurrent pulls of the same model are deduplicated |
+| `POST` | `/v1/models/pull` | Pull a GGUF model from HuggingFace Hub (`name`, optional `force` and `token` body fields); unknown fields fail closed; streams SSE progress events; requires `hf` feature; concurrent pulls of the same model are deduplicated |
 | `GET` | `/v1/models/pull/:name/status` | Get persisted pull progress for a model (`status`, `completed`, `total`, `error`); URL-encode names that contain `/` or `:` |
 | `GET` | `/v1/attestation` | TEE attestation report (returns 503 if TEE not enabled); optional `?nonce=<hex>` binds client nonce; optional `?model=<name>` emits v2 model/runtime claims and binds the claims digest into `report_data`; `gpu-confidential` mode also binds GPU evidence claims and requires a 32-byte `?nonce=<64-hex>` |
 

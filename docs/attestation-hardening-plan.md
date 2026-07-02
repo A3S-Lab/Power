@@ -53,6 +53,9 @@ Landed in the current working tree:
   silently omitting the model binding.
 - Added deterministic directory-manifest hashing for HuggingFace/Vision-style
   model directories and emits `directory-manifest-sha256` model claims.
+- Model registration now rejects unsupported `format` values and unknown
+  top-level registration or pull request fields instead of silently defaulting
+  local artifacts to GGUF or dropping caller-supplied model policy.
 - Added typed encrypted model digest semantics. Explicit `model_hashes` pins
   encrypted models by decrypted plaintext SHA-256 and model claims include both
   `plaintext_digest` and `ciphertext_digest`; manifest-only fallback emits an

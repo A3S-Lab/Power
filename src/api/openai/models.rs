@@ -5,6 +5,7 @@ use axum::Json;
 #[cfg(feature = "hf")]
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::api::types::{ModelInfo, ModelList};
 #[cfg(feature = "hf")]
@@ -138,9 +139,42 @@ pub struct RegisterModelRequest {
     pub name: String,
     /// Absolute path to the model file on disk.
     pub path: String,
-    /// Model format: "gguf" (default) or "safetensors".
+    /// Model format: "gguf" (default), "safetensors", or "huggingface".
     #[serde(default)]
     pub format: Option<String>,
+    /// Unknown registration fields are preserved so handlers can reject
+    /// unsupported model policy instead of silently dropping it.
+    #[serde(default, flatten)]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+impl RegisterModelRequest {
+    fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported model registration field(s): {}; supported fields are name, path, and format",
+                fields.join(", ")
+            ))
+        }
+    }
+}
+
+fn parse_register_model_format(format: Option<&str>) -> Result<ModelFormat, String> {
+    match format.unwrap_or("gguf") {
+        "gguf" => Ok(ModelFormat::Gguf),
+        "safetensors" => Ok(ModelFormat::SafeTensors),
+        "huggingface" => Ok(ModelFormat::HuggingFace),
+        unsupported => Err(format!(
+            "unsupported model format '{unsupported}'; supported values are gguf, safetensors, and huggingface"
+        )),
+    }
 }
 
 /// Response body for POST /v1/models.
@@ -157,12 +191,37 @@ pub async fn register_handler(
     State(state): State<AppState>,
     Json(req): Json<RegisterModelRequest>,
 ) -> impl IntoResponse {
+    if let Some(message) = req.unsupported_fields_message() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "code": "unsupported_request_fields"
+                }
+            })),
+        )
+            .into_response();
+    }
+
     let path = std::path::PathBuf::from(&req.path);
 
-    let format = match req.format.as_deref().unwrap_or("gguf") {
-        "safetensors" => ModelFormat::SafeTensors,
-        "huggingface" => ModelFormat::HuggingFace,
-        _ => ModelFormat::Gguf,
+    let format = match parse_register_model_format(req.format.as_deref()) {
+        Ok(format) => format,
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": message,
+                        "type": "invalid_request_error",
+                        "code": "unsupported_model_format"
+                    }
+                })),
+            )
+                .into_response();
+        }
     };
 
     if !path.exists() {
@@ -344,6 +403,28 @@ pub struct PullModelRequest {
     /// Falls back to `MODELSCOPE_TOKEN` / `A3S_POWER_HUB_TOKEN` / `HF_TOKEN`.
     #[serde(default)]
     pub token: Option<String>,
+    /// Unknown pull fields are preserved so handlers can reject unsupported hub
+    /// policy instead of silently dropping it.
+    #[serde(default, flatten)]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+impl PullModelRequest {
+    fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported model pull field(s): {}; supported fields are name, force, and token",
+                fields.join(", ")
+            ))
+        }
+    }
 }
 
 #[cfg(feature = "hf")]
@@ -475,6 +556,20 @@ pub async fn pull_handler(
     State(state): State<AppState>,
     Json(req): Json<PullModelRequest>,
 ) -> impl IntoResponse {
+    if let Some(message) = req.unsupported_fields_message() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "code": "unsupported_request_fields"
+                }
+            })),
+        )
+            .into_response();
+    }
+
     // Fast path: already registered and not forcing.
     if !req.force && state.registry.exists(&req.name) {
         return axum::response::Sse::new(futures::stream::once(async move {
@@ -821,6 +916,79 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn test_register_model_rejects_unsupported_top_level_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let model_file = dir.path().join("local.gguf");
+        std::fs::write(&model_file, b"fake weights").unwrap();
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state.clone());
+        let body = serde_json::json!({
+            "name": "policy-model",
+            "path": model_file.to_str().unwrap(),
+            "sha256": "client-supplied-pin"
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/models")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_request_fields");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("sha256"));
+        assert!(!state.registry.exists("policy-model"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_register_model_rejects_unsupported_format() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let model_file = dir.path().join("local.onnx");
+        std::fs::write(&model_file, b"fake weights").unwrap();
+
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state.clone());
+        let body = serde_json::json!({
+            "name": "bad-format",
+            "path": model_file.to_str().unwrap(),
+            "format": "onnx"
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/models")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_model_format");
+        assert!(json["error"]["message"].as_str().unwrap().contains("onnx"));
+        assert!(!state.registry.exists("bad-format"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn test_register_model_success() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -974,6 +1142,33 @@ mod tests {
         #[cfg(not(feature = "hf"))]
         // no hf feature: 501 Not Implemented
         assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn test_pull_model_rejects_unsupported_top_level_fields() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let body = serde_json::json!({
+            "name": "new-model",
+            "revision": "main"
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/models/pull")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_request_fields");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("revision"));
     }
 
     #[tokio::test]
