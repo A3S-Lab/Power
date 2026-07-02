@@ -167,6 +167,9 @@ Landed in the current working tree:
 - Tightened v2 claims SDK verifier helpers so direct model, GPU, and runtime
   policy binding checks reject malformed actual claim digest fields before
   policy comparison.
+- Tightened v2 claims SDK verifier helpers so direct nonce, GPU metadata,
+  structured device-claim, and runtime-policy checks reject unexpected claims
+  schema identifiers before accepting policy matches.
 - Tightened runtime-policy SDK verifier pins so chat-template, decoding-policy,
   and GPU execution pins must be full 32-byte SHA-256 digests.
 - Tightened model-hash verifier pins so SDK and CLI verification require a full

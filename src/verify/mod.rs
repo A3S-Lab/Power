@@ -904,13 +904,7 @@ pub fn verify_claims_binding(report: &AttestationReport) -> Result<()> {
 }
 
 fn verify_claims_well_formed(claims: &AttestationClaimsV2) -> Result<()> {
-    if claims.schema != AttestationClaimsV2::SCHEMA {
-        return Err(PowerError::AttestationVerificationFailed(format!(
-            "claims schema mismatch: claims.schema = {}, expected {}",
-            claims.schema,
-            AttestationClaimsV2::SCHEMA,
-        )));
-    }
+    verify_claims_schema(claims)?;
 
     if let Some(model) = claims.model.as_ref() {
         verify_model_digest_claim_well_formed("claims.model", model)?;
@@ -924,6 +918,17 @@ fn verify_claims_well_formed(claims: &AttestationClaimsV2) -> Result<()> {
         verify_runtime_policy_well_formed("claims.runtime", runtime)?;
     }
 
+    Ok(())
+}
+
+fn verify_claims_schema(claims: &AttestationClaimsV2) -> Result<()> {
+    if claims.schema != AttestationClaimsV2::SCHEMA {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "claims schema mismatch: claims.schema = {}, expected {}",
+            claims.schema,
+            AttestationClaimsV2::SCHEMA,
+        )));
+    }
     Ok(())
 }
 
@@ -970,6 +975,8 @@ fn verify_gpu_evidence_claim_well_formed(field_prefix: &str, gpu: &GpuEvidenceCl
 
 /// Verify that v2 claims bind the expected nonce.
 pub fn verify_claims_nonce_binding(claims: &AttestationClaimsV2, nonce: &[u8]) -> Result<()> {
+    verify_claims_schema(claims)?;
+
     let claim_nonce = claims.nonce.as_deref().ok_or_else(|| {
         PowerError::AttestationVerificationFailed("v2 claims do not include a nonce".to_string())
     })?;
@@ -991,6 +998,7 @@ pub fn verify_claims_model_hash_binding(
     model_hash: &[u8],
 ) -> Result<()> {
     require_sha256_digest_bytes("expected model hash", model_hash)?;
+    verify_claims_schema(claims)?;
 
     let model = claims.model.as_ref().ok_or_else(|| {
         PowerError::AttestationVerificationFailed(
@@ -1018,6 +1026,7 @@ pub fn verify_claims_gpu_evidence_binding(
 ) -> Result<()> {
     require_optional_sha256_digest_bytes("expected GPU evidence digest", expected_evidence_digest)?;
     require_optional_sha256_digest_bytes("expected GPU verdict digest", expected_verdict_digest)?;
+    verify_claims_schema(claims)?;
 
     let gpu = claims.gpu.as_ref().ok_or_else(|| {
         PowerError::AttestationVerificationFailed(
@@ -1080,6 +1089,7 @@ pub fn verify_claims_expected_gpu_evidence(
     if expected.is_empty() {
         return Ok(());
     }
+    verify_claims_schema(claims)?;
 
     let gpu = claims.gpu.as_ref().ok_or_else(|| {
         PowerError::AttestationVerificationFailed(
@@ -1159,6 +1169,8 @@ fn verify_optional_gpu_string_claim(
 /// cryptographic link back to NVIDIA evidence while these fields make policy
 /// decisions explicit.
 pub fn verify_claims_gpu_device_claims(claims: &AttestationClaimsV2) -> Result<()> {
+    verify_claims_schema(claims)?;
+
     let gpu = claims.gpu.as_ref().ok_or_else(|| {
         PowerError::AttestationVerificationFailed(
             "v2 claims do not include a GPU evidence claim".to_string(),
@@ -1588,6 +1600,7 @@ pub fn verify_claims_runtime_policy_binding(
         "expected GPU execution digest",
         expected_gpu_execution_digest,
     )?;
+    verify_claims_schema(claims)?;
 
     let runtime = claims.runtime.as_ref().ok_or_else(|| {
         PowerError::AttestationVerificationFailed(
@@ -4047,6 +4060,16 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_claims_nonce_binding_rejects_wrong_schema() {
+        let (_, mut claims) = make_claims_report(Some(b"nonce"), vec![0x02; 32]);
+        claims.schema = "a3s.power.attestation.v1".to_string();
+
+        let err = verify_claims_nonce_binding(&claims, b"nonce").unwrap_err();
+
+        assert!(err.to_string().contains("claims schema mismatch"));
+    }
+
+    #[test]
     fn test_verify_claims_model_hash_binding_rejects_short_claim_digest() {
         let (_, mut claims) = make_claims_report(Some(b"nonce"), vec![0x02; 32]);
         claims.model.as_mut().unwrap().digest = vec![0x02; 31];
@@ -4209,6 +4232,17 @@ mod tests {
         let err = verify_claims_expected_gpu_evidence(&claims, &expected).unwrap_err();
 
         assert!(err.to_string().contains("GPU evidence_count mismatch"));
+    }
+
+    #[test]
+    fn test_verify_claims_expected_gpu_evidence_rejects_wrong_schema() {
+        let (_, mut claims) = make_gpu_claims_report(vec![0x11; 32], Some(vec![0x22; 32]));
+        claims.schema = "a3s.power.attestation.v1".to_string();
+
+        let err = verify_claims_expected_gpu_evidence(&claims, &expected_gpu_evidence_pins())
+            .unwrap_err();
+
+        assert!(err.to_string().contains("claims schema mismatch"));
     }
 
     #[test]
@@ -4720,6 +4754,17 @@ mod tests {
         let err = verify_claims_runtime_policy_binding(&claims, Some(&[0x99; 32]), None, None)
             .unwrap_err();
         assert!(err.to_string().contains("Chat template digest mismatch"));
+    }
+
+    #[test]
+    fn test_verify_claims_runtime_policy_binding_rejects_wrong_schema() {
+        let (_, mut claims) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 32]);
+        claims.schema = "a3s.power.attestation.v1".to_string();
+
+        let err = verify_claims_runtime_policy_binding(&claims, Some(&[0x33; 32]), None, None)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("claims schema mismatch"));
     }
 
     #[test]
