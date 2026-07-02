@@ -146,6 +146,9 @@ Landed in the current working tree:
 - Bounded remote hub file-list API response bodies so malformed ModelScope or
   HuggingFace file-list endpoints cannot force unbounded memory growth before
   JSON parsing.
+- Tightened remote hub download accounting so known-size model downloads fail
+  if the response exceeds the declared size or the completed byte count
+  overflows.
 - Made blob integrity verification hash model files with the existing streaming
   SHA-256 path instead of reading whole model artifacts into memory.
 - Made `A3S_POWER_MODEL_SOURCE` fail closed for unknown configured values

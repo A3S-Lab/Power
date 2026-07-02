@@ -172,6 +172,25 @@ pub mod hf {
         })
     }
 
+    fn checked_download_completed_size(
+        completed: u64,
+        chunk_len: usize,
+        total: u64,
+    ) -> Result<u64> {
+        let chunk_len = u64::try_from(chunk_len).map_err(|_| {
+            PowerError::Server("download chunk length did not fit in u64".to_string())
+        })?;
+        let next = completed.checked_add(chunk_len).ok_or_else(|| {
+            PowerError::Server("download completed byte count overflowed u64".to_string())
+        })?;
+        if total > 0 && next > total {
+            return Err(PowerError::Server(format!(
+                "download exceeded declared size: completed at least {next} bytes, expected {total}"
+            )));
+        }
+        Ok(next)
+    }
+
     fn validate_path_value(value: &str, label: &str) -> Result<()> {
         if value.is_empty() {
             return Err(PowerError::Server(format!("{label} must not be empty")));
@@ -613,7 +632,7 @@ pub mod hf {
                 tmp_file.write_all(&chunk).await.map_err(|e| {
                     PowerError::Io(std::io::Error::other(format!("write error: {e}")))
                 })?;
-                completed += chunk.len() as u64;
+                completed = checked_download_completed_size(completed, chunk.len(), total)?;
                 send_progress(&tx, PullProgress::Downloading { completed, total }).await;
             }
 
@@ -961,6 +980,30 @@ pub mod hf {
                 err.to_string().contains("invalid Content-Length value"),
                 "error: {err}"
             );
+        }
+
+        #[test]
+        fn test_checked_download_completed_size_allows_unknown_total() {
+            let completed = checked_download_completed_size(10, 5, 0).unwrap();
+
+            assert_eq!(completed, 15);
+        }
+
+        #[test]
+        fn test_checked_download_completed_size_rejects_exceeding_total() {
+            let err = checked_download_completed_size(10, 6, 15).unwrap_err();
+
+            assert!(
+                err.to_string().contains("exceeded declared size"),
+                "error: {err}"
+            );
+        }
+
+        #[test]
+        fn test_checked_download_completed_size_rejects_overflow() {
+            let err = checked_download_completed_size(u64::MAX, 1, 0).unwrap_err();
+
+            assert!(err.to_string().contains("overflowed"), "error: {err}");
         }
 
         #[test]
