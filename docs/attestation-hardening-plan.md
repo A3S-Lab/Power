@@ -177,6 +177,9 @@ Landed in the current working tree:
   instead of being forwarded as empty done reasons.
 - Preserved proxy chat stream reasoning and tool-call deltas while making
   malformed tool-call chunks fail closed instead of being silently dropped.
+- Added proxy assembly for OpenAI-style incremental streaming tool-call
+  deltas, preserving complete tool calls while rejecting incomplete or
+  conflicting tool-call streams.
 - Preserved backend-emitted chat tool calls in non-streaming OpenAI responses
   instead of dropping them while collecting streamed backend chunks.
 - Tightened proxy SSE line parsing so malformed non-empty `data:` events fail

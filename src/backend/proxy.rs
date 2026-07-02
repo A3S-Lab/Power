@@ -16,6 +16,7 @@
 //! or responses. Use the in-process backends (mistral.rs / picolm) when content
 //! must stay inside the enclave.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -26,7 +27,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
-    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse, ToolCall,
+    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse, FunctionCall, ToolCall,
 };
 use super::Backend;
 use crate::config::PowerConfig;
@@ -105,6 +106,7 @@ impl Backend for ProxyBackend {
             let mut stream = Box::pin(resp.bytes_stream());
             let mut buf = Vec::new();
             let mut done_reason = Some("stop".to_string());
+            let mut tool_calls = ProxyToolCallAssembler::default();
             while let Some(event) = next_sse_event(&mut stream, &mut buf).await {
                 match event {
                     Err(e) => {
@@ -120,7 +122,14 @@ impl Backend for ProxyBackend {
                                 return;
                             }
                         };
-                        if parsed.has_delta() {
+                        let has_text_delta = parsed.has_text_delta();
+                        if let Some(deltas) = parsed.tool_call_deltas {
+                            if let Err(e) = tool_calls.apply(deltas) {
+                                let _ = tx.send(Err(e)).await;
+                                return;
+                            }
+                        }
+                        if has_text_delta {
                             if tx
                                 .send(Ok(ChatResponseChunk {
                                     content: parsed.content.unwrap_or_default(),
@@ -129,7 +138,7 @@ impl Backend for ProxyBackend {
                                     prompt_tokens: None,
                                     done_reason: None,
                                     prompt_eval_duration_ns: None,
-                                    tool_calls: parsed.tool_calls,
+                                    tool_calls: None,
                                 }))
                                 .await
                                 .is_err()
@@ -142,6 +151,30 @@ impl Backend for ProxyBackend {
                             break;
                         }
                     }
+                }
+            }
+            let completed_tool_calls = match tool_calls.complete() {
+                Ok(calls) => calls,
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+            };
+            if let Some(calls) = completed_tool_calls {
+                if tx
+                    .send(Ok(ChatResponseChunk {
+                        content: String::new(),
+                        thinking_content: None,
+                        done: false,
+                        prompt_tokens: None,
+                        done_reason: None,
+                        prompt_eval_duration_ns: None,
+                        tool_calls: Some(calls),
+                    }))
+                    .await
+                    .is_err()
+                {
+                    return;
                 }
             }
             let _ = tx
@@ -310,14 +343,224 @@ impl Backend for ProxyBackend {
 struct ParsedProxyChatStreamEvent {
     content: Option<String>,
     thinking_content: Option<String>,
-    tool_calls: Option<Vec<ToolCall>>,
+    tool_call_deltas: Option<Vec<ProxyToolCallDelta>>,
     done_reason: Option<String>,
 }
 
 impl ParsedProxyChatStreamEvent {
-    fn has_delta(&self) -> bool {
-        self.content.is_some() || self.thinking_content.is_some() || self.tool_calls.is_some()
+    fn has_text_delta(&self) -> bool {
+        self.content.is_some() || self.thinking_content.is_some()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct ProxyToolCallDelta {
+    index: u32,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(rename = "type", default)]
+    tool_type: Option<String>,
+    #[serde(default)]
+    function: Option<ProxyFunctionCallDelta>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct ProxyFunctionCallDelta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct ProxyToolCallAssembler {
+    calls: BTreeMap<u32, PartialProxyToolCall>,
+}
+
+#[derive(Debug, Default)]
+struct PartialProxyToolCall {
+    id: Option<String>,
+    tool_type: Option<String>,
+    name: Option<String>,
+    arguments: String,
+    saw_arguments: bool,
+}
+
+impl ProxyToolCallDelta {
+    fn validate(&self) -> Result<()> {
+        validate_optional_non_blank(&self.id, "proxy chat stream tool call id")?;
+        validate_optional_non_blank(&self.tool_type, "proxy chat stream tool call type")?;
+        if let Some(function) = &self.function {
+            function.validate()?;
+        }
+        if self.id.is_none() && self.tool_type.is_none() && self.function.is_none() {
+            return Err(PowerError::InferenceFailed(
+                "proxy chat stream tool_call delta must include id, type, or function".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ProxyFunctionCallDelta {
+    fn validate(&self) -> Result<()> {
+        validate_optional_non_blank(&self.name, "proxy chat stream tool call function name")?;
+        if self.name.is_none() && self.arguments.is_none() {
+            return Err(PowerError::InferenceFailed(
+                "proxy chat stream tool_call function delta must include name or arguments"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ProxyToolCallAssembler {
+    fn apply(&mut self, deltas: Vec<ProxyToolCallDelta>) -> Result<()> {
+        let mut indexes = BTreeSet::new();
+        for delta in deltas {
+            if !indexes.insert(delta.index) {
+                return Err(PowerError::InferenceFailed(format!(
+                    "proxy chat stream tool_call delta has duplicate index {} in one chunk",
+                    delta.index
+                )));
+            }
+            let call = self.calls.entry(delta.index).or_default();
+            set_once(&mut call.id, delta.id, "proxy chat stream tool call id")?;
+            set_once(
+                &mut call.tool_type,
+                delta.tool_type,
+                "proxy chat stream tool call type",
+            )?;
+            if let Some(function) = delta.function {
+                set_once(
+                    &mut call.name,
+                    function.name,
+                    "proxy chat stream tool call function name",
+                )?;
+                if let Some(arguments) = function.arguments {
+                    call.arguments.push_str(&arguments);
+                    call.saw_arguments = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn complete(&self) -> Result<Option<Vec<ToolCall>>> {
+        if self.calls.is_empty() {
+            return Ok(None);
+        }
+
+        let mut calls = Vec::with_capacity(self.calls.len());
+        for (index, call) in &self.calls {
+            let id = required_tool_call_field(
+                call.id.as_deref(),
+                *index,
+                "id",
+                "proxy chat stream tool call missing id",
+            )?;
+            let tool_type = required_tool_call_field(
+                call.tool_type.as_deref(),
+                *index,
+                "type",
+                "proxy chat stream tool call missing type",
+            )?;
+            let name = required_tool_call_field(
+                call.name.as_deref(),
+                *index,
+                "function.name",
+                "proxy chat stream tool call missing function name",
+            )?;
+            if !call.saw_arguments {
+                return Err(PowerError::InferenceFailed(format!(
+                    "proxy chat stream tool call at index {index} missing function.arguments"
+                )));
+            }
+
+            calls.push(ToolCall {
+                id,
+                tool_type,
+                function: FunctionCall {
+                    name,
+                    arguments: call.arguments.clone(),
+                },
+                index: Some(*index),
+            });
+        }
+
+        Ok(Some(calls))
+    }
+}
+
+fn validate_optional_non_blank(value: &Option<String>, field: &str) -> Result<()> {
+    if value.as_ref().is_some_and(|value| value.trim().is_empty()) {
+        return Err(PowerError::InferenceFailed(format!(
+            "{field} must not be blank"
+        )));
+    }
+    Ok(())
+}
+
+fn set_once(existing: &mut Option<String>, value: Option<String>, field: &str) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+
+    match existing {
+        Some(existing) if existing != &value => Err(PowerError::InferenceFailed(format!(
+            "{field} changed across proxy chat stream tool_call deltas"
+        ))),
+        Some(_) => Ok(()),
+        None => {
+            *existing = Some(value);
+            Ok(())
+        }
+    }
+}
+
+fn required_tool_call_field(
+    value: Option<&str>,
+    index: u32,
+    field: &str,
+    message: &str,
+) -> Result<String> {
+    value
+        .map(str::to_string)
+        .ok_or_else(|| PowerError::InferenceFailed(format!("{message} at index {index}: {field}")))
+}
+
+fn parse_proxy_tool_call_deltas(
+    value: Option<&serde_json::Value>,
+) -> Result<Option<Vec<ProxyToolCallDelta>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let calls = value.as_array().ok_or_else(|| {
+        PowerError::InferenceFailed(
+            "proxy chat stream delta tool_calls must be an array".to_string(),
+        )
+    })?;
+    if calls.is_empty() {
+        return Ok(None);
+    }
+
+    let mut deltas = Vec::with_capacity(calls.len());
+    for call in calls {
+        let delta: ProxyToolCallDelta = serde_json::from_value(call.clone()).map_err(|e| {
+            PowerError::InferenceFailed(format!(
+                "proxy chat stream delta tool_calls must be valid tool call deltas: {e}"
+            ))
+        })?;
+        delta.validate()?;
+        deltas.push(delta);
+    }
+
+    Ok(Some(deltas))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -331,7 +574,7 @@ fn parse_proxy_chat_stream_event(json: &serde_json::Value) -> Result<ParsedProxy
         return Ok(ParsedProxyChatStreamEvent {
             content: None,
             thinking_content: None,
-            tool_calls: None,
+            tool_call_deltas: None,
             done_reason: None,
         });
     };
@@ -383,27 +626,13 @@ fn parse_proxy_chat_stream_event(json: &serde_json::Value) -> Result<ParsedProxy
         }
         None => None,
     };
-    let tool_calls = match delta.and_then(|delta| delta.get("tool_calls")) {
-        Some(tool_calls) if tool_calls.is_null() => None,
-        Some(tool_calls) => {
-            let calls: Vec<ToolCall> = serde_json::from_value(tool_calls.clone()).map_err(|e| {
-                PowerError::InferenceFailed(format!(
-                    "proxy chat stream delta tool_calls must be valid tool calls: {e}"
-                ))
-            })?;
-            if calls.is_empty() {
-                None
-            } else {
-                Some(calls)
-            }
-        }
-        None => None,
-    };
+    let tool_call_deltas =
+        parse_proxy_tool_call_deltas(delta.and_then(|delta| delta.get("tool_calls")))?;
 
     Ok(ParsedProxyChatStreamEvent {
         content,
         thinking_content,
-        tool_calls,
+        tool_call_deltas,
         done_reason,
     })
 }
@@ -1685,7 +1914,7 @@ mod tests {
             ParsedProxyChatStreamEvent {
                 content: None,
                 thinking_content: None,
-                tool_calls: None,
+                tool_call_deltas: None,
                 done_reason: None
             }
         );
@@ -1727,11 +1956,11 @@ mod tests {
 
         assert_eq!(parsed.content, None);
         assert_eq!(parsed.thinking_content.as_deref(), Some("thinking"));
-        assert!(parsed.tool_calls.is_none());
+        assert!(parsed.tool_call_deltas.is_none());
     }
 
     #[test]
-    fn chat_stream_event_parses_complete_tool_calls() {
+    fn chat_stream_event_parses_complete_tool_call_deltas() {
         let parsed = parse_proxy_chat_stream_event(&serde_json::json!({
             "choices": [{
                 "delta": {
@@ -1750,22 +1979,52 @@ mod tests {
         }))
         .unwrap();
 
-        let calls = parsed.tool_calls.expect("tool calls should be parsed");
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "call_1");
-        assert_eq!(calls[0].function.name, "lookup");
+        let deltas = parsed
+            .tool_call_deltas
+            .expect("tool call deltas should be parsed");
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].id.as_deref(), Some("call_1"));
+        assert_eq!(deltas[0].tool_type.as_deref(), Some("function"));
+        let function = deltas[0].function.as_ref().unwrap();
+        assert_eq!(function.name.as_deref(), Some("lookup"));
+        assert_eq!(function.arguments.as_deref(), Some("{\"city\":\"Paris\"}"));
         assert!(parsed.content.is_none());
     }
 
     #[test]
-    fn chat_stream_event_rejects_malformed_tool_calls() {
+    fn chat_stream_event_parses_incremental_tool_call_deltas() {
+        let parsed = parse_proxy_chat_stream_event(&serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": { "arguments": "\"Paris\"" }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        }))
+        .unwrap();
+
+        let deltas = parsed
+            .tool_call_deltas
+            .expect("incremental tool call delta should be parsed");
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].index, 0);
+        assert!(deltas[0].id.is_none());
+        let function = deltas[0].function.as_ref().unwrap();
+        assert_eq!(function.arguments.as_deref(), Some("\"Paris\""));
+    }
+
+    #[test]
+    fn chat_stream_event_rejects_malformed_tool_call_deltas() {
         let err = parse_proxy_chat_stream_event(&serde_json::json!({
             "choices": [{
                 "delta": {
                     "tool_calls": [{
                         "id": "call_1",
                         "type": "function",
-                        "function": { "name": "lookup" }
+                        "function": { "arguments": "{}" }
                     }]
                 },
                 "finish_reason": null
@@ -1775,6 +2034,87 @@ mod tests {
 
         let err = err.to_string();
         assert!(err.contains("tool_calls"), "error: {err}");
+    }
+
+    #[test]
+    fn proxy_tool_call_assembler_combines_incremental_deltas() {
+        let mut assembler = ProxyToolCallAssembler::default();
+        assembler
+            .apply(vec![ProxyToolCallDelta {
+                index: 0,
+                id: Some("call_1".to_string()),
+                tool_type: Some("function".to_string()),
+                function: Some(ProxyFunctionCallDelta {
+                    name: Some("lookup".to_string()),
+                    arguments: Some("{\"city\":\"".to_string()),
+                }),
+            }])
+            .unwrap();
+        assembler
+            .apply(vec![ProxyToolCallDelta {
+                index: 0,
+                id: None,
+                tool_type: None,
+                function: Some(ProxyFunctionCallDelta {
+                    name: None,
+                    arguments: Some("Paris\"}".to_string()),
+                }),
+            }])
+            .unwrap();
+
+        let calls = assembler.complete().unwrap().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].tool_type, "function");
+        assert_eq!(calls[0].function.name, "lookup");
+        assert_eq!(calls[0].function.arguments, "{\"city\":\"Paris\"}");
+        assert_eq!(calls[0].index, Some(0));
+    }
+
+    #[test]
+    fn proxy_tool_call_assembler_rejects_conflicting_deltas() {
+        let mut assembler = ProxyToolCallAssembler::default();
+        assembler
+            .apply(vec![ProxyToolCallDelta {
+                index: 0,
+                id: Some("call_1".to_string()),
+                tool_type: None,
+                function: None,
+            }])
+            .unwrap();
+
+        let err = assembler
+            .apply(vec![ProxyToolCallDelta {
+                index: 0,
+                id: Some("call_2".to_string()),
+                tool_type: None,
+                function: None,
+            }])
+            .expect_err("conflicting ids must fail closed");
+
+        assert!(err.to_string().contains("changed"), "error: {err}");
+    }
+
+    #[test]
+    fn proxy_tool_call_assembler_rejects_incomplete_deltas() {
+        let mut assembler = ProxyToolCallAssembler::default();
+        assembler
+            .apply(vec![ProxyToolCallDelta {
+                index: 0,
+                id: Some("call_1".to_string()),
+                tool_type: Some("function".to_string()),
+                function: Some(ProxyFunctionCallDelta {
+                    name: Some("lookup".to_string()),
+                    arguments: None,
+                }),
+            }])
+            .unwrap();
+
+        let err = assembler
+            .complete()
+            .expect_err("missing arguments must fail closed");
+
+        assert!(err.to_string().contains("arguments"), "error: {err}");
     }
 
     #[test]

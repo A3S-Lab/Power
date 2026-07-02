@@ -105,6 +105,88 @@ async fn proxy_chat_streams_content_from_upstream() {
 }
 
 #[tokio::test]
+async fn proxy_chat_assembles_incremental_tool_calls_from_upstream() {
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            let events = [
+                serde_json::json!({
+                    "choices": [{
+                        "delta": {
+                            "tool_calls": [{
+                                "index": 0,
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": "{\"city\":\""
+                                }
+                            }]
+                        },
+                        "finish_reason": null
+                    }]
+                }),
+                serde_json::json!({
+                    "choices": [{
+                        "delta": {
+                            "tool_calls": [{
+                                "index": 0,
+                                "function": {
+                                    "arguments": "Paris\"}"
+                                }
+                            }]
+                        },
+                        "finish_reason": null
+                    }]
+                }),
+                serde_json::json!({
+                    "choices": [{
+                        "delta": {},
+                        "finish_reason": "tool_calls"
+                    }]
+                }),
+            ];
+            let mut sse = String::new();
+            for event in events {
+                sse.push_str("data: ");
+                sse.push_str(&event.to_string());
+                sse.push_str("\n\n");
+            }
+            sse.push_str("data: [DONE]\n\n");
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                sse,
+            )
+        }),
+    );
+    let base = start_mock(app).await;
+    let backend = proxy_for("mock", base);
+
+    let mut stream = backend.chat("mock", chat_req()).await.unwrap();
+    let mut tool_calls = None;
+    let mut done_reason = None;
+    while let Some(chunk) = stream.next().await {
+        let c = chunk.unwrap();
+        if let Some(calls) = c.tool_calls {
+            tool_calls = Some(calls);
+        }
+        if c.done {
+            done_reason = c.done_reason;
+            break;
+        }
+    }
+
+    let calls = tool_calls.expect("proxy must emit assembled tool calls");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, "call_1");
+    assert_eq!(calls[0].tool_type, "function");
+    assert_eq!(calls[0].function.name, "lookup");
+    assert_eq!(calls[0].function.arguments, "{\"city\":\"Paris\"}");
+    assert_eq!(calls[0].index, Some(0));
+    assert_eq!(done_reason.as_deref(), Some("tool_calls"));
+}
+
+#[tokio::test]
 async fn proxy_embed_from_upstream() {
     let app = Router::new().route(
         "/v1/embeddings",
