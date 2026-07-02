@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 use crate::config::TeePolicyMode;
 use crate::model::manifest::{ModelFormat, ModelManifest};
@@ -19,6 +20,28 @@ pub struct AttestationQuery {
     /// Optional model name to bind through AttestationClaimsV2.
     /// Ties the attestation to the specific model being served.
     pub model: Option<String>,
+    /// Unknown query parameters are preserved so the endpoint can reject
+    /// unsupported attestation policy instead of silently dropping it.
+    #[serde(default, flatten)]
+    pub unsupported: BTreeMap<String, String>,
+}
+
+impl AttestationQuery {
+    fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported attestation query parameter(s): {}; supported parameters are nonce and model",
+                fields.join(", ")
+            ))
+        }
+    }
 }
 
 /// Decode a hex string to bytes, returning an error response on invalid input.
@@ -346,6 +369,15 @@ pub async fn handler(
     State(state): State<AppState>,
     Query(params): Query<AttestationQuery>,
 ) -> impl IntoResponse {
+    if let Some(message) = params.unsupported_fields_message() {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            message,
+            "unsupported_query_parameters",
+        )
+        .into_response();
+    }
+
     let provider = match &state.tee_provider {
         Some(p) => p.clone(),
         None => {
@@ -489,6 +521,7 @@ mod tests {
         Query(AttestationQuery {
             nonce: None,
             model: None,
+            unsupported: Default::default(),
         })
     }
 
@@ -496,6 +529,7 @@ mod tests {
         Query(AttestationQuery {
             nonce: Some(hex.to_string()),
             model: None,
+            unsupported: Default::default(),
         })
     }
 
@@ -511,6 +545,7 @@ mod tests {
         Query(AttestationQuery {
             nonce: None,
             model: Some(model.to_string()),
+            unsupported: Default::default(),
         })
     }
 
@@ -655,6 +690,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_attestation_rejects_unsupported_query_parameters() {
+        let state = test_state_no_tee();
+        let resp = handler(
+            State(state),
+            Query(AttestationQuery {
+                nonce: None,
+                model: None,
+                unsupported: BTreeMap::from([("policy".to_string(), "strict".to_string())]),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = response_json(resp).await;
+        assert_eq!(json["error"]["code"], "unsupported_query_parameters");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("policy"));
+    }
+
+    #[tokio::test]
     async fn test_attestation_with_nonce_binds_to_report() {
         let state = test_state_simulated();
         // nonce = [0x01, 0x02, 0x03] → hex "010203"
@@ -767,6 +824,7 @@ mod tests {
             Query(AttestationQuery {
                 nonce: Some("010203".to_string()),
                 model: Some("test-model".to_string()),
+                unsupported: Default::default(),
             }),
         )
         .await

@@ -51,6 +51,8 @@ Landed in the current working tree:
 - Changed `/v1/attestation?model=...` to re-hash the current local model
   artifact and fail on missing, malformed, or stale model hashes instead of
   silently omitting the model binding.
+- Changed `/v1/attestation` to reject unknown query parameters instead of
+  silently dropping caller-supplied attestation policy.
 - Added deterministic directory-manifest hashing for HuggingFace/Vision-style
   model directories and emits `directory-manifest-sha256` model claims.
 - Model registration now rejects unsupported `format` values and unknown

@@ -855,7 +855,7 @@ Error messages that echo prompt content are also sanitized via `sanitize_error()
 | `DELETE` | `/v1/models/:name` | Unload and deregister a model |
 | `POST` | `/v1/models/pull` | Pull a GGUF model from HuggingFace Hub (`name`, optional `force` and `token` body fields); unknown fields fail closed; streams SSE progress events; requires `hf` feature; concurrent pulls of the same model are deduplicated |
 | `GET` | `/v1/models/pull/:name/status` | Get persisted pull progress for a model (`status`, `completed`, `total`, `error`); URL-encode names that contain `/` or `:` |
-| `GET` | `/v1/attestation` | TEE attestation report (returns 503 if TEE not enabled); optional `?nonce=<hex>` binds client nonce; optional `?model=<name>` emits v2 model/runtime claims and binds the claims digest into `report_data`; `gpu-confidential` mode also binds GPU evidence claims and requires a 32-byte `?nonce=<64-hex>` |
+| `GET` | `/v1/attestation` | TEE attestation report (returns 503 if TEE not enabled); optional `?nonce=<hex>` binds client nonce; optional `?model=<name>` emits v2 model/runtime claims and binds the claims digest into `report_data`; unknown query parameters fail closed; `gpu-confidential` mode also binds GPU evidence claims and requires a 32-byte `?nonce=<64-hex>` |
 
 The `a3s-power models show` and `a3s-power models rm` commands encode model
 names as URL path segments automatically. Manual HTTP clients must percent-encode
