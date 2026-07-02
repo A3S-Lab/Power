@@ -171,6 +171,8 @@ Landed in the current working tree:
   to empty output.
 - Tightened proxy SSE line parsing so malformed non-empty `data:` events fail
   closed instead of being skipped before stream-event validation.
+- Tightened proxy SSE EOF handling so truncated partial event lines fail closed
+  instead of being treated as a clean stream end.
 - Made proxy effective-prompt digest collection leave image-bearing chat
   requests absent by default and fail closed when the digest endpoint is
   required, avoiding text rendered-prompt overclaims for opaque multimodal

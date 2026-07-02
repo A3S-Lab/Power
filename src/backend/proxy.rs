@@ -776,7 +776,12 @@ where
                     "proxy stream error: {e}"
                 ))))
             }
-            None => return None,
+            None if buf.is_empty() => return None,
+            None => {
+                return Some(Err(PowerError::InferenceFailed(
+                    "proxy SSE stream ended with an incomplete event line".to_string(),
+                )));
+            }
         }
     }
 }
@@ -1762,6 +1767,22 @@ mod tests {
             next_sse_event(&mut s, &mut buf).await.is_none(),
             "exhausted stream must yield None"
         );
+    }
+
+    #[tokio::test]
+    async fn sse_rejects_truncated_data_line_at_stream_end() {
+        let mut s = byte_stream(vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"cut\"}}]",
+        ]);
+        let mut buf = Vec::new();
+
+        let err = next_sse_event(&mut s, &mut buf)
+            .await
+            .expect("expected parser result")
+            .unwrap_err();
+
+        let err = err.to_string();
+        assert!(err.contains("incomplete"), "error: {err}");
     }
 
     #[tokio::test]
