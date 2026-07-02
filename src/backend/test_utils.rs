@@ -24,6 +24,7 @@ pub struct MockBackend {
     supports_memory_load: bool,
     streaming_load_succeeds: bool,
     supports_streaming_load: bool,
+    supports_remote: bool,
     unload_succeeds: bool,
     cleanup_succeeds: bool,
     /// When true, chat() emits chunks simulating `<think>reasoning</think>answer`.
@@ -52,6 +53,7 @@ impl MockBackend {
             supports_memory_load: false,
             streaming_load_succeeds: true,
             supports_streaming_load: false,
+            supports_remote: false,
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: false,
@@ -74,6 +76,7 @@ impl MockBackend {
             supports_memory_load: false,
             streaming_load_succeeds: false,
             supports_streaming_load: false,
+            supports_remote: false,
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: false,
@@ -96,6 +99,7 @@ impl MockBackend {
             supports_memory_load: false,
             streaming_load_succeeds: true,
             supports_streaming_load: false,
+            supports_remote: false,
             unload_succeeds: false,
             cleanup_succeeds: true,
             emit_thinking: false,
@@ -118,6 +122,7 @@ impl MockBackend {
             supports_memory_load: false,
             streaming_load_succeeds: true,
             supports_streaming_load: false,
+            supports_remote: false,
             unload_succeeds: true,
             cleanup_succeeds: false,
             emit_thinking: false,
@@ -140,6 +145,7 @@ impl MockBackend {
             supports_memory_load: false,
             streaming_load_succeeds: true,
             supports_streaming_load: false,
+            supports_remote: false,
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: true,
@@ -181,6 +187,12 @@ impl MockBackend {
         self
     }
 
+    /// Allow tests to exercise remote/proxy-shaped request handling.
+    pub fn with_remote_support(mut self) -> Self {
+        self.supports_remote = true;
+        self
+    }
+
     /// Share a handle that captures the most recent chat request.
     pub fn chat_request_capture(&self) -> Arc<Mutex<Option<ChatRequest>>> {
         self.last_chat_request.clone()
@@ -200,6 +212,7 @@ impl Backend for MockBackend {
 
     fn supports(&self, format: &ModelFormat) -> bool {
         matches!(format, ModelFormat::Gguf)
+            || (self.supports_remote && matches!(format, ModelFormat::Remote))
     }
 
     async fn load(&self, _manifest: &ModelManifest) -> Result<()> {

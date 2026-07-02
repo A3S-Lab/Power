@@ -10,13 +10,67 @@ use zeroize::Zeroize;
 use super::openai_error;
 use crate::api::types::{
     ChatChoice, ChatChunkChoice, ChatCompletionChunk, ChatCompletionMessage, ChatCompletionRequest,
-    ChatCompletionResponse, ChatDelta, Usage,
+    ChatCompletionResponse, ChatDelta, JsonSchemaSpec, ResponseFormat, Usage,
 };
 use crate::backend::types::{ChatMessage, ChatRequest, MessageContent, ToolCall};
+use crate::model::manifest::ModelFormat;
 use crate::server::audit::AuditEvent;
 use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
+
+fn backend_response_format(
+    format: &ModelFormat,
+    response_format: Option<&ResponseFormat>,
+) -> Option<serde_json::Value> {
+    response_format.map(|format_spec| {
+        if matches!(format, ModelFormat::Remote) {
+            openai_wire_response_format(format_spec)
+        } else {
+            local_backend_response_format(format_spec)
+        }
+    })
+}
+
+fn local_backend_response_format(format: &ResponseFormat) -> serde_json::Value {
+    if format.r#type == "json_schema" {
+        if let Some(ref spec) = format.json_schema {
+            if let Some(ref schema) = spec.schema {
+                return schema.clone();
+            }
+        }
+        serde_json::json!("json")
+    } else {
+        serde_json::json!({ "type": format.r#type })
+    }
+}
+
+fn openai_wire_response_format(format: &ResponseFormat) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    value.insert("type".to_string(), format.r#type.clone().into());
+    if let Some(json_schema) = &format.json_schema {
+        value.insert(
+            "json_schema".to_string(),
+            json_schema_spec_value(json_schema),
+        );
+    }
+    serde_json::Value::Object(value)
+}
+
+fn json_schema_spec_value(spec: &JsonSchemaSpec) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    value.insert("name".to_string(), spec.name.clone().into());
+    if let Some(description) = &spec.description {
+        value.insert("description".to_string(), description.clone().into());
+    }
+    if let Some(schema) = &spec.schema {
+        value.insert("schema".to_string(), schema.clone());
+    }
+    if let Some(strict) = spec.strict {
+        value.insert("strict".to_string(), strict.into());
+    }
+    serde_json::Value::Object(value)
+}
 
 /// POST /v1/chat/completions - OpenAI-compatible chat completion.
 pub async fn handler(
@@ -93,22 +147,8 @@ pub async fn handler(
     };
     let unload_after_use = load_result.unload_after_use;
 
-    let response_format = request.response_format.as_ref().map(|f| {
-        if f.r#type == "json_schema" {
-            // Extract the actual JSON Schema and pass it directly to the backend
-            // so it can generate a GBNF grammar for constrained output.
-            if let Some(ref spec) = f.json_schema {
-                if let Some(ref schema) = spec.schema {
-                    return schema.clone();
-                }
-            }
-            // Fallback to generic JSON if schema is missing
-            serde_json::json!("json")
-        } else {
-            // "json_object" or "text" — pass type as-is
-            serde_json::json!({"type": f.r#type})
-        }
-    });
+    let response_format =
+        backend_response_format(&manifest.format, request.response_format.as_ref());
     let backend_request = ChatRequest {
         messages: request
             .messages
@@ -604,6 +644,60 @@ mod tests {
     use serial_test::serial;
     use tower::util::ServiceExt;
 
+    #[test]
+    fn backend_response_format_preserves_remote_json_schema_wire_shape() {
+        let format: crate::api::types::ResponseFormat = serde_json::from_value(serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "Weather",
+                "description": "Weather answer",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "city": { "type": "string" }
+                    },
+                    "required": ["city"]
+                },
+                "strict": true
+            }
+        }))
+        .unwrap();
+
+        let value = super::backend_response_format(&ModelFormat::Remote, Some(&format)).unwrap();
+
+        assert_eq!(value["type"], "json_schema");
+        assert_eq!(value["json_schema"]["name"], "Weather");
+        assert_eq!(value["json_schema"]["description"], "Weather answer");
+        assert_eq!(value["json_schema"]["strict"], true);
+        assert_eq!(
+            value["json_schema"]["schema"]["properties"]["city"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn backend_response_format_extracts_schema_for_local_backends() {
+        let format: crate::api::types::ResponseFormat = serde_json::from_value(serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "Weather",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "city": { "type": "string" }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let value = super::backend_response_format(&ModelFormat::Gguf, Some(&format)).unwrap();
+
+        assert_eq!(value["type"], "object");
+        assert_eq!(value["properties"]["city"]["type"], "string");
+        assert!(value.get("json_schema").is_none());
+    }
+
     #[tokio::test]
     async fn test_openai_chat_model_not_found() {
         let state = test_state_with_mock(MockBackend::success());
@@ -1067,6 +1161,72 @@ mod tests {
         assert_eq!(
             json["attestation_receipt"]["decoding"]["parameters"]["parallel_tool_calls"],
             serde_json::json!(false)
+        );
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_preserves_remote_json_schema_response_format() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let mock = MockBackend::success().with_remote_support();
+        let chat_request_capture = mock.chat_request_capture();
+        let state = test_state_with_mock(mock);
+        let mut manifest = sample_manifest("test");
+        manifest.format = ModelFormat::Remote;
+        state.registry.register(manifest).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"test",
+                    "messages":[{"role":"user","content":"hi"}],
+                    "stream":false,
+                    "response_format":{
+                        "type":"json_schema",
+                        "json_schema":{
+                            "name":"Weather",
+                            "description":"Weather answer",
+                            "schema":{
+                                "type":"object",
+                                "properties":{"city":{"type":"string"}},
+                                "required":["city"]
+                            },
+                            "strict":true
+                        }
+                    }
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let captured = chat_request_capture
+            .lock()
+            .expect("chat request lock poisoned")
+            .clone()
+            .expect("expected backend chat request to be captured");
+        let response_format = captured
+            .response_format
+            .expect("expected response_format to be forwarded");
+        assert_eq!(response_format["type"], "json_schema");
+        assert_eq!(response_format["json_schema"]["name"], "Weather");
+        assert_eq!(
+            response_format["json_schema"]["description"],
+            "Weather answer"
+        );
+        assert_eq!(response_format["json_schema"]["strict"], true);
+        assert_eq!(
+            response_format["json_schema"]["schema"]["properties"]["city"]["type"],
+            "string"
         );
 
         std::env::remove_var("A3S_POWER_HOME");
