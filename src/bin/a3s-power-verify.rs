@@ -679,8 +679,12 @@ impl CliOpts {
             tool_choice_digest,
             effective_prompt_digest,
             effective_prompt_absent: self.effective_prompt_absent,
-            effective_prompt_backend: self.effective_prompt_backend.clone(),
-            effective_prompt_kind: self.effective_prompt_kind.clone(),
+            effective_prompt_backend: normalized_optional_string_arg(
+                self.effective_prompt_backend.as_deref(),
+            ),
+            effective_prompt_kind: normalized_optional_string_arg(
+                self.effective_prompt_kind.as_deref(),
+            ),
         }
     }
 }
@@ -1054,6 +1058,13 @@ fn split_csv_arg(value: &str) -> Vec<String> {
         .filter(|part| !part.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+fn normalized_optional_string_arg(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn parse_u32_arg(flag: &str, value: &str) -> anyhow::Result<u32> {
@@ -2424,6 +2435,50 @@ mod tests {
         assert!(opts.has_receipt_policy_pins());
         let expected = opts.expected_receipt(None, None, None, None, None, None, None, None);
         assert!(expected.effective_prompt_absent);
+    }
+
+    #[test]
+    fn test_expected_receipt_trims_effective_prompt_backend_and_kind() {
+        let args = vec![
+            "--file".to_string(),
+            "report.json".to_string(),
+            "--receipt-file".to_string(),
+            "receipt.json".to_string(),
+            "--effective-prompt-backend".to_string(),
+            " llama.cpp ".to_string(),
+            "--effective-prompt-kind".to_string(),
+            " chat.rendered-prompt ".to_string(),
+        ];
+
+        let opts = parse_args(&args).unwrap();
+        let expected = opts.expected_receipt(None, None, None, None, None, None, None, None);
+
+        assert_eq!(
+            expected.effective_prompt_backend.as_deref(),
+            Some("llama.cpp")
+        );
+        assert_eq!(
+            expected.effective_prompt_kind.as_deref(),
+            Some("chat.rendered-prompt")
+        );
+    }
+
+    #[test]
+    fn test_expected_receipt_ignores_blank_effective_prompt_backend_and_kind() {
+        let args = vec![
+            "--file".to_string(),
+            "report.json".to_string(),
+            "--effective-prompt-backend".to_string(),
+            "   ".to_string(),
+            "--effective-prompt-kind".to_string(),
+            "\t".to_string(),
+        ];
+
+        let opts = parse_args(&args).unwrap();
+        let expected = opts.expected_receipt(None, None, None, None, None, None, None, None);
+
+        assert!(!opts.has_receipt_policy_pins());
+        assert!(expected.is_empty());
     }
 
     #[test]

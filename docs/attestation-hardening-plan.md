@@ -148,6 +148,8 @@ Landed in the current working tree:
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.
+- Tightened verifier CLI effective-prompt backend/kind pins so surrounding
+  whitespace is ignored and blank values do not become accidental policy pins.
 - Added receipt coverage and verifier pins for `stream_options`, so clients can
   distinguish streaming output protocol choices such as `include_usage`.
 - Added `verify_receipt_matches_chat_request()` and
