@@ -40,6 +40,17 @@ pub async fn handler(
             .into_response();
         }
     }
+    if let Some(best_of) = request.best_of {
+        if best_of != 1 {
+            return openai_error(
+                "unsupported_best_of",
+                &format!(
+                    "unsupported text completion best_of={best_of}; only best_of=1 is supported"
+                ),
+            )
+            .into_response();
+        }
+    }
     if request.suffix.is_some() {
         return openai_error(
             "unsupported_completion_suffix",
@@ -58,6 +69,13 @@ pub async fn handler(
         return openai_error(
             "unsupported_completion_echo",
             "completion echo is not supported; omit echo or set it to false",
+        )
+        .into_response();
+    }
+    if request.logit_bias.is_some() {
+        return openai_error(
+            "unsupported_logit_bias",
+            "text completion logit_bias is not supported; omit logit_bias",
         )
         .into_response();
     }
@@ -584,6 +602,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_openai_completions_rejects_best_of_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","prompt":"hi","best_of":2}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_best_of");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("only best_of=1 is supported"));
+    }
+
+    #[tokio::test]
     async fn test_openai_completions_rejects_suffix_request() {
         let state = test_state_with_mock(MockBackend::success());
         let app = router::build(state);
@@ -631,6 +674,31 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("logprobs are not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_completions_rejects_logit_bias_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","prompt":"hi","logit_bias":{"123":-100}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_logit_bias");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("logit_bias is not supported"));
     }
 
     #[tokio::test]
@@ -734,8 +802,44 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(
+            json["attestation_receipt"]["decoding"]["parameters"]["best_of"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
             json["attestation_receipt_sha256"].as_str().unwrap().len(),
             64
+        );
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_completions_accepts_single_best_of_request() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"model":"test","prompt":"hi","best_of":1}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["choices"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            json["attestation_receipt"]["decoding"]["parameters"]["best_of"],
+            serde_json::json!(1)
         );
 
         std::env::remove_var("A3S_POWER_HOME");

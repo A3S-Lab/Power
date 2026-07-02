@@ -2737,6 +2737,7 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            logit_bias: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -2772,6 +2773,8 @@ mod tests {
             n: None,
             logprobs: None,
             echo: None,
+            best_of: None,
+            logit_bias: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -3439,6 +3442,45 @@ mod tests {
         assert!(err
             .to_string()
             .contains("text completion logprobs are unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_logit_bias_request() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.logit_bias = Some(serde_json::json!({"123": -100}));
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("chat completion logit_bias is unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_rejects_best_of_request() {
+        let mut request = completion_request();
+        let receipt = completion_receipt(&request).unwrap();
+        request.best_of = Some(2);
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("completion best_of requests greater than 1 are unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_rejects_logit_bias_request() {
+        let mut request = completion_request();
+        let receipt = completion_receipt(&request).unwrap();
+        request.logit_bias = Some(serde_json::json!({"123": -100}));
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("text completion logit_bias is unsupported"));
     }
 
     #[test]

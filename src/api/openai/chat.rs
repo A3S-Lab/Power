@@ -44,6 +44,13 @@ pub async fn handler(
         )
         .into_response();
     }
+    if request.logit_bias.is_some() {
+        return openai_error(
+            "unsupported_logit_bias",
+            "chat completion logit_bias is not supported; omit logit_bias",
+        )
+        .into_response();
+    }
 
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
@@ -741,6 +748,31 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("logprobs are not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_logit_bias_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"logit_bias":{"123":-100}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_logit_bias");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("logit_bias is not supported"));
     }
 
     #[tokio::test]

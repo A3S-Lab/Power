@@ -110,6 +110,9 @@ Landed in the current working tree:
 - OpenAI-compatible chat and text completion requests now explicitly reject
   logprob response-shape requests, and text completions reject `echo = true`,
   instead of silently returning ordinary responses without the requested fields.
+- OpenAI-compatible chat and text completion requests now explicitly reject
+  `logit_bias`, and text completions accept only the default-equivalent
+  `best_of = 1`, with explicit `best_of` values covered by receipt hashes.
 - Added opt-in proxy upstream effective-prompt digest support. Proxy receipts
   remain non-overclaiming by default; when configured, Power asks the upstream
   digest endpoint for a `chat.rendered-prompt` SHA-256 before inference and can

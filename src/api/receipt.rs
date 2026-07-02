@@ -88,6 +88,11 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             "chat completion logprobs are unsupported and cannot be receipt-bound".to_string(),
         ));
     }
+    if request.logit_bias.is_some() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "chat completion logit_bias is unsupported and cannot be receipt-bound".to_string(),
+        ));
+    }
 
     let input = ReceiptInputDigest {
         kind: "chat.messages".to_string(),
@@ -189,6 +194,18 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
             "completion echo requests are unsupported and cannot be receipt-bound".to_string(),
         ));
     }
+    if let Some(best_of) = request.best_of {
+        if best_of != 1 {
+            return Err(crate::error::PowerError::InvalidRequest(
+                "completion best_of requests greater than 1 are unsupported and cannot be receipt-bound".to_string(),
+            ));
+        }
+    }
+    if request.logit_bias.is_some() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "text completion logit_bias is unsupported and cannot be receipt-bound".to_string(),
+        ));
+    }
 
     let input = ReceiptInputDigest {
         kind: "text.prompt".to_string(),
@@ -200,6 +217,7 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
     insert_optional_f32(&mut parameters, "top_p", request.top_p);
     insert_optional_u32(&mut parameters, "max_tokens", request.max_tokens);
     insert_optional_u32(&mut parameters, "n", request.n);
+    insert_optional_u32(&mut parameters, "best_of", request.best_of);
     insert_optional_i32(&mut parameters, "top_k", request.top_k);
     insert_optional_f32(&mut parameters, "min_p", request.min_p);
     insert_optional_f32(&mut parameters, "repeat_penalty", request.repeat_penalty);
@@ -394,6 +412,7 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            logit_bias: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -482,6 +501,8 @@ mod tests {
             n: None,
             logprobs: None,
             echo: None,
+            best_of: None,
+            logit_bias: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -652,6 +673,8 @@ mod tests {
             n: None,
             logprobs: None,
             echo: None,
+            best_of: None,
+            logit_bias: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -690,6 +713,8 @@ mod tests {
             n: None,
             logprobs: None,
             echo: None,
+            best_of: None,
+            logit_bias: None,
             top_k: Some(40),
             min_p: Some(0.5),
             repeat_penalty: Some(1.25),
@@ -736,6 +761,8 @@ mod tests {
             n: None,
             logprobs: None,
             echo: None,
+            best_of: None,
+            logit_bias: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -776,6 +803,8 @@ mod tests {
             n: None,
             logprobs: None,
             echo: None,
+            best_of: None,
+            logit_bias: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,

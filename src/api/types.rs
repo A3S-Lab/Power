@@ -41,6 +41,10 @@ pub struct ChatCompletionRequest {
     /// requested. Power currently rejects logprob response-shape requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_logprobs: Option<u32>,
+    /// Token bias map. Power currently rejects explicit logit bias requests
+    /// because backends do not share a verified token-ID bias path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logit_bias: Option<serde_json::Value>,
     /// Extended sampling controls accepted by local backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<i32>,
@@ -249,6 +253,14 @@ pub struct CompletionRequest {
     /// rejects echo requests because backends return generated text only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub echo: Option<bool>,
+    /// Server-side candidates to sample before returning the best completion.
+    /// Power currently supports only the default single candidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_of: Option<u32>,
+    /// Token bias map. Power currently rejects explicit logit bias requests
+    /// because backends do not share a verified token-ID bias path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logit_bias: Option<serde_json::Value>,
     /// Extended sampling controls accepted by local backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<i32>,
