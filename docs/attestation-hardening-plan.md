@@ -148,7 +148,7 @@ Landed in the current working tree:
   JSON parsing.
 - Tightened remote hub download accounting so known-size model downloads fail
   if the response exceeds the declared size or the completed byte count
-  overflows.
+  overflows, before writing an oversized chunk into the partial file.
 - Tightened remote hub resume handling so stale partial downloads larger than
   the declared model size are removed and rejected instead of being treated as
   complete artifacts.

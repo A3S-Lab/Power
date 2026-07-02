@@ -651,10 +651,12 @@ pub mod hf {
             while let Some(chunk) = stream.next().await {
                 let chunk =
                     chunk.map_err(|e| PowerError::Server(format!("download error: {e}")))?;
+                let next_completed =
+                    checked_download_completed_size(completed, chunk.len(), total)?;
                 tmp_file.write_all(&chunk).await.map_err(|e| {
                     PowerError::Io(std::io::Error::other(format!("write error: {e}")))
                 })?;
-                completed = checked_download_completed_size(completed, chunk.len(), total)?;
+                completed = next_completed;
                 send_progress(&tx, PullProgress::Downloading { completed, total }).await;
             }
 
