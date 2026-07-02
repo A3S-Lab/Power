@@ -161,6 +161,8 @@ Landed in the current working tree:
   evaluated.
 - Made attestation JSON hex-byte deserialization reject malformed odd-length
   hex as a serde error instead of panicking while loading external reports.
+- Made attestation nonce query decoding reject malformed non-ASCII hex as a
+  400 response instead of panicking while parsing client input.
 - Added receipt coverage and verifier pins for `stream_options`, so clients can
   distinguish streaming output protocol choices such as `include_usage`.
 - Added `verify_receipt_matches_chat_request()` and

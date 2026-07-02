@@ -35,23 +35,18 @@ fn decode_hex_nonce(hex: &str) -> Result<Vec<u8>, (StatusCode, axum::Json<serde_
             })),
         ));
     }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": format!("nonce contains invalid hex character at position {i}"),
-                            "type": "invalid_request_error",
-                            "code": "invalid_nonce"
-                        }
-                    })),
-                )
-            })
-        })
-        .collect()
+    hex::decode(hex).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": {
+                    "message": format!("nonce contains invalid hex: {e}"),
+                    "type": "invalid_request_error",
+                    "code": "invalid_nonce"
+                }
+            })),
+        )
+    })
 }
 
 fn error_json(
@@ -1139,6 +1134,14 @@ mod tests {
     #[test]
     fn test_decode_hex_nonce_invalid_chars_fails() {
         assert!(decode_hex_nonce("zzzz").is_err());
+    }
+
+    #[test]
+    fn test_decode_hex_nonce_unicode_fails_without_panicking() {
+        let result = std::panic::catch_unwind(|| decode_hex_nonce("🙂"));
+
+        assert!(result.is_ok(), "unicode nonce input must not panic");
+        assert!(result.unwrap().is_err());
     }
 
     #[test]
