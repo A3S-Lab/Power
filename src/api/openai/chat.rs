@@ -37,6 +37,13 @@ pub async fn handler(
             .into_response();
         }
     }
+    if request.has_conflicting_max_token_limits() {
+        return openai_error(
+            "conflicting_max_token_limits",
+            "max_tokens and max_completion_tokens must match when both are provided",
+        )
+        .into_response();
+    }
     if request.logprobs.unwrap_or(false) || request.top_logprobs.is_some() {
         return openai_error(
             "unsupported_logprobs",
@@ -135,7 +142,7 @@ pub async fn handler(
             .collect(),
         temperature: request.temperature,
         top_p: request.top_p,
-        max_tokens: request.max_tokens,
+        max_tokens: request.effective_max_tokens(),
         stop: request.stop.clone(),
         stream: request.stream.unwrap_or(false),
         top_k: request.top_k,
@@ -726,6 +733,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_openai_chat_rejects_conflicting_max_completion_tokens() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"max_tokens":8,"max_completion_tokens":9}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "conflicting_max_token_limits");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("must match"));
+    }
+
+    #[tokio::test]
     async fn test_openai_chat_rejects_logprobs_request() {
         let state = test_state_with_mock(MockBackend::success());
         let app = router::build(state);
@@ -929,6 +961,52 @@ mod tests {
         assert_eq!(
             json["attestation_receipt"]["decoding"]["parameters"]["n"],
             serde_json::json!(1)
+        );
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_forwards_max_completion_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let mock = MockBackend::success();
+        let chat_request_capture = mock.chat_request_capture();
+        let state = test_state_with_mock(mock);
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":false,"max_completion_tokens":12}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let captured = chat_request_capture
+            .lock()
+            .expect("chat request lock poisoned")
+            .clone()
+            .expect("expected backend chat request to be captured");
+        assert_eq!(captured.max_tokens, Some(12));
+        assert_eq!(
+            json["attestation_receipt"]["decoding"]["parameters"]["max_tokens"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            json["attestation_receipt"]["decoding"]["parameters"]["max_completion_tokens"],
+            serde_json::json!(12)
         );
 
         std::env::remove_var("A3S_POWER_HOME");

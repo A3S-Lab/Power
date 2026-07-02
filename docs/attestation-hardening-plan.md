@@ -113,6 +113,9 @@ Landed in the current working tree:
 - OpenAI-compatible chat and text completion requests now explicitly reject
   `logit_bias`, and text completions accept only the default-equivalent
   `best_of = 1`, with explicit `best_of` values covered by receipt hashes.
+- OpenAI-compatible chat requests now support `max_completion_tokens` as an
+  alias for the backend generated-token limit, reject conflicts with
+  `max_tokens`, and include both aliases in receipt decoding-parameter hashes.
 - Added opt-in proxy upstream effective-prompt digest support. Proxy receipts
   remain non-overclaiming by default; when configured, Power asks the upstream
   digest endpoint for a `chat.rendered-prompt` SHA-256 before inference and can

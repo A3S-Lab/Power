@@ -2734,6 +2734,7 @@ mod tests {
             temperature: Some(0.2),
             top_p: Some(0.9),
             max_tokens: Some(128),
+            max_completion_tokens: None,
             n: None,
             logprobs: None,
             top_logprobs: None,
@@ -3442,6 +3443,17 @@ mod tests {
         assert!(err
             .to_string()
             .contains("text completion logprobs are unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_conflicting_max_completion_tokens() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.max_completion_tokens = Some(999);
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err.to_string().contains("max_completion_tokens must match"));
     }
 
     #[test]

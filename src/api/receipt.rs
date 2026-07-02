@@ -83,6 +83,11 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
     runtime_policy: Option<RuntimePolicyClaim>,
     effective_prompt: Option<EffectivePromptDigest>,
 ) -> crate::error::Result<AttestationReceipt> {
+    if request.has_conflicting_max_token_limits() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "max_tokens and max_completion_tokens must match when both are provided".to_string(),
+        ));
+    }
     if request.logprobs.unwrap_or(false) || request.top_logprobs.is_some() {
         return Err(crate::error::PowerError::InvalidRequest(
             "chat completion logprobs are unsupported and cannot be receipt-bound".to_string(),
@@ -103,6 +108,11 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
     insert_optional_f32(&mut parameters, "temperature", request.temperature);
     insert_optional_f32(&mut parameters, "top_p", request.top_p);
     insert_optional_u32(&mut parameters, "max_tokens", request.max_tokens);
+    insert_optional_u32(
+        &mut parameters,
+        "max_completion_tokens",
+        request.max_completion_tokens,
+    );
     insert_optional_u32(&mut parameters, "n", request.n);
     insert_optional_i32(&mut parameters, "top_k", request.top_k);
     insert_optional_f32(&mut parameters, "min_p", request.min_p);
@@ -409,6 +419,7 @@ mod tests {
             temperature: Some(0.2),
             top_p: Some(0.9),
             max_tokens: Some(128),
+            max_completion_tokens: None,
             n: None,
             logprobs: None,
             top_logprobs: None,

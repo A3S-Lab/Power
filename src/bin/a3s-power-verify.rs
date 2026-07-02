@@ -1522,6 +1522,7 @@ mod tests {
             temperature: Some(0.2),
             top_p: Some(0.9),
             max_tokens: Some(128),
+            max_completion_tokens: None,
             n: None,
             logprobs: None,
             top_logprobs: None,

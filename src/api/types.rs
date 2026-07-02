@@ -30,6 +30,10 @@ pub struct ChatCompletionRequest {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// OpenAI's newer generated-token limit field. When present without
+    /// `max_tokens`, Power maps it to the backend's generated-token limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
     /// Number of choices to generate. Power currently supports one choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n: Option<u32>,
@@ -103,6 +107,19 @@ impl ChatCompletionRequest {
         self.messages
             .iter()
             .any(ChatCompletionMessage::has_image_inputs)
+    }
+
+    /// Return true when both generated-token limit aliases are present but disagree.
+    pub fn has_conflicting_max_token_limits(&self) -> bool {
+        matches!(
+            (self.max_tokens, self.max_completion_tokens),
+            (Some(max_tokens), Some(max_completion_tokens)) if max_tokens != max_completion_tokens
+        )
+    }
+
+    /// Effective generated-token limit for backend requests.
+    pub fn effective_max_tokens(&self) -> Option<u32> {
+        self.max_tokens.or(self.max_completion_tokens)
     }
 }
 
