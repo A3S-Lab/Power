@@ -2234,6 +2234,42 @@ mod tests {
     }
 
     #[test]
+    fn test_run_gpu_verdict_digest_rejects_short_hex() {
+        let report_file = write_report_file();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--gpu-verdict-digest".to_string(),
+            "abcd".to_string(),
+            "--allow-offline".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("--gpu-verdict-digest must be a 64-character SHA-256 hex digest"));
+    }
+
+    #[test]
+    fn test_run_gpu_execution_digest_rejects_non_hex() {
+        let report_file = write_report_file();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--gpu-execution-digest".to_string(),
+            "g".repeat(64),
+            "--allow-offline".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("--gpu-execution-digest must contain only hexadecimal characters"));
+    }
+
+    #[test]
     fn test_parse_args_runtime_policy() {
         let args = vec![
             "--file".to_string(),

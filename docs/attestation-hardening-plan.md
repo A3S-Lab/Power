@@ -153,6 +153,10 @@ Landed in the current working tree:
 - Made `a3s-power-verify --receipt-chat-request-file` require
   `effective_prompt` absence by default for image-bearing chat requests unless
   the verifier explicitly pins an effective-prompt digest/backend/kind.
+- Tightened `a3s-power-verify` digest pin parsing so receipt, effective-prompt,
+  GPU evidence/verdict, chat-template, decoding-policy, and GPU execution pins
+  must be exactly 64-character SHA-256 hex values before verification policy is
+  evaluated.
 - Added receipt coverage and verifier pins for `stream_options`, so clients can
   distinguish streaming output protocol choices such as `include_usage`.
 - Added `verify_receipt_matches_chat_request()` and
