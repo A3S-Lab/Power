@@ -545,10 +545,15 @@ Remaining gap:
 Current implementation:
 
 - Model-bound `/v1/attestation?model=...` includes `runtime.prompt` digests for
-  manifest chat template overrides, readable GGUF `tokenizer.chat_template`
-  metadata, system prompts, and pre-seeded manifest messages.
-- Model-bound attestation includes `runtime.decoding.parameters_sha256` for
-  canonical default generation parameters from the model manifest.
+  applied manifest chat template overrides or readable GGUF
+  `tokenizer.chat_template` metadata. Manifest system prompts and pre-seeded
+  messages are not claimed until an execution path actually injects them into
+  inference requests.
+- Model-bound attestation does not currently emit
+  `runtime.decoding.parameters_sha256` for manifest default generation
+  parameters, because the OpenAI-compatible inference path does not apply those
+  defaults automatically. Request-level receipts cover the decoding parameters
+  that are actually sent on each request.
 - Model-bound attestation includes `runtime.execution.gpu_sha256` for the
   canonical GPU execution/offload configuration: `gpu_layers`, `main_gpu`, and
   `tensor_split`.
@@ -617,6 +622,9 @@ Remaining code changes:
   exact prompt representation submitted to the model.
 - Continue extending the receipt whenever new request-visible decoding controls
   are exposed by the OpenAI-compatible API.
+- If manifest system prompts, pre-seeded messages, or default generation
+  parameters become execution defaults, apply them in the request path first and
+  then add matching runtime-policy claims and receipt tests.
 
 Tests:
 

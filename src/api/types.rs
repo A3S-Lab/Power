@@ -144,7 +144,7 @@ pub struct ChatCompletionResponse {
     /// Server-side determinism fingerprint (model + sampling config hash).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
-    /// Request-level receipt covering prompt and decoding policy.
+    /// Request-level receipt covering prompt input and decoding/output policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_receipt: Option<AttestationReceipt>,
     /// SHA-256 digest of `attestation_receipt`.
@@ -260,7 +260,7 @@ pub struct CompletionResponse {
     /// Server-side determinism fingerprint (model + sampling config hash).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
-    /// Request-level receipt covering prompt and decoding policy.
+    /// Request-level receipt covering prompt input and decoding/output policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_receipt: Option<AttestationReceipt>,
     /// SHA-256 digest of `attestation_receipt`.

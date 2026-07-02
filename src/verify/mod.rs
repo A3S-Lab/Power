@@ -30,9 +30,9 @@
 //!    evidence count. The production GPU confidential profile requires an
 //!    expected NVIDIA NRAS verdict digest specifically.
 //!
-//! 6. **Runtime policy binding** — v2 reports can bind prompt construction
-//!    inputs, default decoding policy, and GPU execution/offload policy digests
-//!    into CPU TEE `report_data`.
+//! 6. **Runtime policy binding** — v2 reports can bind applied prompt
+//!    construction, applied default decoding policy, and GPU execution/offload
+//!    policy digests into CPU TEE `report_data`.
 //!
 //! 7. **Request receipt digest checks** — inference responses can include an
 //!    `attestation_receipt` and `attestation_receipt_sha256`; helpers in this
@@ -126,7 +126,7 @@ pub struct VerifyOptions<'a> {
     /// Expected SHA-256 digest of the effective chat template string.
     pub expected_chat_template_digest: Option<Vec<u8>>,
 
-    /// Expected SHA-256 digest of canonical default decoding parameters.
+    /// Expected SHA-256 digest of canonical applied default decoding parameters.
     pub expected_decoding_parameters_digest: Option<Vec<u8>>,
 
     /// Expected SHA-256 digest of canonical GPU execution parameters.
@@ -1468,7 +1468,7 @@ fn require_validation_true(
     }
 }
 
-/// Verify that v2 claims bind the expected runtime prompt/decoding policy digests.
+/// Verify that v2 claims bind the expected runtime policy digests.
 pub fn verify_claims_runtime_policy_binding(
     claims: &AttestationClaimsV2,
     expected_chat_template_digest: Option<&[u8]>,

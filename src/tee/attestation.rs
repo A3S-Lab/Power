@@ -84,7 +84,7 @@ pub struct AttestationClaimsV2 {
     /// GPU evidence claim, present only for GPU confidential-computing mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu: Option<GpuEvidenceClaim>,
-    /// Runtime prompt construction and decoding policy digests.
+    /// Runtime policy digests, when the attestation is runtime-policy-bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimePolicyClaim>,
 }
@@ -345,13 +345,16 @@ impl GpuDeviceValidationClaim {
     }
 }
 
-/// Runtime prompt construction and decoding policy claim.
+/// Runtime policy claim.
+///
+/// The schema keeps prompt, decoding, and execution digests independent so
+/// verifiers can pin only the policy dimensions a deployment actually applies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimePolicyClaim {
-    /// Hashes covering prompt construction inputs.
+    /// Hashes covering applied prompt construction inputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<PromptPolicyClaim>,
-    /// Hashes covering default decoding/sampling parameters.
+    /// Hashes covering applied default decoding/sampling parameters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decoding: Option<DecodingPolicyClaim>,
     /// Hashes covering execution/offload policy.
@@ -396,21 +399,21 @@ pub struct PromptPolicyClaim {
     /// Source of the chat template hash, e.g. `manifest.template_override`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_template_source: Option<String>,
-    /// SHA-256 of the effective chat template string.
+    /// SHA-256 of the applied chat template string.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "hex_bytes_opt"
     )]
     pub chat_template_sha256: Option<Vec<u8>>,
-    /// SHA-256 of the configured system prompt.
+    /// SHA-256 of an applied system prompt.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "hex_bytes_opt"
     )]
     pub system_prompt_sha256: Option<Vec<u8>>,
-    /// SHA-256 of canonical manifest pre-seeded messages.
+    /// SHA-256 of canonical applied pre-seeded messages.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
