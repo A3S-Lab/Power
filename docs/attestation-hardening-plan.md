@@ -177,6 +177,8 @@ Landed in the current working tree:
   instead of being forwarded as empty done reasons.
 - Preserved proxy chat stream reasoning and tool-call deltas while making
   malformed tool-call chunks fail closed instead of being silently dropped.
+- Preserved backend-emitted chat tool calls in non-streaming OpenAI responses
+  instead of dropping them while collecting streamed backend chunks.
 - Tightened proxy SSE line parsing so malformed non-empty `data:` events fail
   closed instead of being skipped before stream-event validation.
 - Tightened proxy SSE EOF handling so truncated partial event lines fail closed

@@ -7,7 +7,7 @@ use futures::Stream;
 
 use crate::backend::types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
-    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse,
+    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse, FunctionCall, ToolCall,
 };
 use crate::backend::{Backend, BackendRegistry};
 use crate::config::PowerConfig;
@@ -28,6 +28,8 @@ pub struct MockBackend {
     cleanup_succeeds: bool,
     /// When true, chat() emits chunks simulating `<think>reasoning</think>answer`.
     emit_thinking: bool,
+    /// When true, chat() emits a tool-call response.
+    emit_tool_calls: bool,
     effective_prompt: Option<EffectivePromptDigest>,
     last_chat_request: Arc<Mutex<Option<ChatRequest>>>,
     last_completion_request: Arc<Mutex<Option<CompletionRequest>>>,
@@ -53,6 +55,7 @@ impl MockBackend {
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: false,
+            emit_tool_calls: false,
             effective_prompt: None,
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
@@ -74,6 +77,7 @@ impl MockBackend {
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: false,
+            emit_tool_calls: false,
             effective_prompt: None,
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
@@ -95,6 +99,7 @@ impl MockBackend {
             unload_succeeds: false,
             cleanup_succeeds: true,
             emit_thinking: false,
+            emit_tool_calls: false,
             effective_prompt: None,
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
@@ -116,6 +121,7 @@ impl MockBackend {
             unload_succeeds: true,
             cleanup_succeeds: false,
             emit_thinking: false,
+            emit_tool_calls: false,
             effective_prompt: None,
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
@@ -137,6 +143,7 @@ impl MockBackend {
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: true,
+            emit_tool_calls: false,
             effective_prompt: None,
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
@@ -145,6 +152,13 @@ impl MockBackend {
             streaming_load_count: Arc::new(AtomicU32::new(0)),
             cleanup_count: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    /// Create a mock backend that emits a chat tool-call response.
+    pub fn with_tool_calls() -> Self {
+        let mut mock = Self::success();
+        mock.emit_tool_calls = true;
+        mock
     }
 
     /// Add an effective prompt digest claim to this mock backend.
@@ -283,6 +297,35 @@ impl Backend for MockBackend {
                     done: true,
                     prompt_tokens: Some(5),
                     done_reason: Some("stop".to_string()),
+                    prompt_eval_duration_ns: Some(1_000_000),
+                    tool_calls: None,
+                }),
+            ]
+        } else if self.emit_tool_calls {
+            vec![
+                Ok(ChatResponseChunk {
+                    content: String::new(),
+                    thinking_content: None,
+                    done: false,
+                    prompt_tokens: None,
+                    done_reason: None,
+                    prompt_eval_duration_ns: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_1".to_string(),
+                        tool_type: "function".to_string(),
+                        function: FunctionCall {
+                            name: "get_weather".to_string(),
+                            arguments: "{\"city\":\"Paris\"}".to_string(),
+                        },
+                        index: Some(0),
+                    }]),
+                }),
+                Ok(ChatResponseChunk {
+                    content: String::new(),
+                    thinking_content: None,
+                    done: true,
+                    prompt_tokens: Some(5),
+                    done_reason: Some("tool_calls".to_string()),
                     prompt_eval_duration_ns: Some(1_000_000),
                     tool_calls: None,
                 }),

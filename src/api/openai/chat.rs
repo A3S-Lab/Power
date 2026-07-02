@@ -12,7 +12,7 @@ use crate::api::types::{
     ChatChoice, ChatChunkChoice, ChatCompletionChunk, ChatCompletionMessage, ChatCompletionRequest,
     ChatCompletionResponse, ChatDelta, Usage,
 };
-use crate::backend::types::{ChatMessage, ChatRequest, MessageContent};
+use crate::backend::types::{ChatMessage, ChatRequest, MessageContent, ToolCall};
 use crate::server::audit::AuditEvent;
 use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
@@ -446,6 +446,7 @@ pub async fn handler(
                 let start = Instant::now();
                 let mut full_content = String::new();
                 let mut full_thinking = String::new();
+                let mut tool_calls = Vec::<ToolCall>::new();
                 let mut completion_tokens: u32 = 0;
                 let mut prompt_tokens: u32 = 0;
                 let mut finish_reason = "stop".to_string();
@@ -472,6 +473,9 @@ pub async fn handler(
                             }
                             if let Some(reason) = c.done_reason {
                                 finish_reason = reason;
+                            }
+                            if let Some(calls) = c.tool_calls {
+                                tool_calls.extend(calls);
                             }
                         }
                         Err(e) => {
@@ -518,7 +522,11 @@ pub async fn handler(
                             role: "assistant".to_string(),
                             content: MessageContent::Text(full_content.clone()),
                             name: None,
-                            tool_calls: None,
+                            tool_calls: if tool_calls.is_empty() {
+                                None
+                            } else {
+                                Some(tool_calls)
+                            },
                             tool_call_id: None,
                             images: None,
                             thinking: if full_thinking.is_empty() {
@@ -856,6 +864,55 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["object"], "chat.completion");
         assert!(json["choices"][0]["finish_reason"].as_str().is_some());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_non_streaming_preserves_tool_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::with_tool_calls());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"test",
+                    "messages":[{"role":"user","content":"weather in Paris?"}],
+                    "tools":[{
+                        "type":"function",
+                        "function":{
+                            "name":"get_weather",
+                            "description":"Get weather",
+                            "parameters":{"type":"object"}
+                        }
+                    }],
+                    "stream":false
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let choice = &json["choices"][0];
+        assert_eq!(choice["finish_reason"], "tool_calls");
+        let calls = choice["message"]["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "call_1");
+        assert_eq!(calls[0]["type"], "function");
+        assert_eq!(calls[0]["function"]["name"], "get_weather");
+        assert_eq!(calls[0]["function"]["arguments"], "{\"city\":\"Paris\"}");
 
         std::env::remove_var("A3S_POWER_HOME");
     }
