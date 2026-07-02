@@ -177,6 +177,9 @@ Landed in the current working tree:
   Power posts them to NVIDIA NRAS.
 - Added a 64 MiB cap for configured GPU evidence and verdict file/hex byte
   sources so malformed deployments fail before unbounded reads or hex decodes.
+- Tightened `nras-rest` bearer-token configuration so
+  `nras_bearer_token_env` is treated as an environment variable name, trimmed,
+  and rejected when empty or malformed before Power sends NRAS requests.
 
 Still open:
 

@@ -504,6 +504,10 @@ impl NrasRestGpuEvidenceProvider {
         }
 
         let endpoint = normalize_nras_rest_endpoint(config.nras_url.as_deref())?;
+        let bearer_token_env = normalize_optional_env_name(
+            "gpu_attestation.nras_bearer_token_env",
+            config.nras_bearer_token_env.as_deref(),
+        )?;
         let timeout = Duration::from_secs(config.nras_timeout_secs);
         let client = reqwest::Client::builder()
             .timeout(timeout)
@@ -516,7 +520,7 @@ impl NrasRestGpuEvidenceProvider {
             endpoint,
             architecture,
             claims_version: claims_version.to_string(),
-            bearer_token_env: config.nras_bearer_token_env.clone(),
+            bearer_token_env,
             timeout,
             client,
         })
@@ -693,6 +697,22 @@ fn validate_evidence_source_size(field: &str, len: u64) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn normalize_optional_env_name(field: &str, value: Option<&str>) -> Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(PowerError::Config(format!("{field} must not be empty")));
+    }
+    if value.contains('=') || value.contains('\0') {
+        return Err(PowerError::Config(format!(
+            "{field} must not contain '=' or NUL characters"
+        )));
+    }
+    Ok(Some(value.to_string()))
 }
 
 fn sha256_bytes(bytes: &[u8]) -> Vec<u8> {
@@ -1834,6 +1854,59 @@ mod tests {
         let err = NrasRestGpuEvidenceProvider::from_config(&config).unwrap_err();
 
         assert!(err.to_string().contains("nras_gpu_architecture"));
+    }
+
+    #[test]
+    fn nras_rest_provider_trims_bearer_token_env_name() {
+        let config = GpuAttestationConfig {
+            source: GpuAttestationSource::NrasRest,
+            evidence_hex: Some(hex::encode(
+                br#"{"evidence":"ZXZpZGVuY2U","certificate":"Y2VydA"}"#,
+            )),
+            nras_gpu_architecture: Some("HOPPER".to_string()),
+            nras_bearer_token_env: Some(" NRAS_TOKEN ".to_string()),
+            ..Default::default()
+        };
+
+        let provider = NrasRestGpuEvidenceProvider::from_config(&config).unwrap();
+
+        assert_eq!(provider.bearer_token_env.as_deref(), Some("NRAS_TOKEN"));
+    }
+
+    #[test]
+    fn nras_rest_provider_rejects_empty_bearer_token_env_name() {
+        let config = GpuAttestationConfig {
+            source: GpuAttestationSource::NrasRest,
+            evidence_hex: Some(hex::encode(
+                br#"{"evidence":"ZXZpZGVuY2U","certificate":"Y2VydA"}"#,
+            )),
+            nras_gpu_architecture: Some("HOPPER".to_string()),
+            nras_bearer_token_env: Some("  ".to_string()),
+            ..Default::default()
+        };
+
+        let err = NrasRestGpuEvidenceProvider::from_config(&config).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("gpu_attestation.nras_bearer_token_env must not be empty"));
+    }
+
+    #[test]
+    fn nras_rest_provider_rejects_invalid_bearer_token_env_name() {
+        let config = GpuAttestationConfig {
+            source: GpuAttestationSource::NrasRest,
+            evidence_hex: Some(hex::encode(
+                br#"{"evidence":"ZXZpZGVuY2U","certificate":"Y2VydA"}"#,
+            )),
+            nras_gpu_architecture: Some("HOPPER".to_string()),
+            nras_bearer_token_env: Some("NRAS=TOKEN".to_string()),
+            ..Default::default()
+        };
+
+        let err = NrasRestGpuEvidenceProvider::from_config(&config).unwrap_err();
+
+        assert!(err.to_string().contains("must not contain '='"));
     }
 
     #[test]
