@@ -143,6 +143,10 @@ pub async fn handler(
             &manifest.format,
             request.response_format.as_ref(),
         ),
+        stream_options: request
+            .stream_options
+            .as_ref()
+            .map(|options| serde_json::json!(options)),
         images: None,
         projector_path: None,
         repeat_last_n: request.repeat_last_n,
@@ -581,7 +585,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
 
-        let state = test_state_with_mock(MockBackend::success());
+        let mock = MockBackend::success();
+        let completion_request_capture = mock.completion_request_capture();
+        let state = test_state_with_mock(mock);
         state.registry.register(sample_manifest("test")).unwrap();
         state.mark_loaded("test");
 
@@ -591,7 +597,7 @@ mod tests {
             .uri("/v1/completions")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"model":"test","prompt":"hi","stream":true}"#,
+                r#"{"model":"test","prompt":"hi","stream":true,"stream_options":{"include_usage":true}}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -611,6 +617,19 @@ mod tests {
         assert!(
             body_str.contains("\"attestation_receipt_sha256\""),
             "expected attestation receipt digest in SSE stream"
+        );
+        assert!(
+            body_str.contains("\"usage\""),
+            "expected usage chunk in SSE stream"
+        );
+        let captured = completion_request_capture
+            .lock()
+            .expect("completion request lock poisoned")
+            .clone()
+            .expect("expected backend completion request to be captured");
+        assert_eq!(
+            captured.stream_options,
+            Some(serde_json::json!({"include_usage": true}))
         );
 
         std::env::remove_var("A3S_POWER_HOME");

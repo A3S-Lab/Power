@@ -127,6 +127,9 @@ Landed in the current working tree:
   chat requests while keeping local backend schema extraction unchanged.
 - Added OpenAI completion `response_format` coverage through API parsing,
   backend/proxy forwarding, and request receipt binding.
+- Forwarded OpenAI `stream_options` through backend requests and proxy
+  chat/completion bodies so receipt-bound streaming protocol choices reach
+  remote upstreams.
 - Added regression tests for strict policy, runtime model-hash binding, stale
   model-file rejection, GPU confidential fail-closed behavior, runtime policy
   digest binding, proxy and mistralrs effective-prompt digest handling, request

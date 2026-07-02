@@ -1147,6 +1147,11 @@ fn build_chat_body(model_name: &str, request: &ChatRequest) -> serde_json::Value
             .expect("body is a json object")
             .insert("response_format".into(), response_format.clone());
     }
+    if let Some(stream_options) = &request.stream_options {
+        body.as_object_mut()
+            .expect("body is a json object")
+            .insert("stream_options".into(), stream_options.clone());
+    }
     if let Some(tools) = &request.tools {
         body.as_object_mut()
             .expect("body is a json object")
@@ -1203,6 +1208,11 @@ fn build_completion_body(model_name: &str, request: &CompletionRequest) -> serde
         body.as_object_mut()
             .expect("body is a json object")
             .insert("response_format".into(), response_format.clone());
+    }
+    if let Some(stream_options) = &request.stream_options {
+        body.as_object_mut()
+            .expect("body is a json object")
+            .insert("stream_options".into(), stream_options.clone());
     }
     set_common(
         &mut body,
@@ -1348,6 +1358,7 @@ mod tests {
             tfs_z: None,
             typical_p: None,
             response_format: None,
+            stream_options: None,
             tools: None,
             tool_choice: None,
             parallel_tool_calls: None,
@@ -1403,6 +1414,7 @@ mod tests {
         ]);
         request.messages[0].images = Some(vec!["message-base64-image".to_string()]);
         request.response_format = Some(serde_json::json!({"type":"json_object"}));
+        request.stream_options = Some(serde_json::json!({"include_usage": true}));
         request.tools = Some(vec![Tool {
             tool_type: "function".to_string(),
             function: FunctionDefinition {
@@ -1436,6 +1448,7 @@ mod tests {
         assert_eq!(body["messages"][0]["images"][0], "message-base64-image");
         assert_eq!(body["images"][0], "request-base64-image");
         assert_eq!(body["response_format"]["type"], "json_object");
+        assert_eq!(body["stream_options"]["include_usage"], true);
         assert_eq!(body["tools"][0]["function"]["name"], "lookup");
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["parallel_tool_calls"], false);
@@ -1475,6 +1488,7 @@ mod tests {
             tfs_z: Some(0.75),
             typical_p: Some(0.5),
             response_format: None,
+            stream_options: Some(serde_json::json!({"include_usage": true})),
             images: None,
             projector_path: None,
             repeat_last_n: Some(32),
@@ -1506,6 +1520,7 @@ mod tests {
         assert_eq!(body["mirostat_eta"], 0.25);
         assert_eq!(body["tfs_z"], 0.75);
         assert_eq!(body["typical_p"], 0.5);
+        assert_eq!(body["stream_options"]["include_usage"], true);
     }
 
     #[test]
@@ -1538,6 +1553,7 @@ mod tests {
                     "strict": true
                 }
             })),
+            stream_options: None,
             images: None,
             projector_path: None,
             repeat_last_n: None,

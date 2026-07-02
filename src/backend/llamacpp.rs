@@ -590,6 +590,7 @@ impl Backend for LlamaCppBackend {
             tfs_z: request.tfs_z,
             typical_p: request.typical_p,
             response_format: request.response_format,
+            stream_options: request.stream_options,
             images: if images.is_empty() {
                 None
             } else {
@@ -1672,6 +1673,7 @@ mod tests {
             tfs_z: None,
             typical_p: None,
             response_format: None,
+            stream_options: None,
             tools: None,
             tool_choice: None,
             parallel_tool_calls: None,
@@ -1992,6 +1994,7 @@ mod tests {
             tfs_z: None,
             typical_p: None,
             response_format: None,
+            stream_options: None,
             tools: None,
             tool_choice: None,
             parallel_tool_calls: None,
@@ -2037,6 +2040,7 @@ mod tests {
             tfs_z: None,
             typical_p: None,
             response_format: None,
+            stream_options: None,
             images: None,
             projector_path: None,
             repeat_last_n: None,

@@ -102,6 +102,7 @@ fn req(
         tfs_z: None,
         typical_p: None,
         response_format,
+        stream_options: None,
         tools: None,
         tool_choice: None,
         parallel_tool_calls: None,

@@ -126,6 +126,10 @@ pub async fn handler(
         tfs_z: request.tfs_z,
         typical_p: request.typical_p,
         response_format,
+        stream_options: request
+            .stream_options
+            .as_ref()
+            .map(|options| serde_json::json!(options)),
         tools: request.tools.clone(),
         tool_choice: request.tool_choice.clone(),
         parallel_tool_calls: request.parallel_tool_calls,
@@ -1379,7 +1383,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
 
-        let state = test_state_with_mock(MockBackend::success());
+        let mock = MockBackend::success();
+        let chat_request_capture = mock.chat_request_capture();
+        let state = test_state_with_mock(mock);
         state.registry.register(sample_manifest("test")).unwrap();
         state.mark_loaded("test");
 
@@ -1406,6 +1412,15 @@ mod tests {
         assert!(
             body_str.contains("\"attestation_receipt_sha256\""),
             "expected attestation receipt digest in SSE stream"
+        );
+        let captured = chat_request_capture
+            .lock()
+            .expect("chat request lock poisoned")
+            .clone()
+            .expect("expected backend chat request to be captured");
+        assert_eq!(
+            captured.stream_options,
+            Some(serde_json::json!({"include_usage": true}))
         );
 
         std::env::remove_var("A3S_POWER_HOME");

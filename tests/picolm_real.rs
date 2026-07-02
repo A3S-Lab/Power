@@ -75,6 +75,7 @@ fn make_chat_request(prompt: &str, max_tokens: u32, temperature: f32) -> ChatReq
         tfs_z: None,
         typical_p: None,
         response_format: None,
+        stream_options: None,
         tools: None,
         tool_choice: None,
         parallel_tool_calls: None,

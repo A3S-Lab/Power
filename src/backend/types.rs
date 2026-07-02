@@ -198,6 +198,9 @@ pub struct ChatRequest {
     /// Response format constraint: `"json"` for generic JSON, or a JSON Schema object.
     #[serde(default)]
     pub response_format: Option<serde_json::Value>,
+    /// Streaming protocol options, forwarded to OpenAI-compatible remote backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -365,6 +368,9 @@ pub struct CompletionRequest {
     /// Response format constraint: `"json"` for generic JSON, or a JSON Schema object.
     #[serde(default)]
     pub response_format: Option<serde_json::Value>,
+    /// Streaming protocol options, forwarded to OpenAI-compatible remote backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<serde_json::Value>,
     /// Base64-encoded images for multimodal inference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
