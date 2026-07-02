@@ -923,6 +923,8 @@ pub fn verify_claims_model_hash_binding(
     claims: &AttestationClaimsV2,
     model_hash: &[u8],
 ) -> Result<()> {
+    require_sha256_digest_bytes("expected model hash", model_hash)?;
+
     let model = claims.model.as_ref().ok_or_else(|| {
         PowerError::AttestationVerificationFailed(
             "v2 claims do not include a model digest".to_string(),
@@ -1597,9 +1599,10 @@ pub fn verify_nonce_binding(report_data: &[u8], nonce: &[u8]) -> Result<()> {
 
 /// Verify that `report_data[32..64]` matches the expected model SHA-256 hash.
 ///
-/// The model hash is zero-padded to 32 bytes if shorter. This matches the
-/// layout produced by `build_report_data()` on the server side.
+/// The expected model hash must be a full 32-byte SHA-256 digest.
 pub fn verify_model_hash_binding(report_data: &[u8], model_hash: &[u8]) -> Result<()> {
+    require_sha256_digest_bytes("expected model hash", model_hash)?;
+
     if report_data.len() < 64 {
         return Err(PowerError::AttestationVerificationFailed(format!(
             "report_data too short for model hash: {} bytes (need 64)",
@@ -1607,16 +1610,13 @@ pub fn verify_model_hash_binding(report_data: &[u8], model_hash: &[u8]) -> Resul
         )));
     }
 
-    let hash_len = model_hash.len().min(32);
-    let report_hash = &report_data[32..32 + hash_len];
-    let provided_hash = &model_hash[..hash_len];
+    let report_hash = &report_data[32..64];
 
-    if !constant_time_eq(report_hash, provided_hash) {
+    if !constant_time_eq(report_hash, model_hash) {
         return Err(PowerError::AttestationVerificationFailed(format!(
-            "Model hash mismatch: report_data[32..{}] = {}, expected {}",
-            32 + hash_len,
+            "Model hash mismatch: report_data[32..64] = {}, expected {}",
             hex::encode(report_hash),
-            hex::encode(provided_hash),
+            hex::encode(model_hash),
         )));
     }
 
@@ -2716,6 +2716,19 @@ mod tests {
         let model_hash = vec![0xBBu8; 32];
         let report_data = build_report_data(None, Some(&model_hash));
         assert!(verify_model_hash_binding(&report_data, &model_hash).is_ok());
+    }
+
+    #[test]
+    fn test_model_hash_binding_rejects_short_expected_hash() {
+        let model_hash = vec![0xBBu8; 32];
+        let short_hash = vec![0xBBu8; 31];
+        let report_data = build_report_data(None, Some(&model_hash));
+
+        let err = verify_model_hash_binding(&report_data, &short_hash).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("expected model hash must be a 32-byte SHA-256 digest"));
     }
 
     #[test]

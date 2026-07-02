@@ -145,12 +145,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         .transpose()
         .map_err(|e| anyhow::anyhow!("invalid --nonce hex: {e}"))?;
 
-    let model_hash = opts
-        .model_hash
-        .as_deref()
-        .map(hex::decode)
-        .transpose()
-        .map_err(|e| anyhow::anyhow!("invalid --model-hash hex: {e}"))?;
+    let model_hash = decode_optional_hex_arg("--model-hash", opts.model_hash.as_deref())?;
 
     let expected_measurement = opts
         .expected_measurement
@@ -2650,6 +2645,24 @@ mod tests {
         assert!(err
             .to_string()
             .contains("--effective-prompt-digest must contain only hexadecimal characters"));
+    }
+
+    #[test]
+    fn test_run_model_hash_rejects_short_hex() {
+        let report_file = write_report_file();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--model-hash".to_string(),
+            "bbbb".to_string(),
+            "--allow-offline".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("--model-hash must be a 64-character SHA-256 hex digest"));
     }
 
     #[test]

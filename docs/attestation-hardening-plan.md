@@ -159,6 +159,8 @@ Landed in the current working tree:
   GPU evidence/verdict, chat-template, decoding-policy, and GPU execution pins
   must be exactly 64-character SHA-256 hex values before verification policy is
   evaluated.
+- Tightened model-hash verifier pins so SDK and CLI verification require a full
+  32-byte SHA-256 digest instead of accepting prefix-length legacy pins.
 - Made attestation JSON hex-byte deserialization reject malformed odd-length
   hex as a serde error instead of panicking while loading external reports.
 - Made attestation nonce query decoding reject malformed non-ASCII hex as a
