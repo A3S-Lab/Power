@@ -12,11 +12,39 @@ use crate::api::types::{
     ChatChoice, ChatChunkChoice, ChatCompletionChunk, ChatCompletionMessage, ChatCompletionRequest,
     ChatCompletionResponse, ChatDelta, Usage,
 };
-use crate::backend::types::{ChatMessage, ChatRequest, MessageContent, ToolCall};
+use crate::backend::types::{ChatMessage, ChatRequest, MessageContent, ToolCall, ToolChoice};
 use crate::server::audit::AuditEvent;
 use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
+
+fn unsupported_local_tool_choice_message(request: &ChatCompletionRequest) -> Option<String> {
+    let tool_choice = request.effective_tool_choice()?;
+    let has_tools = request
+        .effective_tools()
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty());
+
+    match tool_choice {
+        ToolChoice::String(value) if value == "auto" => None,
+        ToolChoice::String(value) if value == "none" && !has_tools => None,
+        ToolChoice::String(value) if value == "none" => Some(
+            "local chat backends cannot enforce tool_choice=\"none\" while tools are provided; omit tools or use a remote model"
+                .to_string(),
+        ),
+        ToolChoice::String(value) if value == "required" => Some(
+            "local chat backends cannot enforce tool_choice=\"required\"; use tool_choice=\"auto\" or a remote model"
+                .to_string(),
+        ),
+        ToolChoice::String(value) => Some(format!(
+            "unsupported tool_choice value '{value}'; supported values are auto, none, and required"
+        )),
+        ToolChoice::Specific(_) => Some(
+            "local chat backends cannot enforce named tool_choice or legacy function_call; use tool_choice=\"auto\" or a remote model"
+                .to_string(),
+        ),
+    }
+}
 
 /// POST /v1/chat/completions - OpenAI-compatible chat completion.
 pub async fn handler(
@@ -138,6 +166,12 @@ pub async fn handler(
             .into_response();
         }
     };
+    if !matches!(manifest.format, crate::model::manifest::ModelFormat::Remote) {
+        if let Some(message) = unsupported_local_tool_choice_message(&request) {
+            state.metrics.decrement_active_requests();
+            return openai_error("unsupported_tool_choice", &message).into_response();
+        }
+    }
 
     let runtime_policy = match crate::api::prompt_policy::runtime_policy_claim_with_gpu_config(
         &manifest,
@@ -675,6 +709,7 @@ pub async fn handler(
 
 #[cfg(test)]
 mod tests {
+    use crate::api::types::ChatCompletionRequest;
     use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
     use crate::backend::types::EffectivePromptDigest;
     use crate::model::manifest::ModelFormat;
@@ -738,6 +773,71 @@ mod tests {
         assert_eq!(value["type"], "object");
         assert_eq!(value["properties"]["city"]["type"], "string");
         assert!(value.get("json_schema").is_none());
+    }
+
+    #[test]
+    fn local_tool_choice_validation_rejects_non_default_policy() {
+        let auto: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{"role":"user","content":"hi"}],
+                "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],
+                "tool_choice":"auto"
+            }"#,
+        )
+        .unwrap();
+        assert!(super::unsupported_local_tool_choice_message(&auto).is_none());
+
+        let none_without_tools: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{"role":"user","content":"hi"}],
+                "tool_choice":"none"
+            }"#,
+        )
+        .unwrap();
+        assert!(super::unsupported_local_tool_choice_message(&none_without_tools).is_none());
+
+        let none_with_tools: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{"role":"user","content":"hi"}],
+                "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],
+                "tool_choice":"none"
+            }"#,
+        )
+        .unwrap();
+        assert!(
+            super::unsupported_local_tool_choice_message(&none_with_tools)
+                .unwrap()
+                .contains("cannot enforce tool_choice=\"none\"")
+        );
+
+        let required: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{"role":"user","content":"hi"}],
+                "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],
+                "tool_choice":"required"
+            }"#,
+        )
+        .unwrap();
+        assert!(super::unsupported_local_tool_choice_message(&required)
+            .unwrap()
+            .contains("cannot enforce tool_choice=\"required\""));
+
+        let specific: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{"role":"user","content":"hi"}],
+                "functions":[{"name":"lookup","parameters":{"type":"object"}}],
+                "function_call":{"name":"lookup"}
+            }"#,
+        )
+        .unwrap();
+        assert!(super::unsupported_local_tool_choice_message(&specific)
+            .unwrap()
+            .contains("named tool_choice"));
     }
 
     #[tokio::test]
@@ -1123,6 +1223,85 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn test_openai_chat_rejects_local_tool_choice_none_with_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"test",
+                    "messages":[{"role":"user","content":"hi"}],
+                    "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],
+                    "tool_choice":"none"
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_tool_choice");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot enforce tool_choice=\"none\""));
+        assert_eq!(state.metrics.active_requests(), 0);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_rejects_local_named_legacy_function_call() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"test",
+                    "messages":[{"role":"user","content":"hi"}],
+                    "functions":[{"name":"lookup","parameters":{"type":"object"}}],
+                    "function_call":{"name":"lookup"}
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_tool_choice");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("named tool_choice"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn test_openai_chat_backend_not_found() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -1450,10 +1629,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
 
-        let mock = MockBackend::success();
+        let mock = MockBackend::success().with_remote_support();
         let chat_request_capture = mock.chat_request_capture();
         let state = test_state_with_mock(mock);
-        state.registry.register(sample_manifest("test")).unwrap();
+        let mut manifest = sample_manifest("test");
+        manifest.format = ModelFormat::Remote;
+        state.registry.register(manifest).unwrap();
         state.mark_loaded("test");
 
         let app = router::build(state);

@@ -120,6 +120,10 @@ Landed in the current working tree:
   `function_call` fields onto modern `tools` and `tool_choice`, reject mixed
   legacy/modern tool policy fields, and bind the effective tool policy in
   receipts.
+- OpenAI-compatible chat requests now reject local-backend tool-choice
+  policies that Power cannot enforce (`tool_choice = "none"` with tools,
+  `tool_choice = "required"`, or named tool/function choices), while preserving
+  those policies for remote/proxy models that can enforce them upstream.
 - OpenAI-compatible chat requests now reject message-level `thinking` input
   instead of receipt-binding reasoning content that is not forwarded into
   backend prompt construction.
