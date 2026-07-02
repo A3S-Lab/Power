@@ -1508,12 +1508,15 @@ mod tests {
         request.messages[0].content = MessageContent::Parts(vec![
             ContentPart::Text {
                 text: "describe this".to_string(),
+                unsupported: Default::default(),
             },
             ContentPart::ImageUrl {
                 image_url: ImageUrl {
                     url: "data:image/png;base64,aGVsbG8=".to_string(),
                     detail: Some("low".to_string()),
+                    unsupported: Default::default(),
                 },
+                unsupported: Default::default(),
             },
         ]);
         request.messages[0].images = Some(vec!["message-base64-image".to_string()]);

@@ -22,7 +22,7 @@ impl MessageContent {
             MessageContent::Parts(parts) => parts
                 .iter()
                 .filter_map(|p| match p {
-                    ContentPart::Text { text } => Some(text.clone()),
+                    ContentPart::Text { text, .. } => Some(text.clone()),
                     ContentPart::ImageUrl { .. } => {
                         tracing::warn!("Image URLs not yet supported in llama.cpp backend");
                         None
@@ -45,9 +45,49 @@ impl Default for MessageContent {
 #[serde(tag = "type")]
 pub enum ContentPart {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        /// Unknown content-part fields are preserved so API layers can reject
+        /// unsupported multimodal policy instead of silently dropping it.
+        #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+        unsupported: BTreeMap<String, serde_json::Value>,
+    },
     #[serde(rename = "image_url")]
-    ImageUrl { image_url: ImageUrl },
+    ImageUrl {
+        image_url: ImageUrl,
+        /// Unknown content-part fields are preserved so API layers can reject
+        /// unsupported multimodal policy instead of silently dropping it.
+        #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+        unsupported: BTreeMap<String, serde_json::Value>,
+    },
+}
+
+impl ContentPart {
+    /// Return a stable list of unsupported content-part field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        match self {
+            ContentPart::Text { unsupported, .. } | ContentPart::ImageUrl { unsupported, .. } => {
+                unsupported.keys().map(String::as_str).collect()
+            }
+        }
+    }
+
+    /// Return a validation message when unsupported content-part fields exist.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            let supported = match self {
+                ContentPart::Text { .. } => "type and text",
+                ContentPart::ImageUrl { .. } => "type and image_url",
+            };
+            Some(format!(
+                "unsupported content part field(s): {}; supported fields are {supported}",
+                fields.join(", ")
+            ))
+        }
+    }
 }
 
 /// An image URL reference within a content part.
@@ -56,6 +96,30 @@ pub struct ImageUrl {
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Unknown image URL fields are preserved so API layers can reject
+    /// unsupported image input policy instead of silently dropping it.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+impl ImageUrl {
+    /// Return a stable list of unsupported `image_url` field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported image URL fields exist.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported image_url field(s): {}; supported fields are url and detail",
+                fields.join(", ")
+            ))
+        }
+    }
 }
 
 // ============================================================================
@@ -567,7 +631,9 @@ mod tests {
             image_url: ImageUrl {
                 url: "data:image/png;base64,part-base64-image".to_string(),
                 detail: None,
+                unsupported: Default::default(),
             },
+            unsupported: Default::default(),
         }]);
         assert!(request.has_image_inputs());
 
@@ -733,9 +799,11 @@ mod tests {
         let parts = MessageContent::Parts(vec![
             ContentPart::Text {
                 text: "part1".to_string(),
+                unsupported: Default::default(),
             },
             ContentPart::Text {
                 text: "part2".to_string(),
+                unsupported: Default::default(),
             },
         ]);
         assert_eq!(parts.text(), "part1\npart2");

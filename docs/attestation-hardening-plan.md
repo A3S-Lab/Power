@@ -131,6 +131,10 @@ Landed in the current working tree:
 - OpenAI-compatible chat requests now reject message-level `thinking` input
   instead of receipt-binding reasoning content that is not forwarded into
   backend prompt construction.
+- OpenAI-compatible chat requests preserve unknown nested message, content-part,
+  and image URL fields during parsing and reject them instead of silently
+  dropping prompt or multimodal policy before proxy forwarding and receipt
+  binding.
 - OpenAI-compatible chat requests now accept only the default text output
   modality (`modalities = ["text"]`) and reject unsupported output controls
   (`audio`, `prediction`, and `reasoning_effort`) instead of silently ignoring
@@ -318,6 +322,9 @@ Landed in the current working tree:
 - Added fail-closed receipt and verifier handling for unknown nested
   `response_format` and `response_format.json_schema` fields so output policy
   extensions cannot be silently dropped before hashing.
+- Added fail-closed receipt and verifier handling for unknown chat message,
+  content-part, and image URL fields so prompt and multimodal policy extensions
+  cannot be silently dropped before hashing.
 - Added `verify_receipt_matches_chat_request()` and
   `verify_receipt_matches_completion_request()` so SDK verifiers can recompute
   and compare all request-derived receipt fields from the original request,

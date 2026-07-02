@@ -70,7 +70,7 @@ fn mistralrs_message_images(request: &ChatRequest, msg: &super::types::ChatMessa
 
     if let super::types::MessageContent::Parts(parts) = &msg.content {
         images.extend(parts.iter().filter_map(|p| {
-            if let super::types::ContentPart::ImageUrl { image_url } = p {
+            if let super::types::ContentPart::ImageUrl { image_url, .. } = p {
                 Some(image_url.url.clone())
             } else {
                 None
@@ -1133,12 +1133,15 @@ mod tests {
         request.messages[1].content = MessageContent::Parts(vec![
             ContentPart::Text {
                 text: "describe this".to_string(),
+                unsupported: Default::default(),
             },
             ContentPart::ImageUrl {
                 image_url: ImageUrl {
                     url: "data:image/png;base64,part-base64-image".to_string(),
                     detail: None,
+                    unsupported: Default::default(),
                 },
+                unsupported: Default::default(),
             },
         ]);
 
@@ -1162,12 +1165,15 @@ mod tests {
         request.messages[1].content = MessageContent::Parts(vec![
             ContentPart::Text {
                 text: "describe this".to_string(),
+                unsupported: Default::default(),
             },
             ContentPart::ImageUrl {
                 image_url: ImageUrl {
                     url: "data:image/png;base64,part-base64-image".to_string(),
                     detail: None,
+                    unsupported: Default::default(),
                 },
+                unsupported: Default::default(),
             },
         ]);
 

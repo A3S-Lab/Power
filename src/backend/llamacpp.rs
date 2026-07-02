@@ -198,7 +198,7 @@ fn collect_llamacpp_openai_images(
         .iter()
         .enumerate()
         .filter_map(|(part_index, part)| match part {
-            super::types::ContentPart::ImageUrl { image_url } => Some(
+            super::types::ContentPart::ImageUrl { image_url, .. } => Some(
                 normalize_llamacpp_image_url(message_index, part_index, &image_url.url),
             ),
             super::types::ContentPart::Text { .. } => None,
@@ -1744,12 +1744,15 @@ mod tests {
         let parts = vec![
             ContentPart::Text {
                 text: "describe this".to_string(),
+                unsupported: Default::default(),
             },
             ContentPart::ImageUrl {
                 image_url: ImageUrl {
                     url: "data:image/png;base64,aGVsbG8=".to_string(),
                     detail: None,
+                    unsupported: Default::default(),
                 },
+                unsupported: Default::default(),
             },
         ];
 
@@ -1764,7 +1767,9 @@ mod tests {
             image_url: ImageUrl {
                 url: " aGVsbG8= ".to_string(),
                 detail: None,
+                unsupported: Default::default(),
             },
+            unsupported: Default::default(),
         }];
 
         let images = collect_llamacpp_openai_images(1, &parts).unwrap();
@@ -1778,7 +1783,9 @@ mod tests {
             image_url: ImageUrl {
                 url: "https://example.com/image.png".to_string(),
                 detail: None,
+                unsupported: Default::default(),
             },
+            unsupported: Default::default(),
         }];
 
         let err = collect_llamacpp_openai_images(2, &parts).unwrap_err();
@@ -1795,7 +1802,9 @@ mod tests {
             image_url: ImageUrl {
                 url: "data:image/png;base64,".to_string(),
                 detail: None,
+                unsupported: Default::default(),
             },
+            unsupported: Default::default(),
         }];
 
         let err = collect_llamacpp_openai_images(3, &parts).unwrap_err();
@@ -1812,12 +1821,15 @@ mod tests {
         request.messages[0].content = MessageContent::Parts(vec![
             ContentPart::Text {
                 text: "describe this".to_string(),
+                unsupported: Default::default(),
             },
             ContentPart::ImageUrl {
                 image_url: ImageUrl {
                     url: "data:image/png;base64,part-base64-image".to_string(),
                     detail: None,
+                    unsupported: Default::default(),
                 },
+                unsupported: Default::default(),
             },
         ]);
         request.images = Some(vec!["request-base64-image".to_string()]);

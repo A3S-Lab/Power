@@ -1518,6 +1518,7 @@ mod tests {
                 tool_call_id: None,
                 images: None,
                 thinking: None,
+                unsupported: Default::default(),
             }],
             temperature: Some(0.2),
             top_p: Some(0.9),

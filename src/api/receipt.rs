@@ -143,6 +143,11 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             "{message}; cannot be receipt-bound"
         )));
     }
+    if let Some(message) = request.unsupported_message_fields_message() {
+        return Err(crate::error::PowerError::InvalidRequest(format!(
+            "chat completion {message}; cannot be receipt-bound"
+        )));
+    }
     if request.has_thinking_inputs() {
         return Err(crate::error::PowerError::InvalidRequest(
             "chat message thinking input is unsupported and cannot be receipt-bound".to_string(),
@@ -513,6 +518,7 @@ mod tests {
                 tool_call_id: None,
                 images: None,
                 thinking: None,
+                unsupported: Default::default(),
             }],
             temperature: Some(0.2),
             top_p: Some(0.9),
@@ -679,23 +685,29 @@ mod tests {
         first.messages[0].content = MessageContent::Parts(vec![
             ContentPart::Text {
                 text: "describe".to_string(),
+                unsupported: Default::default(),
             },
             ContentPart::ImageUrl {
                 image_url: ImageUrl {
                     url: "data:image/png;base64,aW1hZ2UtYQ==".to_string(),
                     detail: Some("low".to_string()),
+                    unsupported: Default::default(),
                 },
+                unsupported: Default::default(),
             },
         ]);
         second.messages[0].content = MessageContent::Parts(vec![
             ContentPart::Text {
                 text: "describe".to_string(),
+                unsupported: Default::default(),
             },
             ContentPart::ImageUrl {
                 image_url: ImageUrl {
                     url: "data:image/png;base64,aW1hZ2UtYg==".to_string(),
                     detail: Some("low".to_string()),
+                    unsupported: Default::default(),
                 },
+                unsupported: Default::default(),
             },
         ]);
 
@@ -889,6 +901,26 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("x-strict-mode"));
+    }
+
+    #[test]
+    fn chat_receipt_rejects_unsupported_message_fields() {
+        let request: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model": "llama3",
+                "messages": [{
+                    "role": "user",
+                    "content": "hi",
+                    "metadata": {"source": "test"}
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("messages[0]: unsupported message field(s): metadata"));
     }
 
     #[test]

@@ -152,6 +152,9 @@ pub async fn handler(
     {
         return openai_error(code, &message).into_response();
     }
+    if let Some(message) = request.unsupported_message_fields_message() {
+        return openai_error("unsupported_message_fields", &message).into_response();
+    }
     if request.has_thinking_inputs() {
         return openai_error(
             "unsupported_message_thinking",
@@ -686,6 +689,7 @@ pub async fn handler(
                             } else {
                                 Some(full_thinking.clone())
                             },
+                            unsupported: Default::default(),
                         },
                         finish_reason: Some(finish_reason),
                     }],
@@ -1328,6 +1332,35 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("message.thinking"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_unsupported_message_content_fields() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":true}]}]}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_message_fields");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("messages[0].content[0]"));
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cache_control"));
     }
 
     #[tokio::test]

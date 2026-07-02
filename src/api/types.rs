@@ -167,6 +167,34 @@ impl ChatCompletionRequest {
             .any(ChatCompletionMessage::has_thinking_input)
     }
 
+    /// Return a validation message for unsupported nested chat message fields.
+    pub fn unsupported_message_fields_message(&self) -> Option<String> {
+        for (message_index, message) in self.messages.iter().enumerate() {
+            if let Some(message) = message.unsupported_fields_message() {
+                return Some(format!("messages[{message_index}]: {message}"));
+            }
+
+            let MessageContent::Parts(parts) = &message.content else {
+                continue;
+            };
+            for (part_index, part) in parts.iter().enumerate() {
+                if let Some(message) = part.unsupported_fields_message() {
+                    return Some(format!(
+                        "messages[{message_index}].content[{part_index}]: {message}"
+                    ));
+                }
+                if let ContentPart::ImageUrl { image_url, .. } = part {
+                    if let Some(message) = image_url.unsupported_fields_message() {
+                        return Some(format!(
+                            "messages[{message_index}].content[{part_index}].image_url: {message}"
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Return true when both generated-token limit aliases are present but disagree.
     pub fn has_conflicting_max_token_limits(&self) -> bool {
         matches!(
@@ -414,6 +442,10 @@ pub struct ChatCompletionMessage {
     /// Reasoning/thinking content from reasoning models (Ollama native wire format).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// Unknown message fields are preserved so request handlers can reject
+    /// unsupported prompt or output policy instead of silently dropping it.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
 }
 
 impl ChatCompletionMessage {
@@ -429,6 +461,24 @@ impl ChatCompletionMessage {
     /// Return true when this message carries reasoning/thinking request input.
     pub fn has_thinking_input(&self) -> bool {
         self.thinking.is_some()
+    }
+
+    /// Return a stable list of unsupported chat message field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported message fields exist.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported message field(s): {}; supported fields are role, content, name, tool_calls, tool_call_id, images, and thinking",
+                fields.join(", ")
+            ))
+        }
     }
 }
 
@@ -812,6 +862,57 @@ mod tests {
     }
 
     #[test]
+    fn test_chat_completion_request_collects_unsupported_message_fields() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{
+                "role": "user",
+                "content": "hi",
+                "metadata": {"source": "test"}
+            }]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(req.messages[0].unsupported_fields(), vec!["metadata"]);
+        let message = req.unsupported_message_fields_message().unwrap();
+        assert!(message.contains("messages[0]"));
+        assert!(message.contains("metadata"));
+    }
+
+    #[test]
+    fn test_chat_completion_request_collects_unsupported_content_fields() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this", "cache_control": true},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "https://example.com/img.jpg",
+                            "mime_type": "image/jpeg"
+                        }
+                    }
+                ]
+            }]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let MessageContent::Parts(parts) = &req.messages[0].content else {
+            panic!("expected content parts");
+        };
+
+        assert_eq!(parts[0].unsupported_fields(), vec!["cache_control"]);
+        let ContentPart::ImageUrl { image_url, .. } = &parts[1] else {
+            panic!("expected image_url part");
+        };
+        assert_eq!(image_url.unsupported_fields(), vec!["mime_type"]);
+        let message = req.unsupported_message_fields_message().unwrap();
+        assert!(message.contains("messages[0].content[0]"));
+        assert!(message.contains("cache_control"));
+    }
+
+    #[test]
     fn test_chat_completion_request_with_vision() {
         let json = r#"{
             "model": "llava",
@@ -878,6 +979,7 @@ mod tests {
                     tool_call_id: None,
                     images: None,
                     thinking: None,
+                    unsupported: Default::default(),
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -1114,6 +1216,7 @@ mod tests {
             tool_call_id: None,
             images: None,
             thinking: None,
+            unsupported: Default::default(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("images"));
@@ -1298,6 +1401,7 @@ mod tests {
             tool_call_id: None,
             images: None,
             thinking: Some("reasoning here".to_string()),
+            unsupported: Default::default(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"thinking\":\"reasoning here\""));
@@ -1314,6 +1418,7 @@ mod tests {
             tool_call_id: None,
             images: None,
             thinking: None,
+            unsupported: Default::default(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("thinking"));

@@ -299,12 +299,15 @@ mod tests {
             content: MessageContent::Parts(vec![
                 crate::backend::types::ContentPart::Text {
                     text: "Describe this image".to_string(),
+                    unsupported: Default::default(),
                 },
                 crate::backend::types::ContentPart::ImageUrl {
                     image_url: crate::backend::types::ImageUrl {
                         url: "https://example.com/img.jpg".to_string(),
                         detail: None,
+                        unsupported: Default::default(),
                     },
+                    unsupported: Default::default(),
                 },
             ]),
             name: None,
@@ -484,12 +487,15 @@ mod tests {
             content: MessageContent::Parts(vec![
                 crate::backend::types::ContentPart::Text {
                     text: "Describe this".to_string(),
+                    unsupported: Default::default(),
                 },
                 crate::backend::types::ContentPart::ImageUrl {
                     image_url: crate::backend::types::ImageUrl {
                         url: "https://example.com/img.jpg".to_string(),
                         detail: None,
+                        unsupported: Default::default(),
                     },
+                    unsupported: Default::default(),
                 },
             ]),
             name: None,

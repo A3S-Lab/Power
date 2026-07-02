@@ -2730,6 +2730,7 @@ mod tests {
                 tool_call_id: None,
                 images: None,
                 thinking: None,
+                unsupported: Default::default(),
             }],
             temperature: Some(0.2),
             top_p: Some(0.9),
@@ -3354,12 +3355,15 @@ mod tests {
         request.messages[0].content = MessageContent::Parts(vec![
             ContentPart::Text {
                 text: "describe".to_string(),
+                unsupported: Default::default(),
             },
             ContentPart::ImageUrl {
                 image_url: ImageUrl {
                     url: "data:image/png;base64,aW1hZ2UtYQ==".to_string(),
                     detail: Some("low".to_string()),
+                    unsupported: Default::default(),
                 },
+                unsupported: Default::default(),
             },
         ]);
         let receipt = chat_receipt(&request).unwrap();
@@ -3368,12 +3372,15 @@ mod tests {
         changed.messages[0].content = MessageContent::Parts(vec![
             ContentPart::Text {
                 text: "describe".to_string(),
+                unsupported: Default::default(),
             },
             ContentPart::ImageUrl {
                 image_url: ImageUrl {
                     url: "data:image/png;base64,aW1hZ2UtYg==".to_string(),
                     detail: Some("low".to_string()),
+                    unsupported: Default::default(),
                 },
+                unsupported: Default::default(),
             },
         ]);
 
@@ -3642,6 +3649,22 @@ mod tests {
         assert!(err
             .to_string()
             .contains("chat completion logit_bias is unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_unsupported_message_fields() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.messages[0].unsupported.insert(
+            "metadata".to_string(),
+            serde_json::json!({"source": "test"}),
+        );
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("messages[0]: unsupported message field(s): metadata"));
     }
 
     #[test]
