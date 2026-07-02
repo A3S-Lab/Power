@@ -88,7 +88,7 @@ use crate::api::types::{ChatCompletionRequest, CompletionRequest};
 use crate::error::{PowerError, Result};
 use crate::tee::attestation::{
     build_claims_report_data, AttestationClaimsV2, AttestationReport, GpuDeviceClaim,
-    GpuDeviceValidationClaim, TeeType,
+    GpuDeviceValidationClaim, RuntimePolicyClaim, TeeType,
 };
 
 pub mod hw_verify;
@@ -1757,6 +1757,43 @@ pub fn verify_receipt_well_formed(receipt: &AttestationReceipt) -> Result<()> {
         require_sha256_hex("receipt.effective_prompt.sha256", &effective_prompt.sha256)?;
     }
 
+    if let Some(runtime_policy) = receipt.runtime_policy.as_ref() {
+        verify_receipt_runtime_policy_well_formed(runtime_policy)?;
+    }
+
+    Ok(())
+}
+
+fn verify_receipt_runtime_policy_well_formed(runtime_policy: &RuntimePolicyClaim) -> Result<()> {
+    if let Some(prompt) = runtime_policy.prompt.as_ref() {
+        require_optional_sha256_digest_bytes(
+            "receipt.runtime_policy.prompt.chat_template_sha256",
+            prompt.chat_template_sha256.as_deref(),
+        )?;
+        require_optional_sha256_digest_bytes(
+            "receipt.runtime_policy.prompt.system_prompt_sha256",
+            prompt.system_prompt_sha256.as_deref(),
+        )?;
+        require_optional_sha256_digest_bytes(
+            "receipt.runtime_policy.prompt.messages_sha256",
+            prompt.messages_sha256.as_deref(),
+        )?;
+    }
+
+    if let Some(decoding) = runtime_policy.decoding.as_ref() {
+        require_sha256_digest_bytes(
+            "receipt.runtime_policy.decoding.parameters_sha256",
+            &decoding.parameters_sha256,
+        )?;
+    }
+
+    if let Some(execution) = runtime_policy.execution.as_ref() {
+        require_sha256_digest_bytes(
+            "receipt.runtime_policy.execution.gpu_sha256",
+            &execution.gpu_sha256,
+        )?;
+    }
+
     Ok(())
 }
 
@@ -2057,6 +2094,23 @@ fn verify_receipt_field_digest_hex(
 fn require_optional_sha256_hex(field: &str, value: Option<&str>) -> Result<()> {
     if let Some(value) = value {
         require_sha256_hex(field, value)?;
+    }
+    Ok(())
+}
+
+fn require_optional_sha256_digest_bytes(field: &str, digest: Option<&[u8]>) -> Result<()> {
+    if let Some(digest) = digest {
+        require_sha256_digest_bytes(field, digest)?;
+    }
+    Ok(())
+}
+
+fn require_sha256_digest_bytes(field: &str, digest: &[u8]) -> Result<()> {
+    if digest.len() != 32 {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "{field} must be a 32-byte SHA-256 digest, got {} bytes",
+            digest.len(),
+        )));
     }
     Ok(())
 }
@@ -2786,6 +2840,54 @@ mod tests {
         let err = verify_receipt_well_formed(&receipt).unwrap_err();
 
         assert!(err.to_string().contains("receipt.effective_prompt.sha256"));
+    }
+
+    #[test]
+    fn test_verify_receipt_well_formed_rejects_short_runtime_decoding_digest() {
+        let receipt = make_receipt_with_runtime_policy(RuntimePolicyClaim::new().with_decoding(
+            DecodingPolicyClaim {
+                parameters_sha256: vec![0x44; 31],
+            },
+        ));
+
+        let err = verify_receipt_well_formed(&receipt).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("receipt.runtime_policy.decoding.parameters_sha256"));
+    }
+
+    #[test]
+    fn test_verify_receipt_well_formed_rejects_short_runtime_prompt_digest() {
+        let receipt = make_receipt_with_runtime_policy(RuntimePolicyClaim::new().with_prompt(
+            PromptPolicyClaim {
+                chat_template_source: Some("manifest.template_override".to_string()),
+                chat_template_sha256: Some(vec![0x33; 31]),
+                system_prompt_sha256: None,
+                messages_sha256: None,
+            },
+        ));
+
+        let err = verify_receipt_well_formed(&receipt).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("receipt.runtime_policy.prompt.chat_template_sha256"));
+    }
+
+    #[test]
+    fn test_verify_receipt_well_formed_rejects_short_runtime_execution_digest() {
+        let receipt = make_receipt_with_runtime_policy(RuntimePolicyClaim::new().with_execution(
+            ExecutionPolicyClaim {
+                gpu_sha256: vec![0x55; 31],
+            },
+        ));
+
+        let err = verify_receipt_well_formed(&receipt).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("receipt.runtime_policy.execution.gpu_sha256"));
     }
 
     #[test]

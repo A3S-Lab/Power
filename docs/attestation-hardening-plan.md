@@ -167,6 +167,9 @@ Landed in the current working tree:
   including multimodal input digests and exact presence/absence of optional
   output-policy digests, before separately checking attestation runtime policy
   or effective-prompt pins.
+- Tightened receipt well-formed verification so embedded runtime-policy digests
+  must be 32-byte SHA-256 values, including prompt, decoding, and GPU execution
+  digests.
 - Exposed the same original-request receipt comparison through
   `a3s-power-verify --receipt-chat-request-file` and
   `--receipt-completion-request-file`.
