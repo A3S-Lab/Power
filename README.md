@@ -699,9 +699,10 @@ GPU confidential mode requires clients to send a 64-character hex nonce to
 `/v1/attestation`. The evidence JSON may be a single
 `{ evidence, certificate, firmware_version? }` object, an `evidence_list`
 array, or an `nvattest collect-evidence` wrapper whose embedded nonce matches
-the attestation nonce. In the production profile, the default NVIDIA NRAS
-endpoint is used when `nras_url` is omitted; any configured override must use
-HTTPS.
+the attestation nonce. Power validates `evidence` and `certificate` locally as
+non-empty base64/base64url before posting to NRAS. In the production profile,
+the default NVIDIA NRAS endpoint is used when `nras_url` is omitted; any
+configured override must use HTTPS.
 
 Verifiers can pin the exact GPU deployment identity with
 `ExpectedGpuEvidence` and `ExpectedGpuDevices` in the SDK or with CLI flags

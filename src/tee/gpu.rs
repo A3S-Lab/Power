@@ -11,7 +11,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use base64::{
-    engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+    engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
     Engine as _,
 };
 use rand::RngCore;
@@ -805,8 +805,8 @@ fn normalize_nras_device_evidence(
         }
     }
 
-    let evidence_b64 = required_string_value(index, evidence, "evidence")?;
-    let certificate = required_string_value(index, evidence, "certificate")?;
+    let evidence_b64 = required_base64_string_value(index, evidence, "evidence")?;
+    let certificate = required_base64_string_value(index, evidence, "certificate")?;
     let mut normalized = serde_json::Map::new();
     normalized.insert(
         "evidence".to_string(),
@@ -843,6 +843,35 @@ fn required_string_value(index: usize, object: &serde_json::Value, field: &str) 
             ))
         })?;
     Ok(value.to_string())
+}
+
+fn required_base64_string_value(
+    index: usize,
+    object: &serde_json::Value,
+    field: &str,
+) -> Result<String> {
+    let value = required_string_value(index, object, field)?;
+    validate_base64_string(index, field, &value)?;
+    Ok(value)
+}
+
+fn validate_base64_string(index: usize, field: &str, value: &str) -> Result<()> {
+    let bytes = STANDARD
+        .decode(value)
+        .or_else(|_| STANDARD_NO_PAD.decode(value))
+        .or_else(|_| URL_SAFE.decode(value))
+        .or_else(|_| URL_SAFE_NO_PAD.decode(value))
+        .map_err(|e| {
+            PowerError::Config(format!(
+                "NRAS REST evidence_list[{index}] {field} must be non-empty base64 or base64url: {e}"
+            ))
+        })?;
+    if bytes.is_empty() {
+        return Err(PowerError::Config(format!(
+            "NRAS REST evidence_list[{index}] {field} must decode to non-empty bytes"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_nras_rest_verdict_json(bytes: &[u8], nonce_hex: &str) -> Result<Vec<GpuDeviceClaim>> {
@@ -1805,6 +1834,32 @@ mod tests {
         let err = nras_rest_evidence_list_from_json(evidence, "010203").unwrap_err();
 
         assert!(err.to_string().contains("nonce mismatch"));
+    }
+
+    #[test]
+    fn nras_rest_evidence_list_rejects_invalid_evidence_base64() {
+        let nonce = "1111111111111111111111111111111111111111111111111111111111111111";
+        let evidence =
+            br#"{"evidences":[{"nonce":"1111111111111111111111111111111111111111111111111111111111111111","evidence":"not base64!","certificate":"Y2VydA"}],"result_code":0}"#;
+
+        let err = nras_rest_evidence_list_from_json(evidence, nonce).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("evidence must be non-empty base64"));
+    }
+
+    #[test]
+    fn nras_rest_evidence_list_rejects_invalid_certificate_base64() {
+        let nonce = "1111111111111111111111111111111111111111111111111111111111111111";
+        let evidence =
+            br#"{"evidences":[{"nonce":"1111111111111111111111111111111111111111111111111111111111111111","evidence":"ZXZpZGVuY2U","certificate":"not base64!"}],"result_code":0}"#;
+
+        let err = nras_rest_evidence_list_from_json(evidence, nonce).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("certificate must be non-empty base64"));
     }
 
     #[tokio::test]
