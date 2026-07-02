@@ -146,6 +146,8 @@ Landed in the current working tree:
 - Bounded remote hub file-list API response bodies so malformed ModelScope or
   HuggingFace file-list endpoints cannot force unbounded memory growth before
   JSON parsing.
+- Made blob integrity verification hash model files with the existing streaming
+  SHA-256 path instead of reading whole model artifacts into memory.
 - Made `A3S_POWER_MODEL_SOURCE` fail closed for unknown configured values
   instead of silently falling back to ModelScope.
 - Fixed proxy backend endpoint URL construction to use a URL parser, preserving

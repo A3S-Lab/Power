@@ -64,13 +64,7 @@ pub fn delete_blob(manifest: &ModelManifest) -> Result<()> {
 
 /// Verify the integrity of a blob file against its expected SHA-256 hash.
 pub fn verify_blob(path: &std::path::Path, expected_sha256: &str) -> Result<bool> {
-    let data = std::fs::read(path).map_err(|e| {
-        PowerError::Io(std::io::Error::other(format!(
-            "Failed to read blob for verification {}: {e}",
-            path.display()
-        )))
-    })?;
-    let actual = compute_sha256(&data);
+    let actual = compute_sha256_file(path)?;
     Ok(actual == expected_sha256)
 }
 
