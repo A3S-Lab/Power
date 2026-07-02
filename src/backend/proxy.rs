@@ -33,6 +33,8 @@ use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest};
 
+const MAX_PROXY_SSE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
 /// Forwards inference to upstream OpenAI-compatible servers.
 pub struct ProxyBackend {
     config: Arc<PowerConfig>,
@@ -459,6 +461,9 @@ where
     loop {
         // Emit any complete `data:` line already buffered.
         while let Some(nl) = buf.find('\n') {
+            if nl > MAX_PROXY_SSE_BUFFER_BYTES {
+                return Some(Err(proxy_sse_buffer_limit_error()));
+            }
             let line: String = buf.drain(..=nl).collect();
             let line = line.trim();
             let Some(data) = line.strip_prefix("data:") else {
@@ -477,6 +482,9 @@ where
                 Err(_) => continue,
             }
         }
+        if buf.len() > MAX_PROXY_SSE_BUFFER_BYTES {
+            return Some(Err(proxy_sse_buffer_limit_error()));
+        }
         // Need more bytes.
         match stream.next().await {
             Some(Ok(bytes)) => buf.push_str(&String::from_utf8_lossy(bytes.as_ref())),
@@ -488,6 +496,13 @@ where
             None => return None,
         }
     }
+}
+
+fn proxy_sse_buffer_limit_error() -> PowerError {
+    PowerError::InferenceFailed(format!(
+        "proxy SSE event buffer exceeded {} bytes",
+        MAX_PROXY_SSE_BUFFER_BYTES
+    ))
 }
 
 fn build_chat_body(model_name: &str, request: &ChatRequest) -> serde_json::Value {
@@ -1102,6 +1117,12 @@ mod tests {
         futures::stream::iter(chunks.into_iter().map(Ok::<&[u8], reqwest::Error>))
     }
 
+    fn byte_stream_owned(
+        chunks: Vec<Vec<u8>>,
+    ) -> impl Stream<Item = reqwest::Result<Vec<u8>>> + Unpin {
+        futures::stream::iter(chunks.into_iter().map(Ok::<Vec<u8>, reqwest::Error>))
+    }
+
     #[tokio::test]
     async fn sse_reassembles_line_split_across_chunks() {
         // A single data line arrives split across three byte chunks.
@@ -1184,5 +1205,34 @@ mod tests {
             );
         }
         assert_eq!(got, "ab");
+    }
+
+    #[tokio::test]
+    async fn sse_rejects_oversized_unterminated_event_buffer() {
+        let mut chunk = b"data: ".to_vec();
+        chunk.extend(std::iter::repeat_n(b'x', MAX_PROXY_SSE_BUFFER_BYTES + 1));
+        let mut s = byte_stream_owned(vec![chunk]);
+        let mut buf = String::new();
+
+        let err = next_sse_event(&mut s, &mut buf)
+            .await
+            .expect("expected parser result")
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeded"));
+    }
+
+    #[tokio::test]
+    async fn sse_rejects_oversized_complete_data_line() {
+        let mut chunk = b"data: \"".to_vec();
+        chunk.extend(std::iter::repeat_n(b'x', MAX_PROXY_SSE_BUFFER_BYTES + 1));
+        chunk.extend_from_slice(b"\"\n\n");
+        let mut s = byte_stream_owned(vec![chunk]);
+        let mut buf = String::new();
+
+        let err = next_sse_event(&mut s, &mut buf)
+            .await
+            .expect("expected parser result")
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeded"));
     }
 }

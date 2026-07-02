@@ -152,6 +152,8 @@ Landed in the current working tree:
   requests absent by default and fail closed when the digest endpoint is
   required, avoiding text rendered-prompt overclaims for opaque multimodal
   proxy paths.
+- Bounded proxy upstream SSE event buffering so malformed streaming responses
+  cannot force unbounded memory growth before a complete `data:` line arrives.
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.
