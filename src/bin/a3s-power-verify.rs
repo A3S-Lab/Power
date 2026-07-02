@@ -21,6 +21,8 @@
 //! ```
 
 use std::process;
+#[cfg(feature = "hw-verify")]
+use std::time::Duration;
 
 use a3s_power::api::prompt_policy::canonical_gpu_execution_digest;
 use a3s_power::api::receipt::{AttestationReceipt, ReceiptRequestType};
@@ -223,7 +225,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     let hardware_verifier = if opts.allow_offline {
         None
     } else {
-        Some(default_hardware_verifier(&report)?)
+        Some(default_hardware_verifier(&report, &opts)?)
     };
 
     let verify_opts = VerifyOptions {
@@ -480,6 +482,8 @@ struct CliOpts {
     effective_prompt_kind: Option<String>,
     /// Explicitly allow offline/development verification without hardware signatures.
     allow_offline: bool,
+    /// Override the AMD KDS / Intel PCS certificate cache TTL in seconds.
+    hw_cert_cache_ttl_secs: Option<u64>,
 }
 
 enum ReceiptRequest {
@@ -737,6 +741,7 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
         effective_prompt_backend: None,
         effective_prompt_kind: None,
         allow_offline: false,
+        hw_cert_cache_ttl_secs: None,
     };
 
     let mut i = 0;
@@ -979,6 +984,12 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
             "--allow-offline" => {
                 opts.allow_offline = true;
             }
+            "--hw-cert-cache-ttl-secs" => {
+                opts.hw_cert_cache_ttl_secs = Some(parse_u64_arg(
+                    "--hw-cert-cache-ttl-secs",
+                    &next_arg(args, &mut i, "--hw-cert-cache-ttl-secs")?,
+                )?);
+            }
             other => {
                 return Err(anyhow::anyhow!("unknown argument: {other}"));
             }
@@ -998,10 +1009,18 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
 #[cfg(feature = "hw-verify")]
 fn default_hardware_verifier(
     report: &AttestationReport,
+    opts: &CliOpts,
 ) -> anyhow::Result<Box<dyn HardwareVerifier>> {
+    let ttl = opts.hw_cert_cache_ttl_secs.map(Duration::from_secs);
     match report.tee_type {
-        a3s_power::tee::attestation::TeeType::SevSnp => Ok(Box::new(SevSnpVerifier::new())),
-        a3s_power::tee::attestation::TeeType::Tdx => Ok(Box::new(TdxVerifier::new())),
+        a3s_power::tee::attestation::TeeType::SevSnp => Ok(ttl
+            .map(SevSnpVerifier::with_ttl)
+            .map(|verifier| Box::new(verifier) as Box<dyn HardwareVerifier>)
+            .unwrap_or_else(|| Box::new(SevSnpVerifier::new()))),
+        a3s_power::tee::attestation::TeeType::Tdx => Ok(ttl
+            .map(TdxVerifier::with_ttl)
+            .map(|verifier| Box::new(verifier) as Box<dyn HardwareVerifier>)
+            .unwrap_or_else(|| Box::new(TdxVerifier::new()))),
         a3s_power::tee::attestation::TeeType::Simulated => Err(anyhow::anyhow!(
             "simulated TEE reports cannot be hardware-verified; use --allow-offline only for development"
         )),
@@ -1014,6 +1033,7 @@ fn default_hardware_verifier(
 #[cfg(not(feature = "hw-verify"))]
 fn default_hardware_verifier(
     _report: &AttestationReport,
+    _opts: &CliOpts,
 ) -> anyhow::Result<Box<dyn HardwareVerifier>> {
     Err(anyhow::anyhow!(
         "hardware signature verification requires building a3s-power-verify with --features hw-verify, or pass --allow-offline for explicit offline/development checks"
@@ -1039,6 +1059,12 @@ fn split_csv_arg(value: &str) -> Vec<String> {
 fn parse_u32_arg(flag: &str, value: &str) -> anyhow::Result<u32> {
     value
         .parse::<u32>()
+        .map_err(|e| anyhow::anyhow!("{flag} must be an unsigned integer: {e}"))
+}
+
+fn parse_u64_arg(flag: &str, value: &str) -> anyhow::Result<u64> {
+    value
+        .parse::<u64>()
         .map_err(|e| anyhow::anyhow!("{flag} must be an unsigned integer: {e}"))
 }
 
@@ -1149,6 +1175,7 @@ OPTIONS:
     --effective-prompt-backend <NAME> Expected backend label for the effective prompt digest
     --effective-prompt-kind <KIND> Expected semantic kind for the effective prompt digest
     --allow-offline                Explicitly skip hardware signature verification
+    --hw-cert-cache-ttl-secs <N>   AMD KDS / Intel PCS certificate cache TTL in seconds (default: 3600; 0 refetches every verification)
     --help                         Show this help
 
 EXAMPLES:
@@ -2257,6 +2284,36 @@ mod tests {
         );
         assert!(opts.receipt_completion_request_file.is_none());
         assert!(opts.has_receipt_request_file());
+    }
+
+    #[test]
+    fn test_parse_args_hw_cert_cache_ttl_secs() {
+        let args = vec![
+            "--file".to_string(),
+            "report.json".to_string(),
+            "--hw-cert-cache-ttl-secs".to_string(),
+            "0".to_string(),
+        ];
+
+        let opts = parse_args(&args).unwrap();
+
+        assert_eq!(opts.hw_cert_cache_ttl_secs, Some(0));
+    }
+
+    #[test]
+    fn test_parse_args_rejects_invalid_hw_cert_cache_ttl_secs() {
+        let args = vec![
+            "--file".to_string(),
+            "report.json".to_string(),
+            "--hw-cert-cache-ttl-secs".to_string(),
+            "not-a-number".to_string(),
+        ];
+
+        let err = parse_args(&args).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("--hw-cert-cache-ttl-secs must be an unsigned integer"));
     }
 
     #[test]

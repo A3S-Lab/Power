@@ -162,6 +162,9 @@ Landed in the current working tree:
 - Added strict hardware-verifier operations guidance for AMD SEV-SNP and Intel
   TDX, covering `hw-verify` builds, raw report requirements, AMD KDS / Intel
   PCS outbound access, measurement pins, and production failure handling.
+- Added `a3s-power-verify --hw-cert-cache-ttl-secs` so strict verifier
+  operators can tune AMD KDS / Intel PCS certificate cache lifetime without
+  weakening hardware-signature or measurement requirements.
 - Tightened the GPU confidential verifier profile so it requires the top-level
   GPU evidence nonce claim in addition to structured device `eat_nonce`
   freshness checks.
@@ -434,6 +437,8 @@ Code changes:
 - Make `a3s-power-verify` default to strict verification unless an explicit
   offline/development flag is provided, and require `--expected-measurement`
   in strict mode.
+- Add `--hw-cert-cache-ttl-secs` to tune the in-memory AMD KDS / Intel PCS
+  certificate cache for long-running verifier processes.
 - Add CLI flags for AMD KDS, Intel PCS, and NVIDIA GPU evidence verification
   modes where needed.
 - Make skipped checks visible as non-success status in strict mode.
