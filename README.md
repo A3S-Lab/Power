@@ -743,6 +743,11 @@ a3s-power-verify --print-gpu-execution-digest \
   --tensor-split <CSV>
 ```
 
+For CPU TEE hardware-signature operations, including `hw-verify` builds,
+AMD KDS / Intel PCS outbound access, raw-report requirements, and production
+failure handling, see
+[`docs/hardware-verifier-operations.md`](docs/hardware-verifier-operations.md).
+
 ```hcl
 tee_mode = true
 tee_policy_mode = "gpu-confidential"
@@ -1317,6 +1322,9 @@ See [`docs/supply-chain.md`](docs/supply-chain.md) for:
 - Audit status for each crate in the `tee-minimal` inference path
 - Security properties of `LayerStreamingDecryptedModel`
 - How to reproduce dependency counts and audit unsafe blocks
+
+See [`docs/hardware-verifier-operations.md`](docs/hardware-verifier-operations.md)
+for strict AMD SEV-SNP / Intel TDX verifier operations.
 
 ### Building with RA-TLS
 
