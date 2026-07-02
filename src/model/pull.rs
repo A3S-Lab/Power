@@ -191,6 +191,15 @@ pub mod hf {
         Ok(next)
     }
 
+    fn validate_partial_download_size(resume_offset: u64, total: u64) -> Result<()> {
+        if total > 0 && resume_offset > total {
+            return Err(PowerError::Server(format!(
+                "partial download exceeds declared size: partial is {resume_offset} bytes, expected {total}"
+            )));
+        }
+        Ok(())
+    }
+
     fn validate_path_value(value: &str, label: &str) -> Result<()> {
         if value.is_empty() {
             return Err(PowerError::Server(format!("{label} must not be empty")));
@@ -567,9 +576,13 @@ pub mod hf {
         }
 
         let total = content_length_or_unknown(head.headers(), "model pull HEAD request")?;
+        if let Err(e) = validate_partial_download_size(resume_offset, total) {
+            cleanup_temp_download(&tmp_path, "partial exceeds declared size").await;
+            return Err(e);
+        }
 
         // If partial file is already complete, skip download.
-        if resume_offset > 0 && total > 0 && resume_offset >= total {
+        if resume_offset > 0 && total > 0 && resume_offset == total {
             tracing::info!(path = %tmp_path.display(), "Partial file is complete, skipping download");
         } else {
             // Build GET request, adding Range header if resuming.
@@ -1004,6 +1017,27 @@ pub mod hf {
             let err = checked_download_completed_size(u64::MAX, 1, 0).unwrap_err();
 
             assert!(err.to_string().contains("overflowed"), "error: {err}");
+        }
+
+        #[test]
+        fn test_validate_partial_download_size_allows_unknown_total() {
+            validate_partial_download_size(128, 0).unwrap();
+        }
+
+        #[test]
+        fn test_validate_partial_download_size_allows_complete_partial() {
+            validate_partial_download_size(128, 128).unwrap();
+        }
+
+        #[test]
+        fn test_validate_partial_download_size_rejects_oversized_partial() {
+            let err = validate_partial_download_size(129, 128).unwrap_err();
+
+            assert!(
+                err.to_string()
+                    .contains("partial download exceeds declared size"),
+                "error: {err}"
+            );
         }
 
         #[test]
