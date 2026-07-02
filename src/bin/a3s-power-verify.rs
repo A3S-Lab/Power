@@ -1556,6 +1556,7 @@ mod tests {
             function_call: None,
             parallel_tool_calls: None,
             keep_alive: None,
+            unsupported: Default::default(),
         }
     }
 
@@ -1597,6 +1598,7 @@ mod tests {
             response_format: None,
             suffix: None,
             keep_alive: None,
+            unsupported: Default::default(),
         }
     }
 

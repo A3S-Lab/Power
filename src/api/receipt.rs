@@ -83,6 +83,11 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
     runtime_policy: Option<RuntimePolicyClaim>,
     effective_prompt: Option<EffectivePromptDigest>,
 ) -> crate::error::Result<AttestationReceipt> {
+    if let Some(message) = request.unsupported_fields_message() {
+        return Err(crate::error::PowerError::InvalidRequest(format!(
+            "{message}; cannot be receipt-bound"
+        )));
+    }
     if request.has_conflicting_max_token_limits() {
         return Err(crate::error::PowerError::InvalidRequest(
             "max_tokens and max_completion_tokens must match when both are provided".to_string(),
@@ -274,6 +279,11 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
     runtime_policy: Option<RuntimePolicyClaim>,
     effective_prompt: Option<EffectivePromptDigest>,
 ) -> crate::error::Result<AttestationReceipt> {
+    if let Some(message) = request.unsupported_fields_message() {
+        return Err(crate::error::PowerError::InvalidRequest(format!(
+            "{message}; cannot be receipt-bound"
+        )));
+    }
     if request.suffix.is_some() {
         return Err(crate::error::PowerError::InvalidRequest(
             "completion suffix requests are unsupported and cannot be receipt-bound".to_string(),
@@ -561,6 +571,7 @@ mod tests {
             function_call: None,
             parallel_tool_calls: None,
             keep_alive: None,
+            unsupported: Default::default(),
         }
     }
 
@@ -649,6 +660,7 @@ mod tests {
             response_format: None,
             suffix: None,
             keep_alive: None,
+            unsupported: Default::default(),
         };
         let base = completion_receipt(&request).unwrap();
         let with_effective = completion_receipt_with_runtime_policy_and_effective_prompt(
@@ -949,6 +961,19 @@ mod tests {
     }
 
     #[test]
+    fn chat_receipt_rejects_unsupported_top_level_fields() {
+        let mut request = chat_request();
+        request
+            .unsupported
+            .insert("service_tier".to_string(), serde_json::json!("priority"));
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported chat completion field(s): service_tier"));
+    }
+
+    #[test]
     fn chat_receipt_covers_text_modalities() {
         let first = receipt_digest(&chat_receipt(&chat_request()).unwrap()).unwrap();
         let mut changed = chat_request();
@@ -1072,11 +1097,29 @@ mod tests {
             response_format: None,
             suffix: None,
             keep_alive: None,
+            unsupported: Default::default(),
         };
 
         let receipt = completion_receipt(&request).unwrap();
         assert_eq!(receipt.input.kind, "text.prompt");
         assert_eq!(receipt.input.sha256.len(), 64);
+    }
+
+    #[test]
+    fn completion_receipt_rejects_unsupported_top_level_fields() {
+        let request: CompletionRequest = serde_json::from_str(
+            r#"{
+                "model": "llama3",
+                "prompt": "hello",
+                "service_tier": "priority"
+            }"#,
+        )
+        .unwrap();
+
+        assert!(completion_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported text completion field(s): service_tier"));
     }
 
     #[test]
@@ -1112,6 +1155,7 @@ mod tests {
             response_format: None,
             suffix: None,
             keep_alive: None,
+            unsupported: Default::default(),
         };
 
         let receipt = completion_receipt(&request).unwrap();
@@ -1163,6 +1207,7 @@ mod tests {
             response_format: None,
             suffix: None,
             keep_alive: None,
+            unsupported: Default::default(),
         };
 
         let receipt = completion_receipt(&request).unwrap();
@@ -1203,6 +1248,7 @@ mod tests {
             response_format: None,
             suffix: None,
             keep_alive: None,
+            unsupported: Default::default(),
         };
         request.stream_options = Some(crate::api::types::StreamOptions {
             include_usage: true,
@@ -1248,6 +1294,7 @@ mod tests {
             response_format: None,
             suffix: None,
             keep_alive: None,
+            unsupported: Default::default(),
         };
         request.stream_options = Some(crate::api::types::StreamOptions {
             include_usage: true,
@@ -1306,6 +1353,7 @@ mod tests {
             }),
             suffix: None,
             keep_alive: None,
+            unsupported: Default::default(),
         };
 
         let receipt = completion_receipt(&request).unwrap();
@@ -1350,6 +1398,7 @@ mod tests {
             }),
             suffix: None,
             keep_alive: None,
+            unsupported: Default::default(),
         };
 
         assert!(completion_receipt(&request)

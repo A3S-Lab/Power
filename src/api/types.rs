@@ -150,9 +150,31 @@ pub struct ChatCompletionRequest {
     /// Overrides the server default for this request only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,
+    /// Unknown top-level chat completion request fields are preserved so
+    /// handlers can reject unsupported policy instead of silently dropping it.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
 }
 
 impl ChatCompletionRequest {
+    /// Return a stable list of unsupported top-level chat request field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported top-level fields exist.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported chat completion field(s): {}; omit unsupported top-level request fields",
+                fields.join(", ")
+            ))
+        }
+    }
+
     /// Return true when any chat message carries an image input.
     pub fn has_image_inputs(&self) -> bool {
         self.messages
@@ -676,9 +698,31 @@ pub struct CompletionRequest {
     /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,
+    /// Unknown top-level text completion request fields are preserved so
+    /// handlers can reject unsupported policy instead of silently dropping it.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
 }
 
 impl CompletionRequest {
+    /// Return a stable list of unsupported top-level text completion field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported top-level fields exist.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported text completion field(s): {}; omit unsupported top-level request fields",
+                fields.join(", ")
+            ))
+        }
+    }
+
     /// Return true when streaming-only options are present on a non-streaming request.
     pub fn has_stream_options_without_stream(&self) -> bool {
         self.stream_options.is_some() && !self.stream.unwrap_or(false)
@@ -861,6 +905,22 @@ mod tests {
         assert_eq!(req.top_p, Some(0.9));
         assert_eq!(req.max_tokens, Some(256));
         assert_eq!(req.stream, Some(true));
+    }
+
+    #[test]
+    fn test_chat_completion_request_collects_unsupported_top_level_fields() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "service_tier": "priority"
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(req.unsupported_fields(), vec!["service_tier"]);
+        assert!(req
+            .unsupported_fields_message()
+            .unwrap()
+            .contains("service_tier"));
     }
 
     #[test]
@@ -1143,6 +1203,22 @@ mod tests {
         let req: CompletionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.model, "llama3");
         assert_eq!(req.prompt, "Hello");
+    }
+
+    #[test]
+    fn test_completion_request_collects_unsupported_top_level_fields() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "Hello",
+            "service_tier": "priority"
+        }"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(req.unsupported_fields(), vec!["service_tier"]);
+        assert!(req
+            .unsupported_fields_message()
+            .unwrap()
+            .contains("service_tier"));
     }
 
     #[test]

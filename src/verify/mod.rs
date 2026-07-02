@@ -2768,6 +2768,7 @@ mod tests {
             function_call: None,
             parallel_tool_calls: None,
             keep_alive: None,
+            unsupported: Default::default(),
         }
     }
 
@@ -2803,6 +2804,7 @@ mod tests {
             response_format: None,
             suffix: None,
             keep_alive: None,
+            unsupported: Default::default(),
         }
     }
 
@@ -3692,6 +3694,21 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_unsupported_top_level_fields() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request
+            .unsupported
+            .insert("service_tier".to_string(), serde_json::json!("priority"));
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("unsupported chat completion field(s): service_tier"));
+    }
+
+    #[test]
     fn test_verify_receipt_matches_chat_request_rejects_message_thinking_input() {
         let mut request = chat_request();
         let receipt = chat_receipt(&request).unwrap();
@@ -3809,6 +3826,21 @@ mod tests {
         assert!(err
             .to_string()
             .contains("text completion logit_bias is unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_rejects_unsupported_top_level_fields() {
+        let mut request = completion_request();
+        let receipt = completion_receipt(&request).unwrap();
+        request
+            .unsupported
+            .insert("service_tier".to_string(), serde_json::json!("priority"));
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("unsupported text completion field(s): service_tier"));
     }
 
     #[test]

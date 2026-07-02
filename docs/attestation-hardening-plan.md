@@ -114,6 +114,10 @@ Landed in the current working tree:
 - OpenAI-compatible chat and text completion requests now explicitly reject
   `logit_bias`, and text completions accept only the default-equivalent
   `best_of = 1`, with explicit `best_of` values covered by receipt hashes.
+- OpenAI-compatible chat and completion requests preserve unknown top-level
+  request fields during parsing and reject them instead of silently dropping
+  unsupported output or provider policy before backend inference and receipt
+  binding.
 - OpenAI-compatible chat requests now support `max_completion_tokens` as an
   alias for the backend generated-token limit, reject conflicts with
   `max_tokens`, and include both aliases in receipt decoding-parameter hashes.
@@ -323,6 +327,9 @@ Landed in the current working tree:
   `stream_options`, so clients can distinguish streaming output protocol
   choices such as `include_usage`; unsupported nested stream option fields now
   fail closed during receipt generation and original-request verification.
+- Added fail-closed receipt and verifier handling for unknown top-level chat and
+  text completion request fields so unsupported request policy cannot be
+  silently dropped before hashing.
 - Added fail-closed receipt and verifier handling for unknown nested
   `response_format` and `response_format.json_schema` fields so output policy
   extensions cannot be silently dropped before hashing.

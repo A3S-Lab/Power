@@ -23,6 +23,9 @@ pub async fn handler(
     let model_name = request.model.clone();
     let request_id = format!("cmpl-{}", uuid::Uuid::new_v4());
     let is_stream = request.stream.unwrap_or(false);
+    if let Some(message) = request.unsupported_fields_message() {
+        return openai_error("unsupported_request_fields", &message).into_response();
+    }
     let include_usage_chunk = state.suppress_token_metrics()
         || request
             .stream_options
@@ -620,6 +623,31 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("only n=1 is supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_completions_rejects_unsupported_top_level_fields() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","prompt":"hi","service_tier":"priority"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_request_fields");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("service_tier"));
     }
 
     #[tokio::test]
