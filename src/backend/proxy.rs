@@ -440,14 +440,19 @@ fn proxy_stream_finish_reason(
 ) -> Result<Option<String>> {
     match choice.get("finish_reason") {
         Some(reason) if reason.is_null() => Ok(None),
-        Some(reason) => reason
-            .as_str()
-            .map(|reason| Some(reason.to_string()))
-            .ok_or_else(|| {
+        Some(reason) => {
+            let reason = reason.as_str().ok_or_else(|| {
                 PowerError::InferenceFailed(format!(
                     "proxy {stream_kind} stream choice finish_reason must be a string or null"
                 ))
-            }),
+            })?;
+            if reason.trim().is_empty() {
+                return Err(PowerError::InferenceFailed(format!(
+                    "proxy {stream_kind} stream choice finish_reason must not be blank"
+                )));
+            }
+            Ok(Some(reason.to_string()))
+        }
         None => Ok(None),
     }
 }
@@ -1707,6 +1712,20 @@ mod tests {
                 done_reason: Some("length".to_string())
             }
         );
+    }
+
+    #[test]
+    fn completion_stream_event_rejects_blank_finish_reason() {
+        let err = parse_proxy_completion_stream_event(&serde_json::json!({
+            "choices": [
+                { "text": "", "finish_reason": "  " }
+            ]
+        }))
+        .expect_err("blank finish_reason must fail closed");
+
+        let err = err.to_string();
+        assert!(err.contains("finish_reason"), "error: {err}");
+        assert!(err.contains("blank"), "error: {err}");
     }
 
     // ── SSE parser (`next_sse_event`) ─────────────────────────────────────────
