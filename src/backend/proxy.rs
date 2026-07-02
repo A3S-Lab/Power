@@ -63,16 +63,8 @@ impl ProxyBackend {
     fn effective_prompt_digest_url(&self, model_name: &str) -> Result<String> {
         let upstream = self.upstream(model_name)?;
         let path = self.config.proxy_effective_prompt_digest_path.trim();
-        if path.is_empty() {
-            return Err(PowerError::Config(
-                "proxy_effective_prompt_digest_path cannot be empty".to_string(),
-            ));
-        }
-        if path.starts_with('/') {
-            Ok(format!("{upstream}{path}"))
-        } else {
-            Ok(format!("{upstream}/{path}"))
-        }
+        let segments = configured_proxy_path_segments(path)?;
+        proxy_endpoint_url(&upstream, &segments)
     }
 }
 
@@ -100,7 +92,7 @@ impl Backend for ProxyBackend {
         model_name: &str,
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
-        let url = format!("{}/v1/chat/completions", self.upstream(model_name)?);
+        let url = proxy_endpoint_url(&self.upstream(model_name)?, &["v1", "chat", "completions"])?;
         let body = build_chat_body(model_name, &request);
         let resp = send_stream(&self.http, &url, body).await?;
 
@@ -210,7 +202,7 @@ impl Backend for ProxyBackend {
         model_name: &str,
         request: CompletionRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<CompletionResponseChunk>> + Send>>> {
-        let url = format!("{}/v1/completions", self.upstream(model_name)?);
+        let url = proxy_endpoint_url(&self.upstream(model_name)?, &["v1", "completions"])?;
         let body = build_completion_body(model_name, &request);
         let resp = send_stream(&self.http, &url, body).await?;
 
@@ -272,7 +264,7 @@ impl Backend for ProxyBackend {
         model_name: &str,
         request: EmbeddingRequest,
     ) -> Result<EmbeddingResponse> {
-        let url = format!("{}/v1/embeddings", self.upstream(model_name)?);
+        let url = proxy_endpoint_url(&self.upstream(model_name)?, &["v1", "embeddings"])?;
         let body = serde_json::json!({ "model": model_name, "input": request.input });
         let resp =
             self.http.post(&url).json(&body).send().await.map_err(|e| {
@@ -307,6 +299,74 @@ impl Backend for ProxyBackend {
             .unwrap_or_default();
         Ok(EmbeddingResponse { embeddings })
     }
+}
+
+fn proxy_endpoint_url(upstream: &str, segments: &[&str]) -> Result<String> {
+    let trimmed = upstream.trim();
+    if trimmed.is_empty() {
+        return Err(PowerError::Config(
+            "proxy upstream URL cannot be empty".to_string(),
+        ));
+    }
+
+    let mut url = reqwest::Url::parse(trimmed)
+        .map_err(|e| PowerError::Config(format!("invalid proxy upstream URL {trimmed:?}: {e}")))?;
+    url.set_query(None);
+    url.set_fragment(None);
+    {
+        let mut path = url.path_segments_mut().map_err(|_| {
+            PowerError::Config(format!(
+                "proxy upstream URL {trimmed:?} cannot be used as a base URL"
+            ))
+        })?;
+        path.pop_if_empty();
+        for segment in segments {
+            path.push(segment);
+        }
+    }
+
+    Ok(url.to_string())
+}
+
+fn configured_proxy_path_segments(path: &str) -> Result<Vec<&str>> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(PowerError::Config(
+            "proxy_effective_prompt_digest_path cannot be empty".to_string(),
+        ));
+    }
+    if trimmed.contains('?') || trimmed.contains('#') {
+        return Err(PowerError::Config(
+            "proxy_effective_prompt_digest_path must be a path without query or fragment"
+                .to_string(),
+        ));
+    }
+    if reqwest::Url::parse(trimmed).is_ok() {
+        return Err(PowerError::Config(
+            "proxy_effective_prompt_digest_path must be a path, not an absolute URL".to_string(),
+        ));
+    }
+
+    let segments: Vec<&str> = trimmed
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return Err(PowerError::Config(
+            "proxy_effective_prompt_digest_path cannot be empty".to_string(),
+        ));
+    }
+    if segments
+        .iter()
+        .any(|segment| matches!(*segment, "." | ".."))
+    {
+        return Err(PowerError::Config(
+            "proxy_effective_prompt_digest_path must not contain dot path segments".to_string(),
+        ));
+    }
+
+    Ok(segments)
 }
 
 fn parse_effective_prompt_digest_response(
@@ -820,6 +880,43 @@ mod tests {
         let backend = ProxyBackend::new(Arc::new(PowerConfig::default()));
         let err = backend.upstream("nope").unwrap_err();
         assert!(matches!(err, PowerError::ModelNotFound(_)));
+    }
+
+    #[test]
+    fn proxy_endpoint_url_preserves_base_path_and_drops_query_fragment() {
+        let url = proxy_endpoint_url(
+            "http://upstream.local/proxy/base?stale=1#section",
+            &["v1", "chat", "completions"],
+        )
+        .unwrap();
+
+        assert_eq!(url, "http://upstream.local/proxy/base/v1/chat/completions");
+    }
+
+    #[test]
+    fn effective_prompt_digest_url_encodes_configured_path_segments() {
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            proxy_effective_prompt_digest_path: "/v1/chat/rendered prompt".to_string(),
+            ..proxy_config("http://upstream.local/proxy?stale=1#section".to_string())
+        }));
+
+        let url = backend.effective_prompt_digest_url("llama-70b").unwrap();
+
+        assert_eq!(url, "http://upstream.local/proxy/v1/chat/rendered%20prompt");
+    }
+
+    #[test]
+    fn effective_prompt_digest_url_rejects_query_in_configured_path() {
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            proxy_effective_prompt_digest_path: "/v1/chat/effective-prompt-digest?debug=1"
+                .to_string(),
+            ..proxy_config("http://upstream.local".to_string())
+        }));
+
+        let err = backend
+            .effective_prompt_digest_url("llama-70b")
+            .unwrap_err();
+        assert!(err.to_string().contains("query or fragment"));
     }
 
     fn proxy_config(upstream: String) -> PowerConfig {

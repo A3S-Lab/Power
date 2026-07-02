@@ -145,6 +145,9 @@ Landed in the current working tree:
   accidental cross-use of HuggingFace and ModelScope credentials.
 - Made `A3S_POWER_MODEL_SOURCE` fail closed for unknown configured values
   instead of silently falling back to ModelScope.
+- Fixed proxy backend endpoint URL construction to use a URL parser, preserving
+  upstream base paths, dropping stale query/fragment components, and
+  percent-encoding configured effective-prompt digest path segments.
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.
