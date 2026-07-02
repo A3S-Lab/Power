@@ -426,6 +426,11 @@ fn first_proxy_stream_choice<'a>(
             "proxy {stream_kind} stream event has empty choices without usage"
         )));
     }
+    if choices.len() > 1 {
+        return Err(PowerError::InferenceFailed(format!(
+            "proxy {stream_kind} stream event returned multiple choices; only single-choice proxy streams are supported"
+        )));
+    }
     Ok(Some(&choices[0]))
 }
 
@@ -1647,6 +1652,20 @@ mod tests {
     }
 
     #[test]
+    fn chat_stream_event_rejects_multiple_choices() {
+        let err = parse_proxy_chat_stream_event(&serde_json::json!({
+            "choices": [
+                { "delta": { "content": "first" }, "finish_reason": null },
+                { "delta": { "content": "second" }, "finish_reason": null }
+            ]
+        }))
+        .expect_err("multiple choices must fail closed");
+
+        let err = err.to_string();
+        assert!(err.contains("multiple choices"), "error: {err}");
+    }
+
+    #[test]
     fn completion_stream_event_rejects_non_string_text() {
         let err = parse_proxy_completion_stream_event(&serde_json::json!({
             "choices": [
@@ -1656,6 +1675,20 @@ mod tests {
         .expect_err("non-string completion text must fail closed");
 
         assert!(err.to_string().contains("text"));
+    }
+
+    #[test]
+    fn completion_stream_event_rejects_multiple_choices() {
+        let err = parse_proxy_completion_stream_event(&serde_json::json!({
+            "choices": [
+                { "text": "first", "finish_reason": null },
+                { "text": "second", "finish_reason": null }
+            ]
+        }))
+        .expect_err("multiple choices must fail closed");
+
+        let err = err.to_string();
+        assert!(err.contains("multiple choices"), "error: {err}");
     }
 
     #[test]
