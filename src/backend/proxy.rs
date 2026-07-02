@@ -758,8 +758,11 @@ where
             }
             match serde_json::from_str::<serde_json::Value>(data) {
                 Ok(v) => return Some(Ok(Some(v))),
-                // Skip unparseable keep-alive/comment lines rather than abort.
-                Err(_) => continue,
+                Err(e) => {
+                    return Some(Err(PowerError::InferenceFailed(format!(
+                        "proxy SSE data event decode failed: {e}"
+                    ))));
+                }
             }
         }
         if buf.len() > MAX_PROXY_SSE_BUFFER_BYTES {
@@ -1704,12 +1707,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sse_skips_comments_blanks_and_malformed() {
-        // Keep-alive comment, blank line, malformed data, then a real event.
+    async fn sse_skips_comments_and_blanks() {
+        // Keep-alive comment and blank lines are not data events.
         let mut s = byte_stream(vec![
             b": keep-alive ping\n\n",
             b"\n",
-            b"data: not-json-at-all\n\n",
             b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
         ]);
         let mut buf = Vec::new();
@@ -1717,6 +1719,20 @@ mod tests {
             Some(Ok(Some(json))) => assert_eq!(json["choices"][0]["delta"]["content"], "ok"),
             other => panic!("expected the valid event, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn sse_rejects_malformed_data_line() {
+        let mut s = byte_stream(vec![b"data: not-json-at-all\n\n"]);
+        let mut buf = Vec::new();
+
+        let err = next_sse_event(&mut s, &mut buf)
+            .await
+            .expect("expected parser result")
+            .unwrap_err();
+
+        let err = err.to_string();
+        assert!(err.contains("decode failed"), "error: {err}");
     }
 
     #[tokio::test]
