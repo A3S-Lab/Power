@@ -776,6 +776,30 @@ pub struct EmbeddingRequest {
     /// model's native embedding dimension and rejects explicit overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dimensions: Option<u32>,
+    /// Unknown top-level embedding request fields are preserved so handlers can
+    /// reject unsupported policy instead of silently dropping it.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+impl EmbeddingRequest {
+    /// Return a stable list of unsupported top-level embedding request field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported top-level fields exist.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported embeddings field(s): {}; omit unsupported top-level request fields",
+                fields.join(", ")
+            ))
+        }
+    }
 }
 
 /// Input to embedding endpoint - single string or array of strings.
@@ -1258,6 +1282,15 @@ mod tests {
         let req: EmbeddingRequest = serde_json::from_str(json).unwrap();
         let texts = req.input.into_vec();
         assert_eq!(texts, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_embedding_request_collects_unsupported_top_level_fields() {
+        let json = r#"{"model": "embed", "input": "hello", "user": "client-1"}"#;
+        let req: EmbeddingRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(req.unsupported_fields(), vec!["user"]);
+        assert!(req.unsupported_fields_message().unwrap().contains("user"));
     }
 
     #[test]

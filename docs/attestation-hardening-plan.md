@@ -276,6 +276,9 @@ Landed in the current working tree:
 - Made OpenAI embeddings `dimensions` explicit and rejected for now, avoiding
   silent fallback to native model dimensions when a client requests an output
   dimension override.
+- OpenAI-compatible embeddings requests preserve unknown top-level request
+  fields during parsing and reject them instead of silently dropping unsupported
+  provider or abuse-monitoring policy before backend inference.
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.

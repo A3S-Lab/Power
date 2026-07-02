@@ -868,6 +868,8 @@ with those fields before `[DONE]`; when `stream_options.include_usage = true` or
 Power rejects `stream_options` on non-streaming requests because those options
 do not affect a non-streaming response shape, and currently supports only
 `stream_options.include_usage`; other stream option fields fail closed.
+Embedding requests accept only implemented top-level fields; unsupported fields
+such as `user` fail closed instead of being silently dropped.
 
 The v2 receipt covers prompt-bearing API input, model runtime
 chat-template/GPU execution policy claims, request decoding parameters

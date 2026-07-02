@@ -16,6 +16,9 @@ pub async fn handler(
     Json(request): Json<EmbeddingRequest>,
 ) -> impl IntoResponse {
     let model_name = request.model.clone();
+    if let Some(message) = request.unsupported_fields_message() {
+        return openai_error("unsupported_request_fields", &message).into_response();
+    }
     if let Some(unsupported_format) = unsupported_embedding_encoding_format(&request) {
         return openai_error(
             "unsupported_encoding_format",
@@ -327,6 +330,28 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("native embedding dimension"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_embeddings_rejects_unsupported_top_level_fields() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","input":"hello","user":"client-1"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_request_fields");
+        assert!(json["error"]["message"].as_str().unwrap().contains("user"));
     }
 
     #[tokio::test]
