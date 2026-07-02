@@ -172,6 +172,8 @@ Landed in the current working tree:
 - Tightened v2 claims SDK verifier helpers so direct nonce, GPU metadata,
   structured device-claim, and runtime-policy checks reject unexpected claims
   schema identifiers before accepting policy matches.
+- Tightened GPU metadata and structured device-claim SDK verifier helpers so
+  they reject malformed GPU evidence claim digests before policy comparison.
 - Tightened runtime-policy SDK verifier pins so chat-template, decoding-policy,
   and GPU execution pins must be full 32-byte SHA-256 digests.
 - Tightened model-hash verifier pins so SDK and CLI verification require a full

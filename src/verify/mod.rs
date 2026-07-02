@@ -1096,6 +1096,7 @@ pub fn verify_claims_expected_gpu_evidence(
             "v2 claims do not include a GPU evidence claim".to_string(),
         )
     })?;
+    verify_gpu_evidence_claim_well_formed("claims.gpu", gpu)?;
 
     if let Some(provider) = nonempty_expected_string(expected.provider.as_deref()) {
         if gpu.provider != provider {
@@ -1176,6 +1177,7 @@ pub fn verify_claims_gpu_device_claims(claims: &AttestationClaimsV2) -> Result<(
             "v2 claims do not include a GPU evidence claim".to_string(),
         )
     })?;
+    verify_gpu_evidence_claim_well_formed("claims.gpu", gpu)?;
 
     if gpu.devices.is_empty() {
         return Err(PowerError::AttestationVerificationFailed(
@@ -4245,6 +4247,18 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_claims_expected_gpu_evidence_rejects_short_claim_evidence_digest() {
+        let (_, claims) = make_gpu_claims_report(vec![0x11; 31], Some(vec![0x22; 32]));
+
+        let err = verify_claims_expected_gpu_evidence(&claims, &expected_gpu_evidence_pins())
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.gpu.evidence_digest must be a 32-byte SHA-256 digest"));
+    }
+
+    #[test]
     fn test_verify_report_checks_gpu_evidence_metadata() {
         let (report, _) = make_gpu_claims_report(vec![0x11; 32], Some(vec![0x22; 32]));
         let opts = VerifyOptions {
@@ -4285,6 +4299,18 @@ mod tests {
         assert!(err
             .to_string()
             .contains("does not include structured NVIDIA device claims"));
+    }
+
+    #[test]
+    fn test_verify_claims_gpu_device_claims_rejects_short_claim_evidence_digest() {
+        let (_, claims) =
+            make_gpu_claims_report_with_device_claims(vec![0x11; 31], Some(vec![0x22; 32]));
+
+        let err = verify_claims_gpu_device_claims(&claims).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.gpu.evidence_digest must be a 32-byte SHA-256 digest"));
     }
 
     #[test]
