@@ -169,6 +169,8 @@ Landed in the current working tree:
 - Tightened proxy chat/completion SSE event parsing so upstream error objects
   and malformed stream chunks fail closed instead of being silently converted
   to empty output.
+- Tightened proxy stream parsing so empty `choices` events are accepted only
+  for usage-only chunks and otherwise fail closed.
 - Tightened proxy SSE line parsing so malformed non-empty `data:` events fail
   closed instead of being skipped before stream-event validation.
 - Tightened proxy SSE EOF handling so truncated partial event lines fail closed

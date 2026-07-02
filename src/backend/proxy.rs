@@ -419,7 +419,12 @@ fn first_proxy_stream_choice<'a>(
             ))
         })?;
     if choices.is_empty() {
-        return Ok(None);
+        if json.get("usage").is_some_and(serde_json::Value::is_object) {
+            return Ok(None);
+        }
+        return Err(PowerError::InferenceFailed(format!(
+            "proxy {stream_kind} stream event has empty choices without usage"
+        )));
     }
     Ok(Some(&choices[0]))
 }
@@ -1628,6 +1633,17 @@ mod tests {
                 done_reason: None
             }
         );
+    }
+
+    #[test]
+    fn chat_stream_event_rejects_empty_choices_without_usage() {
+        let err = parse_proxy_chat_stream_event(&serde_json::json!({
+            "choices": []
+        }))
+        .expect_err("empty choices without usage must fail closed");
+
+        let err = err.to_string();
+        assert!(err.contains("empty choices"), "error: {err}");
     }
 
     #[test]
