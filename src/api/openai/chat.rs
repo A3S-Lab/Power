@@ -26,6 +26,17 @@ pub async fn handler(
 ) -> impl IntoResponse {
     let model_name = request.model.clone();
     let request_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+    if let Some(choice_count) = request.n {
+        if choice_count != 1 {
+            return openai_error(
+                "unsupported_choice_count",
+                &format!(
+                    "unsupported chat completion choice count n={choice_count}; only n=1 is supported"
+                ),
+            )
+            .into_response();
+        }
+    }
 
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
@@ -676,6 +687,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_openai_chat_rejects_multi_choice_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"n":2}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_choice_count");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("only n=1 is supported"));
+    }
+
+    #[tokio::test]
     #[serial]
     async fn test_openai_chat_backend_not_found() {
         let dir = tempfile::tempdir().unwrap();
@@ -789,8 +825,46 @@ mod tests {
             "chat-completion"
         );
         assert_eq!(
+            json["attestation_receipt"]["decoding"]["parameters"]["n"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
             json["attestation_receipt_sha256"].as_str().unwrap().len(),
             64
+        );
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_accepts_single_choice_request() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"user","content":"hi"}],"n":1}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["choices"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            json["attestation_receipt"]["decoding"]["parameters"]["n"],
+            serde_json::json!(1)
         );
 
         std::env::remove_var("A3S_POWER_HOME");

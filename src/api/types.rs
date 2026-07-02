@@ -30,6 +30,9 @@ pub struct ChatCompletionRequest {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Number of choices to generate. Power currently supports one choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
     /// Extended sampling controls accepted by local backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<i32>,
@@ -227,6 +230,9 @@ pub struct CompletionRequest {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Number of choices to generate. Power currently supports one choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
     /// Extended sampling controls accepted by local backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<i32>,

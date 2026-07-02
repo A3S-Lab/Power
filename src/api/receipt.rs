@@ -92,6 +92,7 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
     insert_optional_f32(&mut parameters, "temperature", request.temperature);
     insert_optional_f32(&mut parameters, "top_p", request.top_p);
     insert_optional_u32(&mut parameters, "max_tokens", request.max_tokens);
+    insert_optional_u32(&mut parameters, "n", request.n);
     insert_optional_i32(&mut parameters, "top_k", request.top_k);
     insert_optional_f32(&mut parameters, "min_p", request.min_p);
     insert_optional_f32(&mut parameters, "repeat_penalty", request.repeat_penalty);
@@ -176,6 +177,7 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
     insert_optional_f32(&mut parameters, "temperature", request.temperature);
     insert_optional_f32(&mut parameters, "top_p", request.top_p);
     insert_optional_u32(&mut parameters, "max_tokens", request.max_tokens);
+    insert_optional_u32(&mut parameters, "n", request.n);
     insert_optional_i32(&mut parameters, "top_k", request.top_k);
     insert_optional_f32(&mut parameters, "min_p", request.min_p);
     insert_optional_f32(&mut parameters, "repeat_penalty", request.repeat_penalty);
@@ -367,6 +369,7 @@ mod tests {
             temperature: Some(0.2),
             top_p: Some(0.9),
             max_tokens: Some(128),
+            n: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -452,6 +455,7 @@ mod tests {
             temperature: None,
             top_p: None,
             max_tokens: None,
+            n: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -618,6 +622,7 @@ mod tests {
             temperature: None,
             top_p: None,
             max_tokens: None,
+            n: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -652,6 +657,7 @@ mod tests {
             temperature: None,
             top_p: None,
             max_tokens: None,
+            n: None,
             top_k: Some(40),
             min_p: Some(0.5),
             repeat_penalty: Some(1.25),
@@ -694,6 +700,7 @@ mod tests {
             temperature: None,
             top_p: None,
             max_tokens: None,
+            n: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -730,6 +737,7 @@ mod tests {
             temperature: None,
             top_p: None,
             max_tokens: None,
+            n: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,

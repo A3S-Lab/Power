@@ -100,6 +100,10 @@ Landed in the current working tree:
 - OpenAI-compatible chat requests preserve `parallel_tool_calls` through the
   backend/proxy inference path and include it in receipt decoding-parameter
   hashes.
+- OpenAI-compatible chat and completion requests now explicitly accept the
+  default single-choice output (`n = 1`) and reject unsupported multi-choice
+  requests, with explicit `n` values covered by receipt decoding-parameter
+  hashes.
 - Added opt-in proxy upstream effective-prompt digest support. Proxy receipts
   remain non-overclaiming by default; when configured, Power asks the upstream
   digest endpoint for a `chat.rendered-prompt` SHA-256 before inference and can
