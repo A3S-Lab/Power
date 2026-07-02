@@ -147,12 +147,8 @@ fn run(args: &[String]) -> anyhow::Result<()> {
 
     let model_hash = decode_optional_hex_arg("--model-hash", opts.model_hash.as_deref())?;
 
-    let expected_measurement = opts
-        .expected_measurement
-        .as_deref()
-        .map(hex::decode)
-        .transpose()
-        .map_err(|e| anyhow::anyhow!("invalid --expected-measurement hex: {e}"))?;
+    let expected_measurement =
+        decode_optional_measurement_arg(opts.expected_measurement.as_deref())?;
 
     let expected_gpu_evidence_digest =
         decode_optional_hex_arg("--gpu-evidence-digest", opts.gpu_evidence_digest.as_deref())?;
@@ -1144,6 +1140,25 @@ fn decode_optional_hex_arg(name: &str, value: Option<&str>) -> anyhow::Result<Op
     hex::decode(hex)
         .map(Some)
         .map_err(|e| anyhow::anyhow!("invalid {name} hex: {e}"))
+}
+
+fn decode_optional_measurement_arg(value: Option<&str>) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let hex = value.trim();
+    if hex.len() != 96 {
+        anyhow::bail!(
+            "--expected-measurement must be a 96-character launch measurement hex value, got {} characters",
+            hex.len()
+        );
+    }
+    if !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        anyhow::bail!("--expected-measurement must contain only hexadecimal characters");
+    }
+    hex::decode(hex)
+        .map(Some)
+        .map_err(|e| anyhow::anyhow!("invalid --expected-measurement hex: {e}"))
 }
 
 fn print_help() {
@@ -2663,6 +2678,23 @@ mod tests {
         assert!(err
             .to_string()
             .contains("--model-hash must be a 64-character SHA-256 hex digest"));
+    }
+
+    #[test]
+    fn test_run_expected_measurement_rejects_short_hex() {
+        let report_file = write_report_file();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--expected-measurement".to_string(),
+            "cccc".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err.to_string().contains(
+            "--expected-measurement must be a 96-character launch measurement hex value"
+        ));
     }
 
     #[test]

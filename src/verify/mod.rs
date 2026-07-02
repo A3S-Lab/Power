@@ -1625,6 +1625,19 @@ pub fn verify_model_hash_binding(report_data: &[u8], model_hash: &[u8]) -> Resul
 
 /// Verify that the platform measurement matches the expected value.
 pub fn verify_measurement(measurement: &[u8], expected: &[u8]) -> Result<()> {
+    if measurement.len() != 48 {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "report measurement must be a 48-byte launch measurement, got {} bytes",
+            measurement.len(),
+        )));
+    }
+    if expected.len() != 48 {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "expected measurement must be a 48-byte launch measurement, got {} bytes",
+            expected.len(),
+        )));
+    }
+
     if !constant_time_eq(measurement, expected) {
         return Err(PowerError::AttestationVerificationFailed(format!(
             "Measurement mismatch: got {}, expected {}",
@@ -2754,6 +2767,30 @@ mod tests {
     fn test_measurement_passes_when_matching() {
         let m = vec![0xCCu8; 48];
         assert!(verify_measurement(&m, &m).is_ok());
+    }
+
+    #[test]
+    fn test_measurement_rejects_short_expected_measurement() {
+        let measurement = vec![0xCCu8; 48];
+        let expected = vec![0xCCu8; 47];
+
+        let err = verify_measurement(&measurement, &expected).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("expected measurement must be a 48-byte launch measurement"));
+    }
+
+    #[test]
+    fn test_measurement_rejects_short_report_measurement() {
+        let measurement = vec![0xCCu8; 47];
+        let expected = vec![0xCCu8; 48];
+
+        let err = verify_measurement(&measurement, &expected).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("report measurement must be a 48-byte launch measurement"));
     }
 
     #[test]

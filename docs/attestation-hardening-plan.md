@@ -161,6 +161,8 @@ Landed in the current working tree:
   evaluated.
 - Tightened model-hash verifier pins so SDK and CLI verification require a full
   32-byte SHA-256 digest instead of accepting prefix-length legacy pins.
+- Tightened launch-measurement verification so SDK and CLI verification require
+  48-byte report measurements and 48-byte expected measurement pins.
 - Made attestation JSON hex-byte deserialization reject malformed odd-length
   hex as a serde error instead of panicking while loading external reports.
 - Made attestation nonce query decoding reject malformed non-ASCII hex as a
