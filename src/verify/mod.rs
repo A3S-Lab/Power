@@ -3551,6 +3551,7 @@ mod tests {
         request.function_call = Some(crate::api::types::LegacyFunctionChoice::Specific(
             crate::api::types::LegacyFunctionChoiceSpecific {
                 name: "lookup".to_string(),
+                unsupported: BTreeMap::new(),
             },
         ));
         let receipt = chat_receipt(&request).unwrap();
@@ -3636,6 +3637,29 @@ mod tests {
         let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
 
         assert!(err.to_string().contains("x-strict-mode"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_unsupported_tool_choice_fields() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.tool_choice = Some(crate::backend::types::ToolChoice::Specific(
+            crate::backend::types::ToolChoiceSpecific {
+                tool_type: "function".to_string(),
+                function: crate::backend::types::FunctionChoice {
+                    name: "lookup".to_string(),
+                    unsupported: BTreeMap::new(),
+                },
+                unsupported: BTreeMap::from([(
+                    "cache_control".to_string(),
+                    serde_json::Value::Bool(true),
+                )]),
+            },
+        ));
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err.to_string().contains("cache_control"));
     }
 
     #[test]

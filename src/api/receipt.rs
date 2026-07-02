@@ -168,6 +168,11 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             "chat completion {message}; cannot be receipt-bound"
         )));
     }
+    if let Some(message) = request.unsupported_tool_choice_fields_message() {
+        return Err(crate::error::PowerError::InvalidRequest(format!(
+            "chat completion {message}; cannot be receipt-bound"
+        )));
+    }
 
     let input = ReceiptInputDigest {
         kind: "chat.messages".to_string(),
@@ -901,6 +906,26 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("x-strict-mode"));
+    }
+
+    #[test]
+    fn chat_receipt_rejects_unsupported_tool_choice_fields() {
+        let request: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model": "llama3",
+                "messages": [{"role": "user", "content": "hi"}],
+                "function_call": {
+                    "name": "lookup",
+                    "arguments": "{}"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported function_call field(s): arguments"));
     }
 
     #[test]

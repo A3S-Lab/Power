@@ -261,6 +261,27 @@ impl ChatCompletionRequest {
         None
     }
 
+    /// Return a validation message for unsupported nested tool-choice fields.
+    pub fn unsupported_tool_choice_fields_message(&self) -> Option<String> {
+        if let Some(tool_choice) = &self.tool_choice {
+            match tool_choice {
+                ToolChoice::String(_) => {}
+                ToolChoice::Specific(choice) => {
+                    if let Some(message) = choice.unsupported_fields_message() {
+                        return Some(message);
+                    }
+                    if let Some(message) = choice.function.unsupported_fields_message() {
+                        return Some(message);
+                    }
+                }
+            }
+        }
+
+        self.function_call
+            .as_ref()
+            .and_then(LegacyFunctionChoice::unsupported_fields_message)
+    }
+
     /// Effective tool-choice policy after mapping legacy `function_call`.
     pub fn effective_tool_choice(&self) -> Option<ToolChoice> {
         self.tool_choice.clone().or_else(|| {
@@ -287,8 +308,17 @@ impl LegacyFunctionChoice {
                 tool_type: "function".to_string(),
                 function: FunctionChoice {
                     name: choice.name.clone(),
+                    unsupported: BTreeMap::new(),
                 },
+                unsupported: BTreeMap::new(),
             }),
+        }
+    }
+
+    fn unsupported_fields_message(&self) -> Option<String> {
+        match self {
+            LegacyFunctionChoice::String(_) => None,
+            LegacyFunctionChoice::Specific(choice) => choice.unsupported_fields_message(),
         }
     }
 }
@@ -297,6 +327,30 @@ impl LegacyFunctionChoice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LegacyFunctionChoiceSpecific {
     pub name: String,
+    /// Unknown legacy function-call fields are preserved so request validation
+    /// can fail closed instead of silently dropping selection policy.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+impl LegacyFunctionChoiceSpecific {
+    /// Return a stable list of unsupported legacy function-call field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported legacy function-call fields exist.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported function_call field(s): {}; supported field is name",
+                fields.join(", ")
+            ))
+        }
+    }
 }
 
 /// Structured output format specifier.
@@ -859,6 +913,55 @@ mod tests {
             .unsupported_tool_fields_message()
             .unwrap()
             .contains("cache_control"));
+    }
+
+    #[test]
+    fn test_chat_completion_request_collects_unsupported_tool_choice_fields() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "strict": true
+                },
+                "cache_control": true
+            }
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+
+        let Some(ToolChoice::Specific(choice)) = req.tool_choice.as_ref() else {
+            panic!("expected specific tool choice");
+        };
+        assert_eq!(choice.unsupported_fields(), vec!["cache_control"]);
+        assert_eq!(choice.function.unsupported_fields(), vec!["strict"]);
+        assert!(req
+            .unsupported_tool_choice_fields_message()
+            .unwrap()
+            .contains("cache_control"));
+    }
+
+    #[test]
+    fn test_chat_completion_request_collects_unsupported_legacy_function_call_fields() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "function_call": {
+                "name": "get_weather",
+                "arguments": "{}"
+            }
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+
+        let Some(LegacyFunctionChoice::Specific(choice)) = req.function_call.as_ref() else {
+            panic!("expected specific function_call");
+        };
+        assert_eq!(choice.unsupported_fields(), vec!["arguments"]);
+        assert!(req
+            .unsupported_tool_choice_fields_message()
+            .unwrap()
+            .contains("function_call field(s): arguments"));
     }
 
     #[test]

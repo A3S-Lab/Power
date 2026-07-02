@@ -128,6 +128,10 @@ Landed in the current working tree:
   policies that Power cannot enforce (`tool_choice = "none"` with tools,
   `tool_choice = "required"`, or named tool/function choices), while preserving
   those policies for remote/proxy models that can enforce them upstream.
+- OpenAI-compatible chat requests preserve unknown nested `tool_choice` and
+  legacy `function_call` fields during parsing and reject them instead of
+  silently dropping tool-selection policy before proxy forwarding and receipt
+  binding.
 - OpenAI-compatible chat requests now reject message-level `thinking` input
   instead of receipt-binding reasoning content that is not forwarded into
   backend prompt construction.
@@ -325,6 +329,9 @@ Landed in the current working tree:
 - Added fail-closed receipt and verifier handling for unknown chat message,
   content-part, and image URL fields so prompt and multimodal policy extensions
   cannot be silently dropped before hashing.
+- Added fail-closed receipt and verifier handling for unknown `tool_choice`,
+  `tool_choice.function`, and legacy `function_call` fields so tool-selection
+  policy extensions cannot be silently dropped before hashing.
 - Added `verify_receipt_matches_chat_request()` and
   `verify_receipt_matches_completion_request()` so SDK verifiers can recompute
   and compare all request-derived receipt fields from the original request,

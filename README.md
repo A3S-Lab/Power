@@ -874,8 +874,8 @@ chat-template/GPU execution policy claims, request decoding parameters
 including extended local sampling controls, streaming request options, stop
 tokens, response format, tools including function `strict` schema flags, tool
 choice, and parallel tool-call policy. Unknown nested message/content,
-response-format, and tool definition fields fail closed instead of being
-silently dropped before proxying or receipt hashing. Chat receipts also include
+response-format, tool definition, and tool-choice fields fail closed instead of
+being silently dropped before proxying or receipt hashing. Chat receipts also include
 `effective_prompt` when the selected backend can expose the exact prompt
 representation it submits to the model. llama.cpp and picolm text-only chat
 emit `kind = "chat.rendered-prompt"` for post-template prompt bytes. mistralrs
