@@ -3586,6 +3586,20 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_invalid_response_format() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.response_format = Some(crate::api::types::ResponseFormat {
+            r#type: "xml".to_string(),
+            json_schema: None,
+        });
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err.to_string().contains("unsupported response_format.type"));
+    }
+
+    #[test]
     fn test_verify_receipt_matches_completion_request_rejects_best_of_request() {
         let mut request = completion_request();
         let receipt = completion_receipt(&request).unwrap();
@@ -3622,6 +3636,25 @@ mod tests {
         assert!(err
             .to_string()
             .contains("completion echo requests are unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_rejects_invalid_response_format() {
+        let mut request = completion_request();
+        let receipt = completion_receipt(&request).unwrap();
+        request.response_format = Some(crate::api::types::ResponseFormat {
+            r#type: "json_schema".to_string(),
+            json_schema: Some(crate::api::types::JsonSchemaSpec {
+                name: "Answer".to_string(),
+                description: None,
+                schema: None,
+                strict: Some(true),
+            }),
+        });
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err.to_string().contains("json_schema.schema"));
     }
 
     #[test]

@@ -120,6 +120,15 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
                 .to_string(),
         ));
     }
+    if let Some((_, message)) = request
+        .response_format
+        .as_ref()
+        .and_then(|format| format.validation_error())
+    {
+        return Err(crate::error::PowerError::InvalidRequest(format!(
+            "{message}; cannot be receipt-bound"
+        )));
+    }
     if request.has_thinking_inputs() {
         return Err(crate::error::PowerError::InvalidRequest(
             "chat message thinking input is unsupported and cannot be receipt-bound".to_string(),
@@ -262,6 +271,15 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
         return Err(crate::error::PowerError::InvalidRequest(
             "text completion logit_bias is unsupported and cannot be receipt-bound".to_string(),
         ));
+    }
+    if let Some((_, message)) = request
+        .response_format
+        .as_ref()
+        .and_then(|format| format.validation_error())
+    {
+        return Err(crate::error::PowerError::InvalidRequest(format!(
+            "{message}; cannot be receipt-bound"
+        )));
     }
 
     let input = ReceiptInputDigest {
@@ -773,6 +791,35 @@ mod tests {
     }
 
     #[test]
+    fn chat_receipt_rejects_invalid_response_format() {
+        let mut request = chat_request();
+        request.response_format = Some(crate::api::types::ResponseFormat {
+            r#type: "xml".to_string(),
+            json_schema: None,
+        });
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported response_format.type"));
+
+        request.response_format = Some(crate::api::types::ResponseFormat {
+            r#type: "json_schema".to_string(),
+            json_schema: Some(crate::api::types::JsonSchemaSpec {
+                name: "Answer".to_string(),
+                description: None,
+                schema: None,
+                strict: Some(true),
+            }),
+        });
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("json_schema.schema"));
+    }
+
+    #[test]
     fn completion_receipt_hashes_prompt() {
         let request = CompletionRequest {
             model: "llama3".to_string(),
@@ -948,5 +995,64 @@ mod tests {
         let receipt = completion_receipt(&request).unwrap();
 
         assert!(receipt.decoding.response_format_sha256.is_some());
+    }
+
+    #[test]
+    fn completion_receipt_rejects_invalid_response_format() {
+        let mut request = CompletionRequest {
+            model: "llama3".to_string(),
+            prompt: "hello".to_string(),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            n: None,
+            logprobs: None,
+            echo: None,
+            best_of: None,
+            logit_bias: None,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            stop: None,
+            stream: Some(false),
+            stream_options: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            response_format: Some(crate::api::types::ResponseFormat {
+                r#type: "xml".to_string(),
+                json_schema: None,
+            }),
+            suffix: None,
+            keep_alive: None,
+        };
+
+        assert!(completion_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported response_format.type"));
+
+        request.response_format = Some(crate::api::types::ResponseFormat {
+            r#type: "json_schema".to_string(),
+            json_schema: Some(crate::api::types::JsonSchemaSpec {
+                name: "Answer".to_string(),
+                description: None,
+                schema: None,
+                strict: Some(true),
+            }),
+        });
+
+        assert!(completion_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("json_schema.schema"));
     }
 }

@@ -79,6 +79,13 @@ pub async fn handler(
         )
         .into_response();
     }
+    if let Some((code, message)) = request
+        .response_format
+        .as_ref()
+        .and_then(|format| format.validation_error())
+    {
+        return openai_error(code, &message).into_response();
+    }
 
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
@@ -699,6 +706,56 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("logit_bias is not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_completions_rejects_unsupported_response_format_type() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","prompt":"hi","response_format":{"type":"xml"}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_response_format");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("supported values"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_completions_rejects_incomplete_json_schema_response_format() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","prompt":"hi","response_format":{"type":"json_schema","json_schema":{"name":"Answer"}}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_response_format");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("json_schema.schema"));
     }
 
     #[tokio::test]

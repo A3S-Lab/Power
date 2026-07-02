@@ -127,6 +127,10 @@ Landed in the current working tree:
   modality (`modalities = ["text"]`) and reject unsupported output controls
   (`audio`, `prediction`, and `reasoning_effort`) instead of silently ignoring
   response-shape requests that backend inference and receipts cannot honor.
+- OpenAI-compatible chat and completion requests now reject unsupported
+  `response_format.type` values and incomplete `json_schema` response formats
+  instead of receipt-binding output constraints that local backends cannot
+  enforce.
 - Added opt-in proxy upstream effective-prompt digest support. Proxy receipts
   remain non-overclaiming by default; when configured, Power asks the upstream
   digest endpoint for a `chat.rendered-prompt` SHA-256 before inference and can

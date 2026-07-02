@@ -239,6 +239,48 @@ pub struct ResponseFormat {
     pub json_schema: Option<JsonSchemaSpec>,
 }
 
+impl ResponseFormat {
+    /// Validate that Power can honor this response-format request.
+    pub fn validation_error(&self) -> Option<(&'static str, String)> {
+        match self.r#type.as_str() {
+            "text" | "json_object" => {
+                if self.json_schema.is_some() {
+                    Some((
+                        "invalid_response_format",
+                        "response_format.json_schema is only valid when response_format.type is json_schema"
+                            .to_string(),
+                    ))
+                } else {
+                    None
+                }
+            }
+            "json_schema" => {
+                let Some(schema_spec) = self.json_schema.as_ref() else {
+                    return Some((
+                        "invalid_response_format",
+                        "response_format.type json_schema requires response_format.json_schema"
+                            .to_string(),
+                    ));
+                };
+                if schema_spec.schema.is_none() {
+                    return Some((
+                        "invalid_response_format",
+                        "response_format.type json_schema requires response_format.json_schema.schema"
+                            .to_string(),
+                    ));
+                }
+                None
+            }
+            unsupported => Some((
+                "unsupported_response_format",
+                format!(
+                    "unsupported response_format.type '{unsupported}'; supported values are text, json_object, and json_schema"
+                ),
+            )),
+        }
+    }
+}
+
 /// JSON Schema specification for structured output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonSchemaSpec {
