@@ -166,6 +166,9 @@ Landed in the current working tree:
   line plus newline would exceed the per-event buffer limit.
 - Made proxy SSE parsing buffer raw bytes and decode only complete event lines,
   so multibyte UTF-8 split across network chunks is not silently corrupted.
+- Tightened proxy chat/completion SSE event parsing so upstream error objects
+  and malformed stream chunks fail closed instead of being silently converted
+  to empty output.
 - Made proxy effective-prompt digest collection leave image-bearing chat
   requests absent by default and fail closed when the digest endpoint is
   required, avoiding text rendered-prompt overclaims for opaque multimodal

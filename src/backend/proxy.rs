@@ -104,6 +104,7 @@ impl Backend for ProxyBackend {
         tokio::spawn(async move {
             let mut stream = Box::pin(resp.bytes_stream());
             let mut buf = Vec::new();
+            let mut done_reason = Some("stop".to_string());
             while let Some(event) = next_sse_event(&mut stream, &mut buf).await {
                 match event {
                     Err(e) => {
@@ -112,15 +113,17 @@ impl Backend for ProxyBackend {
                     }
                     Ok(None) => break, // [DONE]
                     Ok(Some(json)) => {
-                        let delta = json["choices"][0]["delta"]["content"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string();
-                        let done = !json["choices"][0]["finish_reason"].is_null();
-                        if !delta.is_empty()
-                            && tx
+                        let parsed = match parse_proxy_chat_stream_event(&json) {
+                            Ok(parsed) => parsed,
+                            Err(e) => {
+                                let _ = tx.send(Err(e)).await;
+                                return;
+                            }
+                        };
+                        if let Some(content) = parsed.content {
+                            if tx
                                 .send(Ok(ChatResponseChunk {
-                                    content: delta,
+                                    content,
                                     thinking_content: None,
                                     done: false,
                                     prompt_tokens: None,
@@ -130,10 +133,12 @@ impl Backend for ProxyBackend {
                                 }))
                                 .await
                                 .is_err()
-                        {
-                            return;
+                            {
+                                return;
+                            }
                         }
-                        if done {
+                        if let Some(reason) = parsed.done_reason {
+                            done_reason = Some(reason);
                             break;
                         }
                     }
@@ -145,7 +150,7 @@ impl Backend for ProxyBackend {
                     thinking_content: None,
                     done: true,
                     prompt_tokens: None,
-                    done_reason: Some("stop".to_string()),
+                    done_reason,
                     prompt_eval_duration_ns: None,
                     tool_calls: None,
                 }))
@@ -221,6 +226,7 @@ impl Backend for ProxyBackend {
         tokio::spawn(async move {
             let mut stream = Box::pin(resp.bytes_stream());
             let mut buf = Vec::new();
+            let mut done_reason = Some("stop".to_string());
             while let Some(event) = next_sse_event(&mut stream, &mut buf).await {
                 match event {
                     Err(e) => {
@@ -229,13 +235,15 @@ impl Backend for ProxyBackend {
                     }
                     Ok(None) => break,
                     Ok(Some(json)) => {
-                        let text = json["choices"][0]["text"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string();
-                        let done = !json["choices"][0]["finish_reason"].is_null();
-                        if !text.is_empty()
-                            && tx
+                        let parsed = match parse_proxy_completion_stream_event(&json) {
+                            Ok(parsed) => parsed,
+                            Err(e) => {
+                                let _ = tx.send(Err(e)).await;
+                                return;
+                            }
+                        };
+                        if let Some(text) = parsed.text {
+                            if tx
                                 .send(Ok(CompletionResponseChunk {
                                     text,
                                     done: false,
@@ -246,10 +254,12 @@ impl Backend for ProxyBackend {
                                 }))
                                 .await
                                 .is_err()
-                        {
-                            return;
+                            {
+                                return;
+                            }
                         }
-                        if done {
+                        if let Some(reason) = parsed.done_reason {
+                            done_reason = Some(reason);
                             break;
                         }
                     }
@@ -260,7 +270,7 @@ impl Backend for ProxyBackend {
                     text: String::new(),
                     done: true,
                     prompt_tokens: None,
-                    done_reason: Some("stop".to_string()),
+                    done_reason,
                     prompt_eval_duration_ns: None,
                     token_id: None,
                 }))
@@ -294,6 +304,153 @@ impl Backend for ProxyBackend {
         validate_proxy_embeddings_dimensions(&embeddings)?;
         Ok(EmbeddingResponse { embeddings })
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedProxyChatStreamEvent {
+    content: Option<String>,
+    done_reason: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedProxyCompletionStreamEvent {
+    text: Option<String>,
+    done_reason: Option<String>,
+}
+
+fn parse_proxy_chat_stream_event(json: &serde_json::Value) -> Result<ParsedProxyChatStreamEvent> {
+    let Some(choice) = first_proxy_stream_choice(json, "chat")? else {
+        return Ok(ParsedProxyChatStreamEvent {
+            content: None,
+            done_reason: None,
+        });
+    };
+    let done_reason = proxy_stream_finish_reason(choice, "chat")?;
+    let delta = match choice.get("delta") {
+        Some(delta) if delta.is_object() => Some(delta),
+        Some(delta) if delta.is_null() && done_reason.is_some() => None,
+        Some(_) => {
+            return Err(PowerError::InferenceFailed(
+                "proxy chat stream choice delta must be an object".to_string(),
+            ));
+        }
+        None if done_reason.is_some() => None,
+        None => {
+            return Err(PowerError::InferenceFailed(
+                "proxy chat stream choice missing delta".to_string(),
+            ));
+        }
+    };
+    let content = match delta.and_then(|delta| delta.get("content")) {
+        Some(content) if content.is_null() => None,
+        Some(content) => {
+            let content = content.as_str().ok_or_else(|| {
+                PowerError::InferenceFailed(
+                    "proxy chat stream delta content must be a string".to_string(),
+                )
+            })?;
+            if content.is_empty() {
+                None
+            } else {
+                Some(content.to_string())
+            }
+        }
+        None => None,
+    };
+
+    Ok(ParsedProxyChatStreamEvent {
+        content,
+        done_reason,
+    })
+}
+
+fn parse_proxy_completion_stream_event(
+    json: &serde_json::Value,
+) -> Result<ParsedProxyCompletionStreamEvent> {
+    let Some(choice) = first_proxy_stream_choice(json, "completion")? else {
+        return Ok(ParsedProxyCompletionStreamEvent {
+            text: None,
+            done_reason: None,
+        });
+    };
+    let done_reason = proxy_stream_finish_reason(choice, "completion")?;
+    let text = match choice.get("text") {
+        Some(text) if text.is_null() => None,
+        Some(text) => {
+            let text = text.as_str().ok_or_else(|| {
+                PowerError::InferenceFailed(
+                    "proxy completion stream choice text must be a string".to_string(),
+                )
+            })?;
+            if text.is_empty() {
+                None
+            } else {
+                Some(text.to_string())
+            }
+        }
+        None if done_reason.is_some() => None,
+        None => {
+            return Err(PowerError::InferenceFailed(
+                "proxy completion stream choice missing text".to_string(),
+            ));
+        }
+    };
+
+    Ok(ParsedProxyCompletionStreamEvent { text, done_reason })
+}
+
+fn first_proxy_stream_choice<'a>(
+    json: &'a serde_json::Value,
+    stream_kind: &'static str,
+) -> Result<Option<&'a serde_json::Value>> {
+    if let Some(error) = json.get("error") {
+        return Err(PowerError::InferenceFailed(format!(
+            "proxy {stream_kind} stream upstream error: {}",
+            proxy_stream_error_message(error)
+        )));
+    }
+
+    let choices = json
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            PowerError::InferenceFailed(format!(
+                "proxy {stream_kind} stream event choices must be an array"
+            ))
+        })?;
+    if choices.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(&choices[0]))
+}
+
+fn proxy_stream_finish_reason(
+    choice: &serde_json::Value,
+    stream_kind: &'static str,
+) -> Result<Option<String>> {
+    match choice.get("finish_reason") {
+        Some(reason) if reason.is_null() => Ok(None),
+        Some(reason) => reason
+            .as_str()
+            .map(|reason| Some(reason.to_string()))
+            .ok_or_else(|| {
+                PowerError::InferenceFailed(format!(
+                    "proxy {stream_kind} stream choice finish_reason must be a string or null"
+                ))
+            }),
+        None => Ok(None),
+    }
+}
+
+fn proxy_stream_error_message(error: &serde_json::Value) -> String {
+    error
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| error.as_str())
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| error.to_string())
 }
 
 async fn read_effective_prompt_digest_response_json(
@@ -1425,6 +1582,74 @@ mod tests {
         assert!(err.contains("at most"), "error: {err}");
         assert!(err.contains("content-length"), "error: {err}");
         server.abort();
+    }
+
+    #[test]
+    fn chat_stream_event_rejects_upstream_error_object() {
+        let err = parse_proxy_chat_stream_event(&serde_json::json!({
+            "error": { "message": "upstream failed" }
+        }))
+        .expect_err("upstream errors must fail closed");
+
+        let err = err.to_string();
+        assert!(err.contains("upstream failed"), "error: {err}");
+    }
+
+    #[test]
+    fn chat_stream_event_rejects_missing_choices() {
+        let err = parse_proxy_chat_stream_event(&serde_json::json!({
+            "id": "chunk"
+        }))
+        .expect_err("missing choices must fail closed");
+
+        assert!(err.to_string().contains("choices"));
+    }
+
+    #[test]
+    fn chat_stream_event_skips_usage_only_empty_choices() {
+        let parsed = parse_proxy_chat_stream_event(&serde_json::json!({
+            "choices": [],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            parsed,
+            ParsedProxyChatStreamEvent {
+                content: None,
+                done_reason: None
+            }
+        );
+    }
+
+    #[test]
+    fn completion_stream_event_rejects_non_string_text() {
+        let err = parse_proxy_completion_stream_event(&serde_json::json!({
+            "choices": [
+                { "text": 42, "finish_reason": null }
+            ]
+        }))
+        .expect_err("non-string completion text must fail closed");
+
+        assert!(err.to_string().contains("text"));
+    }
+
+    #[test]
+    fn completion_stream_event_parses_finish_reason() {
+        let parsed = parse_proxy_completion_stream_event(&serde_json::json!({
+            "choices": [
+                { "text": "", "finish_reason": "length" }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            parsed,
+            ParsedProxyCompletionStreamEvent {
+                text: None,
+                done_reason: Some("length".to_string())
+            }
+        );
     }
 
     // ── SSE parser (`next_sse_event`) ─────────────────────────────────────────
