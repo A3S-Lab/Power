@@ -183,7 +183,8 @@ Landed in the current working tree:
 - Tightened direct `nras-rest` endpoint normalization so custom URLs must be an
   HTTPS service root/base path or the full `/v4/attest/gpu` endpoint, without
   embedded credentials, query strings, fragments, or unsupported API-version
-  paths.
+  paths; `gpu-confidential` startup validation now applies the same endpoint
+  policy before the provider is constructed.
 - Tightened direct `nras-rest` detached EAT parsing so only explicit EAT fields
   are decoded as JWTs, malformed token payloads fail closed, and ordinary
   version-like strings elsewhere in the response are ignored.
@@ -531,6 +532,9 @@ Tests:
   verification.
 - `gpu-confidential` policy refuses to start when a custom NVIDIA NRAS, RIM, or
   OCSP URL uses HTTP instead of HTTPS.
+- `gpu-confidential` policy refuses to start when a direct `nras-rest`
+  endpoint includes query strings, fragments, embedded credentials, or
+  unsupported API-version paths.
 - `gpu-confidential` attestation refuses to proceed without a 32-byte nonce.
 - The configured evidence provider rejects nonce-bound attestations when the
   configured NVIDIA verdict is stale or not parseable as nvattest/NRAS JSON.

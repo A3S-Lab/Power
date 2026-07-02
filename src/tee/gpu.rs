@@ -770,7 +770,7 @@ async fn write_private_temp_file(prefix: &str, bytes: &[u8]) -> Result<PathBuf> 
     Ok(path)
 }
 
-fn normalize_nras_rest_endpoint(url: Option<&str>) -> Result<String> {
+pub(crate) fn normalize_nras_rest_endpoint(url: Option<&str>) -> Result<String> {
     let Some(url) = url.map(str::trim).filter(|url| !url.is_empty()) else {
         return Ok(DEFAULT_NRAS_ATTEST_GPU_URL.to_string());
     };

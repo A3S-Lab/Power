@@ -25,7 +25,7 @@ use crate::model::registry::ModelRegistry;
 use crate::server::log_stream::LogBuffer;
 use crate::tee;
 use crate::tee::attestation::{TeeProvider, TeeType};
-use crate::tee::gpu::{provider_from_config, GpuEvidenceProvider};
+use crate::tee::gpu::{normalize_nras_rest_endpoint, provider_from_config, GpuEvidenceProvider};
 use crate::tee::key_provider;
 use crate::tee::policy::{DefaultTeePolicy, TeePolicy};
 
@@ -551,7 +551,7 @@ fn validate_strict_tee_config(
                     ));
                 }
                 if let Some(url) = &config.gpu_attestation.nras_url {
-                    validate_gpu_confidential_https_url("gpu_attestation.nras_url", url)?;
+                    validate_gpu_confidential_nras_rest_endpoint(url)?;
                 }
             }
         }
@@ -703,6 +703,14 @@ fn validate_gpu_confidential_https_url(field: &str, url: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn validate_gpu_confidential_nras_rest_endpoint(url: &str) -> Result<()> {
+    normalize_nras_rest_endpoint(Some(url)).map(|_| ()).map_err(|e| {
+        PowerError::Config(format!(
+            "tee_policy_mode = \"gpu-confidential\" requires gpu_attestation.nras_url to be a valid NVIDIA NRAS REST endpoint: {e}"
+        ))
+    })
 }
 
 fn validate_strict_measurement_policy(config: &PowerConfig, tee_type: TeeType) -> Result<()> {
@@ -905,6 +913,30 @@ mod tests {
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
             ),
             gpu_attestation,
+            expected_measurements: measurement_pins(),
+            ..Default::default()
+        }
+    }
+
+    fn gpu_confidential_nras_rest_config(nras_url: Option<&str>) -> PowerConfig {
+        PowerConfig {
+            tee_policy_mode: TeePolicyMode::GpuConfidential,
+            gpu: GpuConfig {
+                gpu_layers: -1,
+                ..Default::default()
+            },
+            model_signing_key: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            ),
+            gpu_attestation: GpuAttestationConfig {
+                source: GpuAttestationSource::NrasRest,
+                evidence_hex: Some(hex::encode(
+                    br#"{"evidence":"ZXZpZGVuY2U","certificate":"Y2VydA"}"#,
+                )),
+                nras_url: nras_url.map(str::to_string),
+                nras_gpu_architecture: Some("HOPPER".to_string()),
+                ..Default::default()
+            },
             expected_measurements: measurement_pins(),
             ..Default::default()
         }
@@ -1509,26 +1541,15 @@ mod tests {
     #[test]
     fn test_validate_strict_tee_config_gpu_confidential_accepts_nras_rest() {
         let registry = ModelRegistry::new();
-        let config = PowerConfig {
-            tee_policy_mode: TeePolicyMode::GpuConfidential,
-            gpu: GpuConfig {
-                gpu_layers: -1,
-                ..Default::default()
-            },
-            model_signing_key: Some(
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
-            ),
-            gpu_attestation: GpuAttestationConfig {
-                source: GpuAttestationSource::NrasRest,
-                evidence_hex: Some(hex::encode(
-                    br#"{"evidence":"ZXZpZGVuY2U","certificate":"Y2VydA"}"#,
-                )),
-                nras_gpu_architecture: Some("HOPPER".to_string()),
-                ..Default::default()
-            },
-            expected_measurements: measurement_pins(),
-            ..Default::default()
-        };
+        let config = gpu_confidential_nras_rest_config(None);
+
+        validate_strict_tee_config(&config, &registry, TeeType::SevSnp).unwrap();
+    }
+
+    #[test]
+    fn test_validate_strict_tee_config_gpu_confidential_accepts_nras_rest_base_path() {
+        let registry = ModelRegistry::new();
+        let config = gpu_confidential_nras_rest_config(Some("https://proxy.example/nras"));
 
         validate_strict_tee_config(&config, &registry, TeeType::SevSnp).unwrap();
     }
@@ -1565,62 +1586,57 @@ mod tests {
     #[test]
     fn test_validate_strict_tee_config_gpu_confidential_rejects_http_nras_rest_url() {
         let registry = ModelRegistry::new();
-        let config = PowerConfig {
-            tee_policy_mode: TeePolicyMode::GpuConfidential,
-            gpu: GpuConfig {
-                gpu_layers: -1,
-                ..Default::default()
-            },
-            model_signing_key: Some(
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
-            ),
-            gpu_attestation: GpuAttestationConfig {
-                source: GpuAttestationSource::NrasRest,
-                evidence_hex: Some(hex::encode(
-                    br#"{"evidence":"ZXZpZGVuY2U","certificate":"Y2VydA"}"#,
-                )),
-                nras_url: Some("http://nras.attestation.nvidia.com".to_string()),
-                nras_gpu_architecture: Some("HOPPER".to_string()),
-                ..Default::default()
-            },
-            expected_measurements: measurement_pins(),
-            ..Default::default()
-        };
+        let config = gpu_confidential_nras_rest_config(Some("http://nras.attestation.nvidia.com"));
+
+        let err = validate_strict_tee_config(&config, &registry, TeeType::SevSnp).unwrap_err();
+
+        assert!(err.to_string().contains("must use https"));
+    }
+
+    #[test]
+    fn test_validate_strict_tee_config_gpu_confidential_rejects_nras_rest_url_query() {
+        let registry = ModelRegistry::new();
+        let config = gpu_confidential_nras_rest_config(Some(
+            "https://nras.attestation.nvidia.com/v4/attest/gpu?token=secret",
+        ));
 
         let err = validate_strict_tee_config(&config, &registry, TeeType::SevSnp).unwrap_err();
 
         assert!(err
             .to_string()
-            .contains("requires gpu_attestation.nras_url to use https"));
+            .contains("must not include query parameters"));
+    }
+
+    #[test]
+    fn test_validate_strict_tee_config_gpu_confidential_rejects_nras_rest_url_fragment() {
+        let registry = ModelRegistry::new();
+        let config = gpu_confidential_nras_rest_config(Some(
+            "https://nras.attestation.nvidia.com/v4/attest/gpu#fragment",
+        ));
+
+        let err = validate_strict_tee_config(&config, &registry, TeeType::SevSnp).unwrap_err();
+
+        assert!(err.to_string().contains("fragments"));
+    }
+
+    #[test]
+    fn test_validate_strict_tee_config_gpu_confidential_rejects_nras_rest_versioned_path() {
+        let registry = ModelRegistry::new();
+        let config = gpu_confidential_nras_rest_config(Some("https://proxy.example/v3/attest/gpu"));
+
+        let err = validate_strict_tee_config(&config, &registry, TeeType::SevSnp).unwrap_err();
+
+        assert!(err.to_string().contains("service root/base path"));
     }
 
     #[test]
     fn test_validate_strict_tee_config_gpu_confidential_rejects_nras_url_credentials() {
         let registry = ModelRegistry::new();
-        let config = PowerConfig {
-            tee_policy_mode: TeePolicyMode::GpuConfidential,
-            gpu: GpuConfig {
-                gpu_layers: -1,
-                ..Default::default()
-            },
-            model_signing_key: Some(
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
-            ),
-            gpu_attestation: GpuAttestationConfig {
-                source: GpuAttestationSource::NrasRest,
-                evidence_hex: Some(hex::encode(
-                    br#"{"evidence":"ZXZpZGVuY2U","certificate":"Y2VydA"}"#,
-                )),
-                nras_url: Some("https://token@nras.attestation.nvidia.com".to_string()),
-                nras_gpu_architecture: Some("HOPPER".to_string()),
-                ..Default::default()
-            },
-            expected_measurements: measurement_pins(),
-            ..Default::default()
-        };
+        let config =
+            gpu_confidential_nras_rest_config(Some("https://token@nras.attestation.nvidia.com"));
 
         let err = validate_strict_tee_config(&config, &registry, TeeType::SevSnp).unwrap_err();
 
-        assert!(err.to_string().contains("omit embedded credentials"));
+        assert!(err.to_string().contains("embedded credentials"));
     }
 }
