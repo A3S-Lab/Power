@@ -37,6 +37,8 @@ use crate::model::manifest::{ModelFormat, ModelManifest};
 const MAX_PROXY_EFFECTIVE_PROMPT_DIGEST_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_PROXY_EMBEDDINGS_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PROXY_SSE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PROXY_STREAM_TOOL_CALLS: usize = 128;
+const MAX_PROXY_STREAM_TOOL_CALL_ARGUMENT_BYTES: usize = 1024 * 1024;
 
 /// Forwards inference to upstream OpenAI-compatible servers.
 pub struct ProxyBackend {
@@ -425,6 +427,13 @@ impl ProxyToolCallAssembler {
                     delta.index
                 )));
             }
+            if !self.calls.contains_key(&delta.index)
+                && self.calls.len() >= MAX_PROXY_STREAM_TOOL_CALLS
+            {
+                return Err(PowerError::InferenceFailed(format!(
+                    "proxy chat stream tool_calls has too many entries: at most {MAX_PROXY_STREAM_TOOL_CALLS} are allowed"
+                )));
+            }
             let call = self.calls.entry(delta.index).or_default();
             set_once(&mut call.id, delta.id, "proxy chat stream tool call id")?;
             set_once(
@@ -439,6 +448,21 @@ impl ProxyToolCallAssembler {
                     "proxy chat stream tool call function name",
                 )?;
                 if let Some(arguments) = function.arguments {
+                    let new_len = call
+                        .arguments
+                        .len()
+                        .checked_add(arguments.len())
+                        .ok_or_else(|| {
+                            PowerError::InferenceFailed(
+                                "proxy chat stream tool call function.arguments length overflow"
+                                    .to_string(),
+                            )
+                        })?;
+                    if new_len > MAX_PROXY_STREAM_TOOL_CALL_ARGUMENT_BYTES {
+                        return Err(PowerError::InferenceFailed(format!(
+                            "proxy chat stream tool call function.arguments must be at most {MAX_PROXY_STREAM_TOOL_CALL_ARGUMENT_BYTES} bytes"
+                        )));
+                    }
                     call.arguments.push_str(&arguments);
                     call.saw_arguments = true;
                 }
@@ -547,6 +571,11 @@ fn parse_proxy_tool_call_deltas(
     })?;
     if calls.is_empty() {
         return Ok(None);
+    }
+    if calls.len() > MAX_PROXY_STREAM_TOOL_CALLS {
+        return Err(PowerError::InferenceFailed(format!(
+            "proxy chat stream delta tool_calls has too many entries: at most {MAX_PROXY_STREAM_TOOL_CALLS} are allowed"
+        )));
     }
 
     let mut deltas = Vec::with_capacity(calls.len());
@@ -2037,6 +2066,30 @@ mod tests {
     }
 
     #[test]
+    fn chat_stream_event_rejects_too_many_tool_call_deltas() {
+        let calls = (0..=MAX_PROXY_STREAM_TOOL_CALLS)
+            .map(|index| {
+                serde_json::json!({
+                    "index": index,
+                    "function": { "arguments": "{}" }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let err = parse_proxy_chat_stream_event(&serde_json::json!({
+            "choices": [{
+                "delta": { "tool_calls": calls },
+                "finish_reason": null
+            }]
+        }))
+        .expect_err("too many tool call deltas must fail closed");
+
+        let err = err.to_string();
+        assert!(err.contains("too many"), "error: {err}");
+        assert!(err.contains("tool_calls"), "error: {err}");
+    }
+
+    #[test]
     fn proxy_tool_call_assembler_combines_incremental_deltas() {
         let mut assembler = ProxyToolCallAssembler::default();
         assembler
@@ -2115,6 +2168,69 @@ mod tests {
             .expect_err("missing arguments must fail closed");
 
         assert!(err.to_string().contains("arguments"), "error: {err}");
+    }
+
+    #[test]
+    fn proxy_tool_call_assembler_rejects_too_many_calls() {
+        let mut assembler = ProxyToolCallAssembler::default();
+        for index in 0..MAX_PROXY_STREAM_TOOL_CALLS as u32 {
+            assembler
+                .apply(vec![ProxyToolCallDelta {
+                    index,
+                    id: Some(format!("call_{index}")),
+                    tool_type: Some("function".to_string()),
+                    function: Some(ProxyFunctionCallDelta {
+                        name: Some("lookup".to_string()),
+                        arguments: Some("{}".to_string()),
+                    }),
+                }])
+                .unwrap();
+        }
+
+        let err = assembler
+            .apply(vec![ProxyToolCallDelta {
+                index: MAX_PROXY_STREAM_TOOL_CALLS as u32,
+                id: Some("call_overflow".to_string()),
+                tool_type: Some("function".to_string()),
+                function: Some(ProxyFunctionCallDelta {
+                    name: Some("lookup".to_string()),
+                    arguments: Some("{}".to_string()),
+                }),
+            }])
+            .expect_err("too many tool calls must fail closed");
+
+        assert!(err.to_string().contains("too many"), "error: {err}");
+    }
+
+    #[test]
+    fn proxy_tool_call_assembler_rejects_oversized_arguments() {
+        let mut assembler = ProxyToolCallAssembler::default();
+        assembler
+            .apply(vec![ProxyToolCallDelta {
+                index: 0,
+                id: Some("call_1".to_string()),
+                tool_type: Some("function".to_string()),
+                function: Some(ProxyFunctionCallDelta {
+                    name: Some("lookup".to_string()),
+                    arguments: Some("x".repeat(MAX_PROXY_STREAM_TOOL_CALL_ARGUMENT_BYTES)),
+                }),
+            }])
+            .unwrap();
+
+        let err = assembler
+            .apply(vec![ProxyToolCallDelta {
+                index: 0,
+                id: None,
+                tool_type: None,
+                function: Some(ProxyFunctionCallDelta {
+                    name: None,
+                    arguments: Some("x".to_string()),
+                }),
+            }])
+            .expect_err("oversized tool-call arguments must fail closed");
+
+        assert!(err.to_string().contains("arguments"), "error: {err}");
+        assert!(err.to_string().contains("at most"), "error: {err}");
     }
 
     #[test]

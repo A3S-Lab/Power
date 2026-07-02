@@ -180,6 +180,9 @@ Landed in the current working tree:
 - Added proxy assembly for OpenAI-style incremental streaming tool-call
   deltas, preserving complete tool calls while rejecting incomplete or
   conflicting tool-call streams.
+- Bounded proxy streaming tool-call assembly so malicious upstreams cannot
+  force unbounded growth through excessive tool calls or accumulated function
+  arguments.
 - Preserved backend-emitted chat tool calls in non-streaming OpenAI responses
   instead of dropping them while collecting streamed backend chunks.
 - Tightened proxy SSE line parsing so malformed non-empty `data:` events fail
