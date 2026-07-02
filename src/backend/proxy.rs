@@ -488,7 +488,7 @@ where
     loop {
         // Emit any complete `data:` line already buffered.
         while let Some(nl) = buf.find('\n') {
-            if nl > MAX_PROXY_SSE_BUFFER_BYTES {
+            if nl >= MAX_PROXY_SSE_BUFFER_BYTES {
                 return Some(Err(proxy_sse_buffer_limit_error()));
             }
             let line: String = buf.drain(..=nl).collect();
@@ -1274,6 +1274,24 @@ mod tests {
     async fn sse_rejects_oversized_complete_data_line() {
         let mut chunk = b"data: \"".to_vec();
         chunk.extend(std::iter::repeat_n(b'x', MAX_PROXY_SSE_BUFFER_BYTES + 1));
+        chunk.extend_from_slice(b"\"\n\n");
+        let mut s = byte_stream_owned(vec![chunk]);
+        let mut buf = String::new();
+
+        let err = next_sse_event(&mut s, &mut buf)
+            .await
+            .expect("expected parser result")
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeded"));
+    }
+
+    #[tokio::test]
+    async fn sse_rejects_complete_data_line_when_newline_exceeds_limit() {
+        let mut chunk = b"data: \"".to_vec();
+        chunk.extend(std::iter::repeat_n(
+            b'x',
+            MAX_PROXY_SSE_BUFFER_BYTES - chunk.len() - 1,
+        ));
         chunk.extend_from_slice(b"\"\n\n");
         let mut s = byte_stream_owned(vec![chunk]);
         let mut buf = String::new();

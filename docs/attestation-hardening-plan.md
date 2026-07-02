@@ -162,6 +162,8 @@ Landed in the current working tree:
 - Fixed proxy backend endpoint URL construction to use a URL parser, preserving
   upstream base paths, dropping stale query/fragment components, and
   percent-encoding configured effective-prompt digest path segments.
+- Tightened proxy SSE parsing so complete `data:` lines are rejected when the
+  line plus newline would exceed the per-event buffer limit.
 - Made proxy effective-prompt digest collection leave image-bearing chat
   requests absent by default and fail closed when the digest endpoint is
   required, avoiding text rendered-prompt overclaims for opaque multimodal
