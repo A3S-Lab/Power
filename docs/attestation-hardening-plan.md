@@ -150,6 +150,12 @@ Landed in the current working tree:
   detecting conflicts with explicit effective-prompt absence.
 - Added receipt coverage and verifier pins for `stream_options`, so clients can
   distinguish streaming output protocol choices such as `include_usage`.
+- Added `verify_receipt_matches_chat_request()` and
+  `verify_receipt_matches_completion_request()` so SDK verifiers can recompute
+  and compare all request-derived receipt fields from the original request,
+  including multimodal input digests and exact presence/absence of optional
+  output-policy digests, before separately checking attestation runtime policy
+  or effective-prompt pins.
 - Added strict hardware-verifier operations guidance for AMD SEV-SNP and Intel
   TDX, covering `hw-verify` builds, raw report requirements, AMD KDS / Intel
   PCS outbound access, measurement pins, and production failure handling.
@@ -159,8 +165,9 @@ Landed in the current working tree:
 
 Still open:
 
-- Add full post-template receipt policy comparison for remaining opaque
-  multimodal paths.
+- Expose exact post-template prompt representations for remaining opaque
+  multimodal paths, or keep requiring those paths to leave `effective_prompt`
+  absent.
 - Native NVIDIA GPU confidential-computing NRAS SDK integration. The current
   implementation supports configured evidence/verdict bytes, live
   `nvattest-cli` collection, and direct `nras-rest` attestation, hashes the
@@ -591,6 +598,11 @@ Current implementation:
   `verify::verify_receipt_effective_prompt_digest()` and
   `verify::verify_receipt_effective_prompt_digest_hex()` helpers remain
   available for direct digest-only checks.
+- SDK verifiers that still have the original request can use
+  `verify::verify_receipt_matches_chat_request()` or
+  `verify::verify_receipt_matches_completion_request()` to recompute and compare
+  every request-derived receipt field, including exact optional output-policy
+  digest presence or absence.
 - Verifiers can compare a response receipt against the attested runtime policy
   and optional receipt/effective-prompt digest pins with
   `verify::verify_receipt_against_attestation()`.

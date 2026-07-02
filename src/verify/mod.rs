@@ -37,7 +37,8 @@
 //!
 //! 7. **Request receipt digest checks** — inference responses can include an
 //!    `attestation_receipt` and `attestation_receipt_sha256`; helpers in this
-//!    module verify that the digest matches the receipt bytes and that receipt
+//!    module verify that the digest matches the receipt bytes, that receipt
+//!    request-derived fields match the original request, and that receipt
 //!    runtime-policy claims match the attested runtime policy.
 //!
 //! # What this module does NOT verify
@@ -80,8 +81,10 @@
 //! ```
 
 use crate::api::receipt::{
-    receipt_decoding_parameters_digest, receipt_digest, AttestationReceipt, ReceiptRequestType,
+    chat_receipt, completion_receipt, receipt_decoding_parameters_digest, receipt_digest,
+    AttestationReceipt, ReceiptRequestType,
 };
+use crate::api::types::{ChatCompletionRequest, CompletionRequest};
 use crate::error::{PowerError, Result};
 use crate::tee::attestation::{
     build_claims_report_data, AttestationClaimsV2, AttestationReport, GpuDeviceClaim,
@@ -1878,6 +1881,139 @@ pub fn verify_receipt_policy(
     Ok(())
 }
 
+/// Verify that a chat-completion receipt matches the original request.
+///
+/// This checks every request-derived receipt field: request type, model,
+/// prompt-bearing input digest, decoding parameters, streaming options, stop
+/// tokens, response format, tools, and tool choice. Backend-specific
+/// `runtime_policy` and `effective_prompt` claims are intentionally left to
+/// [`verify_receipt_against_attestation()`] and the effective-prompt policy
+/// helpers.
+pub fn verify_receipt_matches_chat_request(
+    receipt: &AttestationReceipt,
+    request: &ChatCompletionRequest,
+) -> Result<()> {
+    let expected = chat_receipt(request)?;
+    verify_receipt_matches_request_receipt(receipt, &expected)
+}
+
+/// Verify that a text-completion receipt matches the original request.
+///
+/// This checks every request-derived receipt field: request type, model,
+/// prompt digest, decoding parameters, streaming options, and stop tokens.
+/// Backend-specific `runtime_policy` claims are intentionally left to
+/// [`verify_receipt_against_attestation()`].
+pub fn verify_receipt_matches_completion_request(
+    receipt: &AttestationReceipt,
+    request: &CompletionRequest,
+) -> Result<()> {
+    let expected = completion_receipt(request)?;
+    verify_receipt_matches_request_receipt(receipt, &expected)
+}
+
+fn verify_receipt_matches_request_receipt(
+    receipt: &AttestationReceipt,
+    expected: &AttestationReceipt,
+) -> Result<()> {
+    verify_receipt_well_formed(receipt)?;
+
+    if receipt.request_type != expected.request_type {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "receipt request type mismatch: receipt.request_type = {:?}, expected {:?}",
+            receipt.request_type, expected.request_type,
+        )));
+    }
+
+    if receipt.model != expected.model {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "receipt model mismatch: receipt.model = {}, expected {}",
+            receipt.model, expected.model,
+        )));
+    }
+
+    let expected_input_digest =
+        decode_receipt_sha256_hex("expected receipt.input.sha256", &expected.input.sha256)?;
+    verify_receipt_field_digest_hex(
+        "receipt.input.sha256",
+        &receipt.input.sha256,
+        &expected_input_digest,
+    )?;
+
+    let expected_parameters_digest = receipt_decoding_parameters_digest(expected).map_err(|e| {
+        PowerError::AttestationVerificationFailed(format!(
+            "failed to compute expected receipt decoding parameter digest: {e}"
+        ))
+    })?;
+    let expected_parameters_digest = decode_receipt_sha256_hex(
+        "expected receipt.decoding.parameters_sha256",
+        &expected_parameters_digest,
+    )?;
+    verify_receipt_field_digest_hex(
+        "receipt.decoding.parameters_sha256",
+        &receipt_decoding_parameters_digest(receipt).map_err(|e| {
+            PowerError::AttestationVerificationFailed(format!(
+                "failed to compute receipt decoding parameter digest: {e}"
+            ))
+        })?,
+        &expected_parameters_digest,
+    )?;
+
+    verify_optional_receipt_field_matches(
+        "receipt.decoding.stream_options_sha256",
+        receipt.decoding.stream_options_sha256.as_deref(),
+        expected.decoding.stream_options_sha256.as_deref(),
+    )?;
+    verify_optional_receipt_field_matches(
+        "receipt.decoding.stop_tokens_sha256",
+        receipt.decoding.stop_tokens_sha256.as_deref(),
+        expected.decoding.stop_tokens_sha256.as_deref(),
+    )?;
+    verify_optional_receipt_field_matches(
+        "receipt.decoding.response_format_sha256",
+        receipt.decoding.response_format_sha256.as_deref(),
+        expected.decoding.response_format_sha256.as_deref(),
+    )?;
+    verify_optional_receipt_field_matches(
+        "receipt.decoding.tools_sha256",
+        receipt.decoding.tools_sha256.as_deref(),
+        expected.decoding.tools_sha256.as_deref(),
+    )?;
+    verify_optional_receipt_field_matches(
+        "receipt.decoding.tool_choice_sha256",
+        receipt.decoding.tool_choice_sha256.as_deref(),
+        expected.decoding.tool_choice_sha256.as_deref(),
+    )?;
+
+    Ok(())
+}
+
+fn verify_optional_receipt_field_matches(
+    field: &str,
+    actual_hex: Option<&str>,
+    expected_hex: Option<&str>,
+) -> Result<()> {
+    match (actual_hex, expected_hex) {
+        (None, None) => Ok(()),
+        (Some(actual), Some(expected)) => {
+            let expected = decode_receipt_sha256_hex(&format!("expected {field}"), expected)?;
+            verify_receipt_field_digest_hex(field, actual, &expected)
+        }
+        (None, Some(expected)) => Err(PowerError::AttestationVerificationFailed(format!(
+            "{field} is absent but the original request requires {expected}"
+        ))),
+        (Some(actual), None) => Err(PowerError::AttestationVerificationFailed(format!(
+            "{field} is present ({actual}) but the original request does not set that policy"
+        ))),
+    }
+}
+
+fn decode_receipt_sha256_hex(field: &str, value: &str) -> Result<Vec<u8>> {
+    require_sha256_hex(field, value)?;
+    hex::decode(value).map_err(|e| {
+        PowerError::AttestationVerificationFailed(format!("failed to decode {field}: {e}"))
+    })
+}
+
 fn verify_optional_receipt_field_digest_hex(
     field: &str,
     actual_hex: Option<&str>,
@@ -2094,10 +2230,14 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::api::receipt::{
+        chat_receipt, chat_receipt_with_runtime_policy_and_effective_prompt, completion_receipt,
         receipt_digest, AttestationReceipt, ReceiptDecodingPolicy, ReceiptInputDigest,
         ReceiptRequestType,
     };
-    use crate::backend::types::EffectivePromptDigest;
+    use crate::api::types::{
+        ChatCompletionMessage, ChatCompletionRequest, CompletionRequest, StreamOptions,
+    };
+    use crate::backend::types::{ContentPart, EffectivePromptDigest, ImageUrl, MessageContent};
     use crate::tee::attestation::{
         build_claims_report_data, AttestationClaimsV2, AttestationReport, DecodingPolicyClaim,
         ExecutionPolicyClaim, GpuDeviceClaim, GpuDeviceValidationClaim, GpuEvidenceClaim,
@@ -2402,6 +2542,74 @@ mod tests {
         let mut receipt = make_receipt();
         receipt.runtime_policy = Some(runtime);
         receipt
+    }
+
+    fn chat_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "test-model".to_string(),
+            messages: vec![ChatCompletionMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("hello".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+                thinking: None,
+            }],
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            max_tokens: Some(128),
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            stop: Some(vec!["</s>".to_string()]),
+            stream: Some(false),
+            stream_options: None,
+            frequency_penalty: Some(0.1),
+            presence_penalty: Some(0.0),
+            seed: Some(7),
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            keep_alive: None,
+        }
+    }
+
+    fn completion_request() -> CompletionRequest {
+        CompletionRequest {
+            model: "test-model".to_string(),
+            prompt: "hello".to_string(),
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            max_tokens: Some(128),
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            stop: Some(vec!["</s>".to_string()]),
+            stream: Some(false),
+            stream_options: None,
+            frequency_penalty: Some(0.1),
+            presence_penalty: Some(0.0),
+            seed: Some(7),
+            keep_alive: None,
+        }
     }
 
     // --- verify_nonce_binding ---
@@ -2791,6 +2999,89 @@ mod tests {
         let err = verify_receipt_policy(&receipt, &expected).unwrap_err();
 
         assert!(err.to_string().contains("cannot require absence"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_allows_runtime_and_effective_prompt_claims() {
+        let request = chat_request();
+        let runtime = RuntimePolicyClaim::new().with_decoding(DecodingPolicyClaim {
+            parameters_sha256: vec![0x44; 32],
+        });
+        let receipt = chat_receipt_with_runtime_policy_and_effective_prompt(
+            &request,
+            Some(runtime),
+            Some(EffectivePromptDigest::chat_rendered_prompt(
+                "test-backend",
+                "rendered prompt",
+            )),
+        )
+        .unwrap();
+
+        verify_receipt_matches_chat_request(&receipt, &request).unwrap();
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_catches_multimodal_input_mismatch() {
+        let mut request = chat_request();
+        request.messages[0].content = MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "describe".to_string(),
+            },
+            ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,aW1hZ2UtYQ==".to_string(),
+                    detail: Some("low".to_string()),
+                },
+            },
+        ]);
+        let receipt = chat_receipt(&request).unwrap();
+
+        let mut changed = request.clone();
+        changed.messages[0].content = MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "describe".to_string(),
+            },
+            ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,aW1hZ2UtYg==".to_string(),
+                    detail: Some("low".to_string()),
+                },
+            },
+        ]);
+
+        let err = verify_receipt_matches_chat_request(&receipt, &changed).unwrap_err();
+
+        assert!(err.to_string().contains("receipt.input.sha256 mismatch"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_unrequested_output_policy_digest() {
+        let request = chat_request();
+        let mut receipt = chat_receipt(&request).unwrap();
+        receipt.decoding.response_format_sha256 = Some("22".repeat(32));
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("receipt.decoding.response_format_sha256 is present"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_catches_missing_stream_options() {
+        let mut request = completion_request();
+        request.stream = Some(true);
+        request.stream_options = Some(StreamOptions {
+            include_usage: true,
+        });
+        let mut receipt = completion_receipt(&request).unwrap();
+        receipt.decoding.stream_options_sha256 = None;
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("receipt.decoding.stream_options_sha256 is absent"));
     }
 
     #[test]
