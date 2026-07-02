@@ -152,7 +152,9 @@ Landed in the current working tree:
   whitespace is ignored and blank values do not become accidental policy pins.
 - Made `a3s-power-verify --receipt-chat-request-file` require
   `effective_prompt` absence by default for image-bearing chat requests unless
-  the verifier explicitly pins an effective-prompt digest/backend/kind.
+  the verifier explicitly pins an effective-prompt digest/backend/kind, with
+  coverage for both rejecting overclaimed image receipts and accepting image
+  receipts that keep `effective_prompt` absent.
 - Tightened `a3s-power-verify` digest pin parsing so receipt, effective-prompt,
   GPU evidence/verdict, chat-template, decoding-policy, and GPU execution pins
   must be exactly 64-character SHA-256 hex values before verification policy is

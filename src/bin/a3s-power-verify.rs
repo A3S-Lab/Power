@@ -1632,6 +1632,25 @@ mod tests {
         (report_file, receipt_file, request_file, effective_prompt)
     }
 
+    fn write_report_receipt_and_image_chat_request_without_effective_prompt_files() -> (
+        tempfile::NamedTempFile,
+        tempfile::NamedTempFile,
+        tempfile::NamedTempFile,
+    ) {
+        let receipt_file = tempfile::NamedTempFile::new().unwrap();
+        let request_file = tempfile::NamedTempFile::new().unwrap();
+        let runtime_policy = runtime_policy();
+        let report_file = write_runtime_report_file(runtime_policy.clone());
+        let request = image_chat_request();
+        let receipt = chat_receipt_with_runtime_policy(&request, Some(runtime_policy)).unwrap();
+        assert!(receipt.effective_prompt.is_none());
+
+        std::fs::write(receipt_file.path(), serde_json::to_vec(&receipt).unwrap()).unwrap();
+        std::fs::write(request_file.path(), serde_json::to_vec(&request).unwrap()).unwrap();
+
+        (report_file, receipt_file, request_file)
+    }
+
     fn write_report_receipt_and_completion_request_files() -> (
         tempfile::NamedTempFile,
         tempfile::NamedTempFile,
@@ -2771,6 +2790,23 @@ mod tests {
         assert!(err
             .to_string()
             .contains("effective prompt digest is present"));
+    }
+
+    #[test]
+    fn test_run_verifies_image_receipt_with_effective_prompt_absent_by_default() {
+        let (report_file, receipt_file, request_file) =
+            write_report_receipt_and_image_chat_request_without_effective_prompt_files();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--receipt-file".to_string(),
+            receipt_file.path().display().to_string(),
+            "--receipt-chat-request-file".to_string(),
+            request_file.path().display().to_string(),
+            "--allow-offline".to_string(),
+        ];
+
+        run(&args).unwrap();
     }
 
     #[test]
