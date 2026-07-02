@@ -172,6 +172,9 @@ Landed in the current working tree:
   `ChatRequest::has_image_inputs()` and switched llama.cpp, picolm, and
   mistralrs effective-prompt/rejection gates to that single source of truth, so
   opaque multimodal paths keep `effective_prompt` absent consistently.
+- Added API-level image-bearing chat request detection and OpenAI receipt
+  regression coverage so vision requests keep `effective_prompt` absent at the
+  response boundary when no exact backend prompt representation is available.
 - Tightened direct `nras-rest` evidence normalization so DeviceEvidence
   `evidence` and `certificate` fields must be non-empty base64/base64url before
   Power posts them to NVIDIA NRAS, and evidence lists are capped before request

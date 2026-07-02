@@ -895,6 +895,7 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["object"], "chat.completion");
+        assert!(json["attestation_receipt"]["effective_prompt"].is_null());
 
         std::env::remove_var("A3S_POWER_HOME");
     }

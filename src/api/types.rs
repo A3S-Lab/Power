@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::api::receipt::AttestationReceipt;
-use crate::backend::types::{MessageContent, Tool, ToolCall, ToolChoice};
+use crate::backend::types::{ContentPart, MessageContent, Tool, ToolCall, ToolChoice};
 
 // Re-import FunctionCall for use in tests
 #[cfg(test)]
@@ -82,6 +82,15 @@ pub struct ChatCompletionRequest {
     pub keep_alive: Option<String>,
 }
 
+impl ChatCompletionRequest {
+    /// Return true when any chat message carries an image input.
+    pub fn has_image_inputs(&self) -> bool {
+        self.messages
+            .iter()
+            .any(ChatCompletionMessage::has_image_inputs)
+    }
+}
+
 /// Structured output format specifier.
 ///
 /// Supports OpenAI's `response_format` variants:
@@ -130,6 +139,17 @@ pub struct ChatCompletionMessage {
     /// Reasoning/thinking content from reasoning models (Ollama native wire format).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+}
+
+impl ChatCompletionMessage {
+    /// Return true when this message carries OpenAI content-part or Ollama-native images.
+    pub fn has_image_inputs(&self) -> bool {
+        self.images
+            .as_ref()
+            .is_some_and(|images| !images.is_empty())
+            || matches!(&self.content, MessageContent::Parts(parts)
+                if parts.iter().any(|part| matches!(part, ContentPart::ImageUrl { .. })))
+    }
 }
 
 /// OpenAI-compatible chat completion response.
@@ -456,10 +476,40 @@ mod tests {
         }"#;
         let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.messages.len(), 1);
+        assert!(req.has_image_inputs());
+        assert!(req.messages[0].has_image_inputs());
         match &req.messages[0].content {
             MessageContent::Parts(parts) => assert_eq!(parts.len(), 2),
             _ => panic!("Expected Parts variant"),
         }
+    }
+
+    #[test]
+    fn test_chat_completion_request_detects_message_images() {
+        let json = r#"{
+            "model": "llava",
+            "messages": [{
+                "role": "user",
+                "content": "What is this?",
+                "images": ["aGVsbG8="]
+            }]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+
+        assert!(req.has_image_inputs());
+        assert!(req.messages[0].has_image_inputs());
+    }
+
+    #[test]
+    fn test_chat_completion_request_without_images_reports_text_only() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+
+        assert!(!req.has_image_inputs());
+        assert!(!req.messages[0].has_image_inputs());
     }
 
     #[test]
