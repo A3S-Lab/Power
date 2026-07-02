@@ -26,7 +26,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
-    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse,
+    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse, ToolCall,
 };
 use super::Backend;
 use crate::config::PowerConfig;
@@ -120,16 +120,16 @@ impl Backend for ProxyBackend {
                                 return;
                             }
                         };
-                        if let Some(content) = parsed.content {
+                        if parsed.has_delta() {
                             if tx
                                 .send(Ok(ChatResponseChunk {
-                                    content,
-                                    thinking_content: None,
+                                    content: parsed.content.unwrap_or_default(),
+                                    thinking_content: parsed.thinking_content,
                                     done: false,
                                     prompt_tokens: None,
                                     done_reason: None,
                                     prompt_eval_duration_ns: None,
-                                    tool_calls: None,
+                                    tool_calls: parsed.tool_calls,
                                 }))
                                 .await
                                 .is_err()
@@ -309,7 +309,15 @@ impl Backend for ProxyBackend {
 #[derive(Debug, PartialEq, Eq)]
 struct ParsedProxyChatStreamEvent {
     content: Option<String>,
+    thinking_content: Option<String>,
+    tool_calls: Option<Vec<ToolCall>>,
     done_reason: Option<String>,
+}
+
+impl ParsedProxyChatStreamEvent {
+    fn has_delta(&self) -> bool {
+        self.content.is_some() || self.thinking_content.is_some() || self.tool_calls.is_some()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -322,6 +330,8 @@ fn parse_proxy_chat_stream_event(json: &serde_json::Value) -> Result<ParsedProxy
     let Some(choice) = first_proxy_stream_choice(json, "chat")? else {
         return Ok(ParsedProxyChatStreamEvent {
             content: None,
+            thinking_content: None,
+            tool_calls: None,
             done_reason: None,
         });
     };
@@ -357,9 +367,43 @@ fn parse_proxy_chat_stream_event(json: &serde_json::Value) -> Result<ParsedProxy
         }
         None => None,
     };
+    let thinking_content = match delta.and_then(|delta| delta.get("reasoning_content")) {
+        Some(thinking) if thinking.is_null() => None,
+        Some(thinking) => {
+            let thinking = thinking.as_str().ok_or_else(|| {
+                PowerError::InferenceFailed(
+                    "proxy chat stream delta reasoning_content must be a string".to_string(),
+                )
+            })?;
+            if thinking.is_empty() {
+                None
+            } else {
+                Some(thinking.to_string())
+            }
+        }
+        None => None,
+    };
+    let tool_calls = match delta.and_then(|delta| delta.get("tool_calls")) {
+        Some(tool_calls) if tool_calls.is_null() => None,
+        Some(tool_calls) => {
+            let calls: Vec<ToolCall> = serde_json::from_value(tool_calls.clone()).map_err(|e| {
+                PowerError::InferenceFailed(format!(
+                    "proxy chat stream delta tool_calls must be valid tool calls: {e}"
+                ))
+            })?;
+            if calls.is_empty() {
+                None
+            } else {
+                Some(calls)
+            }
+        }
+        None => None,
+    };
 
     Ok(ParsedProxyChatStreamEvent {
         content,
+        thinking_content,
+        tool_calls,
         done_reason,
     })
 }
@@ -1640,6 +1684,8 @@ mod tests {
             parsed,
             ParsedProxyChatStreamEvent {
                 content: None,
+                thinking_content: None,
+                tool_calls: None,
                 done_reason: None
             }
         );
@@ -1668,6 +1714,67 @@ mod tests {
 
         let err = err.to_string();
         assert!(err.contains("multiple choices"), "error: {err}");
+    }
+
+    #[test]
+    fn chat_stream_event_parses_reasoning_content() {
+        let parsed = parse_proxy_chat_stream_event(&serde_json::json!({
+            "choices": [
+                { "delta": { "reasoning_content": "thinking" }, "finish_reason": null }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(parsed.content, None);
+        assert_eq!(parsed.thinking_content.as_deref(), Some("thinking"));
+        assert!(parsed.tool_calls.is_none());
+    }
+
+    #[test]
+    fn chat_stream_event_parses_complete_tool_calls() {
+        let parsed = parse_proxy_chat_stream_event(&serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": "{\"city\":\"Paris\"}"
+                        },
+                        "index": 0
+                    }]
+                },
+                "finish_reason": null
+            }]
+        }))
+        .unwrap();
+
+        let calls = parsed.tool_calls.expect("tool calls should be parsed");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].function.name, "lookup");
+        assert!(parsed.content.is_none());
+    }
+
+    #[test]
+    fn chat_stream_event_rejects_malformed_tool_calls() {
+        let err = parse_proxy_chat_stream_event(&serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": { "name": "lookup" }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        }))
+        .expect_err("malformed tool calls must fail closed");
+
+        let err = err.to_string();
+        assert!(err.contains("tool_calls"), "error: {err}");
     }
 
     #[test]
