@@ -920,6 +920,9 @@ Use `--effective-prompt-digest <64-char-hex>` when receipt policy pins the
 exact rendered-prompt or prompt-token-ID digest exposed in `effective_prompt`.
 Use `--require-effective-prompt-absent` for opaque multimodal paths where the
 receipt must prove that Power did not overclaim a post-template prompt digest.
+When `--receipt-chat-request-file` points to an image-bearing request,
+`a3s-power-verify` applies that absence requirement by default unless the
+verifier explicitly pins an effective-prompt digest, backend, or kind.
 Use `--require-runtime-policy --gpu-execution-digest <64-char-hex>` when
 verifier policy pins the exact GPU execution/offload configuration used by the
 attested server.

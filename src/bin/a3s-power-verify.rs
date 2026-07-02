@@ -1155,6 +1155,7 @@ OPTIONS:
     --receipt-file <PATH>          Read an AttestationReceipt JSON file and bind it to the report
     --receipt-chat-request-file <PATH> Original ChatCompletionRequest JSON to compare with the receipt
     --receipt-completion-request-file <PATH> Original CompletionRequest JSON to compare with the receipt
+                                  Image-bearing chat request files require effective_prompt absence unless explicitly pinned
     --model <NAME>                 Model name to bind into the attestation request
     --nonce <HEX>                  Client nonce to verify (hex-encoded)
     --model-hash <HEX>             Expected model SHA-256 hash (hex-encoded, 32 bytes)
