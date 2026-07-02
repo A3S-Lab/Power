@@ -688,7 +688,9 @@ existing non-empty regular file. If custom `nras_url`, `rim_url`, or `ocsp_url`
 values are configured in the production profile, they must be HTTPS URLs. The
 temporary evidence file passed from `nvattest collect-evidence` to
 `nvattest attest` is created with exclusive create semantics and owner-only
-permissions on Unix.
+permissions on Unix. Power reads `nvattest` stdout/stderr with bounded buffers:
+evidence and verdict stdout are capped at 64 MiB, and stderr diagnostics are
+capped at 1 MiB.
 
 When `gpu_attestation.source = "nras-rest"`, Power reads configured
 DeviceEvidenceV2 JSON from `evidence_path` or `evidence_hex`, posts

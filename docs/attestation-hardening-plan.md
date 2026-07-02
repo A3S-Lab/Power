@@ -178,6 +178,8 @@ Landed in the current working tree:
   construction.
 - Capped structured NVIDIA GPU/NVSwitch device-claim arrays before verdict
   parsing so nvattest and NRAS verdicts cannot force unbounded claim handling.
+- Bounded live `nvattest` child-process output collection so evidence/verdict
+  stdout and stderr diagnostics cannot be read into unbounded memory.
 - Added a 64 MiB cap for configured GPU evidence and verdict file/hex byte
   sources so malformed deployments fail before unbounded reads or hex decodes.
 - Tightened `nras-rest` bearer-token configuration so
@@ -546,8 +548,8 @@ Tests:
 - `nvattest-cli` provider tests simulate the CLI and verify 32-byte nonce
   enforcement and propagation, temporary evidence-file handling,
   evidence/verdict digest binding, structured device-claim extraction,
-  owner-only temporary evidence-file permissions on Unix, and rejection of
-  failed core NVIDIA validation booleans.
+  bounded child-process output, owner-only temporary evidence-file permissions
+  on Unix, and rejection of failed core NVIDIA validation booleans.
 - `nras-rest` provider tests verify official request-shape construction,
   evidence normalization, 32-byte nonce enforcement, NRAS verdict digest
   binding, structured device-claim extraction when claims are present, and

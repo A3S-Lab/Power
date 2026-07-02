@@ -17,7 +17,7 @@ use base64::{
 use rand::RngCore;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -31,6 +31,8 @@ const MAX_GPU_EVIDENCE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_NRAS_REST_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_GPU_EVIDENCE_ENTRIES: usize = 1024;
 const MAX_GPU_DEVICE_CLAIMS: usize = 1024;
+const MAX_NVATTEST_STDOUT_BYTES: usize = MAX_GPU_EVIDENCE_SOURCE_BYTES as usize;
+const MAX_NVATTEST_STDERR_BYTES: usize = 1024 * 1024;
 
 /// Source of GPU CC evidence bytes.
 #[derive(Debug, Clone)]
@@ -342,24 +344,52 @@ impl NvattestCliGpuEvidenceProvider {
         command
             .args(args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
-        let output = timeout(self.timeout, command.output())
-            .await
-            .map_err(|_| {
-                PowerError::Config(format!(
-                    "nvattest command timed out after {}s: {} {}",
-                    self.timeout.as_secs(),
-                    self.command.display(),
-                    args.join(" ")
-                ))
-            })?
-            .map_err(|e| {
+        let output = timeout(self.timeout, async {
+            let mut child = command.spawn().map_err(|e| {
                 PowerError::Config(format!(
                     "failed to run nvattest command '{}': {e}",
                     self.command.display()
                 ))
             })?;
+            let stdout = child.stdout.take().ok_or_else(|| {
+                PowerError::Config("failed to capture nvattest stdout".to_string())
+            })?;
+            let stderr = child.stderr.take().ok_or_else(|| {
+                PowerError::Config("failed to capture nvattest stderr".to_string())
+            })?;
+
+            let status = async {
+                child.wait().await.map_err(|e| {
+                    PowerError::Config(format!(
+                        "failed to wait for nvattest command '{}': {e}",
+                        self.command.display()
+                    ))
+                })
+            };
+            let stdout =
+                read_bounded_nvattest_output("nvattest stdout", stdout, MAX_NVATTEST_STDOUT_BYTES);
+            let stderr =
+                read_bounded_nvattest_output("nvattest stderr", stderr, MAX_NVATTEST_STDERR_BYTES);
+            let (status, stdout, stderr) = tokio::try_join!(status, stdout, stderr)?;
+
+            Ok::<_, PowerError>(NvattestCommandOutput {
+                status,
+                stdout,
+                stderr,
+            })
+        })
+        .await
+        .map_err(|_| {
+            PowerError::Config(format!(
+                "nvattest command timed out after {}s: {} {}",
+                self.timeout.as_secs(),
+                self.command.display(),
+                args.join(" ")
+            ))
+        })??;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -382,6 +412,38 @@ impl NvattestCliGpuEvidenceProvider {
 
         Ok(output.stdout)
     }
+}
+
+struct NvattestCommandOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+async fn read_bounded_nvattest_output<R>(
+    label: &str,
+    reader: R,
+    max_bytes: usize,
+) -> Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let read_limit = max_bytes
+        .checked_add(1)
+        .ok_or_else(|| PowerError::Config(format!("{label} byte limit overflowed usize")))?;
+    let mut reader = reader.take(read_limit as u64);
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|e| PowerError::Config(format!("failed to read {label}: {e}")))?;
+    if bytes.len() > max_bytes {
+        return Err(PowerError::Config(format!(
+            "{label} must be at most {max_bytes} bytes, got at least {}",
+            bytes.len()
+        )));
+    }
+    Ok(bytes)
 }
 
 #[async_trait::async_trait]
@@ -1798,7 +1860,7 @@ mod tests {
     async fn configured_provider_with_nonce_rejects_unstructured_verdict() {
         let request_nonce = [0x04, 0x05, 0x06];
         let verdict = serde_json::to_vec(&serde_json::json!({
-            "tokens": ["e30.eyJzdWIiOiJ4In0.sig"]
+            "eat": ["e30.eyJzdWIiOiJ4In0.sig"]
         }))
         .unwrap();
         let config = GpuAttestationConfig {
@@ -2628,6 +2690,30 @@ mod tests {
         });
 
         validate_nvattest_result_code("attest", &value).unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_bounded_nvattest_output_accepts_exact_limit() {
+        let reader = tokio_test::io::Builder::new().read(b"abcd").build();
+
+        let bytes = read_bounded_nvattest_output("nvattest stdout", reader, 4)
+            .await
+            .unwrap();
+
+        assert_eq!(bytes, b"abcd");
+    }
+
+    #[tokio::test]
+    async fn read_bounded_nvattest_output_rejects_oversized_stream() {
+        let reader = tokio_test::io::Builder::new().read(b"abcde").build();
+
+        let err = read_bounded_nvattest_output("nvattest stdout", reader, 4)
+            .await
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("nvattest stdout must be at most 4 bytes"));
     }
 
     #[cfg(unix)]
