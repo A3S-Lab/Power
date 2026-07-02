@@ -93,6 +93,15 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             "chat completion stream_options require stream=true and cannot be receipt-bound for non-streaming responses".to_string(),
         ));
     }
+    if let Some(message) = request
+        .stream_options
+        .as_ref()
+        .and_then(|options| options.unsupported_fields_message())
+    {
+        return Err(crate::error::PowerError::InvalidRequest(format!(
+            "chat completion {message}; cannot be receipt-bound"
+        )));
+    }
     if request.logprobs.unwrap_or(false) || request.top_logprobs.is_some() {
         return Err(crate::error::PowerError::InvalidRequest(
             "chat completion logprobs are unsupported and cannot be receipt-bound".to_string(),
@@ -276,6 +285,15 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
         return Err(crate::error::PowerError::InvalidRequest(
             "text completion stream_options require stream=true and cannot be receipt-bound for non-streaming responses".to_string(),
         ));
+    }
+    if let Some(message) = request
+        .stream_options
+        .as_ref()
+        .and_then(|options| options.unsupported_fields_message())
+    {
+        return Err(crate::error::PowerError::InvalidRequest(format!(
+            "text completion {message}; cannot be receipt-bound"
+        )));
     }
     if request.logit_bias.is_some() {
         return Err(crate::error::PowerError::InvalidRequest(
@@ -746,6 +764,7 @@ mod tests {
         changed.stream = Some(true);
         changed.stream_options = Some(crate::api::types::StreamOptions {
             include_usage: true,
+            ..Default::default()
         });
 
         let receipt = chat_receipt(&changed).unwrap();
@@ -759,6 +778,7 @@ mod tests {
         let mut request = chat_request();
         request.stream_options = Some(crate::api::types::StreamOptions {
             include_usage: true,
+            ..Default::default()
         });
 
         assert!(chat_receipt(&request)
@@ -796,6 +816,24 @@ mod tests {
             receipt_digest(&loose_receipt).unwrap(),
             receipt_digest(&strict_receipt).unwrap()
         );
+    }
+
+    #[test]
+    fn chat_receipt_rejects_unsupported_stream_options_fields() {
+        let mut request = chat_request();
+        request.stream = Some(true);
+        request.stream_options = Some(crate::api::types::StreamOptions {
+            include_usage: true,
+            unsupported: BTreeMap::from([(
+                "include_obfuscation".to_string(),
+                serde_json::Value::Bool(true),
+            )]),
+        });
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("include_obfuscation"));
     }
 
     #[test]
@@ -989,6 +1027,7 @@ mod tests {
             stream: Some(true),
             stream_options: Some(crate::api::types::StreamOptions {
                 include_usage: true,
+                ..Default::default()
             }),
             frequency_penalty: None,
             presence_penalty: None,
@@ -1039,12 +1078,61 @@ mod tests {
         };
         request.stream_options = Some(crate::api::types::StreamOptions {
             include_usage: true,
+            ..Default::default()
         });
 
         assert!(completion_receipt(&request)
             .unwrap_err()
             .to_string()
             .contains("stream_options require stream=true"));
+    }
+
+    #[test]
+    fn completion_receipt_rejects_unsupported_stream_options_fields() {
+        let mut request = CompletionRequest {
+            model: "llama3".to_string(),
+            prompt: "hello".to_string(),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            n: None,
+            logprobs: None,
+            echo: None,
+            best_of: None,
+            logit_bias: None,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            stop: None,
+            stream: Some(true),
+            stream_options: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            response_format: None,
+            suffix: None,
+            keep_alive: None,
+        };
+        request.stream_options = Some(crate::api::types::StreamOptions {
+            include_usage: true,
+            unsupported: BTreeMap::from([(
+                "include_obfuscation".to_string(),
+                serde_json::Value::Bool(true),
+            )]),
+        });
+
+        assert!(completion_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("include_obfuscation"));
     }
 
     #[test]

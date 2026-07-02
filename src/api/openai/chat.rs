@@ -96,6 +96,13 @@ pub async fn handler(
         )
         .into_response();
     }
+    if let Some(message) = request
+        .stream_options
+        .as_ref()
+        .and_then(|options| options.unsupported_fields_message())
+    {
+        return openai_error("unsupported_stream_options", &message).into_response();
+    }
     if request.logprobs.unwrap_or(false) || request.top_logprobs.is_some() {
         return openai_error(
             "unsupported_logprobs",
@@ -1022,6 +1029,31 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("stream=true"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_unsupported_stream_options_fields() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true,"include_obfuscation":true}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_stream_options");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("include_obfuscation"));
     }
 
     #[tokio::test]

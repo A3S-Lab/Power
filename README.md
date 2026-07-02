@@ -866,7 +866,8 @@ Chat and text completion responses include an `attestation_receipt` object and
 with those fields before `[DONE]`; when `stream_options.include_usage = true` or
 `suppress_token_metrics = true`, that final event also includes `usage`.
 Power rejects `stream_options` on non-streaming requests because those options
-do not affect a non-streaming response shape.
+do not affect a non-streaming response shape, and currently supports only
+`stream_options.include_usage`; other stream option fields fail closed.
 
 The v2 receipt covers prompt-bearing API input, model runtime
 chat-template/GPU execution policy claims, request decoding parameters

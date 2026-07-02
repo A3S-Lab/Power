@@ -3401,6 +3401,7 @@ mod tests {
         request.stream = Some(true);
         request.stream_options = Some(StreamOptions {
             include_usage: true,
+            ..Default::default()
         });
         let mut receipt = completion_receipt(&request).unwrap();
         receipt.decoding.stream_options_sha256 = None;
@@ -3418,6 +3419,7 @@ mod tests {
         let receipt = chat_receipt(&request).unwrap();
         request.stream_options = Some(StreamOptions {
             include_usage: true,
+            ..Default::default()
         });
 
         let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
@@ -3433,6 +3435,7 @@ mod tests {
         let receipt = completion_receipt(&request).unwrap();
         request.stream_options = Some(StreamOptions {
             include_usage: true,
+            ..Default::default()
         });
 
         let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
@@ -3440,6 +3443,42 @@ mod tests {
         assert!(err
             .to_string()
             .contains("stream_options require stream=true"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_unsupported_stream_options_fields() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.stream = Some(true);
+        request.stream_options = Some(StreamOptions {
+            include_usage: true,
+            unsupported: BTreeMap::from([(
+                "include_obfuscation".to_string(),
+                serde_json::Value::Bool(true),
+            )]),
+        });
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err.to_string().contains("include_obfuscation"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_rejects_unsupported_stream_options_fields() {
+        let mut request = completion_request();
+        let receipt = completion_receipt(&request).unwrap();
+        request.stream = Some(true);
+        request.stream_options = Some(StreamOptions {
+            include_usage: true,
+            unsupported: BTreeMap::from([(
+                "include_obfuscation".to_string(),
+                serde_json::Value::Bool(true),
+            )]),
+        });
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err.to_string().contains("include_obfuscation"));
     }
 
     #[test]

@@ -167,7 +167,9 @@ Landed in the current working tree:
   requests and proxy chat/completion bodies so receipt-bound streaming protocol
   choices reach remote upstreams. Non-streaming requests now reject
   `stream_options` instead of receipt-binding options that cannot affect the
-  response shape.
+  response shape, and unsupported nested stream option fields are preserved
+  during parsing and rejected instead of being silently dropped before receipt
+  binding.
 - Added regression tests for strict policy, runtime model-hash binding, stale
   model-file rejection, GPU confidential fail-closed behavior, runtime policy
   digest binding, proxy and mistralrs effective-prompt digest handling, request
@@ -306,7 +308,8 @@ Landed in the current working tree:
   panicking when inspecting corrupted or untrusted audit files.
 - Added receipt coverage and verifier pins for streaming-request
   `stream_options`, so clients can distinguish streaming output protocol
-  choices such as `include_usage`.
+  choices such as `include_usage`; unsupported nested stream option fields now
+  fail closed during receipt generation and original-request verification.
 - Added `verify_receipt_matches_chat_request()` and
   `verify_receipt_matches_completion_request()` so SDK verifiers can recompute
   and compare all request-derived receipt fields from the original request,

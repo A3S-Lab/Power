@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::api::receipt::AttestationReceipt;
 use crate::backend::types::{
@@ -20,6 +21,30 @@ pub struct StreamOptions {
     /// When true, a final chunk with a `usage` field is emitted before `[DONE]`.
     #[serde(default)]
     pub include_usage: bool,
+    /// Unknown streaming options are preserved so request handlers can reject
+    /// unsupported protocol choices instead of silently dropping them.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+impl StreamOptions {
+    /// Return a stable list of unsupported `stream_options` field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported fields are present.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported stream_options field(s): {}; supported field is include_usage",
+                fields.join(", ")
+            ))
+        }
+    }
 }
 
 /// OpenAI-compatible chat completion request.
@@ -1164,6 +1189,7 @@ mod tests {
         let json = r#"{"include_usage": true}"#;
         let opts: StreamOptions = serde_json::from_str(json).unwrap();
         assert!(opts.include_usage);
+        assert!(opts.unsupported_fields().is_empty());
     }
 
     #[test]
@@ -1171,6 +1197,20 @@ mod tests {
         let json = r#"{}"#;
         let opts: StreamOptions = serde_json::from_str(json).unwrap();
         assert!(!opts.include_usage);
+        assert!(opts.unsupported_fields().is_empty());
+    }
+
+    #[test]
+    fn test_stream_options_collects_unsupported_fields() {
+        let json = r#"{"include_usage": true, "include_obfuscation": true}"#;
+        let opts: StreamOptions = serde_json::from_str(json).unwrap();
+
+        assert!(opts.include_usage);
+        assert_eq!(opts.unsupported_fields(), vec!["include_obfuscation"]);
+        assert!(opts
+            .unsupported_fields_message()
+            .unwrap()
+            .contains("include_obfuscation"));
     }
 
     #[test]
