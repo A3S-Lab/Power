@@ -98,11 +98,23 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             "chat completion logit_bias is unsupported and cannot be receipt-bound".to_string(),
         ));
     }
+    if request.has_conflicting_tool_definitions() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "tools and legacy functions cannot both be receipt-bound".to_string(),
+        ));
+    }
+    if request.has_conflicting_tool_choice() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "tool_choice and legacy function_call cannot both be receipt-bound".to_string(),
+        ));
+    }
 
     let input = ReceiptInputDigest {
         kind: "chat.messages".to_string(),
         sha256: digest_json(&request.messages)?,
     };
+    let effective_tools = request.effective_tools();
+    let effective_tool_choice = request.effective_tool_choice();
 
     let mut parameters = BTreeMap::new();
     insert_optional_f32(&mut parameters, "temperature", request.temperature);
@@ -164,8 +176,8 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             stream_options_sha256: digest_optional_json(request.stream_options.as_ref())?,
             stop_tokens_sha256: digest_optional_json(request.stop.as_ref())?,
             response_format_sha256: digest_optional_json(request.response_format.as_ref())?,
-            tools_sha256: digest_optional_json(request.tools.as_ref())?,
-            tool_choice_sha256: digest_optional_json(request.tool_choice.as_ref())?,
+            tools_sha256: digest_optional_json(effective_tools.as_ref())?,
+            tool_choice_sha256: digest_optional_json(effective_tool_choice.as_ref())?,
         },
     })
 }
@@ -444,6 +456,8 @@ mod tests {
             response_format: None,
             tools: None,
             tool_choice: None,
+            functions: None,
+            function_call: None,
             parallel_tool_calls: None,
             keep_alive: None,
         }

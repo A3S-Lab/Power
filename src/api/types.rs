@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::api::receipt::AttestationReceipt;
-use crate::backend::types::{ContentPart, MessageContent, Tool, ToolCall, ToolChoice};
+use crate::backend::types::{
+    ContentPart, FunctionChoice, FunctionDefinition, MessageContent, Tool, ToolCall, ToolChoice,
+    ToolChoiceSpecific,
+};
 
 // Re-import FunctionCall for use in tests
 #[cfg(test)]
@@ -91,6 +94,14 @@ pub struct ChatCompletionRequest {
     pub tools: Option<Vec<Tool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// Legacy OpenAI function definitions. Power maps these to modern
+    /// `tools` when `tools` is not also present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub functions: Option<Vec<FunctionDefinition>>,
+    /// Legacy OpenAI function-call policy. Power maps this to modern
+    /// `tool_choice` when `tool_choice` is not also present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_call: Option<LegacyFunctionChoice>,
     /// Whether the model may generate multiple tool calls in parallel.
     /// Accepted for API compatibility; the model decides based on its training.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -121,6 +132,69 @@ impl ChatCompletionRequest {
     pub fn effective_max_tokens(&self) -> Option<u32> {
         self.max_tokens.or(self.max_completion_tokens)
     }
+
+    /// Return true when both legacy and modern tool definitions are present.
+    pub fn has_conflicting_tool_definitions(&self) -> bool {
+        self.tools.is_some() && self.functions.is_some()
+    }
+
+    /// Return true when both legacy and modern tool-choice policies are present.
+    pub fn has_conflicting_tool_choice(&self) -> bool {
+        self.tool_choice.is_some() && self.function_call.is_some()
+    }
+
+    /// Effective tool definitions after mapping legacy `functions`.
+    pub fn effective_tools(&self) -> Option<Vec<Tool>> {
+        self.tools.clone().or_else(|| {
+            self.functions.as_ref().map(|functions| {
+                functions
+                    .iter()
+                    .cloned()
+                    .map(|function| Tool {
+                        tool_type: "function".to_string(),
+                        function,
+                    })
+                    .collect()
+            })
+        })
+    }
+
+    /// Effective tool-choice policy after mapping legacy `function_call`.
+    pub fn effective_tool_choice(&self) -> Option<ToolChoice> {
+        self.tool_choice.clone().or_else(|| {
+            self.function_call
+                .as_ref()
+                .map(LegacyFunctionChoice::to_tool_choice)
+        })
+    }
+}
+
+/// Legacy OpenAI function-call policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LegacyFunctionChoice {
+    String(String),
+    Specific(LegacyFunctionChoiceSpecific),
+}
+
+impl LegacyFunctionChoice {
+    fn to_tool_choice(&self) -> ToolChoice {
+        match self {
+            LegacyFunctionChoice::String(value) => ToolChoice::String(value.clone()),
+            LegacyFunctionChoice::Specific(choice) => ToolChoice::Specific(ToolChoiceSpecific {
+                tool_type: "function".to_string(),
+                function: FunctionChoice {
+                    name: choice.name.clone(),
+                },
+            }),
+        }
+    }
+}
+
+/// Legacy OpenAI function-call object selecting a function by name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyFunctionChoiceSpecific {
+    pub name: String,
 }
 
 /// Structured output format specifier.

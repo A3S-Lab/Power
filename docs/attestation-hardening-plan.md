@@ -116,6 +116,10 @@ Landed in the current working tree:
 - OpenAI-compatible chat requests now support `max_completion_tokens` as an
   alias for the backend generated-token limit, reject conflicts with
   `max_tokens`, and include both aliases in receipt decoding-parameter hashes.
+- OpenAI-compatible chat requests now map legacy `functions` and
+  `function_call` fields onto modern `tools` and `tool_choice`, reject mixed
+  legacy/modern tool policy fields, and bind the effective tool policy in
+  receipts.
 - Added opt-in proxy upstream effective-prompt digest support. Proxy receipts
   remain non-overclaiming by default; when configured, Power asks the upstream
   digest endpoint for a `chat.rendered-prompt` SHA-256 before inference and can

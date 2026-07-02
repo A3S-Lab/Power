@@ -1547,6 +1547,8 @@ mod tests {
             response_format: None,
             tools: None,
             tool_choice: None,
+            functions: None,
+            function_call: None,
             parallel_tool_calls: None,
             keep_alive: None,
         }

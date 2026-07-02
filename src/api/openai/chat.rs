@@ -58,6 +58,20 @@ pub async fn handler(
         )
         .into_response();
     }
+    if request.has_conflicting_tool_definitions() {
+        return openai_error(
+            "conflicting_tool_definitions",
+            "tools and legacy functions cannot both be provided",
+        )
+        .into_response();
+    }
+    if request.has_conflicting_tool_choice() {
+        return openai_error(
+            "conflicting_tool_choice",
+            "tool_choice and legacy function_call cannot both be provided",
+        )
+        .into_response();
+    }
 
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
@@ -125,6 +139,8 @@ pub async fn handler(
     };
     let unload_after_use = load_result.unload_after_use;
 
+    let effective_tools = request.effective_tools();
+    let effective_tool_choice = request.effective_tool_choice();
     let response_format =
         super::backend_response_format(&manifest.format, request.response_format.as_ref());
     let backend_request = ChatRequest {
@@ -162,8 +178,8 @@ pub async fn handler(
             .stream_options
             .as_ref()
             .map(|options| serde_json::json!(options)),
-        tools: request.tools.clone(),
-        tool_choice: request.tool_choice.clone(),
+        tools: effective_tools,
+        tool_choice: effective_tool_choice,
         parallel_tool_calls: request.parallel_tool_calls,
         repeat_last_n: request.repeat_last_n,
         penalize_newline: request.penalize_newline,
@@ -808,6 +824,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_openai_chat_rejects_conflicting_tool_definition_fields() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"missing",
+                    "messages":[{"role":"user","content":"hi"}],
+                    "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],
+                    "functions":[{"name":"lookup","parameters":{"type":"object"}}]
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "conflicting_tool_definitions");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot both be provided"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_conflicting_tool_choice_fields() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"missing",
+                    "messages":[{"role":"user","content":"hi"}],
+                    "tool_choice":"auto",
+                    "function_call":"auto"
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "conflicting_tool_choice");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot both be provided"));
+    }
+
+    #[tokio::test]
     #[serial]
     async fn test_openai_chat_backend_not_found() {
         let dir = tempfile::tempdir().unwrap();
@@ -1126,6 +1202,66 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["object"], "chat.completion");
         assert!(json["choices"][0]["finish_reason"].as_str().is_some());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_maps_legacy_functions_to_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let mock = MockBackend::success();
+        let chat_request_capture = mock.chat_request_capture();
+        let state = test_state_with_mock(mock);
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"test",
+                    "messages":[{"role":"user","content":"weather in SF?"}],
+                    "functions":[{
+                        "name":"get_weather",
+                        "description":"Get weather",
+                        "parameters":{"type":"object","properties":{"location":{"type":"string"}}}
+                    }],
+                    "function_call":{"name":"get_weather"}
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let captured = chat_request_capture
+            .lock()
+            .expect("chat request lock poisoned")
+            .clone()
+            .expect("expected backend chat request to be captured");
+        let tools = captured.tools.expect("expected legacy functions as tools");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool_type, "function");
+        assert_eq!(tools[0].function.name, "get_weather");
+        assert_eq!(
+            serde_json::to_value(captured.tool_choice.expect("expected mapped tool choice"))
+                .unwrap(),
+            serde_json::json!({
+                "type": "function",
+                "function": {"name": "get_weather"}
+            })
+        );
+        assert!(json["attestation_receipt"]["decoding"]["tools_sha256"].is_string());
+        assert!(json["attestation_receipt"]["decoding"]["tool_choice_sha256"].is_string());
 
         std::env::remove_var("A3S_POWER_HOME");
     }

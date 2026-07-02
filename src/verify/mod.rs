@@ -2759,6 +2759,8 @@ mod tests {
             response_format: None,
             tools: None,
             tool_choice: None,
+            functions: None,
+            function_call: None,
             parallel_tool_calls: None,
             keep_alive: None,
         }
@@ -3454,6 +3456,51 @@ mod tests {
         let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
 
         assert!(err.to_string().contains("max_completion_tokens must match"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_maps_legacy_functions() {
+        let mut request = chat_request();
+        request.functions = Some(vec![crate::backend::types::FunctionDefinition {
+            name: "lookup".to_string(),
+            description: Some("Look up a value".to_string()),
+            parameters: serde_json::json!({"type": "object"}),
+        }]);
+        request.function_call = Some(crate::api::types::LegacyFunctionChoice::Specific(
+            crate::api::types::LegacyFunctionChoiceSpecific {
+                name: "lookup".to_string(),
+            },
+        ));
+        let receipt = chat_receipt(&request).unwrap();
+
+        assert!(receipt.decoding.tools_sha256.is_some());
+        assert!(receipt.decoding.tool_choice_sha256.is_some());
+        verify_receipt_matches_chat_request(&receipt, &request).unwrap();
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_conflicting_legacy_functions() {
+        let mut request = chat_request();
+        request.tools = Some(vec![crate::backend::types::Tool {
+            tool_type: "function".to_string(),
+            function: crate::backend::types::FunctionDefinition {
+                name: "lookup".to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        }]);
+        request.functions = Some(vec![crate::backend::types::FunctionDefinition {
+            name: "lookup".to_string(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        }]);
+        let receipt = chat_receipt(&chat_request()).unwrap();
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("tools and legacy functions cannot both be receipt-bound"));
     }
 
     #[test]
