@@ -180,7 +180,8 @@ Landed in the current working tree:
 - Tightened `nras-rest` bearer-token configuration so
   `nras_bearer_token_env` is treated as an environment variable name, trimmed,
   and rejected when empty or not a portable ASCII identifier before Power sends
-  NRAS requests.
+  NRAS requests; token values are also trimmed and rejected when empty or not
+  visible ASCII before they are placed in the Authorization header.
 - Tightened direct `nras-rest` endpoint normalization so custom URLs must be an
   HTTPS service root/base path or the full `/v4/attest/gpu` endpoint, without
   embedded credentials, query strings, fragments, or unsupported API-version

@@ -713,7 +713,8 @@ explicit EAT fields and contain JWTs with base64url JSON payloads; unrelated
 version strings elsewhere in the response are not treated as token candidates.
 If `nras_bearer_token_env` is configured, it names the environment variable
 holding the bearer token; Power trims the name and rejects empty or non-portable
-names before making NRAS requests.
+names before making NRAS requests. The token value itself is trimmed, must be
+non-empty, and must contain only visible ASCII characters.
 
 Verifiers can pin the exact GPU deployment identity with
 `ExpectedGpuEvidence` and `ExpectedGpuDevices` in the SDK or with CLI flags

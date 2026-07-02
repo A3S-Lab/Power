@@ -552,13 +552,7 @@ impl NrasRestGpuEvidenceProvider {
                 "failed to read NRAS bearer token from environment variable {env_name}: {e}"
             ))
         })?;
-        let token = token.trim();
-        if token.is_empty() {
-            return Err(PowerError::Config(format!(
-                "NRAS bearer token environment variable {env_name} is empty"
-            )));
-        }
-        Ok(Some(token.to_string()))
+        Ok(Some(normalize_nras_bearer_token_value(env_name, &token)?))
     }
 }
 
@@ -744,6 +738,21 @@ fn is_portable_env_name(value: &str) -> bool {
         return false;
     }
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn normalize_nras_bearer_token_value(env_name: &str, token: &str) -> Result<String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(PowerError::Config(format!(
+            "NRAS bearer token environment variable {env_name} is empty"
+        )));
+    }
+    if !token.chars().all(|ch| ch.is_ascii_graphic()) {
+        return Err(PowerError::Config(format!(
+            "NRAS bearer token environment variable {env_name} must contain only visible ASCII characters after trimming"
+        )));
+    }
+    Ok(token.to_string())
 }
 
 fn sha256_bytes(bytes: &[u8]) -> Vec<u8> {
@@ -2024,6 +2033,34 @@ mod tests {
                 err.to_string()
                     .contains("portable ASCII environment variable name"),
                 "unexpected error for {env_name:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn nras_rest_bearer_token_value_trims_visible_ascii() {
+        let token =
+            normalize_nras_bearer_token_value("NRAS_TOKEN", " token.abc-DEF_123~+/= ").unwrap();
+
+        assert_eq!(token, "token.abc-DEF_123~+/=");
+    }
+
+    #[test]
+    fn nras_rest_bearer_token_value_rejects_empty_or_non_visible_ascii() {
+        for token in [
+            "",
+            "   ",
+            "token value",
+            "token\nvalue",
+            "token\tvalue",
+            "tokén",
+        ] {
+            let err = normalize_nras_bearer_token_value("NRAS_TOKEN", token).unwrap_err();
+
+            assert!(
+                err.to_string().contains("empty")
+                    || err.to_string().contains("visible ASCII characters"),
+                "unexpected error for {token:?}: {err}"
             );
         }
     }
