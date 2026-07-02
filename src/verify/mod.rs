@@ -27,8 +27,9 @@
 //!    `report_data`. Strict GPU evidence policy also requires an expected nonce
 //!    and rejects GPU evidence nonce mismatches when the claim exposes one.
 //!    Verifiers can additionally pin the evidence provider, byte formats, and
-//!    evidence count. The production GPU confidential profile requires an
-//!    expected NVIDIA NRAS verdict digest specifically.
+//!    evidence count. The production GPU confidential profile requires a
+//!    top-level GPU evidence nonce claim and an expected NVIDIA NRAS verdict
+//!    digest specifically.
 //!
 //! 6. **Runtime policy binding** — v2 reports can bind applied prompt
 //!    construction, applied default decoding policy, and GPU execution/offload
@@ -287,6 +288,8 @@ pub struct VerificationPolicy {
     pub require_claims: bool,
     /// Require a GPU evidence claim and an expected evidence or verdict digest.
     pub require_gpu_evidence: bool,
+    /// Require the top-level GPU evidence claim to carry the verifier nonce.
+    pub require_gpu_evidence_nonce: bool,
     /// Require an expected NVIDIA NRAS verdict digest specifically.
     pub require_gpu_verdict_digest: bool,
     /// Require verifier-pinned GPU evidence provider/format/count policy.
@@ -314,6 +317,7 @@ impl VerificationPolicy {
             require_measurement: false,
             require_claims: false,
             require_gpu_evidence: false,
+            require_gpu_evidence_nonce: false,
             require_gpu_verdict_digest: false,
             require_gpu_evidence_metadata_pins: false,
             require_gpu_device_claims: false,
@@ -337,6 +341,7 @@ impl VerificationPolicy {
             require_measurement: true,
             require_claims: false,
             require_gpu_evidence: false,
+            require_gpu_evidence_nonce: false,
             require_gpu_verdict_digest: false,
             require_gpu_evidence_metadata_pins: false,
             require_gpu_device_claims: false,
@@ -429,6 +434,7 @@ impl VerificationPolicy {
         self.require_32_byte_nonce = true;
         self.require_claims = true;
         self.require_gpu_evidence = true;
+        self.require_gpu_evidence_nonce = true;
         self.require_gpu_verdict_digest = true;
         self.require_gpu_evidence_metadata_pins = true;
         self.require_gpu_device_claims = true;
@@ -749,6 +755,17 @@ fn validate_required_inputs(
         if opts.nonce.is_none() {
             return Err(PowerError::AttestationVerificationFailed(
                 "GPU evidence verification requires an expected nonce".to_string(),
+            ));
+        }
+        if policy.require_gpu_evidence_nonce
+            && claims
+                .gpu
+                .as_ref()
+                .and_then(|gpu| gpu.nonce.as_ref())
+                .is_none()
+        {
+            return Err(PowerError::AttestationVerificationFailed(
+                "GPU confidential verification requires a GPU evidence nonce claim".to_string(),
             ));
         }
         if opts.expected_gpu_evidence_digest.is_none() && opts.expected_gpu_verdict_digest.is_none()
@@ -3160,6 +3177,7 @@ mod tests {
         assert!(policy.require_32_byte_nonce);
         assert!(policy.require_claims);
         assert!(policy.require_gpu_evidence);
+        assert!(policy.require_gpu_evidence_nonce);
         assert!(policy.require_gpu_verdict_digest);
         assert!(policy.require_gpu_evidence_metadata_pins);
         assert!(policy.require_gpu_device_claims);
@@ -3194,6 +3212,40 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("requires a 32-byte nonce"));
+    }
+
+    #[test]
+    fn test_gpu_confidential_policy_requires_gpu_evidence_nonce_claim() {
+        let (mut report, mut claims) =
+            make_gpu_claims_report_with_device_claims(vec![0x11; 32], Some(vec![0x22; 32]));
+        claims.gpu.as_mut().unwrap().nonce = None;
+        report.report_data = build_claims_report_data(&claims).unwrap();
+        report.claims = Some(claims);
+
+        let opts = VerifyOptions {
+            nonce: Some(gpu_nonce().to_vec()),
+            expected_model_hash: None,
+            expected_measurement: None,
+            expected_gpu_evidence_digest: None,
+            expected_gpu_verdict_digest: Some(vec![0x22; 32]),
+            expected_gpu_evidence: Some(expected_gpu_evidence_pins()),
+            expected_gpu_devices: Some(expected_gpu_device_pins()),
+            expected_chat_template_digest: None,
+            expected_decoding_parameters_digest: None,
+            expected_gpu_execution_digest: Some(vec![0x55; 32]),
+            hardware_verifier: None,
+        };
+
+        let err = verify_report_with_policy(
+            &report,
+            &opts,
+            VerificationPolicy::permissive().require_gpu_confidential(),
+        )
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("requires a GPU evidence nonce claim"));
     }
 
     #[test]

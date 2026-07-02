@@ -1065,7 +1065,7 @@ OPTIONS:
     --gpu-evidence-format <FORMAT> Expected GPU evidence byte-format label
     --gpu-verdict-format <FORMAT>  Expected GPU verdict byte-format label
     --gpu-evidence-count <N>       Expected number of GPU evidence entries
-    --gpu-confidential             Require production NVIDIA GPU CC profile plus NRAS verdict digest, evidence metadata, topology, claims-version, and identity/version pins
+    --gpu-confidential             Require production NVIDIA GPU CC profile plus evidence nonce, NRAS verdict digest, evidence metadata, topology, claims-version, and identity/version pins
     --require-gpu-evidence         Require a v2 GPU evidence claim and digest verification; requires --nonce
     --require-gpu-device-claims    Require structured NVIDIA GPU/NVSwitch identity and freshness claims; requires --nonce
     --gpu-count <N>                Expected number of NVIDIA GPU device claims

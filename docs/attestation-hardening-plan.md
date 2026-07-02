@@ -153,12 +153,14 @@ Landed in the current working tree:
 - Added strict hardware-verifier operations guidance for AMD SEV-SNP and Intel
   TDX, covering `hw-verify` builds, raw report requirements, AMD KDS / Intel
   PCS outbound access, measurement pins, and production failure handling.
+- Tightened the GPU confidential verifier profile so it requires the top-level
+  GPU evidence nonce claim in addition to structured device `eat_nonce`
+  freshness checks.
 
 Still open:
 
 - Add full post-template receipt policy comparison for remaining opaque
-  multimodal paths and any additional GPU freshness fields required by
-  production policy.
+  multimodal paths.
 - Native NVIDIA GPU confidential-computing NRAS SDK integration. The current
   implementation supports configured evidence/verdict bytes, live
   `nvattest-cli` collection, and direct `nras-rest` attestation, hashes the
