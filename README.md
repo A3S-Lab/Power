@@ -873,9 +873,9 @@ The v2 receipt covers prompt-bearing API input, model runtime
 chat-template/GPU execution policy claims, request decoding parameters
 including extended local sampling controls, streaming request options, stop
 tokens, response format, tools including function `strict` schema flags, tool
-choice, and parallel tool-call policy. Unknown nested tool definition fields
-fail closed instead of being silently dropped before proxying or receipt
-hashing. Chat receipts also include
+choice, and parallel tool-call policy. Unknown nested response-format and tool
+definition fields fail closed instead of being silently dropped before proxying
+or receipt hashing. Chat receipts also include
 `effective_prompt` when the selected backend can expose the exact prompt
 representation it submits to the model. llama.cpp and picolm text-only chat
 emit `kind = "chat.rendered-prompt"` for post-template prompt bytes. mistralrs
@@ -1018,18 +1018,26 @@ curl http://localhost:11434/v1/chat/completions \
     "response_format": {
       "type": "json_schema",
       "json_schema": {
-        "type": "object",
-        "properties": {
-          "colors": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "name": {"type": "string"},
-                "hex": {"type": "string"}
+        "name": "color_list",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "colors": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {"type": "string"},
+                  "hex": {"type": "string"}
+                },
+                "required": ["name", "hex"],
+                "additionalProperties": false
               }
             }
-          }
+          },
+          "required": ["colors"],
+          "additionalProperties": false
         }
       }
     }

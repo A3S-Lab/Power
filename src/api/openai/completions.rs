@@ -798,6 +798,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_openai_completions_rejects_unsupported_json_schema_field() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","prompt":"hi","response_format":{"type":"json_schema","json_schema":{"name":"Answer","schema":{"type":"object"},"future_policy":true}}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_response_format");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported response_format.json_schema field(s): future_policy"));
+    }
+
+    #[tokio::test]
     async fn test_openai_completions_rejects_incomplete_json_schema_response_format() {
         let state = test_state_with_mock(MockBackend::success());
         let app = router::build(state);

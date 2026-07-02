@@ -283,11 +283,37 @@ pub struct ResponseFormat {
     /// JSON Schema definition for structured output (when type = "json_schema").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub json_schema: Option<JsonSchemaSpec>,
+    /// Unknown response-format fields are preserved so request handlers can
+    /// reject unsupported output policy instead of silently dropping it.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
 }
 
 impl ResponseFormat {
+    /// Return a stable list of unsupported `response_format` field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported fields are present.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported response_format field(s): {}; supported fields are type and json_schema",
+                fields.join(", ")
+            ))
+        }
+    }
+
     /// Validate that Power can honor this response-format request.
     pub fn validation_error(&self) -> Option<(&'static str, String)> {
+        if let Some(message) = self.unsupported_fields_message() {
+            return Some(("unsupported_response_format", message));
+        }
+
         match self.r#type.as_str() {
             "text" | "json_object" => {
                 if self.json_schema.is_some() {
@@ -308,6 +334,9 @@ impl ResponseFormat {
                             .to_string(),
                     ));
                 };
+                if let Some(message) = schema_spec.unsupported_fields_message() {
+                    return Some(("unsupported_response_format", message));
+                }
                 if schema_spec.schema.is_none() {
                     return Some((
                         "invalid_response_format",
@@ -341,6 +370,30 @@ pub struct JsonSchemaSpec {
     /// Whether to enforce strict schema adherence (default: false).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+    /// Unknown JSON schema spec fields are preserved so request handlers can
+    /// reject unsupported structured-output policy instead of silently dropping it.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+impl JsonSchemaSpec {
+    /// Return a stable list of unsupported `response_format.json_schema` field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported fields are present.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported response_format.json_schema field(s): {}; supported fields are name, description, schema, and strict",
+                fields.join(", ")
+            ))
+        }
+    }
 }
 
 /// A single message in the chat format.
@@ -1112,6 +1165,7 @@ mod tests {
         let fmt: ResponseFormat = serde_json::from_str(json).unwrap();
         assert_eq!(fmt.r#type, "json_object");
         assert!(fmt.json_schema.is_none());
+        assert!(fmt.unsupported.is_empty());
     }
 
     #[test]
@@ -1134,10 +1188,12 @@ mod tests {
         }"#;
         let fmt: ResponseFormat = serde_json::from_str(json).unwrap();
         assert_eq!(fmt.r#type, "json_schema");
+        assert!(fmt.unsupported.is_empty());
         let spec = fmt.json_schema.unwrap();
         assert_eq!(spec.name, "person");
         assert_eq!(spec.description.as_deref(), Some("A person object"));
         assert_eq!(spec.strict, Some(true));
+        assert!(spec.unsupported.is_empty());
         let schema = spec.schema.unwrap();
         assert!(schema["properties"]["name"]["type"] == "string");
     }
@@ -1157,6 +1213,7 @@ mod tests {
         assert!(spec.schema.is_none());
         assert!(spec.description.is_none());
         assert!(spec.strict.is_none());
+        assert!(spec.unsupported.is_empty());
     }
 
     #[test]
@@ -1164,10 +1221,44 @@ mod tests {
         let fmt = ResponseFormat {
             r#type: "json_object".to_string(),
             json_schema: None,
+            unsupported: BTreeMap::new(),
         };
         let json = serde_json::to_string(&fmt).unwrap();
         assert!(json.contains("json_object"));
         assert!(!json.contains("json_schema"));
+    }
+
+    #[test]
+    fn test_response_format_preserves_unsupported_fields() {
+        let json = r#"{
+            "type": "json_object",
+            "future_policy": true
+        }"#;
+        let fmt: ResponseFormat = serde_json::from_str(json).unwrap();
+
+        assert_eq!(fmt.unsupported_fields(), vec!["future_policy"]);
+        let (code, message) = fmt.validation_error().unwrap();
+        assert_eq!(code, "unsupported_response_format");
+        assert!(message.contains("unsupported response_format field(s): future_policy"));
+    }
+
+    #[test]
+    fn test_json_schema_spec_preserves_unsupported_fields() {
+        let json = r#"{
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "schema": {"type": "object"},
+                "future_policy": {"mode": "strictest"}
+            }
+        }"#;
+        let fmt: ResponseFormat = serde_json::from_str(json).unwrap();
+        let spec = fmt.json_schema.as_ref().unwrap();
+
+        assert_eq!(spec.unsupported_fields(), vec!["future_policy"]);
+        let (code, message) = fmt.validation_error().unwrap();
+        assert_eq!(code, "unsupported_response_format");
+        assert!(message.contains("unsupported response_format.json_schema field(s): future_policy"));
     }
 
     #[test]

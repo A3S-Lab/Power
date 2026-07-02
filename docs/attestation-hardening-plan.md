@@ -137,8 +137,8 @@ Landed in the current working tree:
   response-shape requests that backend inference and receipts cannot honor.
 - OpenAI-compatible chat and completion requests now reject unsupported
   `response_format.type` values and incomplete `json_schema` response formats
-  instead of receipt-binding output constraints that local backends cannot
-  enforce.
+  as well as unknown nested response-format policy fields instead of
+  receipt-binding output constraints that local backends cannot enforce.
 - Added opt-in proxy upstream effective-prompt digest support. Proxy receipts
   remain non-overclaiming by default; when configured, Power asks the upstream
   digest endpoint for a `chat.rendered-prompt` SHA-256 before inference and can
@@ -163,7 +163,9 @@ Landed in the current working tree:
   forwarding inference and when requesting an upstream
   `effective_prompt` digest.
 - Preserved OpenAI `json_schema` response-format wire shape for remote/proxy
-  chat requests while keeping local backend schema extraction unchanged.
+  chat requests while keeping local backend schema extraction unchanged, and
+  reject unknown nested response-format fields before forwarding or receipt
+  binding.
 - Added OpenAI completion `response_format` coverage through API parsing,
   backend/proxy forwarding, and request receipt binding.
 - Forwarded OpenAI `stream_options` for streaming requests through backend
@@ -313,6 +315,9 @@ Landed in the current working tree:
   `stream_options`, so clients can distinguish streaming output protocol
   choices such as `include_usage`; unsupported nested stream option fields now
   fail closed during receipt generation and original-request verification.
+- Added fail-closed receipt and verifier handling for unknown nested
+  `response_format` and `response_format.json_schema` fields so output policy
+  extensions cannot be silently dropped before hashing.
 - Added `verify_receipt_matches_chat_request()` and
   `verify_receipt_matches_completion_request()` so SDK verifiers can recompute
   and compare all request-derived receipt fields from the original request,

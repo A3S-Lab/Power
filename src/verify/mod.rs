@@ -3716,11 +3716,26 @@ mod tests {
         request.response_format = Some(crate::api::types::ResponseFormat {
             r#type: "xml".to_string(),
             json_schema: None,
+            unsupported: BTreeMap::new(),
         });
 
         let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
 
         assert!(err.to_string().contains("unsupported response_format.type"));
+
+        let mut unsupported = BTreeMap::new();
+        unsupported.insert("future_policy".to_string(), serde_json::json!(true));
+        request.response_format = Some(crate::api::types::ResponseFormat {
+            r#type: "json_object".to_string(),
+            json_schema: None,
+            unsupported,
+        });
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("unsupported response_format field(s): future_policy"));
     }
 
     #[test]
@@ -3771,9 +3786,33 @@ mod tests {
             json_schema: Some(crate::api::types::JsonSchemaSpec {
                 name: "Answer".to_string(),
                 description: None,
+                schema: Some(serde_json::json!({"type":"object"})),
+                strict: Some(true),
+                unsupported: {
+                    let mut unsupported = BTreeMap::new();
+                    unsupported.insert("future_policy".to_string(), serde_json::json!(true));
+                    unsupported
+                },
+            }),
+            unsupported: BTreeMap::new(),
+        });
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("unsupported response_format.json_schema field(s): future_policy"));
+
+        request.response_format = Some(crate::api::types::ResponseFormat {
+            r#type: "json_schema".to_string(),
+            json_schema: Some(crate::api::types::JsonSchemaSpec {
+                name: "Answer".to_string(),
+                description: None,
                 schema: None,
                 strict: Some(true),
+                unsupported: BTreeMap::new(),
             }),
+            unsupported: BTreeMap::new(),
         });
 
         let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();

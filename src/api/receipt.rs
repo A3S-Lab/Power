@@ -943,12 +943,26 @@ mod tests {
         request.response_format = Some(crate::api::types::ResponseFormat {
             r#type: "xml".to_string(),
             json_schema: None,
+            unsupported: BTreeMap::new(),
         });
 
         assert!(chat_receipt(&request)
             .unwrap_err()
             .to_string()
             .contains("unsupported response_format.type"));
+
+        let mut unsupported = BTreeMap::new();
+        unsupported.insert("future_policy".to_string(), serde_json::json!(true));
+        request.response_format = Some(crate::api::types::ResponseFormat {
+            r#type: "json_object".to_string(),
+            json_schema: None,
+            unsupported,
+        });
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported response_format field(s): future_policy"));
 
         request.response_format = Some(crate::api::types::ResponseFormat {
             r#type: "json_schema".to_string(),
@@ -957,7 +971,9 @@ mod tests {
                 description: None,
                 schema: None,
                 strict: Some(true),
+                unsupported: BTreeMap::new(),
             }),
+            unsupported: BTreeMap::new(),
         });
 
         assert!(chat_receipt(&request)
@@ -1227,7 +1243,9 @@ mod tests {
                     description: None,
                     schema: Some(serde_json::json!({"type":"object"})),
                     strict: Some(true),
+                    unsupported: BTreeMap::new(),
                 }),
+                unsupported: BTreeMap::new(),
             }),
             suffix: None,
             keep_alive: None,
@@ -1271,6 +1289,7 @@ mod tests {
             response_format: Some(crate::api::types::ResponseFormat {
                 r#type: "xml".to_string(),
                 json_schema: None,
+                unsupported: BTreeMap::new(),
             }),
             suffix: None,
             keep_alive: None,
@@ -1281,6 +1300,25 @@ mod tests {
             .to_string()
             .contains("unsupported response_format.type"));
 
+        let mut unsupported = BTreeMap::new();
+        unsupported.insert("future_policy".to_string(), serde_json::json!(true));
+        request.response_format = Some(crate::api::types::ResponseFormat {
+            r#type: "json_schema".to_string(),
+            json_schema: Some(crate::api::types::JsonSchemaSpec {
+                name: "Answer".to_string(),
+                description: None,
+                schema: Some(serde_json::json!({"type":"object"})),
+                strict: Some(true),
+                unsupported,
+            }),
+            unsupported: BTreeMap::new(),
+        });
+
+        assert!(completion_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported response_format.json_schema field(s): future_policy"));
+
         request.response_format = Some(crate::api::types::ResponseFormat {
             r#type: "json_schema".to_string(),
             json_schema: Some(crate::api::types::JsonSchemaSpec {
@@ -1288,7 +1326,9 @@ mod tests {
                 description: None,
                 schema: None,
                 strict: Some(true),
+                unsupported: BTreeMap::new(),
             }),
+            unsupported: BTreeMap::new(),
         });
 
         assert!(completion_receipt(&request)
