@@ -31,6 +31,7 @@ const MAX_GPU_EVIDENCE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_NRAS_REST_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_GPU_EVIDENCE_ENTRIES: usize = 1024;
 const MAX_GPU_DEVICE_CLAIMS: usize = 1024;
+const MAX_NRAS_EAT_TOKENS: usize = 1024;
 const MAX_NVATTEST_STDOUT_BYTES: usize = MAX_GPU_EVIDENCE_SOURCE_BYTES as usize;
 const MAX_NVATTEST_STDERR_BYTES: usize = 1024 * 1024;
 
@@ -1068,7 +1069,7 @@ fn validate_nras_rest_verdict_json(bytes: &[u8], nonce_hex: &str) -> Result<Vec<
         return parse_nvattest_device_claims(claims, nonce_hex);
     }
 
-    let tokens = collect_nras_eat_tokens(&value);
+    let tokens = collect_nras_eat_tokens(&value)?;
     if tokens.is_empty() {
         return Err(PowerError::Config(
             "NRAS REST response does not contain claims or detached EAT tokens".to_string(),
@@ -1119,26 +1120,32 @@ fn validate_configured_verdict_json(bytes: &[u8], nonce_hex: &str) -> Result<Vec
     Ok(devices)
 }
 
-fn collect_nras_eat_tokens(value: &serde_json::Value) -> Vec<String> {
+fn collect_nras_eat_tokens(value: &serde_json::Value) -> Result<Vec<String>> {
     let mut tokens = Vec::new();
-    collect_nras_eat_tokens_inner(value, false, &mut tokens);
-    tokens
+    collect_nras_eat_tokens_inner(value, false, &mut tokens)?;
+    Ok(tokens)
 }
 
 fn collect_nras_eat_tokens_inner(
     value: &serde_json::Value,
     in_eat_field: bool,
     tokens: &mut Vec<String>,
-) {
+) -> Result<()> {
     match value {
         serde_json::Value::String(value) => {
             if in_eat_field {
+                if tokens.len() >= MAX_NRAS_EAT_TOKENS {
+                    return Err(PowerError::Config(format!(
+                        "NRAS REST detached EAT token list must contain at most {MAX_NRAS_EAT_TOKENS} tokens, got at least {}",
+                        tokens.len() + 1
+                    )));
+                }
                 tokens.push(value.clone());
             }
         }
         serde_json::Value::Array(values) => {
             for value in values {
-                collect_nras_eat_tokens_inner(value, in_eat_field, tokens);
+                collect_nras_eat_tokens_inner(value, in_eat_field, tokens)?;
             }
         }
         serde_json::Value::Object(values) => {
@@ -1147,11 +1154,12 @@ fn collect_nras_eat_tokens_inner(
                     value,
                     in_eat_field || is_nras_eat_field(key),
                     tokens,
-                );
+                )?;
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 fn is_nras_eat_field(key: &str) -> bool {
@@ -2339,6 +2347,21 @@ mod tests {
         let err = validate_nras_rest_verdict_json(&verdict, "010203").unwrap_err();
 
         assert!(err.to_string().contains("must contain at most"));
+    }
+
+    #[test]
+    fn validate_nras_rest_verdict_rejects_too_many_detached_eat_tokens() {
+        let tokens = vec!["e30.eyJzdWIiOiJ4In0.sig"; MAX_NRAS_EAT_TOKENS + 1];
+        let verdict = serde_json::to_vec(&serde_json::json!({
+            "eat": tokens
+        }))
+        .unwrap();
+
+        let err = validate_nras_rest_verdict_json(&verdict, "010203").unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("detached EAT token list must contain at most"));
     }
 
     #[test]

@@ -713,8 +713,9 @@ endpoint; query strings, fragments, embedded credentials, and unsupported
 versioned paths are rejected during `gpu-confidential` startup and before
 direct NRAS REST requests. Direct NRAS REST response bodies are capped at 16
 MiB before JSON or detached-EAT parsing. Detached EAT values must appear in
-explicit EAT fields and contain JWTs with base64url JSON payloads; unrelated
-version strings elsewhere in the response are not treated as token candidates.
+explicit EAT fields, are capped at 1024 tokens, and must contain JWTs with
+base64url JSON payloads; unrelated version strings elsewhere in the response
+are not treated as token candidates.
 If `nras_bearer_token_env` is configured, it names the environment variable
 holding the bearer token; Power trims the name and rejects empty or non-portable
 names before making NRAS requests. The token value itself is trimmed, must be

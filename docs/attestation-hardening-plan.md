@@ -195,6 +195,8 @@ Landed in the current working tree:
 - Tightened direct `nras-rest` detached EAT parsing so only explicit EAT fields
   are decoded as JWTs, malformed token payloads fail closed, and ordinary
   version-like strings elsewhere in the response are ignored.
+- Capped direct `nras-rest` detached EAT token collection before JWT decoding so
+  explicit token arrays cannot force unbounded verdict parsing work.
 
 Still open:
 
@@ -554,7 +556,7 @@ Tests:
   evidence normalization, 32-byte nonce enforcement, NRAS verdict digest
   binding, structured device-claim extraction when claims are present, and
   fail-closed config validation, including oversized NRAS response bodies,
-  oversized evidence/device-claim lists, and malformed detached EAT JWTs.
+  oversized evidence/device-claim/token lists, and malformed detached EAT JWTs.
 - Verifier policy `require_gpu_evidence()` now also requires an expected nonce
   and rejects GPU claim nonce mismatches.
 - Verifier policy `require_gpu_device_claims()` requires structured NVIDIA
