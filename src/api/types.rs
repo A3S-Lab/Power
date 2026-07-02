@@ -155,6 +155,11 @@ impl ChatCompletionRequest {
         self.max_tokens.or(self.max_completion_tokens)
     }
 
+    /// Return true when streaming-only options are present on a non-streaming request.
+    pub fn has_stream_options_without_stream(&self) -> bool {
+        self.stream_options.is_some() && !self.stream.unwrap_or(false)
+    }
+
     /// Return true when a request asks for anything other than text output.
     pub fn has_unsupported_modalities(&self) -> bool {
         self.modalities
@@ -474,6 +479,13 @@ pub struct CompletionRequest {
     /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,
+}
+
+impl CompletionRequest {
+    /// Return true when streaming-only options are present on a non-streaming request.
+    pub fn has_stream_options_without_stream(&self) -> bool {
+        self.stream_options.is_some() && !self.stream.unwrap_or(false)
+    }
 }
 
 /// OpenAI-compatible text completion response.
@@ -1176,6 +1188,18 @@ mod tests {
     }
 
     #[test]
+    fn test_chat_request_detects_stream_options_without_stream() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream_options": {"include_usage": true}
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+
+        assert!(req.has_stream_options_without_stream());
+    }
+
+    #[test]
     fn test_chat_request_stream_options_absent_by_default() {
         let json = r#"{"model": "m", "messages": []}"#;
         let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
@@ -1194,6 +1218,18 @@ mod tests {
         assert_eq!(req.stream, Some(true));
         let opts = req.stream_options.unwrap();
         assert!(opts.include_usage);
+    }
+
+    #[test]
+    fn test_completion_request_detects_stream_options_without_stream() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "hello",
+            "stream_options": {"include_usage": true}
+        }"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+
+        assert!(req.has_stream_options_without_stream());
     }
 
     #[test]

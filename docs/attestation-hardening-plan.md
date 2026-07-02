@@ -163,9 +163,11 @@ Landed in the current working tree:
   chat requests while keeping local backend schema extraction unchanged.
 - Added OpenAI completion `response_format` coverage through API parsing,
   backend/proxy forwarding, and request receipt binding.
-- Forwarded OpenAI `stream_options` through backend requests and proxy
-  chat/completion bodies so receipt-bound streaming protocol choices reach
-  remote upstreams.
+- Forwarded OpenAI `stream_options` for streaming requests through backend
+  requests and proxy chat/completion bodies so receipt-bound streaming protocol
+  choices reach remote upstreams. Non-streaming requests now reject
+  `stream_options` instead of receipt-binding options that cannot affect the
+  response shape.
 - Added regression tests for strict policy, runtime model-hash binding, stale
   model-file rejection, GPU confidential fail-closed behavior, runtime policy
   digest binding, proxy and mistralrs effective-prompt digest handling, request
@@ -302,8 +304,9 @@ Landed in the current working tree:
   400 response instead of panicking while parsing client input.
 - Made encrypted audit log line decryption reject malformed nonce hex without
   panicking when inspecting corrupted or untrusted audit files.
-- Added receipt coverage and verifier pins for `stream_options`, so clients can
-  distinguish streaming output protocol choices such as `include_usage`.
+- Added receipt coverage and verifier pins for streaming-request
+  `stream_options`, so clients can distinguish streaming output protocol
+  choices such as `include_usage`.
 - Added `verify_receipt_matches_chat_request()` and
   `verify_receipt_matches_completion_request()` so SDK verifiers can recompute
   and compare all request-derived receipt fields from the original request,

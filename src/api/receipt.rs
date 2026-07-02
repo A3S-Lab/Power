@@ -88,6 +88,11 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             "max_tokens and max_completion_tokens must match when both are provided".to_string(),
         ));
     }
+    if request.has_stream_options_without_stream() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "chat completion stream_options require stream=true and cannot be receipt-bound for non-streaming responses".to_string(),
+        ));
+    }
     if request.logprobs.unwrap_or(false) || request.top_logprobs.is_some() {
         return Err(crate::error::PowerError::InvalidRequest(
             "chat completion logprobs are unsupported and cannot be receipt-bound".to_string(),
@@ -266,6 +271,11 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
                 "completion best_of requests greater than 1 are unsupported and cannot be receipt-bound".to_string(),
             ));
         }
+    }
+    if request.has_stream_options_without_stream() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "text completion stream_options require stream=true and cannot be receipt-bound for non-streaming responses".to_string(),
+        ));
     }
     if request.logit_bias.is_some() {
         return Err(crate::error::PowerError::InvalidRequest(
@@ -745,6 +755,19 @@ mod tests {
     }
 
     #[test]
+    fn chat_receipt_rejects_stream_options_without_stream() {
+        let mut request = chat_request();
+        request.stream_options = Some(crate::api::types::StreamOptions {
+            include_usage: true,
+        });
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("stream_options require stream=true"));
+    }
+
+    #[test]
     fn chat_receipt_covers_tool_function_strict_flag() {
         let mut loose = chat_request();
         loose.tools = Some(vec![crate::backend::types::Tool {
@@ -978,6 +1001,50 @@ mod tests {
         let receipt = completion_receipt(&request).unwrap();
 
         assert!(receipt.decoding.stream_options_sha256.is_some());
+    }
+
+    #[test]
+    fn completion_receipt_rejects_stream_options_without_stream() {
+        let mut request = CompletionRequest {
+            model: "llama3".to_string(),
+            prompt: "hello".to_string(),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            n: None,
+            logprobs: None,
+            echo: None,
+            best_of: None,
+            logit_bias: None,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            stop: None,
+            stream: Some(false),
+            stream_options: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            response_format: None,
+            suffix: None,
+            keep_alive: None,
+        };
+        request.stream_options = Some(crate::api::types::StreamOptions {
+            include_usage: true,
+        });
+
+        assert!(completion_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("stream_options require stream=true"));
     }
 
     #[test]

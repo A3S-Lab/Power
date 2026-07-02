@@ -3413,6 +3413,36 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_stream_options_without_stream() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.stream_options = Some(StreamOptions {
+            include_usage: true,
+        });
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("stream_options require stream=true"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_rejects_stream_options_without_stream() {
+        let mut request = completion_request();
+        let receipt = completion_receipt(&request).unwrap();
+        request.stream_options = Some(StreamOptions {
+            include_usage: true,
+        });
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("stream_options require stream=true"));
+    }
+
+    #[test]
     fn test_verify_receipt_matches_completion_request_rejects_suffix_request() {
         let mut request = completion_request();
         let receipt = completion_receipt(&request).unwrap();

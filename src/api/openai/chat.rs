@@ -89,6 +89,13 @@ pub async fn handler(
         )
         .into_response();
     }
+    if request.has_stream_options_without_stream() {
+        return openai_error(
+            "unsupported_stream_options",
+            "chat completion stream_options are only supported when stream=true",
+        )
+        .into_response();
+    }
     if request.logprobs.unwrap_or(false) || request.top_logprobs.is_some() {
         return openai_error(
             "unsupported_logprobs",
@@ -990,6 +997,31 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("must match"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_stream_options_without_stream() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"stream_options":{"include_usage":true}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_stream_options");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("stream=true"));
     }
 
     #[tokio::test]
