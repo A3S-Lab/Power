@@ -1012,6 +1012,8 @@ pub fn verify_claims_gpu_evidence_binding(
                     .to_string(),
             )
         })?;
+        require_32_byte_nonce("claims.gpu.nonce", gpu_nonce)?;
+        require_32_byte_nonce("claims.nonce", claim_nonce)?;
         if !constant_time_eq(gpu_nonce, claim_nonce) {
             return Err(PowerError::AttestationVerificationFailed(format!(
                 "GPU evidence nonce mismatch: claims.gpu.nonce = {}, claims.nonce = {}",
@@ -1153,6 +1155,7 @@ pub fn verify_claims_gpu_device_claims(claims: &AttestationClaimsV2) -> Result<(
             "GPU device-claim verification requires a CPU nonce claim".to_string(),
         )
     })?;
+    require_32_byte_nonce("claims.nonce", claim_nonce)?;
 
     let mut gpu_count = 0usize;
     for device in &gpu.devices {
@@ -1172,6 +1175,10 @@ pub fn verify_claims_gpu_device_claims(claims: &AttestationClaimsV2) -> Result<(
                 device.index
             ))
         })?;
+        require_32_byte_nonce(
+            &format!("GPU device claim {} attestation_nonce", device.index),
+            device_nonce,
+        )?;
         if !constant_time_eq(device_nonce, claim_nonce) {
             return Err(PowerError::AttestationVerificationFailed(format!(
                 "GPU device nonce mismatch: device {} nonce = {}, claims.nonce = {}",
@@ -2190,6 +2197,16 @@ fn require_sha256_digest_bytes(field: &str, digest: &[u8]) -> Result<()> {
         return Err(PowerError::AttestationVerificationFailed(format!(
             "{field} must be a 32-byte SHA-256 digest, got {} bytes",
             digest.len(),
+        )));
+    }
+    Ok(())
+}
+
+fn require_32_byte_nonce(field: &str, nonce: &[u8]) -> Result<()> {
+    if nonce.len() != 32 {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "{field} must be a 32-byte nonce, got {} bytes",
+            nonce.len(),
         )));
     }
     Ok(())
@@ -4079,11 +4096,24 @@ mod tests {
     #[test]
     fn test_verify_claims_gpu_evidence_binding_fails_on_nonce_mismatch() {
         let (_, mut claims) = make_gpu_claims_report(vec![0x11; 32], Some(vec![0x22; 32]));
-        claims.gpu.as_mut().unwrap().nonce = Some(vec![0x99]);
+        claims.gpu.as_mut().unwrap().nonce = Some(vec![0x99; 32]);
 
         let err = verify_claims_gpu_evidence_binding(&claims, Some(&[0x11; 32]), None).unwrap_err();
 
         assert!(err.to_string().contains("GPU evidence nonce mismatch"));
+    }
+
+    #[test]
+    fn test_verify_claims_gpu_evidence_binding_rejects_short_gpu_nonce() {
+        let (_, mut claims) = make_gpu_claims_report(vec![0x11; 32], Some(vec![0x22; 32]));
+        claims.nonce = Some(vec![0x11; 31]);
+        claims.gpu.as_mut().unwrap().nonce = Some(vec![0x11; 31]);
+
+        let err = verify_claims_gpu_evidence_binding(&claims, Some(&[0x11; 32]), None).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.gpu.nonce must be a 32-byte nonce"));
     }
 
     #[test]
@@ -4179,11 +4209,52 @@ mod tests {
             .devices
             .first_mut()
             .unwrap()
-            .attestation_nonce = Some(vec![0x99]);
+            .attestation_nonce = Some(vec![0x99; 32]);
 
         let err = verify_claims_gpu_device_claims(&claims).unwrap_err();
 
         assert!(err.to_string().contains("GPU device nonce mismatch"));
+    }
+
+    #[test]
+    fn test_verify_claims_gpu_device_claims_rejects_short_device_nonce() {
+        let (_, mut claims) =
+            make_gpu_claims_report_with_device_claims(vec![0x11; 32], Some(vec![0x22; 32]));
+        claims
+            .gpu
+            .as_mut()
+            .unwrap()
+            .devices
+            .first_mut()
+            .unwrap()
+            .attestation_nonce = Some(vec![0x11; 31]);
+
+        let err = verify_claims_gpu_device_claims(&claims).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("GPU device claim 0 attestation_nonce must be a 32-byte nonce"));
+    }
+
+    #[test]
+    fn test_verify_claims_gpu_device_claims_rejects_short_claim_nonce() {
+        let (_, mut claims) =
+            make_gpu_claims_report_with_device_claims(vec![0x11; 32], Some(vec![0x22; 32]));
+        claims.nonce = Some(vec![0x11; 31]);
+        claims
+            .gpu
+            .as_mut()
+            .unwrap()
+            .devices
+            .first_mut()
+            .unwrap()
+            .attestation_nonce = Some(vec![0x11; 31]);
+
+        let err = verify_claims_gpu_device_claims(&claims).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.nonce must be a 32-byte nonce"));
     }
 
     #[test]

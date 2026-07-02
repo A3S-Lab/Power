@@ -162,6 +162,8 @@ Landed in the current working tree:
 - Tightened GPU evidence/verdict SDK verifier pins so callers must provide full
   32-byte SHA-256 digests instead of relying on mismatch behavior for malformed
   pins.
+- Tightened GPU freshness nonce validation so SDK GPU evidence and device-claim
+  verification rejects malformed non-32-byte GPU/CPU nonce bindings.
 - Tightened runtime-policy SDK verifier pins so chat-template, decoding-policy,
   and GPU execution pins must be full 32-byte SHA-256 digests.
 - Tightened model-hash verifier pins so SDK and CLI verification require a full
