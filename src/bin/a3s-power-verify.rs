@@ -24,10 +24,12 @@ use std::process;
 
 use a3s_power::api::prompt_policy::canonical_gpu_execution_digest;
 use a3s_power::api::receipt::{AttestationReceipt, ReceiptRequestType};
+use a3s_power::api::types::{ChatCompletionRequest, CompletionRequest};
 use a3s_power::config::GpuConfig;
 use a3s_power::tee::attestation::AttestationReport;
 use a3s_power::verify::{
-    verify_receipt_against_attestation, verify_receipt_policy, verify_report_with_policy,
+    verify_receipt_against_attestation, verify_receipt_matches_chat_request,
+    verify_receipt_matches_completion_request, verify_receipt_policy, verify_report_with_policy,
     ExpectedGpuDevices, ExpectedGpuEvidence, ExpectedReceipt, HardwareVerifier, VerificationPolicy,
     VerifyOptions,
 };
@@ -98,10 +100,16 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     if opts.receipt_file.is_none()
         && (opts.receipt_digest.is_some()
             || opts.effective_prompt_digest.is_some()
+            || opts.has_receipt_request_file()
             || opts.has_receipt_policy_pins())
     {
         anyhow::bail!(
-            "--receipt-digest, --effective-prompt-digest, and receipt policy pins require --receipt-file"
+            "--receipt-digest, --effective-prompt-digest, receipt request files, and receipt policy pins require --receipt-file"
+        );
+    }
+    if opts.receipt_chat_request_file.is_some() && opts.receipt_completion_request_file.is_some() {
+        anyhow::bail!(
+            "--receipt-chat-request-file conflicts with --receipt-completion-request-file"
         );
     }
     if opts.effective_prompt_absent
@@ -125,6 +133,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     // Load the attestation report
     let report = load_report(&opts)?;
     let receipt = load_receipt(&opts)?;
+    let receipt_request = load_receipt_request(&opts)?;
 
     // Build verify options
     let nonce = opts
@@ -271,6 +280,17 @@ fn run(args: &[String]) -> anyhow::Result<()> {
             verify_receipt_policy(receipt, &expected_receipt)
                 .map_err(|e| anyhow::anyhow!("receipt verification failed: {e}"))?;
         }
+        if let Some(receipt_request) = receipt_request.as_ref() {
+            match receipt_request {
+                ReceiptRequest::Chat(request) => {
+                    verify_receipt_matches_chat_request(receipt, request)
+                }
+                ReceiptRequest::Completion(request) => {
+                    verify_receipt_matches_completion_request(receipt, request)
+                }
+            }
+            .map_err(|e| anyhow::anyhow!("receipt request verification failed: {e}"))?;
+        }
     }
 
     // Print results
@@ -358,6 +378,10 @@ struct CliOpts {
     file: Option<String>,
     /// Path to a JSON file containing an AttestationReceipt.
     receipt_file: Option<String>,
+    /// Path to the original ChatCompletionRequest JSON covered by the receipt.
+    receipt_chat_request_file: Option<String>,
+    /// Path to the original CompletionRequest JSON covered by the receipt.
+    receipt_completion_request_file: Option<String>,
     /// Model name to include in the attestation request (?model=<name>)
     model: Option<String>,
     /// Client nonce (hex-encoded)
@@ -456,6 +480,11 @@ struct CliOpts {
     effective_prompt_kind: Option<String>,
     /// Explicitly allow offline/development verification without hardware signatures.
     allow_offline: bool,
+}
+
+enum ReceiptRequest {
+    Chat(ChatCompletionRequest),
+    Completion(CompletionRequest),
 }
 
 impl CliOpts {
@@ -619,6 +648,10 @@ impl CliOpts {
                 .is_some_and(|value| !value.is_empty())
     }
 
+    fn has_receipt_request_file(&self) -> bool {
+        self.receipt_chat_request_file.is_some() || self.receipt_completion_request_file.is_some()
+    }
+
     fn expected_receipt(
         &self,
         input_digest: Option<Vec<u8>>,
@@ -653,6 +686,8 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
         url: None,
         file: None,
         receipt_file: None,
+        receipt_chat_request_file: None,
+        receipt_completion_request_file: None,
         model: None,
         nonce: None,
         model_hash: None,
@@ -719,6 +754,14 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
             }
             "--receipt-file" => {
                 opts.receipt_file = Some(next_arg(args, &mut i, "--receipt-file")?);
+            }
+            "--receipt-chat-request-file" => {
+                opts.receipt_chat_request_file =
+                    Some(next_arg(args, &mut i, "--receipt-chat-request-file")?);
+            }
+            "--receipt-completion-request-file" => {
+                opts.receipt_completion_request_file =
+                    Some(next_arg(args, &mut i, "--receipt-completion-request-file")?);
             }
             "--model" => {
                 opts.model = Some(next_arg(args, &mut i, "--model")?);
@@ -1055,6 +1098,8 @@ OPTIONS:
     --url <URL>                    Fetch report from a live server (e.g. http://localhost:11434)
     --file <PATH>                  Read report from a JSON file
     --receipt-file <PATH>          Read an AttestationReceipt JSON file and bind it to the report
+    --receipt-chat-request-file <PATH> Original ChatCompletionRequest JSON to compare with the receipt
+    --receipt-completion-request-file <PATH> Original CompletionRequest JSON to compare with the receipt
     --model <NAME>                 Model name to bind into the attestation request
     --nonce <HEX>                  Client nonce to verify (hex-encoded)
     --model-hash <HEX>             Expected model SHA-256 hash (hex-encoded, 32 bytes)
@@ -1182,6 +1227,7 @@ EXAMPLES:
     # Verify an inference receipt against the saved attestation report
     a3s-power-verify --file report.json \
         --receipt-file receipt.json \
+        --receipt-chat-request-file chat-request.json \
         --receipt-digest <64-char-hex> \
         --receipt-model llama3 \
         --receipt-request-type chat-completion \
@@ -1224,6 +1270,29 @@ fn load_receipt(opts: &CliOpts) -> anyhow::Result<Option<AttestationReceipt>> {
     let receipt: AttestationReceipt = serde_json::from_str(&content)
         .map_err(|e| anyhow::anyhow!("failed to parse receipt JSON: {e}"))?;
     Ok(Some(receipt))
+}
+
+fn load_receipt_request(opts: &CliOpts) -> anyhow::Result<Option<ReceiptRequest>> {
+    if let Some(path) = opts.receipt_chat_request_file.as_deref() {
+        let request = load_json_file::<ChatCompletionRequest>(path, "chat request")?;
+        return Ok(Some(ReceiptRequest::Chat(request)));
+    }
+
+    if let Some(path) = opts.receipt_completion_request_file.as_deref() {
+        let request = load_json_file::<CompletionRequest>(path, "completion request")?;
+        return Ok(Some(ReceiptRequest::Completion(request)));
+    }
+
+    Ok(None)
+}
+
+fn load_json_file<T>(path: &str, label: &str) -> anyhow::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read {label} file {path}: {e}"))?;
+    serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("failed to parse {label} JSON: {e}"))
 }
 
 fn fetch_report(
@@ -1284,9 +1353,12 @@ fn attestation_url(
 mod tests {
     use super::*;
     use a3s_power::api::receipt::{
+        chat_receipt_with_runtime_policy, completion_receipt_with_runtime_policy,
         receipt_decoding_parameters_digest, receipt_digest, ReceiptDecodingPolicy,
         ReceiptInputDigest, ReceiptRequestType,
     };
+    use a3s_power::api::types::{ChatCompletionMessage, ChatCompletionRequest, CompletionRequest};
+    use a3s_power::backend::types::MessageContent;
     use a3s_power::tee::attestation::TeeType;
     use a3s_power::tee::attestation::{
         build_claims_report_data, AttestationClaimsV2, DecodingPolicyClaim, RuntimePolicyClaim,
@@ -1357,6 +1429,128 @@ mod tests {
         std::fs::write(receipt_file.path(), serde_json::to_vec(&receipt).unwrap()).unwrap();
 
         (report_file, receipt_file, digest)
+    }
+
+    fn chat_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "test-model".to_string(),
+            messages: vec![ChatCompletionMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("hello".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+                thinking: None,
+            }],
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            max_tokens: Some(128),
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            stop: Some(vec!["</s>".to_string()]),
+            stream: Some(false),
+            stream_options: None,
+            frequency_penalty: Some(0.1),
+            presence_penalty: Some(0.0),
+            seed: Some(7),
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            keep_alive: None,
+        }
+    }
+
+    fn completion_request() -> CompletionRequest {
+        CompletionRequest {
+            model: "test-model".to_string(),
+            prompt: "hello".to_string(),
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            max_tokens: Some(128),
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            stop: Some(vec!["</s>".to_string()]),
+            stream: Some(false),
+            stream_options: None,
+            frequency_penalty: Some(0.1),
+            presence_penalty: Some(0.0),
+            seed: Some(7),
+            keep_alive: None,
+        }
+    }
+
+    fn write_runtime_report_file(runtime_policy: RuntimePolicyClaim) -> tempfile::NamedTempFile {
+        let report_file = tempfile::NamedTempFile::new().unwrap();
+        let claims = AttestationClaimsV2::new(TeeType::Simulated).with_runtime(runtime_policy);
+        let report = AttestationReport {
+            version: "1.0".to_string(),
+            tee_type: TeeType::Simulated,
+            report_data: build_claims_report_data(&claims).unwrap(),
+            measurement: vec![0u8; 48],
+            raw_report: None,
+            timestamp: chrono::Utc::now(),
+            nonce: None,
+            claims: Some(claims),
+        };
+        std::fs::write(report_file.path(), serde_json::to_vec(&report).unwrap()).unwrap();
+        report_file
+    }
+
+    fn write_report_receipt_and_chat_request_files() -> (
+        tempfile::NamedTempFile,
+        tempfile::NamedTempFile,
+        tempfile::NamedTempFile,
+    ) {
+        let receipt_file = tempfile::NamedTempFile::new().unwrap();
+        let request_file = tempfile::NamedTempFile::new().unwrap();
+        let runtime_policy = runtime_policy();
+        let report_file = write_runtime_report_file(runtime_policy.clone());
+        let request = chat_request();
+        let receipt = chat_receipt_with_runtime_policy(&request, Some(runtime_policy)).unwrap();
+
+        std::fs::write(receipt_file.path(), serde_json::to_vec(&receipt).unwrap()).unwrap();
+        std::fs::write(request_file.path(), serde_json::to_vec(&request).unwrap()).unwrap();
+
+        (report_file, receipt_file, request_file)
+    }
+
+    fn write_report_receipt_and_completion_request_files() -> (
+        tempfile::NamedTempFile,
+        tempfile::NamedTempFile,
+        tempfile::NamedTempFile,
+    ) {
+        let receipt_file = tempfile::NamedTempFile::new().unwrap();
+        let request_file = tempfile::NamedTempFile::new().unwrap();
+        let runtime_policy = runtime_policy();
+        let report_file = write_runtime_report_file(runtime_policy.clone());
+        let request = completion_request();
+        let receipt =
+            completion_receipt_with_runtime_policy(&request, Some(runtime_policy)).unwrap();
+
+        std::fs::write(receipt_file.path(), serde_json::to_vec(&receipt).unwrap()).unwrap();
+        std::fs::write(request_file.path(), serde_json::to_vec(&request).unwrap()).unwrap();
+
+        (report_file, receipt_file, request_file)
     }
 
     #[test]
@@ -2045,6 +2239,27 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_args_receipt_request_files() {
+        let args = vec![
+            "--file".to_string(),
+            "report.json".to_string(),
+            "--receipt-file".to_string(),
+            "receipt.json".to_string(),
+            "--receipt-chat-request-file".to_string(),
+            "chat-request.json".to_string(),
+        ];
+
+        let opts = parse_args(&args).unwrap();
+
+        assert_eq!(
+            opts.receipt_chat_request_file.as_deref(),
+            Some("chat-request.json")
+        );
+        assert!(opts.receipt_completion_request_file.is_none());
+        assert!(opts.has_receipt_request_file());
+    }
+
+    #[test]
     fn test_parse_args_receipt_policy_pins() {
         let args = vec![
             "--file".to_string(),
@@ -2221,6 +2436,42 @@ mod tests {
     }
 
     #[test]
+    fn test_run_receipt_request_file_requires_receipt_file() {
+        let report_file = write_report_file();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--receipt-chat-request-file".to_string(),
+            "chat-request.json".to_string(),
+            "--allow-offline".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err.to_string().contains("require --receipt-file"));
+    }
+
+    #[test]
+    fn test_run_rejects_conflicting_receipt_request_files() {
+        let (report_file, receipt_file, _) = write_report_and_receipt_files();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--receipt-file".to_string(),
+            receipt_file.path().display().to_string(),
+            "--receipt-chat-request-file".to_string(),
+            "chat-request.json".to_string(),
+            "--receipt-completion-request-file".to_string(),
+            "completion-request.json".to_string(),
+            "--allow-offline".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err.to_string().contains("conflicts"));
+    }
+
+    #[test]
     fn test_run_verifies_receipt_against_attestation() {
         let (report_file, receipt_file, receipt_digest) = write_report_and_receipt_files();
         let args = vec![
@@ -2230,6 +2481,40 @@ mod tests {
             receipt_file.path().display().to_string(),
             "--receipt-digest".to_string(),
             receipt_digest,
+            "--allow-offline".to_string(),
+        ];
+
+        run(&args).unwrap();
+    }
+
+    #[test]
+    fn test_run_verifies_receipt_chat_request_file() {
+        let (report_file, receipt_file, request_file) =
+            write_report_receipt_and_chat_request_files();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--receipt-file".to_string(),
+            receipt_file.path().display().to_string(),
+            "--receipt-chat-request-file".to_string(),
+            request_file.path().display().to_string(),
+            "--allow-offline".to_string(),
+        ];
+
+        run(&args).unwrap();
+    }
+
+    #[test]
+    fn test_run_verifies_receipt_completion_request_file() {
+        let (report_file, receipt_file, request_file) =
+            write_report_receipt_and_completion_request_files();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--receipt-file".to_string(),
+            receipt_file.path().display().to_string(),
+            "--receipt-completion-request-file".to_string(),
+            request_file.path().display().to_string(),
             "--allow-offline".to_string(),
         ];
 
@@ -2310,6 +2595,31 @@ mod tests {
         let err = run(&args).unwrap_err();
 
         assert!(err.to_string().contains("receipt verification failed"));
+        assert!(err.to_string().contains("receipt.input.sha256 mismatch"));
+    }
+
+    #[test]
+    fn test_run_rejects_receipt_chat_request_mismatch() {
+        let (report_file, receipt_file, request_file) =
+            write_report_receipt_and_chat_request_files();
+        let mut request = chat_request();
+        request.messages[0].content = MessageContent::Text("different".to_string());
+        std::fs::write(request_file.path(), serde_json::to_vec(&request).unwrap()).unwrap();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--receipt-file".to_string(),
+            receipt_file.path().display().to_string(),
+            "--receipt-chat-request-file".to_string(),
+            request_file.path().display().to_string(),
+            "--allow-offline".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("receipt request verification failed"));
         assert!(err.to_string().contains("receipt.input.sha256 mismatch"));
     }
 

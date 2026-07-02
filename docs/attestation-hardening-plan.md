@@ -156,6 +156,9 @@ Landed in the current working tree:
   including multimodal input digests and exact presence/absence of optional
   output-policy digests, before separately checking attestation runtime policy
   or effective-prompt pins.
+- Exposed the same original-request receipt comparison through
+  `a3s-power-verify --receipt-chat-request-file` and
+  `--receipt-completion-request-file`.
 - Added strict hardware-verifier operations guidance for AMD SEV-SNP and Intel
   TDX, covering `hw-verify` builds, raw report requirements, AMD KDS / Intel
   PCS outbound access, measurement pins, and production failure handling.
@@ -607,7 +610,8 @@ Current implementation:
   and optional receipt/effective-prompt digest pins with
   `verify::verify_receipt_against_attestation()`.
 - `a3s-power-verify` exposes the same attestation-to-receipt check with
-  `--receipt-file`, `--receipt-digest`, receipt policy digest pins, and
+  `--receipt-file`, `--receipt-digest`, receipt policy digest pins,
+  `--receipt-chat-request-file`, `--receipt-completion-request-file`, and
   `--effective-prompt-digest`.
 - Proxy backends can ask upstreams for an explicit rendered prompt digest before
   inference with `proxy_effective_prompt_digest = true`. The upstream endpoint
