@@ -152,6 +152,9 @@ Landed in the current working tree:
 - Tightened remote hub resume handling so stale partial downloads larger than
   the declared model size are removed and rejected instead of being treated as
   complete artifacts.
+- Tightened remote hub download completion checks so known-size downloads must
+  receive exactly the declared byte count before the partial file is promoted
+  into the blob store.
 - Made blob integrity verification hash model files with the existing streaming
   SHA-256 path instead of reading whole model artifacts into memory.
 - Made `A3S_POWER_MODEL_SOURCE` fail closed for unknown configured values

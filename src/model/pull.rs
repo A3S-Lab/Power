@@ -200,6 +200,15 @@ pub mod hf {
         Ok(())
     }
 
+    fn validate_completed_download_size(completed: u64, total: u64) -> Result<()> {
+        if total > 0 && completed != total {
+            return Err(PowerError::Server(format!(
+                "incomplete download: received {completed} bytes, expected {total}"
+            )));
+        }
+        Ok(())
+    }
+
     fn validate_path_value(value: &str, label: &str) -> Result<()> {
         if value.is_empty() {
             return Err(PowerError::Server(format!("{label} must not be empty")));
@@ -653,6 +662,7 @@ pub mod hf {
                 .flush()
                 .await
                 .map_err(|e| PowerError::Io(std::io::Error::other(format!("flush error: {e}"))))?;
+            validate_completed_download_size(completed, total)?;
         }
 
         // Verify and store in content-addressed blob store.
@@ -1036,6 +1046,26 @@ pub mod hf {
             assert!(
                 err.to_string()
                     .contains("partial download exceeds declared size"),
+                "error: {err}"
+            );
+        }
+
+        #[test]
+        fn test_validate_completed_download_size_allows_unknown_total() {
+            validate_completed_download_size(64, 0).unwrap();
+        }
+
+        #[test]
+        fn test_validate_completed_download_size_allows_exact_total() {
+            validate_completed_download_size(64, 64).unwrap();
+        }
+
+        #[test]
+        fn test_validate_completed_download_size_rejects_short_download() {
+            let err = validate_completed_download_size(63, 64).unwrap_err();
+
+            assert!(
+                err.to_string().contains("incomplete download"),
                 "error: {err}"
             );
         }
