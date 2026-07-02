@@ -1526,7 +1526,9 @@ mod tests {
                 description: Some("Look up a value".to_string()),
                 parameters: serde_json::json!({"type":"object"}),
                 strict: Some(true),
+                unsupported: Default::default(),
             },
+            unsupported: Default::default(),
         }]);
         request.tool_choice = Some(ToolChoice::String("auto".to_string()));
         request.parallel_tool_calls = Some(false);

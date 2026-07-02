@@ -173,6 +173,9 @@ pub async fn handler(
         )
         .into_response();
     }
+    if let Some(message) = request.unsupported_tool_fields_message() {
+        return openai_error("unsupported_tool_definition", &message).into_response();
+    }
 
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
@@ -1360,6 +1363,78 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("cannot both be provided"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_unsupported_tool_definition_fields() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"missing",
+                    "messages":[{"role":"user","content":"hi"}],
+                    "tools":[{
+                        "type":"function",
+                        "cache_control":true,
+                        "function":{
+                            "name":"lookup",
+                            "parameters":{"type":"object"}
+                        }
+                    }]
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_tool_definition");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cache_control"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_unsupported_tool_function_fields() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"missing",
+                    "messages":[{"role":"user","content":"hi"}],
+                    "tools":[{
+                        "type":"function",
+                        "function":{
+                            "name":"lookup",
+                            "parameters":{"type":"object"},
+                            "x-strict-mode":true
+                        }
+                    }]
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_tool_definition");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("x-strict-mode"));
     }
 
     #[tokio::test]

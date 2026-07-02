@@ -121,6 +121,9 @@ Landed in the current working tree:
   `function_call` fields onto modern `tools` and `tool_choice`, reject mixed
   legacy/modern tool policy fields, preserve function `strict` schema flags,
   and bind the effective tool policy in receipts.
+- OpenAI-compatible chat requests preserve unknown nested tool definition
+  fields during parsing and reject them instead of silently dropping tool
+  schema or tool wrapper policy before proxy forwarding and receipt binding.
 - OpenAI-compatible chat requests now reject local-backend tool-choice
   policies that Power cannot enforce (`tool_choice = "none"` with tools,
   `tool_choice = "required"`, or named tool/function choices), while preserving

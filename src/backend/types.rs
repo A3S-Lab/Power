@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 // ============================================================================
 // Vision / Multimodal types
@@ -67,6 +68,31 @@ pub struct Tool {
     #[serde(rename = "type")]
     pub tool_type: String,
     pub function: FunctionDefinition,
+    /// Unknown tool fields are preserved so API layers can reject unsupported
+    /// tool policies instead of silently dropping them before proxying or
+    /// receipt hashing.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+impl Tool {
+    /// Return a stable list of unsupported top-level tool field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported top-level tool fields exist.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported tool field(s): {}; supported fields are type and function",
+                fields.join(", ")
+            ))
+        }
+    }
 }
 
 /// A function definition within a tool.
@@ -79,6 +105,30 @@ pub struct FunctionDefinition {
     /// OpenAI structured-output flag for strict function argument schemas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+    /// Unknown function fields are preserved so request validation can fail
+    /// closed instead of silently weakening a tool schema policy.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+impl FunctionDefinition {
+    /// Return a stable list of unsupported tool function field names.
+    pub fn unsupported_fields(&self) -> Vec<&str> {
+        self.unsupported.keys().map(String::as_str).collect()
+    }
+
+    /// Return a validation message when unsupported function fields exist.
+    pub fn unsupported_fields_message(&self) -> Option<String> {
+        let fields = self.unsupported_fields();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported tool function field(s): {}; supported fields are name, description, parameters, and strict",
+                fields.join(", ")
+            ))
+        }
+    }
 }
 
 /// How the model should choose tools.

@@ -212,10 +212,25 @@ impl ChatCompletionRequest {
                     .map(|function| Tool {
                         tool_type: "function".to_string(),
                         function,
+                        unsupported: BTreeMap::new(),
                     })
                     .collect()
             })
         })
+    }
+
+    /// Return a validation message for unsupported nested tool definition fields.
+    pub fn unsupported_tool_fields_message(&self) -> Option<String> {
+        let tools = self.effective_tools()?;
+        for tool in tools {
+            if let Some(message) = tool.unsupported_fields_message() {
+                return Some(message);
+            }
+            if let Some(message) = tool.function.unsupported_fields_message() {
+                return Some(message);
+            }
+        }
+        None
     }
 
     /// Effective tool-choice policy after mapping legacy `function_call`.
@@ -712,6 +727,35 @@ mod tests {
         let tool = &req.tools.unwrap()[0];
         assert_eq!(tool.function.name, "get_weather");
         assert_eq!(tool.function.strict, Some(true));
+    }
+
+    #[test]
+    fn test_chat_completion_request_collects_unsupported_tool_fields() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "cache_control": true,
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object"},
+                    "x-strict-mode": true
+                }
+            }]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let tools = req.tools.as_ref().unwrap();
+
+        assert_eq!(tools[0].unsupported_fields(), vec!["cache_control"]);
+        assert_eq!(
+            tools[0].function.unsupported_fields(),
+            vec!["x-strict-mode"]
+        );
+        assert!(req
+            .unsupported_tool_fields_message()
+            .unwrap()
+            .contains("cache_control"));
     }
 
     #[test]

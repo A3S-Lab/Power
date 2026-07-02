@@ -158,6 +158,11 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             "tool_choice and legacy function_call cannot both be receipt-bound".to_string(),
         ));
     }
+    if let Some(message) = request.unsupported_tool_fields_message() {
+        return Err(crate::error::PowerError::InvalidRequest(format!(
+            "chat completion {message}; cannot be receipt-bound"
+        )));
+    }
 
     let input = ReceiptInputDigest {
         kind: "chat.messages".to_string(),
@@ -797,7 +802,9 @@ mod tests {
                 description: None,
                 parameters: serde_json::json!({"type": "object"}),
                 strict: Some(false),
+                unsupported: BTreeMap::new(),
             },
+            unsupported: BTreeMap::new(),
         }]);
 
         let mut strict = loose.clone();
@@ -834,6 +841,54 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("include_obfuscation"));
+    }
+
+    #[test]
+    fn chat_receipt_rejects_unsupported_tool_definition_fields() {
+        let mut request = chat_request();
+        request.tools = Some(vec![crate::backend::types::Tool {
+            tool_type: "function".to_string(),
+            function: crate::backend::types::FunctionDefinition {
+                name: "lookup".to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+                strict: None,
+                unsupported: BTreeMap::new(),
+            },
+            unsupported: BTreeMap::from([(
+                "cache_control".to_string(),
+                serde_json::Value::Bool(true),
+            )]),
+        }]);
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("cache_control"));
+    }
+
+    #[test]
+    fn chat_receipt_rejects_unsupported_tool_function_fields() {
+        let mut request = chat_request();
+        request.tools = Some(vec![crate::backend::types::Tool {
+            tool_type: "function".to_string(),
+            function: crate::backend::types::FunctionDefinition {
+                name: "lookup".to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+                strict: None,
+                unsupported: BTreeMap::from([(
+                    "x-strict-mode".to_string(),
+                    serde_json::Value::Bool(true),
+                )]),
+            },
+            unsupported: BTreeMap::new(),
+        }]);
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("x-strict-mode"));
     }
 
     #[test]

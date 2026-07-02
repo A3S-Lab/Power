@@ -3539,6 +3539,7 @@ mod tests {
             description: Some("Look up a value".to_string()),
             parameters: serde_json::json!({"type": "object"}),
             strict: Some(true),
+            unsupported: BTreeMap::new(),
         }]);
         request.function_call = Some(crate::api::types::LegacyFunctionChoice::Specific(
             crate::api::types::LegacyFunctionChoiceSpecific {
@@ -3562,13 +3563,16 @@ mod tests {
                 description: None,
                 parameters: serde_json::json!({"type": "object"}),
                 strict: None,
+                unsupported: BTreeMap::new(),
             },
+            unsupported: BTreeMap::new(),
         }]);
         request.functions = Some(vec![crate::backend::types::FunctionDefinition {
             name: "lookup".to_string(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
             strict: None,
+            unsupported: BTreeMap::new(),
         }]);
         let receipt = chat_receipt(&chat_request()).unwrap();
 
@@ -3577,6 +3581,54 @@ mod tests {
         assert!(err
             .to_string()
             .contains("tools and legacy functions cannot both be receipt-bound"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_unsupported_tool_fields() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.tools = Some(vec![crate::backend::types::Tool {
+            tool_type: "function".to_string(),
+            function: crate::backend::types::FunctionDefinition {
+                name: "lookup".to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+                strict: None,
+                unsupported: BTreeMap::new(),
+            },
+            unsupported: BTreeMap::from([(
+                "cache_control".to_string(),
+                serde_json::Value::Bool(true),
+            )]),
+        }]);
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err.to_string().contains("cache_control"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_unsupported_tool_function_fields() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.tools = Some(vec![crate::backend::types::Tool {
+            tool_type: "function".to_string(),
+            function: crate::backend::types::FunctionDefinition {
+                name: "lookup".to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+                strict: None,
+                unsupported: BTreeMap::from([(
+                    "x-strict-mode".to_string(),
+                    serde_json::Value::Bool(true),
+                )]),
+            },
+            unsupported: BTreeMap::new(),
+        }]);
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err.to_string().contains("x-strict-mode"));
     }
 
     #[test]
