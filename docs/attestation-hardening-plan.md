@@ -148,6 +148,10 @@ Landed in the current working tree:
 - Fixed proxy backend endpoint URL construction to use a URL parser, preserving
   upstream base paths, dropping stale query/fragment components, and
   percent-encoding configured effective-prompt digest path segments.
+- Made proxy effective-prompt digest collection leave image-bearing chat
+  requests absent by default and fail closed when the digest endpoint is
+  required, avoiding text rendered-prompt overclaims for opaque multimodal
+  proxy paths.
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.
@@ -712,7 +716,10 @@ Current implementation:
   `chat.rendered-prompt` SHA-256 claim. Unsupported endpoints leave
   `effective_prompt` absent unless
   `proxy_effective_prompt_digest_required = true`; malformed digests fail
-  closed.
+  closed. Image-bearing proxy chat requests leave `effective_prompt` absent
+  unless a future claim type can represent the exact multimodal prompt; when
+  the digest endpoint is required, those opaque image-bearing requests fail
+  closed instead.
 - mistralrs text chat emits `kind = "chat.prompt-token-ids"` with a
   domain-separated SHA-256 over the exact token IDs produced by
   `Model::tokenize(..., add_special_tokens = true, add_generation_prompt =
@@ -726,8 +733,9 @@ Remaining gap:
   chat renderers (llama.cpp and picolm), and for proxy upstreams that implement
   the explicit digest endpoint. mistralrs text chat is covered by
   prompt-token-ID digest. llama.cpp, picolm, and mistralrs vision/multimodal
-  paths still leave `effective_prompt` absent until they can expose the exact
-  prompt representation submitted to the model.
+  paths, plus proxy image-bearing chat paths, still leave `effective_prompt`
+  absent until they can expose the exact prompt representation submitted to the
+  model.
 
 Remaining code changes:
 
@@ -748,7 +756,7 @@ Tests:
 - Template override changes the effective prompt-policy or receipt hash for
   backends that expose `effective_prompt`.
 - Receipt generation is available for streaming and non-streaming responses.
-- llama.cpp, picolm, and mistralrs image-bearing chat paths keep
+- llama.cpp, picolm, mistralrs, and proxy image-bearing chat paths keep
   `effective_prompt` absent unless the backend can expose the exact
   post-template multimodal representation.
 - Shared image-input detection covers top-level request images, per-message

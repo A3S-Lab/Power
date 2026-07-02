@@ -162,6 +162,15 @@ impl Backend for ProxyBackend {
             return Ok(None);
         }
 
+        if request.has_image_inputs() {
+            if self.config.proxy_effective_prompt_digest_required {
+                return Err(PowerError::InferenceFailed(
+                    "proxy effective prompt digest is required, but image-bearing chat requests must leave effective_prompt absent unless the exact multimodal prompt representation is exposed".to_string(),
+                ));
+            }
+            return Ok(None);
+        }
+
         let url = self.effective_prompt_digest_url(model_name)?;
         let mut body = build_chat_body(model_name, request);
         if let Some(obj) = body.as_object_mut() {
@@ -732,6 +741,12 @@ mod tests {
         }
     }
 
+    fn image_chat_req() -> ChatRequest {
+        let mut request = chat_req();
+        request.messages[0].images = Some(vec!["aGVsbG8=".to_string()]);
+        request
+    }
+
     #[test]
     fn build_chat_body_maps_params() {
         let body = build_chat_body("llama-70b", &chat_req());
@@ -945,6 +960,34 @@ mod tests {
             .await
             .unwrap();
         assert!(digest.is_none());
+    }
+
+    #[tokio::test]
+    async fn effective_prompt_digest_optional_image_request_is_absent_without_upstream_lookup() {
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            proxy_effective_prompt_digest: true,
+            ..Default::default()
+        }));
+
+        let digest = backend
+            .effective_chat_prompt_digest("llama-70b", &image_chat_req())
+            .await
+            .unwrap();
+        assert!(digest.is_none());
+    }
+
+    #[tokio::test]
+    async fn effective_prompt_digest_required_image_request_fails_closed() {
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            proxy_effective_prompt_digest_required: true,
+            ..Default::default()
+        }));
+
+        let err = backend
+            .effective_chat_prompt_digest("llama-70b", &image_chat_req())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("image-bearing"));
     }
 
     #[tokio::test]
