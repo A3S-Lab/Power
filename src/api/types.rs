@@ -313,6 +313,10 @@ pub struct EmbeddingRequest {
     /// Output format. Power currently supports "float" (default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoding_format: Option<String>,
+    /// Requested embedding dimension override. Power currently returns the
+    /// model's native embedding dimension and rejects explicit overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<u32>,
 }
 
 /// Input to embedding endpoint - single string or array of strings.

@@ -216,6 +216,9 @@ Landed in the current working tree:
 - Made OpenAI embeddings request encoding explicit: the endpoint accepts the
   default float output or `encoding_format = "float"` and rejects unsupported
   formats such as `base64` instead of silently returning float vectors.
+- Made OpenAI embeddings `dimensions` explicit and rejected for now, avoiding
+  silent fallback to native model dimensions when a client requests an output
+  dimension override.
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.

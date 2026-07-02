@@ -25,6 +25,15 @@ pub async fn handler(
         )
         .into_response();
     }
+    if let Some(dimensions) = request.dimensions {
+        return openai_error(
+            "unsupported_embedding_dimensions",
+            &format!(
+                "unsupported embeddings dimensions value {dimensions}; this endpoint returns the model's native embedding dimension"
+            ),
+        )
+        .into_response();
+    }
 
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
@@ -293,6 +302,31 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("only 'float' is supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_embeddings_rejects_dimensions_override() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","input":"hello","dimensions":2}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_embedding_dimensions");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("native embedding dimension"));
     }
 
     #[tokio::test]
