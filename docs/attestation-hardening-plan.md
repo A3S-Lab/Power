@@ -150,6 +150,9 @@ Landed in the current working tree:
   detecting conflicts with explicit effective-prompt absence.
 - Tightened verifier CLI effective-prompt backend/kind pins so surrounding
   whitespace is ignored and blank values do not become accidental policy pins.
+- Made `a3s-power-verify --receipt-chat-request-file` require
+  `effective_prompt` absence by default for image-bearing chat requests unless
+  the verifier explicitly pins an effective-prompt digest/backend/kind.
 - Added receipt coverage and verifier pins for `stream_options`, so clients can
   distinguish streaming output protocol choices such as `include_usage`.
 - Added `verify_receipt_matches_chat_request()` and

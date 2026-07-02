@@ -211,7 +211,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         "--receipt-tool-choice-digest",
         opts.receipt_tool_choice_digest.as_deref(),
     )?;
-    let expected_receipt = opts.expected_receipt(
+    let mut expected_receipt = opts.expected_receipt(
         expected_receipt_input_digest,
         expected_receipt_decoding_parameters_digest,
         expected_receipt_stream_options_digest,
@@ -221,6 +221,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         expected_receipt_tool_choice_digest,
         expected_effective_prompt_digest.clone(),
     );
+    apply_image_receipt_prompt_absence_default(&mut expected_receipt, receipt_request.as_ref());
 
     let hardware_verifier = if opts.allow_offline {
         None
@@ -1067,6 +1068,23 @@ fn normalized_optional_string_arg(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn apply_image_receipt_prompt_absence_default(
+    expected: &mut ExpectedReceipt,
+    receipt_request: Option<&ReceiptRequest>,
+) {
+    let Some(ReceiptRequest::Chat(request)) = receipt_request else {
+        return;
+    };
+    if !request.has_image_inputs()
+        || expected.effective_prompt_digest.is_some()
+        || expected.effective_prompt_backend.is_some()
+        || expected.effective_prompt_kind.is_some()
+    {
+        return;
+    }
+    expected.effective_prompt_absent = true;
+}
+
 fn parse_u32_arg(flag: &str, value: &str) -> anyhow::Result<u32> {
     value
         .parse::<u32>()
@@ -1391,12 +1409,12 @@ fn attestation_url(
 mod tests {
     use super::*;
     use a3s_power::api::receipt::{
-        chat_receipt_with_runtime_policy, completion_receipt_with_runtime_policy,
-        receipt_decoding_parameters_digest, receipt_digest, ReceiptDecodingPolicy,
-        ReceiptInputDigest, ReceiptRequestType,
+        chat_receipt_with_runtime_policy, chat_receipt_with_runtime_policy_and_effective_prompt,
+        completion_receipt_with_runtime_policy, receipt_decoding_parameters_digest, receipt_digest,
+        ReceiptDecodingPolicy, ReceiptInputDigest, ReceiptRequestType,
     };
     use a3s_power::api::types::{ChatCompletionMessage, ChatCompletionRequest, CompletionRequest};
-    use a3s_power::backend::types::MessageContent;
+    use a3s_power::backend::types::{EffectivePromptDigest, MessageContent};
     use a3s_power::tee::attestation::TeeType;
     use a3s_power::tee::attestation::{
         build_claims_report_data, AttestationClaimsV2, DecodingPolicyClaim, RuntimePolicyClaim,
@@ -1509,6 +1527,12 @@ mod tests {
         }
     }
 
+    fn image_chat_request() -> ChatCompletionRequest {
+        let mut request = chat_request();
+        request.messages[0].images = Some(vec!["aGVsbG8=".to_string()]);
+        request
+    }
+
     fn completion_request() -> CompletionRequest {
         CompletionRequest {
             model: "test-model".to_string(),
@@ -1570,6 +1594,32 @@ mod tests {
         std::fs::write(request_file.path(), serde_json::to_vec(&request).unwrap()).unwrap();
 
         (report_file, receipt_file, request_file)
+    }
+
+    fn write_report_receipt_and_image_chat_request_files() -> (
+        tempfile::NamedTempFile,
+        tempfile::NamedTempFile,
+        tempfile::NamedTempFile,
+        EffectivePromptDigest,
+    ) {
+        let receipt_file = tempfile::NamedTempFile::new().unwrap();
+        let request_file = tempfile::NamedTempFile::new().unwrap();
+        let runtime_policy = runtime_policy();
+        let report_file = write_runtime_report_file(runtime_policy.clone());
+        let request = image_chat_request();
+        let effective_prompt =
+            EffectivePromptDigest::chat_rendered_prompt("test-backend", "rendered image prompt");
+        let receipt = chat_receipt_with_runtime_policy_and_effective_prompt(
+            &request,
+            Some(runtime_policy),
+            Some(effective_prompt.clone()),
+        )
+        .unwrap();
+
+        std::fs::write(receipt_file.path(), serde_json::to_vec(&receipt).unwrap()).unwrap();
+        std::fs::write(request_file.path(), serde_json::to_vec(&request).unwrap()).unwrap();
+
+        (report_file, receipt_file, request_file, effective_prompt)
     }
 
     fn write_report_receipt_and_completion_request_files() -> (
@@ -2610,6 +2660,46 @@ mod tests {
             receipt_file.path().display().to_string(),
             "--receipt-chat-request-file".to_string(),
             request_file.path().display().to_string(),
+            "--allow-offline".to_string(),
+        ];
+
+        run(&args).unwrap();
+    }
+
+    #[test]
+    fn test_run_rejects_image_receipt_effective_prompt_without_explicit_pin() {
+        let (report_file, receipt_file, request_file, _) =
+            write_report_receipt_and_image_chat_request_files();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--receipt-file".to_string(),
+            receipt_file.path().display().to_string(),
+            "--receipt-chat-request-file".to_string(),
+            request_file.path().display().to_string(),
+            "--allow-offline".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("effective prompt digest is present"));
+    }
+
+    #[test]
+    fn test_run_allows_image_receipt_effective_prompt_with_explicit_pin() {
+        let (report_file, receipt_file, request_file, effective_prompt) =
+            write_report_receipt_and_image_chat_request_files();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--receipt-file".to_string(),
+            receipt_file.path().display().to_string(),
+            "--receipt-chat-request-file".to_string(),
+            request_file.path().display().to_string(),
+            "--effective-prompt-digest".to_string(),
+            effective_prompt.sha256,
             "--allow-offline".to_string(),
         ];
 
