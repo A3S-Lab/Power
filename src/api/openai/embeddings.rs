@@ -16,6 +16,15 @@ pub async fn handler(
     Json(request): Json<EmbeddingRequest>,
 ) -> impl IntoResponse {
     let model_name = request.model.clone();
+    if let Some(unsupported_format) = unsupported_embedding_encoding_format(&request) {
+        return openai_error(
+            "unsupported_encoding_format",
+            &format!(
+                "unsupported embeddings encoding_format '{unsupported_format}'; only 'float' is supported"
+            ),
+        )
+        .into_response();
+    }
 
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
@@ -129,6 +138,13 @@ pub async fn handler(
     }
 }
 
+fn unsupported_embedding_encoding_format(request: &EmbeddingRequest) -> Option<&str> {
+    match request.encoding_format.as_deref() {
+        Some("float") | None => None,
+        Some(format) => Some(format),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
@@ -221,6 +237,62 @@ mod tests {
         assert_eq!(json["data"][0]["object"], "embedding");
 
         std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_embeddings_success_explicit_float() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","input":"hello","encoding_format":"float"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["object"], "list");
+        assert_eq!(json["data"][0]["embedding"].as_array().unwrap().len(), 3);
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    async fn test_openai_embeddings_rejects_base64_encoding_format() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","input":"hello","encoding_format":"base64"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_encoding_format");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("only 'float' is supported"));
     }
 
     #[tokio::test]

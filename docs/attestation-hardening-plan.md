@@ -213,6 +213,9 @@ Landed in the current working tree:
   exactly one embedding vector per requested input item.
 - Tightened proxy embeddings shape validation so upstream vectors must be
   non-empty and have consistent dimensions within each response.
+- Made OpenAI embeddings request encoding explicit: the endpoint accepts the
+  default float output or `encoding_format = "float"` and rejects unsupported
+  formats such as `base64` instead of silently returning float vectors.
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.

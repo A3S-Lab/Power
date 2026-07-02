@@ -310,7 +310,7 @@ pub struct EmbeddingRequest {
     /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,
-    /// Output format: "float" (default) or "base64".
+    /// Output format. Power currently supports "float" (default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoding_format: Option<String>,
 }
