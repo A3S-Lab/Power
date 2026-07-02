@@ -755,15 +755,7 @@ fn normalize_nras_rest_endpoint(url: Option<&str>) -> Result<String> {
         return Ok(DEFAULT_NRAS_ATTEST_GPU_URL.to_string());
     };
 
-    let endpoint = if url.ends_with("/v4/attest/gpu") {
-        url.to_string()
-    } else if url.contains("/v") {
-        url.to_string()
-    } else {
-        format!("{}/v4/attest/gpu", url.trim_end_matches('/'))
-    };
-
-    let parsed = reqwest::Url::parse(&endpoint)
+    let mut parsed = reqwest::Url::parse(url)
         .map_err(|e| PowerError::Config(format!("gpu_attestation.nras_url is invalid: {e}")))?;
     if parsed.scheme() != "https" {
         return Err(PowerError::Config(format!(
@@ -777,7 +769,36 @@ fn normalize_nras_rest_endpoint(url: Option<&str>) -> Result<String> {
                 .to_string(),
         ));
     }
-    Ok(endpoint)
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(PowerError::Config(
+            "gpu_attestation.nras_url must not include query parameters or fragments".to_string(),
+        ));
+    }
+
+    let trimmed_path = parsed.path().trim_end_matches('/').to_string();
+    if trimmed_path.is_empty() {
+        parsed.set_path("/v4/attest/gpu");
+    } else if trimmed_path.ends_with("/v4/attest/gpu") {
+        parsed.set_path(&trimmed_path);
+    } else if contains_versioned_path_segment(&trimmed_path) {
+        return Err(PowerError::Config(format!(
+            "gpu_attestation.nras_url must be a service root/base path or the full /v4/attest/gpu endpoint, got path {:?}",
+            parsed.path()
+        )));
+    } else {
+        parsed.set_path(&format!("{trimmed_path}/v4/attest/gpu"));
+    }
+
+    Ok(parsed.to_string())
+}
+
+fn contains_versioned_path_segment(path: &str) -> bool {
+    path.split('/').any(|segment| {
+        let Some(rest) = segment.strip_prefix('v') else {
+            return false;
+        };
+        !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())
+    })
 }
 
 fn nras_rest_evidence_list_from_json(
@@ -1921,11 +1942,59 @@ mod tests {
     }
 
     #[test]
+    fn nras_rest_endpoint_accepts_https_base_path() {
+        let endpoint = normalize_nras_rest_endpoint(Some("https://proxy.example/nras")).unwrap();
+
+        assert_eq!(endpoint, "https://proxy.example/nras/v4/attest/gpu");
+    }
+
+    #[test]
+    fn nras_rest_endpoint_accepts_full_attest_gpu_endpoint() {
+        let endpoint =
+            normalize_nras_rest_endpoint(Some("https://proxy.example/nras/v4/attest/gpu/"))
+                .unwrap();
+
+        assert_eq!(endpoint, "https://proxy.example/nras/v4/attest/gpu");
+    }
+
+    #[test]
     fn nras_rest_endpoint_rejects_http() {
         let err =
             normalize_nras_rest_endpoint(Some("http://nras.attestation.nvidia.com")).unwrap_err();
 
         assert!(err.to_string().contains("must use https"));
+    }
+
+    #[test]
+    fn nras_rest_endpoint_rejects_unsupported_versioned_path() {
+        let err =
+            normalize_nras_rest_endpoint(Some("https://proxy.example/v3/attest/gpu")).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("service root/base path or the full /v4/attest/gpu endpoint"));
+    }
+
+    #[test]
+    fn nras_rest_endpoint_rejects_query_parameters() {
+        let err = normalize_nras_rest_endpoint(Some(
+            "https://nras.attestation.nvidia.com/v4/attest/gpu?token=secret",
+        ))
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("must not include query parameters"));
+    }
+
+    #[test]
+    fn nras_rest_endpoint_rejects_fragments() {
+        let err = normalize_nras_rest_endpoint(Some(
+            "https://nras.attestation.nvidia.com/v4/attest/gpu#fragment",
+        ))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("fragments"));
     }
 
     #[test]

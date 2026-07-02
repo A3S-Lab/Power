@@ -587,7 +587,7 @@ gpu_attestation {
 | `gpu_attestation.nvattest_verifier` | `"remote"` | `nvattest attest --verifier` value; `gpu-confidential` mode requires `"remote"` for NRAS |
 | `gpu_attestation.nvattest_gpu_evidence_source` | `"nvml"` | `nvattest collect-evidence --gpu-evidence-source`; use `"nvml"` for H100 confidential-computing deployments |
 | `gpu_attestation.nvattest_gpu_architecture` | `null` | GPU architecture value required only for `corelib` evidence collection |
-| `gpu_attestation.nras_url` | `null` | Optional NRAS URL. For `nvattest-cli`, passed to `nvattest attest --nras-url`; for `nras-rest`, may be the service root or full `/v4/attest/gpu` endpoint. In `gpu-confidential` production policy, custom NRAS URLs must use HTTPS and must not include embedded credentials |
+| `gpu_attestation.nras_url` | `null` | Optional NRAS URL. For `nvattest-cli`, passed to `nvattest attest --nras-url`; for `nras-rest`, may be a service root/base path or full `/v4/attest/gpu` endpoint. In `gpu-confidential` production policy, custom NRAS URLs must use HTTPS and must not include embedded credentials |
 | `gpu_attestation.nras_gpu_architecture` | `null` | GPU architecture for `nras-rest`: `"HOPPER"` or `"BLACKWELL"` |
 | `gpu_attestation.nras_claims_version` | `"3.0"` | NVIDIA NRAS REST claims version (`"2.0"` or `"3.0"`) |
 | `gpu_attestation.nras_bearer_token_env` | `null` | Optional environment variable name containing a bearer token for direct NRAS REST calls; the name is trimmed and must be non-empty; use this instead of embedding credentials in `nras_url` |
@@ -702,8 +702,11 @@ GPU confidential mode requires clients to send a 64-character hex nonce to
 array, or an `nvattest collect-evidence` wrapper whose embedded nonce matches
 the attestation nonce. Power validates `evidence` and `certificate` locally as
 non-empty base64/base64url before posting to NRAS. In the production profile,
-the default NVIDIA NRAS endpoint is used when `nras_url` is omitted; any
-configured override must use HTTPS.
+the default NVIDIA NRAS endpoint is used when `nras_url` is omitted. Direct
+`nras-rest` overrides must use HTTPS and may be a service root/base path that
+Power expands to `/v4/attest/gpu`, or the exact full `/v4/attest/gpu`
+endpoint; query strings, fragments, embedded credentials, and unsupported
+versioned paths are rejected.
 If `nras_bearer_token_env` is configured, it names the environment variable
 holding the bearer token; Power trims the name and rejects empty names before
 making NRAS requests.
