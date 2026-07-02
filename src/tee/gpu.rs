@@ -27,6 +27,7 @@ use crate::error::{PowerError, Result};
 use crate::tee::attestation::{GpuDeviceClaim, GpuDeviceValidationClaim, GpuEvidenceClaim};
 
 const DEFAULT_NRAS_ATTEST_GPU_URL: &str = "https://nras.attestation.nvidia.com/v4/attest/gpu";
+const MAX_GPU_EVIDENCE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Source of GPU CC evidence bytes.
 #[derive(Debug, Clone)]
@@ -646,6 +647,7 @@ fn decode_hex_bytes(field: &str, value: &str) -> Result<Vec<u8>> {
             "{field}_hex must be an even-length hex string"
         )));
     }
+    validate_evidence_source_size(field, (hex.len() / 2) as u64)?;
     hex::decode(hex).map_err(|e| {
         PowerError::Config(format!(
             "{field}_hex must contain raw hex-encoded bytes: {e}"
@@ -654,6 +656,20 @@ fn decode_hex_bytes(field: &str, value: &str) -> Result<Vec<u8>> {
 }
 
 async fn read_nonempty_file(field: &str, path: &Path) -> Result<Vec<u8>> {
+    let metadata = tokio::fs::metadata(path).await.map_err(|e| {
+        PowerError::Config(format!(
+            "failed to stat {field}_path '{}': {e}",
+            path.display()
+        ))
+    })?;
+    if metadata.len() == 0 {
+        return Err(PowerError::Config(format!(
+            "{field}_path '{}' is empty",
+            path.display()
+        )));
+    }
+    validate_evidence_source_size(field, metadata.len())?;
+
     let bytes = tokio::fs::read(path).await.map_err(|e| {
         PowerError::Config(format!(
             "failed to read {field}_path '{}': {e}",
@@ -667,6 +683,16 @@ async fn read_nonempty_file(field: &str, path: &Path) -> Result<Vec<u8>> {
         )));
     }
     Ok(bytes)
+}
+
+fn validate_evidence_source_size(field: &str, len: u64) -> Result<()> {
+    if len > MAX_GPU_EVIDENCE_SOURCE_BYTES {
+        return Err(PowerError::Config(format!(
+            "{field} must be at most {} bytes, got {len}",
+            MAX_GPU_EVIDENCE_SOURCE_BYTES
+        )));
+    }
+    Ok(())
 }
 
 fn sha256_bytes(bytes: &[u8]) -> Vec<u8> {
@@ -1698,6 +1724,45 @@ mod tests {
             claim.verdict_digest.map(hex::encode),
             Some(storage::compute_sha256(b"nras-verdict"))
         );
+    }
+
+    #[test]
+    fn gpu_evidence_source_size_limit_allows_boundary() {
+        validate_evidence_source_size("gpu_attestation.evidence", MAX_GPU_EVIDENCE_SOURCE_BYTES)
+            .unwrap();
+    }
+
+    #[test]
+    fn gpu_evidence_source_size_limit_rejects_oversized_len() {
+        let err = validate_evidence_source_size(
+            "gpu_attestation.evidence",
+            MAX_GPU_EVIDENCE_SOURCE_BYTES + 1,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("must be at most"));
+    }
+
+    #[tokio::test]
+    async fn configured_provider_rejects_oversized_file_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let evidence_path = dir.path().join("gpu.evidence");
+        let file = std::fs::File::create(&evidence_path).unwrap();
+        file.set_len(MAX_GPU_EVIDENCE_SOURCE_BYTES + 1).unwrap();
+
+        let config = GpuAttestationConfig {
+            evidence_path: Some(evidence_path),
+            ..Default::default()
+        };
+        let provider = ConfiguredGpuEvidenceProvider::from_config(&config)
+            .unwrap()
+            .unwrap();
+
+        let err = provider.evidence_claim().await.unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("gpu_attestation.evidence must be at most"));
     }
 
     #[test]

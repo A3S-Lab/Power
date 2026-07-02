@@ -579,10 +579,10 @@ gpu_attestation {
 | `gpu.main_gpu` | `0` | Primary GPU index |
 | `gpu_attestation.source` | `"configured"` | GPU CC evidence source: `"configured"` for file/hex bytes, `"nvattest-cli"` for live NVIDIA `nvattest`, or `"nras-rest"` for direct NVIDIA NRAS REST attestation |
 | `gpu_attestation.provider` | `"nvidia-nras"` | Provider label for NVIDIA GPU confidential-computing evidence claims; `gpu-confidential` production policy requires `"nvidia-nras"` |
-| `gpu_attestation.evidence_path` | `null` | Path to raw NVIDIA GPU CC evidence bytes; mutually exclusive with `evidence_hex`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when file-backed evidence is configured |
-| `gpu_attestation.evidence_hex` | `null` | Hex-encoded raw NVIDIA GPU CC evidence bytes; mutually exclusive with `evidence_path` |
-| `gpu_attestation.verdict_path` | `null` | Path to raw NVIDIA NRAS verdict bytes; mutually exclusive with `verdict_hex`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when configured evidence uses a file-backed verdict |
-| `gpu_attestation.verdict_hex` | `null` | Hex-encoded raw NVIDIA NRAS verdict bytes; mutually exclusive with `verdict_path` |
+| `gpu_attestation.evidence_path` | `null` | Path to raw NVIDIA GPU CC evidence bytes; mutually exclusive with `evidence_hex`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when file-backed evidence is configured; configured evidence sources are capped at 64 MiB |
+| `gpu_attestation.evidence_hex` | `null` | Hex-encoded raw NVIDIA GPU CC evidence bytes; mutually exclusive with `evidence_path`; configured evidence sources are capped at 64 MiB |
+| `gpu_attestation.verdict_path` | `null` | Path to raw NVIDIA NRAS verdict bytes; mutually exclusive with `verdict_hex`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when configured evidence uses a file-backed verdict; configured verdict sources are capped at 64 MiB |
+| `gpu_attestation.verdict_hex` | `null` | Hex-encoded raw NVIDIA NRAS verdict bytes; mutually exclusive with `verdict_path`; configured verdict sources are capped at 64 MiB |
 | `gpu_attestation.nvattest_path` | `"nvattest"` | Path to NVIDIA's `nvattest` CLI when `source = "nvattest-cli"`; `gpu-confidential` production policy requires an absolute path to an existing executable file |
 | `gpu_attestation.nvattest_verifier` | `"remote"` | `nvattest attest --verifier` value; `gpu-confidential` mode requires `"remote"` for NRAS |
 | `gpu_attestation.nvattest_gpu_evidence_source` | `"nvml"` | `nvattest collect-evidence --gpu-evidence-source`; use `"nvml"` for H100 confidential-computing deployments |
@@ -668,6 +668,7 @@ When `gpu_attestation.source = "configured"`, Power reads externally produced
 GPU evidence and verdict bytes from file or hex configuration. Startup verifies
 that evidence and verdict sources exist, and file-backed sources must use
 absolute paths to existing non-empty regular files in the production profile.
+Configured evidence and verdict byte sources are capped at 64 MiB.
 Each nonce-bound `/v1/attestation` call then requires the configured verdict to
 be NVIDIA nvattest or NRAS JSON whose device `eat_nonce` matches the request
 nonce; stale or non-parseable verdicts fail closed instead of being rebound to a

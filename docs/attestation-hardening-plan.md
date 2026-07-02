@@ -175,6 +175,8 @@ Landed in the current working tree:
 - Tightened direct `nras-rest` evidence normalization so DeviceEvidence
   `evidence` and `certificate` fields must be non-empty base64/base64url before
   Power posts them to NVIDIA NRAS.
+- Added a 64 MiB cap for configured GPU evidence and verdict file/hex byte
+  sources so malformed deployments fail before unbounded reads or hex decodes.
 
 Still open:
 
