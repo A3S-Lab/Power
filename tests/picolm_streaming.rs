@@ -104,6 +104,7 @@ fn req(
         response_format,
         tools: None,
         tool_choice: None,
+        parallel_tool_calls: None,
         repeat_last_n: None,
         penalize_newline: None,
         num_batch: None,

@@ -139,6 +139,17 @@ pub struct ChatMessage {
     pub images: Option<Vec<String>>,
 }
 
+impl ChatMessage {
+    /// Return true when this message carries any image input.
+    pub fn has_image_inputs(&self) -> bool {
+        self.images
+            .as_ref()
+            .is_some_and(|images| !images.is_empty())
+            || matches!(&self.content, MessageContent::Parts(parts)
+                if parts.iter().any(|part| matches!(part, ContentPart::ImageUrl { .. })))
+    }
+}
+
 /// Request for chat-based inference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -231,6 +242,16 @@ pub struct ChatRequest {
     /// Each entry is a base64-encoded image (with or without data URI prefix).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+}
+
+impl ChatRequest {
+    /// Return true when the request carries any top-level or per-message image input.
+    pub fn has_image_inputs(&self) -> bool {
+        self.images
+            .as_ref()
+            .is_some_and(|images| !images.is_empty())
+            || self.messages.iter().any(ChatMessage::has_image_inputs)
+    }
 }
 
 /// Digest of the exact prompt representation a backend submits to the model.
@@ -462,6 +483,30 @@ mod tests {
         }"#;
         let msg: ChatMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.content.text(), "What is this?");
+    }
+
+    #[test]
+    fn test_chat_request_has_image_inputs_covers_all_sources() {
+        let mut request: ChatRequest =
+            serde_json::from_str(r#"{"messages":[{"role":"user","content":"hello"}]}"#).unwrap();
+
+        assert!(!request.has_image_inputs());
+
+        request.messages[0].images = Some(vec!["message-base64-image".to_string()]);
+        assert!(request.has_image_inputs());
+
+        request.messages[0].images = None;
+        request.messages[0].content = MessageContent::Parts(vec![ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: "data:image/png;base64,part-base64-image".to_string(),
+                detail: None,
+            },
+        }]);
+        assert!(request.has_image_inputs());
+
+        request.messages[0].content = MessageContent::Text("hello".to_string());
+        request.images = Some(vec!["request-base64-image".to_string()]);
+        assert!(request.has_image_inputs());
     }
 
     #[test]

@@ -56,16 +56,6 @@ use super::picolm_ops::tensor_cache::TensorCache;
 #[cfg(feature = "picolm")]
 use super::picolm_ops::tokenizer::BpeTokenizer;
 
-#[cfg(any(feature = "picolm", test))]
-fn request_has_picolm_images(request: &ChatRequest) -> bool {
-    request.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
-        || request.messages.iter().any(|m| {
-            m.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
-                || matches!(&m.content, MessageContent::Parts(parts)
-                    if parts.iter().any(|p| matches!(p, crate::backend::types::ContentPart::ImageUrl { .. })))
-        })
-}
-
 // ── Loaded model state ────────────────────────────────────────────────────────
 
 #[cfg(feature = "picolm")]
@@ -1674,7 +1664,7 @@ impl Backend for PicolmBackend {
 
         #[cfg(feature = "picolm")]
         {
-            if request_has_picolm_images(&request) {
+            if request.has_image_inputs() {
                 return Err(PowerError::InvalidFormat(
                     "picolm does not support image inputs; use a vision-capable backend"
                         .to_string(),
@@ -1869,7 +1859,7 @@ impl Backend for PicolmBackend {
 
         #[cfg(feature = "picolm")]
         {
-            if request_has_picolm_images(request) {
+            if request.has_image_inputs() {
                 return Ok(None);
             }
 
@@ -2039,12 +2029,12 @@ fn completion_to_chat(req: CompletionRequest) -> ChatRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::types::{ContentPart, ImageUrl};
 
     fn test_config() -> Arc<PowerConfig> {
         Arc::new(PowerConfig::default())
     }
 
+    #[cfg(feature = "picolm")]
     fn test_chat_request() -> ChatRequest {
         ChatRequest {
             messages: vec![ChatMessage {
@@ -2104,28 +2094,6 @@ mod tests {
         assert!(!b.supports(&ModelFormat::SafeTensors));
         assert!(!b.supports(&ModelFormat::HuggingFace));
         assert!(!b.supports(&ModelFormat::Vision));
-    }
-
-    #[test]
-    fn test_request_has_picolm_images_covers_all_image_sources() {
-        let mut request = test_chat_request();
-        assert!(!request_has_picolm_images(&request));
-
-        request.messages[0].images = Some(vec!["message-base64-image".to_string()]);
-        assert!(request_has_picolm_images(&request));
-
-        request.messages[0].images = None;
-        request.messages[0].content = MessageContent::Parts(vec![ContentPart::ImageUrl {
-            image_url: ImageUrl {
-                url: "data:image/png;base64,part-base64-image".to_string(),
-                detail: None,
-            },
-        }]);
-        assert!(request_has_picolm_images(&request));
-
-        request.messages[0].content = MessageContent::Text("Hello".to_string());
-        request.images = Some(vec!["request-base64-image".to_string()]);
-        assert!(request_has_picolm_images(&request));
     }
 
     #[cfg(feature = "picolm")]

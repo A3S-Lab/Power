@@ -65,16 +65,6 @@ async fn send_mistralrs_chat_result(
 }
 
 #[cfg(feature = "mistralrs")]
-fn request_has_mistralrs_images(request: &ChatRequest) -> bool {
-    request.messages.iter().any(|m| {
-        m.images.as_ref().is_some_and(|v| !v.is_empty())
-            || matches!(&m.content, super::types::MessageContent::Parts(parts) if
-                parts.iter().any(|p| matches!(p, super::types::ContentPart::ImageUrl { .. }))
-            )
-    }) || request.images.as_ref().is_some_and(|v| !v.is_empty())
-}
-
-#[cfg(feature = "mistralrs")]
 fn mistralrs_message_images(request: &ChatRequest, msg: &super::types::ChatMessage) -> Vec<String> {
     let mut images = Vec::new();
 
@@ -273,7 +263,7 @@ impl Backend for MistralRsBackend {
         use mistralrs::{RequestBuilder, TextMessageRole};
 
         // Check if this is a vision request (has images) and route accordingly.
-        let has_images = request_has_mistralrs_images(&request);
+        let has_images = request.has_image_inputs();
 
         // Try vision model first if images present, fall back to text model.
         let model = if has_images {
@@ -498,7 +488,7 @@ impl Backend for MistralRsBackend {
         model_name: &str,
         request: &ChatRequest,
     ) -> Result<Option<EffectivePromptDigest>> {
-        if request_has_mistralrs_images(request) {
+        if request.has_image_inputs() {
             return Ok(None);
         }
 
@@ -1079,37 +1069,6 @@ mod tests {
 
     #[cfg(feature = "mistralrs")]
     #[test]
-    fn test_mistralrs_image_detection_covers_top_level_images() {
-        let mut request = text_chat_request();
-        assert!(!request_has_mistralrs_images(&request));
-        request.images = Some(vec!["base64-image".to_string()]);
-        assert!(request_has_mistralrs_images(&request));
-    }
-
-    #[cfg(feature = "mistralrs")]
-    #[test]
-    fn test_mistralrs_image_detection_covers_message_images() {
-        let mut request = text_chat_request();
-        assert!(!request_has_mistralrs_images(&request));
-        request.messages[1].images = Some(vec!["message-base64-image".to_string()]);
-        assert!(request_has_mistralrs_images(&request));
-    }
-
-    #[cfg(feature = "mistralrs")]
-    #[test]
-    fn test_mistralrs_image_detection_covers_openai_parts() {
-        let mut request = text_chat_request();
-        request.messages[1].content = MessageContent::Parts(vec![ContentPart::ImageUrl {
-            image_url: ImageUrl {
-                url: "data:image/png;base64,abc".to_string(),
-                detail: None,
-            },
-        }]);
-        assert!(request_has_mistralrs_images(&request));
-    }
-
-    #[cfg(feature = "mistralrs")]
-    #[test]
     fn test_mistralrs_message_images_combines_supported_sources() {
         let mut request = text_chat_request();
         request.images = Some(vec!["request-base64-image".to_string()]);
@@ -1220,6 +1179,7 @@ mod tests {
             response_format: None,
             tools: None,
             tool_choice: None,
+            parallel_tool_calls: None,
             repeat_last_n: None,
             penalize_newline: None,
             num_batch: None,

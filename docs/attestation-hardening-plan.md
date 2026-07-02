@@ -168,6 +168,10 @@ Landed in the current working tree:
 - Tightened the GPU confidential verifier profile so it requires the top-level
   GPU evidence nonce claim in addition to structured device `eat_nonce`
   freshness checks.
+- Consolidated image-bearing chat request detection in
+  `ChatRequest::has_image_inputs()` and switched llama.cpp, picolm, and
+  mistralrs effective-prompt/rejection gates to that single source of truth, so
+  opaque multimodal paths keep `effective_prompt` absent consistently.
 
 Still open:
 
@@ -665,6 +669,8 @@ Tests:
 - llama.cpp, picolm, and mistralrs image-bearing chat paths keep
   `effective_prompt` absent unless the backend can expose the exact
   post-template multimodal representation.
+- Shared image-input detection covers top-level request images, per-message
+  image arrays, and OpenAI `image_url` content parts.
 
 ### Phase 8: Documentation and release notes
 

@@ -207,16 +207,6 @@ fn collect_llamacpp_openai_images(
 }
 
 #[cfg(any(feature = "llamacpp", test))]
-fn request_has_llamacpp_images(request: &ChatRequest) -> bool {
-    request.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
-        || request.messages.iter().any(|m| {
-            m.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
-                || matches!(&m.content, super::types::MessageContent::Parts(parts)
-                    if parts.iter().any(|p| matches!(p, super::types::ContentPart::ImageUrl { .. })))
-        })
-}
-
-#[cfg(any(feature = "llamacpp", test))]
 fn collect_llamacpp_chat_images(request: &ChatRequest) -> Result<Vec<String>> {
     let mut images = Vec::new();
 
@@ -567,7 +557,7 @@ impl Backend for LlamaCppBackend {
             PowerError::InferenceFailed(format!("Chat template rendering task failed: {e}"))
         })?;
 
-        let has_images = request_has_llamacpp_images(&request);
+        let has_images = request.has_image_inputs();
         ensure_llamacpp_images_supported(model_name, has_images, projector_path.is_some())?;
         if has_images {
             tracing::info!("Vision inference with multimodal projector");
@@ -690,7 +680,7 @@ impl Backend for LlamaCppBackend {
         model_name: &str,
         request: &ChatRequest,
     ) -> Result<Option<EffectivePromptDigest>> {
-        if request_has_llamacpp_images(request) {
+        if request.has_image_inputs() {
             return Ok(None);
         }
 
@@ -1792,14 +1782,6 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("message 3"), "error: {msg}");
         assert!(msg.contains("empty image data"), "error: {msg}");
-    }
-
-    #[test]
-    fn test_request_has_llamacpp_images_covers_top_level_images() {
-        let mut request = test_chat_request();
-        assert!(!request_has_llamacpp_images(&request));
-        request.images = Some(vec!["request-base64-image".to_string()]);
-        assert!(request_has_llamacpp_images(&request));
     }
 
     #[test]
