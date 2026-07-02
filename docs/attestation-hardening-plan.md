@@ -271,8 +271,11 @@ Landed in the current working tree:
 - Added text-completion `effective_prompt` receipt coverage for backends that
   own the exact submitted prompt representation. llama.cpp emits the raw text
   prompt digest; picolm and mistralrs reuse their completion-as-chat rendered
-  prompt/token-ID digest paths; proxy completions remain absent unless an exact
-  upstream representation is exposed later.
+  prompt/token-ID digest paths.
+- Extended opt-in proxy upstream effective-prompt digest support to text
+  completions. When configured, proxy completions send the OpenAI-compatible
+  completion body with `stream = false` to the digest endpoint and accept only
+  an upstream-declared `text.prompt` SHA-256 claim.
 - Tightened receipt well-formed verification so embedded runtime-policy digests
   must be 32-byte SHA-256 values, including prompt, decoding, and GPU execution
   digests.
@@ -338,10 +341,11 @@ Still open:
   parallel tool-call policy.
   llama.cpp and picolm text-only chat additionally emit an `effective_prompt`
   digest for the exact rendered chat prompt; text completions emit exact prompt
-  digests when the serving backend owns that representation; proxy can emit an
-  upstream-declared chat digest through an explicit opt-in endpoint; mistralrs
-  text chat emits a prompt-token-ID digest. Remaining opaque multimodal and
-  delegated paths leave that field absent.
+  digests when the serving backend owns that representation; proxy can emit
+  upstream-declared chat and text-completion digests through an explicit opt-in
+  endpoint; mistralrs text chat emits a prompt-token-ID digest. Remaining
+  opaque multimodal and delegated paths without an explicit digest endpoint
+  leave that field absent.
 
 ## Baseline Findings
 
@@ -777,10 +781,12 @@ Current implementation:
   `--receipt-file`, `--receipt-digest`, receipt policy digest pins,
   `--receipt-chat-request-file`, `--receipt-completion-request-file`, and
   `--effective-prompt-digest`.
-- Proxy backends can ask upstreams for an explicit rendered prompt digest before
-  inference with `proxy_effective_prompt_digest = true`. The upstream endpoint
-  receives the OpenAI-compatible chat body with `stream = false` and returns a
-  `chat.rendered-prompt` SHA-256 claim. Unsupported endpoints leave
+- Proxy backends can ask upstreams for an explicit prompt digest before
+  inference with `proxy_effective_prompt_digest = true`. For chat, the upstream
+  endpoint receives the OpenAI-compatible chat body with `stream = false` and
+  returns a `chat.rendered-prompt` SHA-256 claim. For text completions, it
+  receives the OpenAI-compatible completion body with `stream = false` and
+  returns a `text.prompt` SHA-256 claim. Unsupported endpoints leave
   `effective_prompt` absent unless
   `proxy_effective_prompt_digest_required = true`; malformed digests fail
   closed. Image-bearing proxy chat requests leave `effective_prompt` absent
@@ -798,11 +804,11 @@ Remaining gap:
 
 - Effective prompt digests are implemented for local deterministic text-only
   chat renderers (llama.cpp and picolm), and for proxy upstreams that implement
-  the explicit digest endpoint. mistralrs text chat is covered by
-  prompt-token-ID digest. llama.cpp, picolm, and mistralrs vision/multimodal
-  paths, plus proxy image-bearing chat paths, still leave `effective_prompt`
-  absent until they can expose the exact prompt representation submitted to the
-  model.
+  the explicit chat/completion digest endpoint. mistralrs text chat is covered
+  by prompt-token-ID digest. llama.cpp, picolm, and mistralrs vision/multimodal
+  paths, plus proxy image-bearing chat/completion paths, still leave
+  `effective_prompt` absent until they can expose the exact prompt
+  representation submitted to the model.
 
 Remaining code changes:
 

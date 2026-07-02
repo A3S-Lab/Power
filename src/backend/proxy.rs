@@ -221,31 +221,15 @@ impl Backend for ProxyBackend {
             obj.insert("stream".to_string(), false.into());
         }
 
-        let resp = self.http.post(&url).json(&body).send().await.map_err(|e| {
-            PowerError::InferenceFailed(format!(
-                "proxy effective prompt digest request to {url} failed: {e}"
-            ))
-        })?;
-
-        let status = resp.status();
-        if matches!(
-            status,
-            reqwest::StatusCode::NOT_FOUND
-                | reqwest::StatusCode::METHOD_NOT_ALLOWED
-                | reqwest::StatusCode::NOT_IMPLEMENTED
-        ) && !self.config.proxy_effective_prompt_digest_required
-        {
-            return Ok(None);
-        }
-
-        if !status.is_success() {
-            return Err(PowerError::InferenceFailed(format!(
-                "proxy upstream returned {status} for effective prompt digest"
-            )));
-        }
-
-        let json = read_effective_prompt_digest_response_json(resp).await?;
-        parse_effective_prompt_digest_response(&json).map(Some)
+        request_effective_prompt_digest(
+            &self.http,
+            &url,
+            &body,
+            self.config.proxy_effective_prompt_digest_required,
+            &["chat.rendered-prompt"],
+            "chat.rendered-prompt",
+        )
+        .await
     }
 
     async fn complete(
@@ -313,6 +297,47 @@ impl Backend for ProxyBackend {
         });
 
         Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+
+    async fn effective_completion_prompt_digest(
+        &self,
+        model_name: &str,
+        request: &CompletionRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        if !self.config.proxy_effective_prompt_digest
+            && !self.config.proxy_effective_prompt_digest_required
+        {
+            return Ok(None);
+        }
+
+        if request
+            .images
+            .as_ref()
+            .is_some_and(|images| !images.is_empty())
+        {
+            if self.config.proxy_effective_prompt_digest_required {
+                return Err(PowerError::InferenceFailed(
+                    "proxy effective prompt digest is required, but image-bearing completion requests must leave effective_prompt absent unless the exact multimodal prompt representation is exposed".to_string(),
+                ));
+            }
+            return Ok(None);
+        }
+
+        let url = self.effective_prompt_digest_url(model_name)?;
+        let mut body = build_completion_body(model_name, request);
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("stream".to_string(), false.into());
+        }
+
+        request_effective_prompt_digest(
+            &self.http,
+            &url,
+            &body,
+            self.config.proxy_effective_prompt_digest_required,
+            &["text.prompt"],
+            "text.prompt",
+        )
+        .await
     }
 
     async fn embed(
@@ -781,6 +806,41 @@ async fn read_effective_prompt_digest_response_json(
     .await
 }
 
+async fn request_effective_prompt_digest(
+    http: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    required: bool,
+    allowed_kinds: &[&str],
+    default_kind: &str,
+) -> Result<Option<EffectivePromptDigest>> {
+    let resp = http.post(url).json(body).send().await.map_err(|e| {
+        PowerError::InferenceFailed(format!(
+            "proxy effective prompt digest request to {url} failed: {e}"
+        ))
+    })?;
+
+    let status = resp.status();
+    if matches!(
+        status,
+        reqwest::StatusCode::NOT_FOUND
+            | reqwest::StatusCode::METHOD_NOT_ALLOWED
+            | reqwest::StatusCode::NOT_IMPLEMENTED
+    ) && !required
+    {
+        return Ok(None);
+    }
+
+    if !status.is_success() {
+        return Err(PowerError::InferenceFailed(format!(
+            "proxy upstream returned {status} for effective prompt digest"
+        )));
+    }
+
+    let json = read_effective_prompt_digest_response_json(resp).await?;
+    parse_effective_prompt_digest_response(&json, allowed_kinds, default_kind).map(Some)
+}
+
 async fn read_proxy_embeddings_response_json(
     response: reqwest::Response,
 ) -> Result<serde_json::Value> {
@@ -972,6 +1032,8 @@ fn configured_proxy_path_segments(path: &str) -> Result<Vec<&str>> {
 
 fn parse_effective_prompt_digest_response(
     json: &serde_json::Value,
+    allowed_kinds: &[&str],
+    default_kind: &str,
 ) -> Result<EffectivePromptDigest> {
     let claim = json.get("effective_prompt").unwrap_or(json);
     let sha256 = claim
@@ -994,10 +1056,11 @@ fn parse_effective_prompt_digest_response(
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("chat.rendered-prompt");
-    if kind != "chat.rendered-prompt" {
+        .unwrap_or(default_kind);
+    if !allowed_kinds.contains(&kind) {
         return Err(PowerError::InferenceFailed(format!(
-            "proxy effective prompt digest kind must be chat.rendered-prompt, got {kind}"
+            "proxy effective prompt digest kind must be one of {}, got {kind}",
+            allowed_kinds.join(", ")
         )));
     }
 
@@ -1383,6 +1446,47 @@ mod tests {
         request
     }
 
+    fn completion_req() -> CompletionRequest {
+        CompletionRequest {
+            prompt: "hi".to_string(),
+            session_id: None,
+            temperature: Some(0.5),
+            top_p: None,
+            max_tokens: Some(16),
+            stop: Some(vec!["END".to_string()]),
+            stream: true,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: Some(7),
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
+            stream_options: None,
+            images: None,
+            projector_path: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
+            num_parallel: None,
+            suffix: None,
+            context: None,
+        }
+    }
+
     #[test]
     fn build_chat_body_maps_params() {
         let body = build_chat_body("llama-70b", &chat_req());
@@ -1658,6 +1762,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn effective_completion_prompt_digest_default_is_absent_without_upstream_lookup() {
+        let backend = ProxyBackend::new(Arc::new(PowerConfig::default()));
+        let digest = backend
+            .effective_completion_prompt_digest("llama-70b", &completion_req())
+            .await
+            .unwrap();
+        assert!(digest.is_none());
+    }
+
+    #[tokio::test]
     async fn effective_prompt_digest_optional_image_request_is_absent_without_upstream_lookup() {
         let backend = ProxyBackend::new(Arc::new(PowerConfig {
             proxy_effective_prompt_digest: true,
@@ -1699,6 +1813,38 @@ mod tests {
             .unwrap();
         assert!(digest.is_none());
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn effective_completion_prompt_digest_optional_unsupported_endpoint_is_absent() {
+        let (upstream, server) = spawn_test_server(axum::Router::new()).await;
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            proxy_effective_prompt_digest: true,
+            ..proxy_config(upstream)
+        }));
+
+        let digest = backend
+            .effective_completion_prompt_digest("llama-70b", &completion_req())
+            .await
+            .unwrap();
+        assert!(digest.is_none());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn effective_completion_prompt_digest_required_image_request_fails_closed() {
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            proxy_effective_prompt_digest_required: true,
+            ..Default::default()
+        }));
+        let mut request = completion_req();
+        request.images = Some(vec!["aGVsbG8=".to_string()]);
+
+        let err = backend
+            .effective_completion_prompt_digest("llama-70b", &request)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("image-bearing"));
     }
 
     #[tokio::test]
@@ -1761,6 +1907,81 @@ mod tests {
         assert_eq!(body["model"], "llama-70b");
         assert_eq!(body["stream"], false);
         assert_eq!(body["messages"][0]["content"], "hi");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn effective_completion_prompt_digest_success_uses_upstream_claim() {
+        let received = Arc::new(Mutex::new(None::<serde_json::Value>));
+        let handler_received = received.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/effective-prompt-digest",
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let handler_received = handler_received.clone();
+                async move {
+                    {
+                        let mut received = handler_received.lock().unwrap();
+                        *received = Some(body);
+                    }
+                    axum::Json(serde_json::json!({
+                        "effective_prompt": {
+                            "backend": "vllm",
+                            "kind": "text.prompt",
+                            "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+                        }
+                    }))
+                }
+            }),
+        );
+        let (upstream, server) = spawn_test_server(app).await;
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            proxy_effective_prompt_digest: true,
+            ..proxy_config(upstream)
+        }));
+
+        let digest = backend
+            .effective_completion_prompt_digest("llama-70b", &completion_req())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(digest.backend, "vllm");
+        assert_eq!(digest.kind, "text.prompt");
+        assert_eq!(
+            digest.sha256,
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        );
+        let body = received.lock().unwrap().clone().unwrap();
+        assert_eq!(body["model"], "llama-70b");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["prompt"], "hi");
+        assert!(body.get("messages").is_none());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn effective_completion_prompt_digest_rejects_chat_only_kind() {
+        let app = axum::Router::new().route(
+            "/v1/chat/effective-prompt-digest",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "effective_prompt": {
+                        "kind": "chat.rendered-prompt",
+                        "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+                    }
+                }))
+            }),
+        );
+        let (upstream, server) = spawn_test_server(app).await;
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            proxy_effective_prompt_digest: true,
+            ..proxy_config(upstream)
+        }));
+
+        let err = backend
+            .effective_completion_prompt_digest("llama-70b", &completion_req())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("text.prompt"));
         server.abort();
     }
 
