@@ -29,6 +29,7 @@ use crate::tee::attestation::{GpuDeviceClaim, GpuDeviceValidationClaim, GpuEvide
 const DEFAULT_NRAS_ATTEST_GPU_URL: &str = "https://nras.attestation.nvidia.com/v4/attest/gpu";
 const MAX_GPU_EVIDENCE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_NRAS_REST_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_GPU_EVIDENCE_ENTRIES: usize = 1024;
 
 /// Source of GPU CC evidence bytes.
 #[derive(Debug, Clone)]
@@ -879,6 +880,7 @@ fn nras_rest_evidence_list_from_json(
             "NRAS REST evidence_list is empty".to_string(),
         ));
     }
+    validate_gpu_evidence_entry_count("NRAS REST evidence_list", evidence_values.len())?;
 
     let mut evidence_list = Vec::with_capacity(evidence_values.len());
     for (index, evidence) in evidence_values.iter().enumerate() {
@@ -936,6 +938,15 @@ fn normalize_nras_device_evidence(
     }
 
     Ok(serde_json::Value::Object(normalized))
+}
+
+fn validate_gpu_evidence_entry_count(context: &str, count: usize) -> Result<()> {
+    if count > MAX_GPU_EVIDENCE_ENTRIES {
+        return Err(PowerError::Config(format!(
+            "{context} must contain at most {MAX_GPU_EVIDENCE_ENTRIES} entries, got {count}"
+        )));
+    }
+    Ok(())
 }
 
 fn required_string_value(index: usize, object: &serde_json::Value, field: &str) -> Result<String> {
@@ -1163,6 +1174,7 @@ fn validate_nvattest_evidence_json(bytes: &[u8], nonce_hex: &str) -> Result<u32>
             "nvattest collect-evidence returned an empty evidences array".to_string(),
         ));
     }
+    validate_gpu_evidence_entry_count("nvattest collect-evidence evidences", evidences.len())?;
 
     for evidence in evidences {
         let evidence_nonce = evidence
@@ -2205,6 +2217,26 @@ mod tests {
     }
 
     #[test]
+    fn nras_rest_evidence_list_rejects_too_many_entries() {
+        let nonce = "1111111111111111111111111111111111111111111111111111111111111111";
+        let evidence_list = vec![
+            serde_json::json!({
+                "evidence": "ZXZpZGVuY2U",
+                "certificate": "Y2VydA"
+            });
+            MAX_GPU_EVIDENCE_ENTRIES + 1
+        ];
+        let evidence = serde_json::to_vec(&serde_json::json!({
+            "evidence_list": evidence_list
+        }))
+        .unwrap();
+
+        let err = nras_rest_evidence_list_from_json(&evidence, nonce).unwrap_err();
+
+        assert!(err.to_string().contains("must contain at most"));
+    }
+
+    #[test]
     fn validate_nras_rest_verdict_extracts_claims_from_detached_eat_jwt() {
         let verdict = nras_rest_verdict_with_detached_eat_payload(serde_json::json!({
             "submods": {
@@ -2423,6 +2455,22 @@ mod tests {
         let err = validate_nvattest_evidence_json(evidence, "010203").unwrap_err();
 
         assert!(err.to_string().contains("nonce mismatch"));
+    }
+
+    #[test]
+    fn validate_nvattest_evidence_rejects_too_many_entries() {
+        let nonce = "010203";
+        let evidences = vec![serde_json::json!({ "nonce": nonce }); MAX_GPU_EVIDENCE_ENTRIES + 1];
+        let evidence = serde_json::to_vec(&serde_json::json!({
+            "evidences": evidences,
+            "result_code": 0,
+            "result_message": "ok"
+        }))
+        .unwrap();
+
+        let err = validate_nvattest_evidence_json(&evidence, nonce).unwrap_err();
+
+        assert!(err.to_string().contains("must contain at most"));
     }
 
     #[test]
