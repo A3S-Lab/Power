@@ -47,6 +47,20 @@ pub async fn handler(
         )
         .into_response();
     }
+    if request.logprobs.is_some() {
+        return openai_error(
+            "unsupported_logprobs",
+            "text completion logprobs are not supported; omit logprobs",
+        )
+        .into_response();
+    }
+    if request.echo.unwrap_or(false) {
+        return openai_error(
+            "unsupported_completion_echo",
+            "completion echo is not supported; omit echo or set it to false",
+        )
+        .into_response();
+    }
 
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
@@ -592,6 +606,56 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("suffix is not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_completions_rejects_logprobs_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","prompt":"hi","logprobs":5}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_logprobs");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("logprobs are not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_completions_rejects_echo_request() {
+        let state = test_state_with_mock(MockBackend::success());
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"missing","prompt":"hi","echo":true}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_completion_echo");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("echo is not supported"));
     }
 
     #[tokio::test]

@@ -33,6 +33,14 @@ pub struct ChatCompletionRequest {
     /// Number of choices to generate. Power currently supports one choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n: Option<u32>,
+    /// Whether to return token log probabilities. Power currently rejects
+    /// logprob response-shape requests because responses do not carry logprobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<bool>,
+    /// Number of top token log probabilities to return when logprobs are
+    /// requested. Power currently rejects logprob response-shape requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<u32>,
     /// Extended sampling controls accepted by local backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<i32>,
@@ -233,6 +241,14 @@ pub struct CompletionRequest {
     /// Number of choices to generate. Power currently supports one choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n: Option<u32>,
+    /// Number of token log probabilities to return. Power currently rejects
+    /// logprob response-shape requests because responses do not carry logprobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<u32>,
+    /// Whether to echo the prompt in the completion text. Power currently
+    /// rejects echo requests because backends return generated text only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub echo: Option<bool>,
     /// Extended sampling controls accepted by local backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<i32>,

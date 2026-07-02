@@ -83,6 +83,12 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
     runtime_policy: Option<RuntimePolicyClaim>,
     effective_prompt: Option<EffectivePromptDigest>,
 ) -> crate::error::Result<AttestationReceipt> {
+    if request.logprobs.unwrap_or(false) || request.top_logprobs.is_some() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "chat completion logprobs are unsupported and cannot be receipt-bound".to_string(),
+        ));
+    }
+
     let input = ReceiptInputDigest {
         kind: "chat.messages".to_string(),
         sha256: digest_json(&request.messages)?,
@@ -171,6 +177,16 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
     if request.suffix.is_some() {
         return Err(crate::error::PowerError::InvalidRequest(
             "completion suffix requests are unsupported and cannot be receipt-bound".to_string(),
+        ));
+    }
+    if request.logprobs.is_some() {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "text completion logprobs are unsupported and cannot be receipt-bound".to_string(),
+        ));
+    }
+    if request.echo.unwrap_or(false) {
+        return Err(crate::error::PowerError::InvalidRequest(
+            "completion echo requests are unsupported and cannot be receipt-bound".to_string(),
         ));
     }
 
@@ -376,6 +392,8 @@ mod tests {
             top_p: Some(0.9),
             max_tokens: Some(128),
             n: None,
+            logprobs: None,
+            top_logprobs: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -462,6 +480,8 @@ mod tests {
             top_p: None,
             max_tokens: None,
             n: None,
+            logprobs: None,
+            echo: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -630,6 +650,8 @@ mod tests {
             top_p: None,
             max_tokens: None,
             n: None,
+            logprobs: None,
+            echo: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -666,6 +688,8 @@ mod tests {
             top_p: None,
             max_tokens: None,
             n: None,
+            logprobs: None,
+            echo: None,
             top_k: Some(40),
             min_p: Some(0.5),
             repeat_penalty: Some(1.25),
@@ -710,6 +734,8 @@ mod tests {
             top_p: None,
             max_tokens: None,
             n: None,
+            logprobs: None,
+            echo: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -748,6 +774,8 @@ mod tests {
             top_p: None,
             max_tokens: None,
             n: None,
+            logprobs: None,
+            echo: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,

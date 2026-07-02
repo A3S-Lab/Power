@@ -2735,6 +2735,8 @@ mod tests {
             top_p: Some(0.9),
             max_tokens: Some(128),
             n: None,
+            logprobs: None,
+            top_logprobs: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -2768,6 +2770,8 @@ mod tests {
             top_p: Some(0.9),
             max_tokens: Some(128),
             n: None,
+            logprobs: None,
+            echo: None,
             top_k: None,
             min_p: None,
             repeat_penalty: None,
@@ -3409,6 +3413,45 @@ mod tests {
         assert!(err
             .to_string()
             .contains("completion suffix requests are unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_chat_request_rejects_logprobs_request() {
+        let mut request = chat_request();
+        let receipt = chat_receipt(&request).unwrap();
+        request.logprobs = Some(true);
+
+        let err = verify_receipt_matches_chat_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("chat completion logprobs are unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_rejects_logprobs_request() {
+        let mut request = completion_request();
+        let receipt = completion_receipt(&request).unwrap();
+        request.logprobs = Some(5);
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("text completion logprobs are unsupported"));
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_rejects_echo_request() {
+        let mut request = completion_request();
+        let receipt = completion_receipt(&request).unwrap();
+        request.echo = Some(true);
+
+        let err = verify_receipt_matches_completion_request(&receipt, &request).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("completion echo requests are unsupported"));
     }
 
     #[test]
