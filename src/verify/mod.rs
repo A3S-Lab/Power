@@ -530,8 +530,8 @@ impl ExpectedReceipt {
             && self.tool_choice_digest.is_none()
             && self.effective_prompt_digest.is_none()
             && !self.effective_prompt_absent
-            && self.effective_prompt_backend.is_none()
-            && self.effective_prompt_kind.is_none()
+            && nonempty_expected_string(self.effective_prompt_backend.as_deref()).is_none()
+            && nonempty_expected_string(self.effective_prompt_kind.as_deref()).is_none()
     }
 }
 
@@ -1974,10 +1974,15 @@ pub fn verify_receipt_policy(
         expected.tool_choice_digest.as_deref(),
     )?;
 
+    let expected_effective_prompt_backend =
+        nonempty_expected_string(expected.effective_prompt_backend.as_deref());
+    let expected_effective_prompt_kind =
+        nonempty_expected_string(expected.effective_prompt_kind.as_deref());
+
     if expected.effective_prompt_absent
         && (expected.effective_prompt_digest.is_some()
-            || expected.effective_prompt_backend.is_some()
-            || expected.effective_prompt_kind.is_some())
+            || expected_effective_prompt_backend.is_some()
+            || expected_effective_prompt_kind.is_some())
     {
         return Err(PowerError::AttestationVerificationFailed(
             "receipt effective prompt policy cannot require absence while also pinning digest, backend, or kind"
@@ -1996,13 +2001,13 @@ pub fn verify_receipt_policy(
         verify_receipt_effective_prompt_digest(receipt, expected_digest)?;
     }
 
-    if expected.effective_prompt_backend.is_some() || expected.effective_prompt_kind.is_some() {
+    if expected_effective_prompt_backend.is_some() || expected_effective_prompt_kind.is_some() {
         let effective_prompt = receipt.effective_prompt.as_ref().ok_or_else(|| {
             PowerError::AttestationVerificationFailed(
                 "receipt does not include an effective prompt digest".to_string(),
             )
         })?;
-        if let Some(expected_backend) = expected.effective_prompt_backend.as_deref() {
+        if let Some(expected_backend) = expected_effective_prompt_backend {
             if effective_prompt.backend != expected_backend {
                 return Err(PowerError::AttestationVerificationFailed(format!(
                     "receipt effective prompt backend mismatch: receipt.effective_prompt.backend = {}, expected {}",
@@ -2010,7 +2015,7 @@ pub fn verify_receipt_policy(
                 )));
             }
         }
-        if let Some(expected_kind) = expected.effective_prompt_kind.as_deref() {
+        if let Some(expected_kind) = expected_effective_prompt_kind {
             if effective_prompt.kind != expected_kind {
                 return Err(PowerError::AttestationVerificationFailed(format!(
                     "receipt effective prompt kind mismatch: receipt.effective_prompt.kind = {}, expected {}",
@@ -3226,10 +3231,36 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_receipt_policy_ignores_blank_effective_prompt_backend_and_kind() {
+        let receipt = make_receipt();
+        let expected = ExpectedReceipt {
+            effective_prompt_backend: Some("  ".to_string()),
+            effective_prompt_kind: Some("\t".to_string()),
+            ..Default::default()
+        };
+
+        verify_receipt_policy(&receipt, &expected).unwrap();
+        assert!(expected.is_empty());
+    }
+
+    #[test]
     fn test_verify_receipt_policy_passes_when_effective_prompt_absent_required() {
         let receipt = make_receipt();
         let expected = ExpectedReceipt {
             effective_prompt_absent: true,
+            ..Default::default()
+        };
+
+        verify_receipt_policy(&receipt, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_verify_receipt_policy_allows_absence_with_blank_effective_prompt_backend_and_kind() {
+        let receipt = make_receipt();
+        let expected = ExpectedReceipt {
+            effective_prompt_absent: true,
+            effective_prompt_backend: Some("  ".to_string()),
+            effective_prompt_kind: Some("\t".to_string()),
             ..Default::default()
         };
 

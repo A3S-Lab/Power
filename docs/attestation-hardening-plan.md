@@ -150,6 +150,9 @@ Landed in the current working tree:
   detecting conflicts with explicit effective-prompt absence.
 - Tightened verifier CLI effective-prompt backend/kind pins so surrounding
   whitespace is ignored and blank values do not become accidental policy pins.
+- Tightened SDK `ExpectedReceipt` effective-prompt backend/kind pins so blank
+  values are ignored instead of becoming accidental policy pins or absence
+  conflicts.
 - Normalized SDK receipt and effective-prompt digest hex pins so direct verifier
   helpers trim surrounding whitespace and share the same `sha256:` parsing path.
 - Made `a3s-power-verify --receipt-chat-request-file` require
