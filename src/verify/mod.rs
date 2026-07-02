@@ -996,6 +996,9 @@ pub fn verify_claims_gpu_evidence_binding(
     expected_evidence_digest: Option<&[u8]>,
     expected_verdict_digest: Option<&[u8]>,
 ) -> Result<()> {
+    require_optional_sha256_digest_bytes("expected GPU evidence digest", expected_evidence_digest)?;
+    require_optional_sha256_digest_bytes("expected GPU verdict digest", expected_verdict_digest)?;
+
     let gpu = claims.gpu.as_ref().ok_or_else(|| {
         PowerError::AttestationVerificationFailed(
             "v2 claims do not include a GPU evidence claim".to_string(),
@@ -4036,6 +4039,28 @@ mod tests {
 
         let err = verify_claims_gpu_evidence_binding(&claims, Some(&[0x99; 32]), None).unwrap_err();
         assert!(err.to_string().contains("GPU evidence digest mismatch"));
+    }
+
+    #[test]
+    fn test_verify_claims_gpu_evidence_binding_rejects_short_expected_evidence_digest() {
+        let (_, claims) = make_gpu_claims_report(vec![0x11; 32], Some(vec![0x22; 32]));
+
+        let err = verify_claims_gpu_evidence_binding(&claims, Some(&[0x11; 31]), None).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("expected GPU evidence digest must be a 32-byte SHA-256 digest"));
+    }
+
+    #[test]
+    fn test_verify_claims_gpu_evidence_binding_rejects_short_expected_verdict_digest() {
+        let (_, claims) = make_gpu_claims_report(vec![0x11; 32], Some(vec![0x22; 32]));
+
+        let err = verify_claims_gpu_evidence_binding(&claims, None, Some(&[0x22; 31])).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("expected GPU verdict digest must be a 32-byte SHA-256 digest"));
     }
 
     #[test]

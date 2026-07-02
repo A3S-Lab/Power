@@ -159,6 +159,9 @@ Landed in the current working tree:
   GPU evidence/verdict, chat-template, decoding-policy, and GPU execution pins
   must be exactly 64-character SHA-256 hex values before verification policy is
   evaluated.
+- Tightened GPU evidence/verdict SDK verifier pins so callers must provide full
+  32-byte SHA-256 digests instead of relying on mismatch behavior for malformed
+  pins.
 - Tightened model-hash verifier pins so SDK and CLI verification require a full
   32-byte SHA-256 digest instead of accepting prefix-length legacy pins.
 - Tightened launch-measurement verification so SDK and CLI verification require
