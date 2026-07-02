@@ -236,9 +236,10 @@ impl EncryptedAuditLogger {
         if nonce_hex.len() != 24 {
             return None;
         }
-        let nonce_bytes: Vec<u8> = (0..12)
-            .map(|i| u8::from_str_radix(&nonce_hex[i * 2..i * 2 + 2], 16).ok())
-            .collect::<Option<Vec<_>>>()?;
+        let nonce_bytes = hex::decode(nonce_hex).ok()?;
+        if nonce_bytes.len() != 12 {
+            return None;
+        }
         #[allow(deprecated)]
         let nonce = Nonce::from_slice(&nonce_bytes);
 
@@ -746,6 +747,13 @@ mod tests {
             &key
         )
         .is_none());
+
+        let unicode_nonce_line = format!("{}.ciphertext", "🙂".repeat(6));
+        let result = std::panic::catch_unwind(|| {
+            EncryptedAuditLogger::decrypt_line(&unicode_nonce_line, &key)
+        });
+        assert!(result.is_ok(), "unicode nonce must not panic");
+        assert!(result.unwrap().is_none());
     }
 
     #[cfg(unix)]
