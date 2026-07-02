@@ -998,16 +998,12 @@ mod hex_bytes {
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
-        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        s.serialize_str(&hex)
+        s.serialize_str(&hex::encode(bytes))
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
         let hex = String::deserialize(d)?;
-        (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(serde::de::Error::custom))
-            .collect()
+        hex::decode(hex).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1017,10 +1013,7 @@ mod hex_bytes_opt {
 
     pub fn serialize<S: Serializer>(bytes: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
         match bytes {
-            Some(b) => {
-                let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
-                s.serialize_str(&hex)
-            }
+            Some(b) => s.serialize_str(&hex::encode(b)),
             None => s.serialize_none(),
         }
     }
@@ -1029,11 +1022,7 @@ mod hex_bytes_opt {
         let hex = Option::<String>::deserialize(d)?;
         match hex {
             None => Ok(None),
-            Some(h) => (0..h.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&h[i..i + 2], 16).map_err(serde::de::Error::custom))
-                .collect::<Result<Vec<u8>, _>>()
-                .map(Some),
+            Some(hex) => hex::decode(hex).map(Some).map_err(serde::de::Error::custom),
         }
     }
 }
@@ -1169,6 +1158,26 @@ mod tests {
         let json = r#"{"tee_type":"simulated","report_data":"aabb","measurement":"ccdd","timestamp":"2024-01-01T00:00:00Z"}"#;
         let report: AttestationReport = serde_json::from_str(json).unwrap();
         assert_eq!(report.version, "1.0");
+    }
+
+    #[test]
+    fn test_attestation_report_rejects_odd_required_hex_without_panicking() {
+        let json = r#"{"tee_type":"simulated","report_data":"abc","measurement":"ccdd","timestamp":"2024-01-01T00:00:00Z"}"#;
+
+        let result = std::panic::catch_unwind(|| serde_json::from_str::<AttestationReport>(json));
+
+        assert!(result.is_ok(), "odd required hex must not panic");
+        assert!(result.unwrap().is_err());
+    }
+
+    #[test]
+    fn test_attestation_report_rejects_odd_optional_hex_without_panicking() {
+        let json = r#"{"tee_type":"simulated","report_data":"aabb","measurement":"ccdd","timestamp":"2024-01-01T00:00:00Z","nonce":"abc"}"#;
+
+        let result = std::panic::catch_unwind(|| serde_json::from_str::<AttestationReport>(json));
+
+        assert!(result.is_ok(), "odd optional hex must not panic");
+        assert!(result.unwrap().is_err());
     }
 
     #[test]

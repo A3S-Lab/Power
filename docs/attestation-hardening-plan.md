@@ -159,6 +159,8 @@ Landed in the current working tree:
   GPU evidence/verdict, chat-template, decoding-policy, and GPU execution pins
   must be exactly 64-character SHA-256 hex values before verification policy is
   evaluated.
+- Made attestation JSON hex-byte deserialization reject malformed odd-length
+  hex as a serde error instead of panicking while loading external reports.
 - Added receipt coverage and verifier pins for `stream_options`, so clients can
   distinguish streaming output protocol choices such as `include_usage`.
 - Added `verify_receipt_matches_chat_request()` and
