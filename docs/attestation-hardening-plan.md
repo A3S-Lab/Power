@@ -163,6 +163,9 @@ Landed in the current working tree:
   32-byte SHA-256 digest instead of accepting prefix-length legacy pins.
 - Tightened launch-measurement verification so SDK and CLI verification require
   48-byte report measurements and 48-byte expected measurement pins.
+- Tightened v2 claims binding verification so self-consistent but malformed
+  claim sets are rejected for wrong schema or non-32-byte model/GPU/runtime
+  digests before report-data comparison.
 - Made attestation JSON hex-byte deserialization reject malformed odd-length
   hex as a serde error instead of panicking while loading external reports.
 - Made attestation nonce query decoding reject malformed non-ASCII hex as a

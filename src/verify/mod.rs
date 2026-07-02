@@ -889,6 +889,8 @@ pub fn verify_claims_binding(report: &AttestationReport) -> Result<()> {
         )));
     }
 
+    verify_claims_well_formed(claims)?;
+
     let expected_report_data = build_claims_report_data(claims)?;
     if !constant_time_eq(&report.report_data, &expected_report_data) {
         return Err(PowerError::AttestationVerificationFailed(format!(
@@ -896,6 +898,52 @@ pub fn verify_claims_binding(report: &AttestationReport) -> Result<()> {
             hex::encode(&report.report_data),
             hex::encode(&expected_report_data),
         )));
+    }
+
+    Ok(())
+}
+
+fn verify_claims_well_formed(claims: &AttestationClaimsV2) -> Result<()> {
+    if claims.schema != AttestationClaimsV2::SCHEMA {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "claims schema mismatch: claims.schema = {}, expected {}",
+            claims.schema,
+            AttestationClaimsV2::SCHEMA,
+        )));
+    }
+
+    if let Some(model) = claims.model.as_ref() {
+        if model.name.trim().is_empty() {
+            return Err(PowerError::AttestationVerificationFailed(
+                "claims.model.name must not be empty".to_string(),
+            ));
+        }
+        require_sha256_digest_bytes("claims.model.digest", &model.digest)?;
+        require_optional_sha256_digest_bytes(
+            "claims.model.plaintext_digest",
+            model.plaintext_digest.as_deref(),
+        )?;
+        require_optional_sha256_digest_bytes(
+            "claims.model.ciphertext_digest",
+            model.ciphertext_digest.as_deref(),
+        )?;
+    }
+
+    if let Some(gpu) = claims.gpu.as_ref() {
+        if gpu.provider.trim().is_empty() {
+            return Err(PowerError::AttestationVerificationFailed(
+                "claims.gpu.provider must not be empty".to_string(),
+            ));
+        }
+        require_sha256_digest_bytes("claims.gpu.evidence_digest", &gpu.evidence_digest)?;
+        require_optional_sha256_digest_bytes(
+            "claims.gpu.verdict_digest",
+            gpu.verdict_digest.as_deref(),
+        )?;
+    }
+
+    if let Some(runtime) = claims.runtime.as_ref() {
+        verify_runtime_policy_well_formed("claims.runtime", runtime)?;
     }
 
     Ok(())
@@ -1771,38 +1819,41 @@ pub fn verify_receipt_well_formed(receipt: &AttestationReceipt) -> Result<()> {
     }
 
     if let Some(runtime_policy) = receipt.runtime_policy.as_ref() {
-        verify_receipt_runtime_policy_well_formed(runtime_policy)?;
+        verify_runtime_policy_well_formed("receipt.runtime_policy", runtime_policy)?;
     }
 
     Ok(())
 }
 
-fn verify_receipt_runtime_policy_well_formed(runtime_policy: &RuntimePolicyClaim) -> Result<()> {
+fn verify_runtime_policy_well_formed(
+    field_prefix: &str,
+    runtime_policy: &RuntimePolicyClaim,
+) -> Result<()> {
     if let Some(prompt) = runtime_policy.prompt.as_ref() {
         require_optional_sha256_digest_bytes(
-            "receipt.runtime_policy.prompt.chat_template_sha256",
+            &format!("{field_prefix}.prompt.chat_template_sha256"),
             prompt.chat_template_sha256.as_deref(),
         )?;
         require_optional_sha256_digest_bytes(
-            "receipt.runtime_policy.prompt.system_prompt_sha256",
+            &format!("{field_prefix}.prompt.system_prompt_sha256"),
             prompt.system_prompt_sha256.as_deref(),
         )?;
         require_optional_sha256_digest_bytes(
-            "receipt.runtime_policy.prompt.messages_sha256",
+            &format!("{field_prefix}.prompt.messages_sha256"),
             prompt.messages_sha256.as_deref(),
         )?;
     }
 
     if let Some(decoding) = runtime_policy.decoding.as_ref() {
         require_sha256_digest_bytes(
-            "receipt.runtime_policy.decoding.parameters_sha256",
+            &format!("{field_prefix}.decoding.parameters_sha256"),
             &decoding.parameters_sha256,
         )?;
     }
 
     if let Some(execution) = runtime_policy.execution.as_ref() {
         require_sha256_digest_bytes(
-            "receipt.runtime_policy.execution.gpu_sha256",
+            &format!("{field_prefix}.execution.gpu_sha256"),
             &execution.gpu_sha256,
         )?;
     }
@@ -3865,6 +3916,54 @@ mod tests {
 
         let err = verify_claims_binding(&report).unwrap_err();
         assert!(err.to_string().contains("claims tee_type mismatch"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_wrong_schema() {
+        let (mut report, mut claims) = make_claims_report(Some(b"nonce"), vec![0x02; 32]);
+        claims.schema = "a3s.power.attestation.v1".to_string();
+        report.report_data = build_claims_report_data(&claims).unwrap();
+        report.claims = Some(claims);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err.to_string().contains("claims schema mismatch"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_short_model_digest() {
+        let (mut report, mut claims) = make_claims_report(Some(b"nonce"), vec![0x02; 32]);
+        claims.model.as_mut().unwrap().digest = vec![0x02; 31];
+        report.report_data = build_claims_report_data(&claims).unwrap();
+        report.claims = Some(claims);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.model.digest must be a 32-byte SHA-256 digest"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_short_gpu_evidence_digest() {
+        let (report, _) = make_gpu_claims_report(vec![0x11; 31], Some(vec![0x22; 32]));
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.gpu.evidence_digest must be a 32-byte SHA-256 digest"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_short_runtime_decoding_digest() {
+        let (report, _) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 31]);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.runtime.decoding.parameters_sha256"));
     }
 
     #[test]
