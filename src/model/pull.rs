@@ -20,6 +20,8 @@ pub mod hf {
     use crate::model::manifest::{ModelFormat, ModelManifest};
     use crate::model::storage;
 
+    const MAX_HUB_FILE_LIST_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
     /// Supported model hubs for remote pull.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum HubSource {
@@ -405,17 +407,44 @@ pub mod hf {
             )));
         }
 
-        let payload: serde_json::Value = resp.json().await.map_err(|e| match source {
+        let payload = read_hub_file_list_response_json(resp, source).await?;
+
+        let paths = extract_file_paths(source, &payload)?;
+        find_matching_gguf_file(&paths, quant, &hf_ref.repo)
+    }
+
+    async fn read_hub_file_list_response_json(
+        mut response: reqwest::Response,
+        source: HubSource,
+    ) -> Result<serde_json::Value> {
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|e| {
+            PowerError::Server(format!("{} response read failed: {e}", source.api_label()))
+        })? {
+            let next_len = body.len().checked_add(chunk.len()).ok_or_else(|| {
+                PowerError::Server(format!(
+                    "{} response body length overflowed usize",
+                    source.api_label()
+                ))
+            })?;
+            if next_len > MAX_HUB_FILE_LIST_RESPONSE_BYTES {
+                return Err(PowerError::Server(format!(
+                    "{} response body must be at most {} bytes, got at least {next_len}",
+                    source.api_label(),
+                    MAX_HUB_FILE_LIST_RESPONSE_BYTES
+                )));
+            }
+            body.extend_from_slice(&chunk);
+        }
+
+        serde_json::from_slice(&body).map_err(|e| match source {
             HubSource::ModelScope => {
                 PowerError::Server(format!("ModelScope API response parse failed: {e}"))
             }
             HubSource::HuggingFace => {
                 PowerError::Server(format!("HF API response parse failed: {e}"))
             }
-        })?;
-
-        let paths = extract_file_paths(source, &payload)?;
-        find_matching_gguf_file(&paths, quant, &hf_ref.repo)
+        })
     }
 
     fn extract_file_paths(source: HubSource, payload: &serde_json::Value) -> Result<Vec<String>> {
@@ -810,6 +839,31 @@ pub mod hf {
             let err = extract_file_paths(HubSource::HuggingFace, &payload).unwrap_err();
 
             assert!(err.to_string().contains("file list array"), "error: {err}");
+        }
+
+        #[tokio::test]
+        async fn test_hub_file_list_response_rejects_oversized_body() {
+            let app = axum::Router::new().route(
+                "/files",
+                axum::routing::get(|| async { vec![b'{'; MAX_HUB_FILE_LIST_RESPONSE_BYTES + 1] }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+
+            let response = reqwest::Client::new()
+                .get(format!("http://{addr}/files"))
+                .send()
+                .await
+                .unwrap();
+            let err = read_hub_file_list_response_json(response, HubSource::HuggingFace)
+                .await
+                .unwrap_err();
+
+            assert!(err.to_string().contains("at most"), "error: {err}");
+            server.abort();
         }
 
         #[test]

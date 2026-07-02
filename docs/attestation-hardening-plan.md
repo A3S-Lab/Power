@@ -143,6 +143,9 @@ Landed in the current working tree:
 - Fixed remote hub token resolution to use the selected source's token
   environment variable plus the generic `A3S_POWER_HUB_TOKEN`, avoiding
   accidental cross-use of HuggingFace and ModelScope credentials.
+- Bounded remote hub file-list API response bodies so malformed ModelScope or
+  HuggingFace file-list endpoints cannot force unbounded memory growth before
+  JSON parsing.
 - Made `A3S_POWER_MODEL_SOURCE` fail closed for unknown configured values
   instead of silently falling back to ModelScope.
 - Fixed proxy backend endpoint URL construction to use a URL parser, preserving
