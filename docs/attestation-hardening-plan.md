@@ -154,6 +154,8 @@ Landed in the current working tree:
   proxy paths.
 - Bounded proxy upstream SSE event buffering so malformed streaming responses
   cannot force unbounded memory growth before a complete `data:` line arrives.
+- Bounded proxy effective-prompt digest response bodies so malformed upstream
+  digest endpoints cannot force unbounded memory growth before JSON parsing.
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.

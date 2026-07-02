@@ -33,6 +33,7 @@ use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest};
 
+const MAX_PROXY_EFFECTIVE_PROMPT_DIGEST_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_PROXY_SSE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 /// Forwards inference to upstream OpenAI-compatible servers.
@@ -202,9 +203,7 @@ impl Backend for ProxyBackend {
             )));
         }
 
-        let json: serde_json::Value = resp.json().await.map_err(|e| {
-            PowerError::InferenceFailed(format!("proxy effective prompt digest decode failed: {e}"))
-        })?;
+        let json = read_effective_prompt_digest_response_json(resp).await?;
         parse_effective_prompt_digest_response(&json).map(Some)
     }
 
@@ -310,6 +309,34 @@ impl Backend for ProxyBackend {
             .unwrap_or_default();
         Ok(EmbeddingResponse { embeddings })
     }
+}
+
+async fn read_effective_prompt_digest_response_json(
+    mut response: reqwest::Response,
+) -> Result<serde_json::Value> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| {
+        PowerError::InferenceFailed(format!(
+            "failed to read proxy effective prompt digest response body: {e}"
+        ))
+    })? {
+        let next_len = body.len().checked_add(chunk.len()).ok_or_else(|| {
+            PowerError::InferenceFailed(
+                "proxy effective prompt digest response body length overflowed usize".to_string(),
+            )
+        })?;
+        if next_len > MAX_PROXY_EFFECTIVE_PROMPT_DIGEST_RESPONSE_BYTES {
+            return Err(PowerError::InferenceFailed(format!(
+                "proxy effective prompt digest response body must be at most {} bytes, got at least {next_len}",
+                MAX_PROXY_EFFECTIVE_PROMPT_DIGEST_RESPONSE_BYTES
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    serde_json::from_slice(&body).map_err(|e| {
+        PowerError::InferenceFailed(format!("proxy effective prompt digest decode failed: {e}"))
+    })
 }
 
 fn proxy_endpoint_url(upstream: &str, segments: &[&str]) -> Result<String> {
@@ -1105,6 +1132,28 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("64 hex"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn effective_prompt_digest_rejects_oversized_response_body() {
+        let app = axum::Router::new().route(
+            "/v1/chat/effective-prompt-digest",
+            axum::routing::post(|| async {
+                vec![b'{'; MAX_PROXY_EFFECTIVE_PROMPT_DIGEST_RESPONSE_BYTES + 1]
+            }),
+        );
+        let (upstream, server) = spawn_test_server(app).await;
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            proxy_effective_prompt_digest: true,
+            ..proxy_config(upstream)
+        }));
+
+        let err = backend
+            .effective_chat_prompt_digest("llama-70b", &chat_req())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("at most"));
         server.abort();
     }
 
