@@ -17,6 +17,34 @@ A3S Power exists to solve one problem: **LLM inference where the infrastructure 
 - OpenAI-compatible API with streaming
 - picolm: 14+ tok/s decode, pure Rust, layer-streaming, 900+ tests across current validation profiles
 
+### 2026 Attestation Soundness Reopen
+
+The implementation has a production attestation hardening follow-up after an
+external review identified fail-open and claim-binding gaps in the current TEE
+flow. The detailed remediation plan is tracked in
+[`docs/attestation-hardening-plan.md`](docs/attestation-hardening-plan.md).
+The current remediation has added strict fail-closed policy defaults, v2
+CPU/GPU/runtime attestation claims, strict verifier defaults, and request-level
+inference receipts. Encrypted GGUF models can now load from locked
+`MemoryDecryptedModel` plaintext and `LayerStreamingDecryptedModel` plaintext
+through `picolm`, while unsupported backends fail closed. Local deterministic chat
+renderers can include rendered-prompt `effective_prompt` digests in receipts;
+mistralrs text chat can include a domain-separated prompt-token-ID digest, and
+proxy backends can include an upstream-declared digest through an explicit
+opt-in endpoint. NVIDIA GPU confidential-computing support now has configured
+evidence/verdict binding, a live `nvattest-cli` provider, and a direct
+`nras-rest` provider that share the CPU/GPU attestation nonce, extract
+structured NVIDIA device identity/freshness claims from the NRAS/NVAT verdict,
+exposes verifier policy checks for those device claims, and supports
+deployment-specific GPU/NVSwitch topology, NVIDIA claims-version, UEID,
+OEM ID, hwmodel, driver, firmware, secure-boot, debug-state, and NVSwitch
+identity/version pinning, with RIM schema validation enforced for accepted
+device claims. A native NRAS SDK client and remaining opaque multimodal renderer
+prompt digests still remain to be implemented. Until those
+paths are complete, Phase 6 should be read as local TEE runtime hardening plus
+substantial attestation remediation, not as a complete production attestation
+soundness claim.
+
 ### First Principles Question: What Should We Build Next?
 
 Every candidate feature must pass this filter:
@@ -143,8 +171,8 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 
 ## What We Will NOT Build (First Principles Rejection)
 
-### ❌ GPU Support for picolm
-**Why not**: TEE memory (EPC) is CPU memory. GPU memory is outside the trust boundary. Adding GPU to picolm would undermine the entire security model. Use mistralrs/llamacpp for GPU inference outside TEE.
+### ❌ GPU Support inside picolm
+**Why not**: picolm is the CPU/EPC-constrained pure Rust backend. Adding GPU memory to picolm itself would undermine that backend's minimal CPU TEE security model. Power still supports NVIDIA GPU acceleration through the other backends, and production NVIDIA GPU Confidential Computing support is tracked separately through `tee_policy_mode = "gpu-confidential"` and bound GPU evidence claims.
 
 ### ❌ Embeddings in picolm
 **Why not**: Embedding models are small, don't need layer-streaming, and don't process sensitive user prompts (they process documents at indexing time, not query time). Use mistralrs for embeddings. Adding embedding support to picolm adds complexity without strengthening the privacy moat.

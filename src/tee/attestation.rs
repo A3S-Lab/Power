@@ -1,6 +1,7 @@
 //! TEE attestation: detect hardware TEE and generate attestation reports.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Type of TEE hardware detected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,7 +35,10 @@ pub struct AttestationReport {
     #[serde(default = "default_report_version")]
     pub version: String,
     pub tee_type: TeeType,
-    /// Raw report data from the TEE hardware (includes nonce when provided).
+    /// Raw report data from the TEE hardware.
+    ///
+    /// Legacy reports embed nonce/model bytes directly. V2 reports embed
+    /// `sha256(canonical_claims_v2)` and carry the clear claim set in `claims`.
     #[serde(with = "hex_bytes")]
     pub report_data: Vec<u8>,
     /// Platform measurement (launch digest).
@@ -55,6 +59,388 @@ pub struct AttestationReport {
         with = "hex_bytes_opt"
     )]
     pub nonce: Option<Vec<u8>>,
+    /// Canonical v2 claim set whose SHA-256 digest is bound into `report_data`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claims: Option<AttestationClaimsV2>,
+}
+
+/// Canonical attestation claim set bound into CPU TEE `report_data`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttestationClaimsV2 {
+    /// Schema identifier for deterministic verifier dispatch.
+    pub schema: String,
+    /// TEE type expected to produce the CPU evidence.
+    pub tee_type: TeeType,
+    /// Client nonce, when supplied.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_bytes_opt"
+    )]
+    pub nonce: Option<Vec<u8>>,
+    /// Model digest claim, when the attestation is model-bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelDigestClaim>,
+    /// GPU evidence claim, present only for GPU confidential-computing mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuEvidenceClaim>,
+    /// Runtime prompt construction and decoding policy digests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimePolicyClaim>,
+}
+
+impl AttestationClaimsV2 {
+    pub const SCHEMA: &'static str = "a3s.power.attestation.v2";
+
+    pub fn new(tee_type: TeeType) -> Self {
+        Self {
+            schema: Self::SCHEMA.to_string(),
+            tee_type,
+            nonce: None,
+            model: None,
+            gpu: None,
+            runtime: None,
+        }
+    }
+
+    pub fn with_nonce(mut self, nonce: Option<&[u8]>) -> Self {
+        self.nonce = nonce.map(|n| n.to_vec());
+        self
+    }
+
+    pub fn with_model(mut self, model: ModelDigestClaim) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    pub fn with_gpu(mut self, gpu: GpuEvidenceClaim) -> Self {
+        self.gpu = Some(gpu);
+        self
+    }
+
+    pub fn with_runtime(mut self, runtime: RuntimePolicyClaim) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+}
+
+/// Typed model digest claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelDigestClaim {
+    pub name: String,
+    pub kind: ModelDigestKind,
+    #[serde(with = "hex_bytes")]
+    pub digest: Vec<u8>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_bytes_opt"
+    )]
+    pub plaintext_digest: Option<Vec<u8>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_bytes_opt"
+    )]
+    pub ciphertext_digest: Option<Vec<u8>>,
+}
+
+/// What bytes a model digest covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelDigestKind {
+    PlaintextWeightsSha256,
+    CiphertextArtifactSha256,
+    DirectoryManifestSha256,
+}
+
+/// NVIDIA GPU confidential-computing evidence claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuEvidenceClaim {
+    pub provider: String,
+    /// Canonical byte format hashed by `evidence_digest`, for example
+    /// `nvidia-nvattest-evidence-json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_format: Option<String>,
+    #[serde(with = "hex_bytes")]
+    pub evidence_digest: Vec<u8>,
+    /// Number of GPU evidence entries covered by `evidence_digest`, when the
+    /// provider can expose it without parsing vendor-private structures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_count: Option<u32>,
+    /// Nonce embedded in the GPU evidence flow. When present, verifiers require
+    /// it to match `AttestationClaimsV2::nonce`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_bytes_opt"
+    )]
+    pub nonce: Option<Vec<u8>>,
+    /// Canonical byte format hashed by `verdict_digest`, for example
+    /// `nvidia-nvattest-attestation-json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict_format: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_bytes_opt"
+    )]
+    pub verdict_digest: Option<Vec<u8>>,
+    /// Structured NVIDIA device claims extracted from the verified NRAS/NVAT
+    /// verdict. These are not a replacement for `verdict_digest`; they make the
+    /// GPU identity, freshness, and validation result visible to verifier
+    /// policy while the raw verdict remains digest-bound.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<GpuDeviceClaim>,
+}
+
+impl GpuEvidenceClaim {
+    pub fn new(provider: impl Into<String>, evidence_digest: Vec<u8>) -> Self {
+        Self {
+            provider: provider.into(),
+            evidence_format: None,
+            evidence_digest,
+            evidence_count: None,
+            nonce: None,
+            verdict_format: None,
+            verdict_digest: None,
+            devices: Vec::new(),
+        }
+    }
+
+    pub fn with_evidence_format(mut self, evidence_format: impl Into<String>) -> Self {
+        self.evidence_format = Some(evidence_format.into());
+        self
+    }
+
+    pub fn with_evidence_count(mut self, evidence_count: u32) -> Self {
+        self.evidence_count = Some(evidence_count);
+        self
+    }
+
+    pub fn with_nonce(mut self, nonce: &[u8]) -> Self {
+        self.nonce = Some(nonce.to_vec());
+        self
+    }
+
+    pub fn with_verdict_format(mut self, verdict_format: impl Into<String>) -> Self {
+        self.verdict_format = Some(verdict_format.into());
+        self
+    }
+
+    pub fn with_verdict_digest(mut self, verdict_digest: Vec<u8>) -> Self {
+        self.verdict_digest = Some(verdict_digest);
+        self
+    }
+
+    pub fn with_devices(mut self, devices: Vec<GpuDeviceClaim>) -> Self {
+        self.devices = devices;
+        self
+    }
+}
+
+/// Structured NVIDIA GPU/NVSwitch identity and validation claim extracted from
+/// an NRAS/NVAT verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuDeviceClaim {
+    /// Index of this entry in the NVIDIA `claims` array.
+    pub index: u32,
+    /// NVIDIA device type, for example `gpu` or `nvswitch`.
+    pub device_type: String,
+    /// Nonce carried in this device claim (`eat_nonce`), when present.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_bytes_opt"
+    )]
+    pub attestation_nonce: Option<Vec<u8>>,
+    /// NVIDIA hardware model string, for example `GH100 A01 GSP BROM`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hwmodel: Option<String>,
+    /// Universal Entity ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ueid: Option<String>,
+    /// Firmware manufacturer ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oemid: Option<String>,
+    /// NVIDIA GPU claims schema version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claims_version: Option<String>,
+    /// GPU driver version when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_version: Option<String>,
+    /// GPU VBIOS or NVSwitch BIOS version when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_version: Option<String>,
+    /// Measurement result, usually `success`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurements_result: Option<String>,
+    /// Secure boot status (`secboot`); production GPU verification requires `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secure_boot: Option<bool>,
+    /// Debug status (`dbgstat`); production GPU verification requires `disabled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_status: Option<String>,
+    /// NVIDIA validation booleans normalized from GPU/NVSwitch-specific claim
+    /// names.
+    #[serde(default, skip_serializing_if = "GpuDeviceValidationClaim::is_empty")]
+    pub validation: GpuDeviceValidationClaim,
+}
+
+/// Normalized NVIDIA GPU/NVSwitch validation booleans.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuDeviceValidationClaim {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch_check: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_report_cert_chain_fwid_match: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_report_parsed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_report_nonce_match: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_report_signature_verified: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_rim_fetched: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_rim_schema_validated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_rim_signature_verified: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_rim_version_match: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_rim_measurements_available: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_rim_fetched: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_rim_schema_validated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_rim_signature_verified: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_rim_version_match: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_rim_measurements_available: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_index_no_conflict: Option<bool>,
+}
+
+impl GpuDeviceValidationClaim {
+    pub fn is_empty(&self) -> bool {
+        self.arch_check.is_none()
+            && self.attestation_report_cert_chain_fwid_match.is_none()
+            && self.attestation_report_parsed.is_none()
+            && self.attestation_report_nonce_match.is_none()
+            && self.attestation_report_signature_verified.is_none()
+            && self.driver_rim_fetched.is_none()
+            && self.driver_rim_schema_validated.is_none()
+            && self.driver_rim_signature_verified.is_none()
+            && self.driver_rim_version_match.is_none()
+            && self.driver_rim_measurements_available.is_none()
+            && self.firmware_rim_fetched.is_none()
+            && self.firmware_rim_schema_validated.is_none()
+            && self.firmware_rim_signature_verified.is_none()
+            && self.firmware_rim_version_match.is_none()
+            && self.firmware_rim_measurements_available.is_none()
+            && self.firmware_index_no_conflict.is_none()
+    }
+}
+
+/// Runtime prompt construction and decoding policy claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimePolicyClaim {
+    /// Hashes covering prompt construction inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<PromptPolicyClaim>,
+    /// Hashes covering default decoding/sampling parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoding: Option<DecodingPolicyClaim>,
+    /// Hashes covering execution/offload policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionPolicyClaim>,
+}
+
+impl RuntimePolicyClaim {
+    pub fn new() -> Self {
+        Self {
+            prompt: None,
+            decoding: None,
+            execution: None,
+        }
+    }
+
+    pub fn with_prompt(mut self, prompt: PromptPolicyClaim) -> Self {
+        self.prompt = Some(prompt);
+        self
+    }
+
+    pub fn with_decoding(mut self, decoding: DecodingPolicyClaim) -> Self {
+        self.decoding = Some(decoding);
+        self
+    }
+
+    pub fn with_execution(mut self, execution: ExecutionPolicyClaim) -> Self {
+        self.execution = Some(execution);
+        self
+    }
+}
+
+impl Default for RuntimePolicyClaim {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Prompt construction digest claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptPolicyClaim {
+    /// Source of the chat template hash, e.g. `manifest.template_override`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_template_source: Option<String>,
+    /// SHA-256 of the effective chat template string.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_bytes_opt"
+    )]
+    pub chat_template_sha256: Option<Vec<u8>>,
+    /// SHA-256 of the configured system prompt.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_bytes_opt"
+    )]
+    pub system_prompt_sha256: Option<Vec<u8>>,
+    /// SHA-256 of canonical manifest pre-seeded messages.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_bytes_opt"
+    )]
+    pub messages_sha256: Option<Vec<u8>>,
+}
+
+impl PromptPolicyClaim {
+    pub fn is_empty(&self) -> bool {
+        self.chat_template_sha256.is_none()
+            && self.system_prompt_sha256.is_none()
+            && self.messages_sha256.is_none()
+    }
+}
+
+/// Default decoding/sampling policy digest claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecodingPolicyClaim {
+    /// SHA-256 of canonical manifest default generation parameters.
+    #[serde(with = "hex_bytes")]
+    pub parameters_sha256: Vec<u8>,
+}
+
+/// Execution/offload policy digest claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionPolicyClaim {
+    /// SHA-256 of canonical GPU execution parameters.
+    #[serde(with = "hex_bytes")]
+    pub gpu_sha256: Vec<u8>,
 }
 
 fn default_report_version() -> String {
@@ -77,7 +463,7 @@ pub trait TeeProvider: Send + Sync {
         nonce: Option<&[u8]>,
     ) -> crate::error::Result<AttestationReport>;
 
-    /// Generate an attestation report bound to a specific model hash.
+    /// Generate a legacy attestation report bound to a specific model hash.
     ///
     /// Calls `attestation_report` with a combined `report_data` that includes
     /// both the nonce and the model's SHA-256 hash.
@@ -89,6 +475,18 @@ pub trait TeeProvider: Send + Sync {
         // Build combined report_data: [nonce(32)][model_hash(32)]
         let combined = build_report_data(nonce, model_hash);
         self.attestation_report(Some(&combined)).await
+    }
+
+    /// Generate an attestation report bound to canonical v2 claims.
+    async fn attestation_report_with_claims(
+        &self,
+        claims: AttestationClaimsV2,
+    ) -> crate::error::Result<AttestationReport> {
+        let report_data = build_claims_report_data(&claims)?;
+        let mut report = self.attestation_report(Some(&report_data)).await?;
+        report.nonce = claims.nonce.clone();
+        report.claims = Some(claims);
+        Ok(report)
     }
 
     /// Whether we are running inside a TEE.
@@ -200,6 +598,28 @@ pub fn build_report_data(nonce: Option<&[u8]>, model_hash: Option<&[u8]>) -> Vec
     data
 }
 
+/// Serialize claims canonically for hashing.
+pub fn canonical_claims_bytes(claims: &AttestationClaimsV2) -> crate::error::Result<Vec<u8>> {
+    serde_json::to_vec(claims).map_err(crate::error::PowerError::from)
+}
+
+/// SHA-256 digest of canonical v2 claims.
+pub fn claims_digest(claims: &AttestationClaimsV2) -> crate::error::Result<Vec<u8>> {
+    let bytes = canonical_claims_bytes(claims)?;
+    let digest = Sha256::digest(&bytes);
+    Ok(digest.to_vec())
+}
+
+/// Build the 64-byte CPU TEE `report_data` for v2 claims.
+///
+/// Layout: `[sha256(canonical AttestationClaimsV2) (32 bytes)][zeros (32 bytes)]`.
+pub fn build_claims_report_data(claims: &AttestationClaimsV2) -> crate::error::Result<Vec<u8>> {
+    let digest = claims_digest(claims)?;
+    let mut data = vec![0u8; 64];
+    data[..32].copy_from_slice(&digest);
+    Ok(data)
+}
+
 /// Read attestation report from AMD SEV-SNP guest device.
 ///
 /// On Linux, opens `/dev/sev-guest` and issues the `SNP_GET_REPORT` ioctl.
@@ -226,6 +646,7 @@ async fn read_sev_snp_report(nonce: Option<&[u8]>) -> crate::error::Result<Attes
             raw_report: Some(raw_report),
             timestamp: chrono::Utc::now(),
             nonce: nonce.map(|n| n.to_vec()),
+            claims: None,
         })
     }
 
@@ -263,6 +684,7 @@ async fn read_tdx_report(nonce: Option<&[u8]>) -> crate::error::Result<Attestati
             raw_report: Some(raw_report),
             timestamp: chrono::Utc::now(),
             nonce: nonce.map(|n| n.to_vec()),
+            claims: None,
         })
     }
 
@@ -285,6 +707,7 @@ fn simulated_report(nonce: Option<&[u8]>) -> AttestationReport {
         raw_report: None,
         timestamp: chrono::Utc::now(),
         nonce: nonce.map(|n| n.to_vec()),
+        claims: None,
     }
 }
 
@@ -665,6 +1088,47 @@ mod tests {
         assert!(data.iter().all(|&b| b == 0xFF));
     }
 
+    fn sample_claims() -> AttestationClaimsV2 {
+        AttestationClaimsV2::new(TeeType::Simulated)
+            .with_nonce(Some(b"nonce-1"))
+            .with_model(ModelDigestClaim {
+                name: "test-model".to_string(),
+                kind: ModelDigestKind::PlaintextWeightsSha256,
+                digest: vec![0x42; 32],
+                plaintext_digest: None,
+                ciphertext_digest: None,
+            })
+    }
+
+    #[test]
+    fn test_claims_canonical_bytes_are_deterministic() {
+        let claims = sample_claims();
+        let first = canonical_claims_bytes(&claims).unwrap();
+        let second = canonical_claims_bytes(&claims).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_claims_digest_changes_when_claim_changes() {
+        let claims = sample_claims();
+        let mut changed = sample_claims();
+        changed.nonce = Some(b"nonce-2".to_vec());
+        assert_ne!(
+            claims_digest(&claims).unwrap(),
+            claims_digest(&changed).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_build_claims_report_data_binds_claim_digest() {
+        let claims = sample_claims();
+        let digest = claims_digest(&claims).unwrap();
+        let report_data = build_claims_report_data(&claims).unwrap();
+        assert_eq!(report_data.len(), 64);
+        assert_eq!(&report_data[..32], digest.as_slice());
+        assert!(report_data[32..].iter().all(|&b| b == 0));
+    }
+
     #[test]
     fn test_attestation_report_serialization() {
         let report = simulated_report(None);
@@ -752,6 +1216,23 @@ mod tests {
         assert_eq!(report.tee_type, TeeType::Simulated);
         assert_eq!(report.nonce.as_deref(), Some(nonce.as_ref()));
         assert_eq!(report.report_data[..nonce.len()], *nonce);
+    }
+
+    #[tokio::test]
+    async fn test_attestation_report_with_claims_binds_claim_digest() {
+        let provider = DefaultTeeProvider {
+            detected: TeeType::Simulated,
+        };
+        let claims = sample_claims();
+        let expected_report_data = build_claims_report_data(&claims).unwrap();
+        let report = provider
+            .attestation_report_with_claims(claims.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(report.report_data, expected_report_data);
+        assert_eq!(report.nonce, claims.nonce);
+        assert_eq!(report.claims, Some(claims));
     }
 
     #[tokio::test]

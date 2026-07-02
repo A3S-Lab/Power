@@ -13,9 +13,8 @@ use crate::server::lock::{mutex_lock, read_lock, write_lock};
 use crate::server::log_stream::LogBuffer;
 use crate::server::metrics::Metrics;
 use crate::tee::attestation::TeeProvider;
-use crate::tee::encrypted_model::{
-    DecryptedModel, LayerStreamingDecryptedModel, MemoryDecryptedModel,
-};
+use crate::tee::encrypted_model::DecryptedModel;
+use crate::tee::gpu::GpuEvidenceProvider;
 use crate::tee::key_provider::KeyProvider;
 use crate::tee::privacy::PrivacyProvider;
 
@@ -64,6 +63,7 @@ pub struct AppState {
     pub limiter: Arc<crate::server::limiter::ConcurrencyLimiter>,
     pub log_buffer: LogBuffer,
     pub tee_provider: Option<Arc<dyn TeeProvider>>,
+    pub gpu_evidence_provider: Option<Arc<dyn GpuEvidenceProvider>>,
     pub privacy: Option<Arc<dyn PrivacyProvider>>,
     pub auth: Option<Arc<dyn AuthProvider>>,
     pub audit: Option<Arc<dyn AuditLogger>>,
@@ -72,10 +72,6 @@ pub struct AppState {
     loaded_models: Arc<RwLock<HashMap<String, LoadedModelEntry>>>,
     /// RAII handles for decrypted model files. Dropping triggers secure wipe + delete.
     decrypted_models: Arc<RwLock<HashMap<String, DecryptedModel>>>,
-    /// RAII handles for in-memory decrypted models. Dropping triggers zeroize + munlock.
-    memory_decrypted_models: Arc<RwLock<HashMap<String, MemoryDecryptedModel>>>,
-    /// RAII handles for layer-streaming decrypted models. Dropping triggers zeroize + munlock.
-    streaming_decrypted_models: Arc<RwLock<HashMap<String, LayerStreamingDecryptedModel>>>,
     /// Models currently being pulled (downloading). Prevents duplicate concurrent pulls.
     pulling_models: Arc<Mutex<HashSet<String>>>,
 }
@@ -112,6 +108,7 @@ impl AppState {
             limiter,
             log_buffer,
             tee_provider: None,
+            gpu_evidence_provider: None,
             privacy: None,
             auth: None,
             audit: None,
@@ -119,8 +116,6 @@ impl AppState {
             start_time: Instant::now(),
             loaded_models: Arc::new(RwLock::new(HashMap::new())),
             decrypted_models: Arc::new(RwLock::new(HashMap::new())),
-            memory_decrypted_models: Arc::new(RwLock::new(HashMap::new())),
-            streaming_decrypted_models: Arc::new(RwLock::new(HashMap::new())),
             pulling_models: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -128,6 +123,12 @@ impl AppState {
     /// Set the TEE provider for attestation.
     pub fn with_tee_provider(mut self, provider: Arc<dyn TeeProvider>) -> Self {
         self.tee_provider = Some(provider);
+        self
+    }
+
+    /// Set the GPU confidential-computing evidence provider for attestation.
+    pub fn with_gpu_evidence_provider(mut self, provider: Arc<dyn GpuEvidenceProvider>) -> Self {
+        self.gpu_evidence_provider = Some(provider);
         self
     }
 
@@ -230,29 +231,11 @@ impl AppState {
             tracing::info!(model = %name, "Cleaning up decrypted model file");
             drop(dec); // triggers DecryptedModel::drop → zero-fill + delete
         }
-        if let Some(mem) = write_lock(&self.memory_decrypted_models).remove(name) {
-            tracing::info!(model = %name, "Cleaning up in-memory decrypted model");
-            drop(mem); // triggers MemoryDecryptedModel::drop → zeroize + munlock
-        }
-        if let Some(stream) = write_lock(&self.streaming_decrypted_models).remove(name) {
-            tracing::info!(model = %name, "Cleaning up layer-streaming decrypted model");
-            drop(stream); // triggers LayerStreamingDecryptedModel::drop → zeroize + munlock
-        }
     }
 
     /// Store a decrypted model handle for RAII cleanup on unload.
     pub fn store_decrypted(&self, name: &str, handle: DecryptedModel) {
         write_lock(&self.decrypted_models).insert(name.to_string(), handle);
-    }
-
-    /// Store an in-memory decrypted model handle for RAII cleanup on unload.
-    pub fn store_memory_decrypted(&self, name: &str, handle: MemoryDecryptedModel) {
-        write_lock(&self.memory_decrypted_models).insert(name.to_string(), handle);
-    }
-
-    /// Store a layer-streaming decrypted model handle for RAII cleanup on unload.
-    pub fn store_streaming_decrypted(&self, name: &str, handle: LayerStreamingDecryptedModel) {
-        write_lock(&self.streaming_decrypted_models).insert(name.to_string(), handle);
     }
 
     /// Sanitize an error message through the privacy provider (strips paths, internal state).
@@ -873,35 +856,6 @@ mod tests {
     }
 
     #[test]
-    fn test_store_memory_decrypted_and_cleanup_on_unload() {
-        use crate::tee::encrypted_model::{encrypt_model_file, MemoryDecryptedModel};
-
-        let dir = tempfile::tempdir().unwrap();
-        let plain_path = dir.path().join("model.gguf");
-        std::fs::write(&plain_path, b"test data for memory decryption").unwrap();
-
-        let mut key = [0u8; 32];
-        for (i, b) in key.iter_mut().enumerate() {
-            *b = i as u8;
-        }
-        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
-        let mem_model = MemoryDecryptedModel::decrypt(&enc_path, &key).unwrap();
-        assert!(!mem_model.is_empty());
-
-        let state = AppState::new(
-            Arc::new(ModelRegistry::new()),
-            Arc::new(BackendRegistry::new()),
-            Arc::new(PowerConfig::default()),
-        );
-        state.mark_loaded("mem-model");
-        state.store_memory_decrypted("mem-model", mem_model);
-
-        // Unloading should trigger MemoryDecryptedModel drop → zeroize + munlock
-        state.mark_unloaded("mem-model");
-        assert!(!state.is_model_loaded("mem-model"));
-    }
-
-    #[test]
     fn test_sanitize_error_without_privacy() {
         let state = AppState::new(
             Arc::new(ModelRegistry::new()),
@@ -958,33 +912,5 @@ mod tests {
         assert!(result.is_ok());
         #[cfg(not(any(feature = "mistralrs", feature = "llamacpp", feature = "picolm")))]
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_store_streaming_decrypted_and_cleanup_on_unload() {
-        use crate::tee::encrypted_model::{encrypt_model_file, LayerStreamingDecryptedModel};
-
-        let dir = tempfile::tempdir().unwrap();
-        let plain_path = dir.path().join("model.gguf");
-        std::fs::write(&plain_path, b"test data for streaming decryption").unwrap();
-
-        let mut key = [0u8; 32];
-        for (i, b) in key.iter_mut().enumerate() {
-            *b = i as u8;
-        }
-        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
-        let stream_model = LayerStreamingDecryptedModel::decrypt(&enc_path, &key).unwrap();
-
-        let state = AppState::new(
-            Arc::new(ModelRegistry::new()),
-            Arc::new(BackendRegistry::new()),
-            Arc::new(PowerConfig::default()),
-        );
-        state.mark_loaded("stream-model");
-        state.store_streaming_decrypted("stream-model", stream_model);
-
-        // Unloading should trigger LayerStreamingDecryptedModel drop → zeroize + munlock
-        state.mark_unloaded("stream-model");
-        assert!(!state.is_model_loaded("stream-model"));
     }
 }

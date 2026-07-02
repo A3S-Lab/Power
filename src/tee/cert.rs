@@ -128,6 +128,7 @@ mod tests {
             raw_report: None,
             timestamp: chrono::Utc::now(),
             nonce: None,
+            claims: None,
         }
     }
 

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 // ============================================================================
 // Vision / Multimodal types
@@ -190,6 +191,9 @@ pub struct ChatRequest {
     pub tools: Option<Vec<Tool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// Whether the model may generate multiple tool calls in parallel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
     /// Last N tokens to consider for repetition penalty (0 = disabled, -1 = ctx_size).
     #[serde(default)]
     pub repeat_last_n: Option<i32>,
@@ -227,6 +231,44 @@ pub struct ChatRequest {
     /// Each entry is a base64-encoded image (with or without data URI prefix).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+}
+
+/// Digest of the exact prompt representation a backend submits to the model.
+///
+/// This is optional because not every backend exposes or owns prompt rendering.
+/// Backends should only emit this when they can compute the same prompt bytes
+/// or token IDs that are used for inference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectivePromptDigest {
+    /// Backend that produced the prompt representation, e.g. `llama.cpp`.
+    pub backend: String,
+    /// Semantic kind of the digested prompt representation.
+    pub kind: String,
+    /// SHA-256 of the effective prompt representation as lowercase hex.
+    pub sha256: String,
+}
+
+impl EffectivePromptDigest {
+    pub fn chat_rendered_prompt(backend: impl Into<String>, prompt: &str) -> Self {
+        Self {
+            backend: backend.into(),
+            kind: "chat.rendered-prompt".to_string(),
+            sha256: hex::encode(Sha256::digest(prompt.as_bytes())),
+        }
+    }
+
+    pub fn chat_prompt_token_ids(backend: impl Into<String>, token_ids: &[u32]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"a3s.power.chat.prompt-token-ids.v1\0");
+        for token_id in token_ids {
+            hasher.update(token_id.to_le_bytes());
+        }
+        Self {
+            backend: backend.into(),
+            kind: "chat.prompt-token-ids".to_string(),
+            sha256: hex::encode(hasher.finalize()),
+        }
+    }
 }
 
 /// A streamed chunk from a chat completion.
@@ -420,6 +462,22 @@ mod tests {
         }"#;
         let msg: ChatMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.content.text(), "What is this?");
+    }
+
+    #[test]
+    fn test_effective_prompt_token_ids_digest_is_domain_separated() {
+        let rendered = EffectivePromptDigest::chat_rendered_prompt("test", "\x01\0\0\0");
+        let tokens = EffectivePromptDigest::chat_prompt_token_ids("test", &[1]);
+        assert_eq!(tokens.kind, "chat.prompt-token-ids");
+        assert_eq!(tokens.sha256.len(), 64);
+        assert_ne!(tokens.sha256, rendered.sha256);
+    }
+
+    #[test]
+    fn test_effective_prompt_token_ids_digest_changes_with_order() {
+        let a = EffectivePromptDigest::chat_prompt_token_ids("test", &[1, 2]);
+        let b = EffectivePromptDigest::chat_prompt_token_ids("test", &[2, 1]);
+        assert_ne!(a.sha256, b.sha256);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Model integrity verification for TEE environments.
 //!
-//! Verifies model file SHA-256 hashes against expected values from config,
+//! Verifies model artifact SHA-256 hashes against expected values from config,
 //! ensuring models have not been tampered with before loading into the TEE.
 //!
 //! Also supports Ed25519 signature verification for supply-chain security:
@@ -15,10 +15,11 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use crate::error::{PowerError, Result};
 use crate::model::registry::ModelRegistry;
 use crate::model::storage;
+use crate::tee::key_provider::KeyProvider;
 
-/// Verify a single model file's SHA-256 against an expected hash.
+/// Verify a single model artifact's SHA-256 against an expected hash.
 pub fn verify_model_integrity(model_path: &Path, expected_hash: &str) -> Result<bool> {
-    let actual = storage::compute_sha256_file(model_path)?;
+    let actual = storage::compute_sha256_path(model_path)?;
     Ok(actual == expected_hash)
 }
 
@@ -45,7 +46,61 @@ pub fn verify_all_models(
                 actual: "<not found in registry>".to_string(),
             })?;
 
-        let actual = storage::compute_sha256_file(&manifest.path)?;
+        let actual = storage::compute_sha256_path(&manifest.path)?;
+        if actual != *expected {
+            return Err(PowerError::IntegrityCheckFailed {
+                model: name.clone(),
+                expected: expected.clone(),
+                actual,
+            });
+        }
+        verified += 1;
+        tracing::info!(model = %name, "Model integrity verified");
+    }
+
+    Ok(verified)
+}
+
+/// Verify all registered models, using plaintext hashes for encrypted artifacts.
+pub async fn verify_all_models_with_key_provider(
+    registry: &ModelRegistry,
+    expected_hashes: &HashMap<String, String>,
+    key_provider: Option<&dyn KeyProvider>,
+) -> Result<usize> {
+    if expected_hashes.is_empty() {
+        return Ok(0);
+    }
+
+    let mut verified = 0;
+    for (name, expected) in expected_hashes {
+        let manifest = registry
+            .get(name)
+            .map_err(|_| PowerError::IntegrityCheckFailed {
+                model: name.clone(),
+                expected: expected.clone(),
+                actual: "<not found in registry>".to_string(),
+            })?;
+
+        let actual = if manifest
+            .path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("enc"))
+        {
+            let provider = key_provider.ok_or_else(|| {
+                PowerError::Config(format!(
+                    "Model '{name}' is encrypted (.enc) but no key provider is configured for plaintext integrity verification"
+                ))
+            })?;
+            let key = provider.get_key().await.map_err(|e| {
+                PowerError::Config(format!(
+                    "Key provider failed while verifying encrypted model '{name}': {e}"
+                ))
+            })?;
+            crate::tee::encrypted_model::compute_plaintext_sha256(&manifest.path, &key)?
+        } else {
+            storage::compute_sha256_path(&manifest.path)?
+        };
+
         if actual != *expected {
             return Err(PowerError::IntegrityCheckFailed {
                 model: name.clone(),
@@ -73,6 +128,23 @@ pub fn verify_model_signature(model_path: &Path, public_key_hex: &str) -> Result
         .and_then(|n| n.to_str())
         .unwrap_or("<unknown>");
 
+    // Compute SHA-256 of the model file (the signed message)
+    let model_hash_hex = storage::compute_sha256_file(model_path)?;
+    verify_model_signature_hash(model_name, &model_hash_hex, model_path, public_key_hex)
+}
+
+/// Verify an Ed25519 signature over a known model SHA-256 hash.
+///
+/// The signature file must be at `<signature_anchor_path>.sig` and contain
+/// exactly 64 bytes. This is used for encrypted artifacts where the signed
+/// message is the plaintext model hash, but the distributable file is
+/// `<model>.enc` and the signature naturally lives beside it as `<model>.enc.sig`.
+pub fn verify_model_signature_hash(
+    model_name: &str,
+    model_hash_hex: &str,
+    signature_anchor_path: &Path,
+    public_key_hex: &str,
+) -> Result<()> {
     // Parse the public key
     let key_bytes =
         hex::decode(public_key_hex).map_err(|e| PowerError::SignatureVerificationFailed {
@@ -99,12 +171,8 @@ pub fn verify_model_signature(model_path: &Path, public_key_hex: &str) -> Result
         }
     })?;
 
-    // Read the signature file: <model_path>.sig (appended, not replacing extension)
-    let sig_path = {
-        let mut p = model_path.as_os_str().to_owned();
-        p.push(".sig");
-        std::path::PathBuf::from(p)
-    };
+    // Read the signature file: <signature_anchor_path>.sig (appended, not replacing extension)
+    let sig_path = signature_path(signature_anchor_path);
     let sig_bytes =
         std::fs::read(&sig_path).map_err(|e| PowerError::SignatureVerificationFailed {
             model: model_name.to_string(),
@@ -125,13 +193,20 @@ pub fn verify_model_signature(model_path: &Path, public_key_hex: &str) -> Result
             })?;
     let signature = Signature::from_bytes(&sig_array);
 
-    // Compute SHA-256 of the model file (the signed message)
-    let model_hash_hex = storage::compute_sha256_file(model_path)?;
     let model_hash_bytes =
-        hex::decode(&model_hash_hex).map_err(|e| PowerError::SignatureVerificationFailed {
+        hex::decode(model_hash_hex).map_err(|e| PowerError::SignatureVerificationFailed {
             model: model_name.to_string(),
             reason: format!("failed to decode model hash: {}", e),
         })?;
+    if model_hash_bytes.len() != 32 {
+        return Err(PowerError::SignatureVerificationFailed {
+            model: model_name.to_string(),
+            reason: format!(
+                "model hash must be 32 bytes, got {}",
+                model_hash_bytes.len()
+            ),
+        });
+    }
 
     // Verify the signature
     verifying_key
@@ -143,6 +218,28 @@ pub fn verify_model_signature(model_path: &Path, public_key_hex: &str) -> Result
 
     tracing::info!(model = %model_name, "Model signature verified");
     Ok(())
+}
+
+/// Verify an Ed25519 signature over an in-memory model buffer.
+pub fn verify_model_signature_bytes(
+    model_name: &str,
+    model_bytes: &[u8],
+    signature_anchor_path: &Path,
+    public_key_hex: &str,
+) -> Result<()> {
+    let model_hash_hex = storage::compute_sha256(model_bytes);
+    verify_model_signature_hash(
+        model_name,
+        &model_hash_hex,
+        signature_anchor_path,
+        public_key_hex,
+    )
+}
+
+fn signature_path(model_path: &Path) -> std::path::PathBuf {
+    let mut p = model_path.as_os_str().to_owned();
+    p.push(".sig");
+    std::path::PathBuf::from(p)
 }
 
 /// Verify signatures for all registered models.
@@ -242,6 +339,48 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    #[tokio::test]
+    async fn test_verify_all_models_with_key_provider_uses_encrypted_plaintext_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        let plaintext = b"encrypted model plaintext";
+        std::fs::write(&plain_path, plaintext).unwrap();
+        let key = [0x42; 32];
+        let enc_path = crate::tee::encrypted_model::encrypt_model_file(&plain_path, &key).unwrap();
+        let key_path = dir.path().join("model.key");
+        std::fs::write(&key_path, hex::encode(key)).unwrap();
+        let manifest = ModelManifest {
+            name: "test-model".to_string(),
+            format: ModelFormat::Gguf,
+            size: std::fs::metadata(&enc_path).unwrap().len(),
+            sha256: storage::compute_sha256_file(&enc_path).unwrap(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: enc_path,
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: vec![],
+            family: None,
+            families: None,
+        };
+        let registry = ModelRegistry::new();
+        registry.register_transient(manifest).unwrap();
+        let hashes =
+            HashMap::from([("test-model".to_string(), storage::compute_sha256(plaintext))]);
+        let provider = crate::tee::key_provider::StaticKeyProvider::new(
+            crate::tee::encrypted_model::KeySource::File(key_path),
+        );
+
+        let count = verify_all_models_with_key_provider(&registry, &hashes, Some(&provider)).await;
+
+        assert_eq!(count.unwrap(), 1);
+    }
+
     #[test]
     #[serial_test::serial]
     fn test_verify_all_models_fail_wrong_hash() {
@@ -282,13 +421,19 @@ mod tests {
     }
 
     fn sign_model_file_for_test(model_path: &Path, signing_key: &ed25519_dalek::SigningKey) {
-        use ed25519_dalek::Signer;
         let hash_hex = storage::compute_sha256_file(model_path).unwrap();
+        sign_model_hash_for_test(model_path, &hash_hex, signing_key);
+    }
+
+    fn sign_model_hash_for_test(
+        signature_anchor_path: &Path,
+        hash_hex: &str,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) {
+        use ed25519_dalek::Signer;
         let hash_bytes = hex::decode(&hash_hex).unwrap();
         let signature = signing_key.sign(&hash_bytes);
-        let mut sig_os = model_path.as_os_str().to_owned();
-        sig_os.push(".sig");
-        let sig_path = std::path::PathBuf::from(sig_os);
+        let sig_path = signature_path(signature_anchor_path);
         std::fs::write(&sig_path, signature.to_bytes()).unwrap();
     }
 
@@ -302,6 +447,45 @@ mod tests {
         sign_model_file_for_test(&model_path, &signing_key);
 
         let result = verify_model_signature(&model_path, &public_key_hex);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_verify_model_signature_hash_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let anchor_path = dir.path().join("model.gguf.enc");
+        std::fs::write(&anchor_path, b"ciphertext").unwrap();
+        let plaintext_hash = storage::compute_sha256(b"plaintext model bytes");
+
+        let (signing_key, public_key_hex) = generate_test_keypair();
+        sign_model_hash_for_test(&anchor_path, &plaintext_hash, &signing_key);
+
+        let result = verify_model_signature_hash(
+            "encrypted-model",
+            &plaintext_hash,
+            &anchor_path,
+            &public_key_hex,
+        );
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_verify_model_signature_bytes_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let anchor_path = dir.path().join("model.gguf.enc");
+        std::fs::write(&anchor_path, b"ciphertext").unwrap();
+        let plaintext = b"plaintext model bytes";
+        let plaintext_hash = storage::compute_sha256(plaintext);
+
+        let (signing_key, public_key_hex) = generate_test_keypair();
+        sign_model_hash_for_test(&anchor_path, &plaintext_hash, &signing_key);
+
+        let result = verify_model_signature_bytes(
+            "encrypted-model",
+            plaintext,
+            &anchor_path,
+            &public_key_hex,
+        );
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
     }
 

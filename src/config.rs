@@ -8,6 +8,96 @@ use serde::{Deserialize, Serialize};
 use crate::dirs;
 use crate::error::Result;
 
+/// Attestation policy mode for TEE deployments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TeePolicyMode {
+    /// Development mode permits simulated TEE evidence and skipped production checks.
+    Development,
+    /// Strict mode requires hardware TEE evidence, launch measurement pins, and
+    /// pinned local model integrity policy.
+    Strict,
+    /// Strict mode plus NVIDIA GPU confidential-computing evidence binding.
+    GpuConfidential,
+}
+
+impl Default for TeePolicyMode {
+    fn default() -> Self {
+        Self::Strict
+    }
+}
+
+/// Source used to produce NVIDIA GPU confidential-computing evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GpuAttestationSource {
+    /// Consume configured raw evidence/verdict bytes from file or hex fields.
+    Configured,
+    /// Invoke NVIDIA's `nvattest` CLI to collect evidence and request an NRAS
+    /// verdict for each attestation request.
+    NvattestCli,
+    /// Send configured GPU evidence directly to the NVIDIA NRAS REST API.
+    NrasRest,
+}
+
+impl Default for GpuAttestationSource {
+    fn default() -> Self {
+        Self::Configured
+    }
+}
+
+impl Display for GpuAttestationSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Configured => write!(f, "configured"),
+            Self::NvattestCli => write!(f, "nvattest-cli"),
+            Self::NrasRest => write!(f, "nras-rest"),
+        }
+    }
+}
+
+impl FromStr for GpuAttestationSource {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "configured" | "static" | "file" | "hex" => Ok(Self::Configured),
+            "nvattest-cli" | "nvattest" | "nvidia-nvattest-cli" => Ok(Self::NvattestCli),
+            "nras-rest" | "nvidia-nras-rest" | "nras" => Ok(Self::NrasRest),
+            other => Err(format!(
+                "unknown GPU attestation source '{other}', expected configured, nvattest-cli, or nras-rest"
+            )),
+        }
+    }
+}
+
+impl Display for TeePolicyMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Development => write!(f, "development"),
+            Self::Strict => write!(f, "strict"),
+            Self::GpuConfidential => write!(f, "gpu-confidential"),
+        }
+    }
+}
+
+impl FromStr for TeePolicyMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "development" | "dev" => Ok(Self::Development),
+            "strict" | "production" | "prod" => Ok(Self::Strict),
+            "gpu-confidential" | "gpu_confidential" | "gpu-confidential-computing" => {
+                Ok(Self::GpuConfidential)
+            }
+            other => Err(format!(
+                "unknown TEE policy mode '{other}', expected development, strict, or gpu-confidential"
+            )),
+        }
+    }
+}
+
 /// GPU acceleration settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GpuConfig {
@@ -25,6 +115,167 @@ pub struct GpuConfig {
     /// Empty means use a single GPU (default behavior).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tensor_split: Vec<f32>,
+}
+
+fn default_gpu_attestation_provider() -> String {
+    "nvidia-nras".to_string()
+}
+
+fn default_nvattest_path() -> PathBuf {
+    PathBuf::from("nvattest")
+}
+
+fn default_nvattest_verifier() -> String {
+    "remote".to_string()
+}
+
+fn default_nvattest_gpu_evidence_source() -> String {
+    "nvml".to_string()
+}
+
+fn default_nvattest_timeout_secs() -> u64 {
+    30
+}
+
+fn default_proxy_effective_prompt_digest_path() -> String {
+    "/v1/chat/effective-prompt-digest".to_string()
+}
+
+fn default_nras_claims_version() -> String {
+    "3.0".to_string()
+}
+
+fn default_nras_timeout_secs() -> u64 {
+    30
+}
+
+/// NVIDIA GPU confidential-computing attestation evidence settings.
+///
+/// Power can consume evidence/verdict bytes produced by an external NVIDIA GPU
+/// CC verifier, or invoke NVIDIA's `nvattest` CLI to collect live evidence and
+/// request an NRAS verdict. In both modes, Power hashes the raw evidence and
+/// verdict bytes and binds those digests into CPU TEE attestation claims.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuAttestationConfig {
+    /// Evidence source used by `gpu-confidential` mode.
+    #[serde(default)]
+    pub source: GpuAttestationSource,
+
+    /// Evidence provider label emitted in the attestation claim.
+    #[serde(default = "default_gpu_attestation_provider")]
+    pub provider: String,
+
+    /// Raw GPU CC evidence bytes, hex-encoded. Mutually exclusive with
+    /// `evidence_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_hex: Option<String>,
+
+    /// Path to raw GPU CC evidence bytes. Mutually exclusive with
+    /// `evidence_hex`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_path: Option<PathBuf>,
+
+    /// Raw NVIDIA NRAS verdict bytes, hex-encoded. Mutually exclusive with
+    /// `verdict_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict_hex: Option<String>,
+
+    /// Path to raw NVIDIA NRAS verdict bytes. Mutually exclusive with
+    /// `verdict_hex`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict_path: Option<PathBuf>,
+
+    /// Path to NVIDIA's `nvattest` CLI when `source = "nvattest-cli"`.
+    #[serde(default = "default_nvattest_path")]
+    pub nvattest_path: PathBuf,
+
+    /// `nvattest attest --verifier` value. Production deployments should use
+    /// `remote` so NRAS signs/verifies the GPU evidence.
+    #[serde(default = "default_nvattest_verifier")]
+    pub nvattest_verifier: String,
+
+    /// Live GPU evidence source passed to `nvattest collect-evidence`.
+    /// `nvml` is the Confidential Computing path for H100-class GPUs.
+    #[serde(default = "default_nvattest_gpu_evidence_source")]
+    pub nvattest_gpu_evidence_source: String,
+
+    /// Required by `nvattest` only for `corelib` evidence sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvattest_gpu_architecture: Option<String>,
+
+    /// Optional NRAS service URL for `nvattest attest --nras-url`.
+    /// When `source = "nras-rest"`, this may be either the API root or the full
+    /// `/v4/attest/gpu` endpoint. Defaults to NVIDIA's public NRAS endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nras_url: Option<String>,
+
+    /// GPU architecture passed to NVIDIA NRAS REST requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nras_gpu_architecture: Option<String>,
+
+    /// NVIDIA NRAS REST claims version. Supported by NRAS v4: `2.0` and `3.0`.
+    #[serde(default = "default_nras_claims_version")]
+    pub nras_claims_version: String,
+
+    /// Environment variable containing an optional bearer token for NRAS REST.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nras_bearer_token_env: Option<String>,
+
+    /// Maximum time allowed for each NRAS REST request.
+    #[serde(default = "default_nras_timeout_secs")]
+    pub nras_timeout_secs: u64,
+
+    /// Optional RIM service URL for `nvattest attest --rim-url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rim_url: Option<String>,
+
+    /// Optional OCSP service URL for `nvattest attest --ocsp-url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocsp_url: Option<String>,
+
+    /// Optional relying-party policy file for `nvattest attest`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relying_party_policy_path: Option<PathBuf>,
+
+    /// Maximum time allowed for each `nvattest` command.
+    #[serde(default = "default_nvattest_timeout_secs")]
+    pub nvattest_timeout_secs: u64,
+}
+
+impl Default for GpuAttestationConfig {
+    fn default() -> Self {
+        Self {
+            source: GpuAttestationSource::default(),
+            provider: default_gpu_attestation_provider(),
+            evidence_hex: None,
+            evidence_path: None,
+            verdict_hex: None,
+            verdict_path: None,
+            nvattest_path: default_nvattest_path(),
+            nvattest_verifier: default_nvattest_verifier(),
+            nvattest_gpu_evidence_source: default_nvattest_gpu_evidence_source(),
+            nvattest_gpu_architecture: None,
+            nras_url: None,
+            nras_gpu_architecture: None,
+            nras_claims_version: default_nras_claims_version(),
+            nras_bearer_token_env: None,
+            nras_timeout_secs: default_nras_timeout_secs(),
+            rim_url: None,
+            ocsp_url: None,
+            relying_party_policy_path: None,
+            nvattest_timeout_secs: default_nvattest_timeout_secs(),
+        }
+    }
+}
+
+impl GpuAttestationConfig {
+    pub fn evidence_configured(&self) -> bool {
+        self.evidence_hex.is_some() || self.evidence_path.is_some()
+    }
+
+    pub fn verdict_configured(&self) -> bool {
+        self.verdict_hex.is_some() || self.verdict_path.is_some()
+    }
 }
 
 /// User-configurable settings for the Power server.
@@ -49,6 +300,10 @@ pub struct PowerConfig {
     /// GPU acceleration settings
     #[serde(default)]
     pub gpu: GpuConfig,
+
+    /// NVIDIA GPU confidential-computing evidence binding settings.
+    #[serde(default)]
+    pub gpu_attestation: GpuAttestationConfig,
 
     /// Speculative-decoding mode for the picolm backend: "off", "prompt-lookup",
     /// or "ngram-context" (DSpark-like self-speculation). Default: "prompt-lookup".
@@ -81,6 +336,11 @@ pub struct PowerConfig {
     /// memory zeroing after inference (default: false).
     #[serde(default)]
     pub tee_mode: bool,
+
+    /// Attestation policy mode. Defaults to strict so `tee_mode = true` fails
+    /// closed unless development mode is explicitly requested.
+    #[serde(default)]
+    pub tee_policy_mode: TeePolicyMode,
 
     /// Redact inference content from logs (default: true when tee_mode is enabled).
     #[serde(default)]
@@ -132,9 +392,9 @@ pub struct PowerConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tee_types: Vec<String>,
 
-    /// Expected measurements per TEE type (hex-encoded).
-    /// When set, attestation reports must match the expected measurement.
-    /// Key: tee type (e.g., "sev-snp"), Value: hex measurement string.
+    /// Expected 48-byte launch measurements per TEE type (hex-encoded).
+    /// Strict and GPU-confidential policy require a pin for the detected TEE
+    /// type. Keys use canonical TEE names such as "sev-snp" or "tdx".
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub expected_measurements: HashMap<String, String>,
 
@@ -178,14 +438,16 @@ pub struct PowerConfig {
 
     // --- In-Memory Decryption ---
     /// Decrypt encrypted models entirely in RAM (mlock) instead of writing a temp file.
-    /// Default: true when tee_mode is enabled. Prevents plaintext from touching disk.
+    ///
+    /// Backends must explicitly support locked in-memory plaintext loading.
+    /// Unsupported backends fail closed before load.
     #[serde(default)]
     pub in_memory_decrypt: bool,
 
-    /// Decrypt encrypted models one layer at a time during inference (requires `picolm` feature).
-    /// Peak plaintext in RAM = one transformer layer (~50–200MB) instead of the full model.
-    /// Each layer is zeroized immediately after use. Incompatible with mistralrs/llamacpp.
-    /// Default: false.
+    /// Decrypt encrypted models through a chunked plaintext access primitive.
+    ///
+    /// Backends must explicitly support layer-streaming decrypted plaintext
+    /// loading. Unsupported backends fail closed before load.
     #[serde(default)]
     pub streaming_decrypt: bool,
 
@@ -211,6 +473,20 @@ pub struct PowerConfig {
     /// upstream (outside any TEE) — no hardware attestation covers its content.
     #[serde(default)]
     pub proxy_upstreams: HashMap<String, String>,
+
+    /// Ask proxy upstreams for the exact rendered chat prompt digest before
+    /// inference, using `proxy_effective_prompt_digest_path`.
+    #[serde(default)]
+    pub proxy_effective_prompt_digest: bool,
+
+    /// Require proxy upstreams to provide an effective prompt digest. When true,
+    /// missing/unsupported upstream digest endpoints fail the request closed.
+    #[serde(default)]
+    pub proxy_effective_prompt_digest_required: bool,
+
+    /// Upstream endpoint path for proxy effective prompt digest requests.
+    #[serde(default = "default_proxy_effective_prompt_digest_path")]
+    pub proxy_effective_prompt_digest_path: String,
 
     // --- Timing Side-Channel Mitigation ---
     /// Minimum response time in milliseconds for all inference requests.
@@ -337,6 +613,7 @@ impl Default for PowerConfig {
             data_dir: dirs::power_home(),
             max_loaded_models: default_max_loaded_models(),
             gpu: GpuConfig::default(),
+            gpu_attestation: GpuAttestationConfig::default(),
             spec_mode: default_spec_mode(),
             keep_alive: default_keep_alive(),
             use_mlock: false,
@@ -344,6 +621,7 @@ impl Default for PowerConfig {
             flash_attention: false,
             num_parallel: default_num_parallel(),
             tee_mode: false,
+            tee_policy_mode: TeePolicyMode::default(),
             redact_logs: false,
             model_hashes: HashMap::new(),
             model_key_source: None,
@@ -367,6 +645,9 @@ impl Default for PowerConfig {
             rate_limit_rps: 0,
             max_concurrent_requests: 0,
             proxy_upstreams: HashMap::new(),
+            proxy_effective_prompt_digest: false,
+            proxy_effective_prompt_digest_required: false,
+            proxy_effective_prompt_digest_path: default_proxy_effective_prompt_digest_path(),
             timing_padding_ms: None,
         }
     }
@@ -478,13 +759,110 @@ impl PowerConfig {
             );
         }
 
-        // Warn if streaming_decrypt is set but picolm feature is not enabled.
+        if self.in_memory_decrypt {
+            tracing::warn!(
+                "in_memory_decrypt = true requires a backend that explicitly supports locked \
+                 in-memory plaintext loading. Unsupported backends fail closed before load."
+            );
+        }
+
         if self.streaming_decrypt {
+            tracing::warn!(
+                "streaming_decrypt = true requires a backend that explicitly supports \
+                 layer-streaming decrypted plaintext loading. Unsupported backends fail closed \
+                 before load."
+            );
             #[cfg(not(feature = "picolm"))]
             tracing::warn!(
                 "streaming_decrypt = true but the picolm feature is not enabled. \
-                 Layer-streaming decryption requires --features picolm."
+                 The current GGUF streaming-decrypt backend path requires --features picolm."
             );
+        }
+
+        if self.gpu_attestation.evidence_hex.is_some()
+            && self.gpu_attestation.evidence_path.is_some()
+        {
+            tracing::warn!(
+                "gpu_attestation.evidence_hex and gpu_attestation.evidence_path are both set; \
+                 GPU evidence providers require exactly one evidence source."
+            );
+        }
+
+        if self.gpu_attestation.verdict_hex.is_some() && self.gpu_attestation.verdict_path.is_some()
+        {
+            tracing::warn!(
+                "gpu_attestation.verdict_hex and gpu_attestation.verdict_path are both set; \
+                 GPU evidence providers require at most one verdict source."
+            );
+        }
+
+        if self.gpu_attestation.source == GpuAttestationSource::NvattestCli
+            && self.gpu_attestation.nvattest_timeout_secs == 0
+        {
+            tracing::warn!(
+                "gpu_attestation.nvattest_timeout_secs = 0 is invalid; nvattest CLI provider \
+                 requires a positive timeout."
+            );
+        }
+
+        if self.gpu_attestation.source == GpuAttestationSource::NvattestCli
+            && !matches!(
+                self.gpu_attestation
+                    .nvattest_verifier
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "local" | "remote"
+            )
+        {
+            tracing::warn!(
+                verifier = %self.gpu_attestation.nvattest_verifier,
+                "gpu_attestation.nvattest_verifier should be \"remote\" or \"local\"."
+            );
+        }
+
+        if self.gpu_attestation.source == GpuAttestationSource::NvattestCli
+            && !matches!(
+                self.gpu_attestation
+                    .nvattest_gpu_evidence_source
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "nvml" | "corelib"
+            )
+        {
+            tracing::warn!(
+                source = %self.gpu_attestation.nvattest_gpu_evidence_source,
+                "gpu_attestation.nvattest_gpu_evidence_source should be \"nvml\" or \"corelib\"."
+            );
+        }
+
+        if self.gpu_attestation.source == GpuAttestationSource::NrasRest {
+            if !self.gpu_attestation.evidence_configured() {
+                tracing::warn!(
+                    "gpu_attestation.source = \"nras-rest\" requires evidence_hex or evidence_path."
+                );
+            }
+            if self.gpu_attestation.nras_gpu_architecture.is_none() {
+                tracing::warn!(
+                    "gpu_attestation.source = \"nras-rest\" requires nras_gpu_architecture."
+                );
+            }
+            if !matches!(
+                self.gpu_attestation.nras_claims_version.trim(),
+                "2.0" | "3.0"
+            ) {
+                tracing::warn!(
+                    claims_version = %self.gpu_attestation.nras_claims_version,
+                    "gpu_attestation.nras_claims_version should be \"2.0\" or \"3.0\"."
+                );
+            }
+            if self.gpu_attestation.nras_timeout_secs == 0 {
+                tracing::warn!(
+                    "gpu_attestation.nras_timeout_secs = 0 is invalid; NRAS REST provider \
+                     requires a positive timeout."
+                );
+            }
         }
     }
 
@@ -524,9 +902,114 @@ impl PowerConfig {
             }
         }
 
+        if let Ok(provider) = std::env::var("A3S_POWER_GPU_ATTESTATION_PROVIDER") {
+            self.gpu_attestation.provider = provider;
+        }
+
+        if let Ok(source) = std::env::var("A3S_POWER_GPU_ATTESTATION_SOURCE") {
+            if let Some(source) = parse_env_override::<GpuAttestationSource>(
+                "A3S_POWER_GPU_ATTESTATION_SOURCE",
+                &source,
+            ) {
+                self.gpu_attestation.source = source;
+            }
+        }
+
+        if let Ok(evidence_hex) = std::env::var("A3S_POWER_GPU_ATTESTATION_EVIDENCE_HEX") {
+            self.gpu_attestation.evidence_hex = Some(evidence_hex);
+            self.gpu_attestation.evidence_path = None;
+        }
+
+        if let Ok(evidence_path) = std::env::var("A3S_POWER_GPU_ATTESTATION_EVIDENCE_PATH") {
+            self.gpu_attestation.evidence_path = Some(PathBuf::from(evidence_path));
+            self.gpu_attestation.evidence_hex = None;
+        }
+
+        if let Ok(verdict_hex) = std::env::var("A3S_POWER_GPU_ATTESTATION_VERDICT_HEX") {
+            self.gpu_attestation.verdict_hex = Some(verdict_hex);
+            self.gpu_attestation.verdict_path = None;
+        }
+
+        if let Ok(verdict_path) = std::env::var("A3S_POWER_GPU_ATTESTATION_VERDICT_PATH") {
+            self.gpu_attestation.verdict_path = Some(PathBuf::from(verdict_path));
+            self.gpu_attestation.verdict_hex = None;
+        }
+
+        if let Ok(path) = std::env::var("A3S_POWER_GPU_ATTESTATION_NVATTEST_PATH") {
+            self.gpu_attestation.nvattest_path = PathBuf::from(path);
+        }
+
+        if let Ok(verifier) = std::env::var("A3S_POWER_GPU_ATTESTATION_NVATTEST_VERIFIER") {
+            self.gpu_attestation.nvattest_verifier = verifier;
+        }
+
+        if let Ok(source) = std::env::var("A3S_POWER_GPU_ATTESTATION_NVATTEST_GPU_EVIDENCE_SOURCE")
+        {
+            self.gpu_attestation.nvattest_gpu_evidence_source = source;
+        }
+
+        if let Ok(architecture) =
+            std::env::var("A3S_POWER_GPU_ATTESTATION_NVATTEST_GPU_ARCHITECTURE")
+        {
+            self.gpu_attestation.nvattest_gpu_architecture = Some(architecture);
+        }
+
+        if let Ok(url) = std::env::var("A3S_POWER_GPU_ATTESTATION_NRAS_URL") {
+            self.gpu_attestation.nras_url = Some(url);
+        }
+
+        if let Ok(architecture) = std::env::var("A3S_POWER_GPU_ATTESTATION_NRAS_GPU_ARCHITECTURE") {
+            self.gpu_attestation.nras_gpu_architecture = Some(architecture);
+        }
+
+        if let Ok(claims_version) = std::env::var("A3S_POWER_GPU_ATTESTATION_NRAS_CLAIMS_VERSION") {
+            self.gpu_attestation.nras_claims_version = claims_version;
+        }
+
+        if let Ok(token_env) = std::env::var("A3S_POWER_GPU_ATTESTATION_NRAS_BEARER_TOKEN_ENV") {
+            self.gpu_attestation.nras_bearer_token_env = Some(token_env);
+        }
+
+        if let Ok(timeout) = std::env::var("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS") {
+            if let Some(timeout) =
+                parse_env_override::<u64>("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS", &timeout)
+            {
+                self.gpu_attestation.nras_timeout_secs = timeout;
+            }
+        }
+
+        if let Ok(url) = std::env::var("A3S_POWER_GPU_ATTESTATION_RIM_URL") {
+            self.gpu_attestation.rim_url = Some(url);
+        }
+
+        if let Ok(url) = std::env::var("A3S_POWER_GPU_ATTESTATION_OCSP_URL") {
+            self.gpu_attestation.ocsp_url = Some(url);
+        }
+
+        if let Ok(path) = std::env::var("A3S_POWER_GPU_ATTESTATION_RELYING_PARTY_POLICY_PATH") {
+            self.gpu_attestation.relying_party_policy_path = Some(PathBuf::from(path));
+        }
+
+        if let Ok(timeout) = std::env::var("A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS") {
+            if let Some(timeout) = parse_env_override::<u64>(
+                "A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS",
+                &timeout,
+            ) {
+                self.gpu_attestation.nvattest_timeout_secs = timeout;
+            }
+        }
+
         if let Ok(tee_str) = std::env::var("A3S_POWER_TEE_MODE") {
             if let Some(tee_mode) = parse_bool_env_override("A3S_POWER_TEE_MODE", &tee_str) {
                 self.tee_mode = tee_mode;
+            }
+        }
+
+        if let Ok(policy_mode) = std::env::var("A3S_POWER_TEE_POLICY_MODE") {
+            if let Some(mode) =
+                parse_env_override::<TeePolicyMode>("A3S_POWER_TEE_POLICY_MODE", &policy_mode)
+            {
+                self.tee_policy_mode = mode;
             }
         }
 
@@ -573,6 +1056,7 @@ impl PowerConfig {
 
         // A3S_POWER_TEE_STRICT=1 removes "simulated" from allowed TEE types
         if std::env::var("A3S_POWER_TEE_STRICT").as_deref() == Ok("1") {
+            self.tee_policy_mode = TeePolicyMode::Strict;
             if self.allowed_tee_types.is_empty() {
                 // Default to all hardware types when strict mode is enabled
                 self.allowed_tee_types = vec!["sev-snp".to_string(), "tdx".to_string()];
@@ -583,6 +1067,27 @@ impl PowerConfig {
 
         if std::env::var("A3S_POWER_AUDIT_LOG").as_deref() == Ok("1") {
             self.audit_log = true;
+        }
+
+        if let Ok(enabled) = std::env::var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST") {
+            if let Some(enabled) =
+                parse_bool_env_override("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST", &enabled)
+            {
+                self.proxy_effective_prompt_digest = enabled;
+            }
+        }
+
+        if let Ok(required) = std::env::var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED") {
+            if let Some(required) = parse_bool_env_override(
+                "A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED",
+                &required,
+            ) {
+                self.proxy_effective_prompt_digest_required = required;
+            }
+        }
+
+        if let Ok(path) = std::env::var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_PATH") {
+            self.proxy_effective_prompt_digest_path = path;
         }
     }
 
@@ -613,6 +1118,7 @@ impl PowerConfig {
         out.push_str(&format!("flash_attention = {}\n", self.flash_attention));
         out.push_str(&format!("num_parallel = {}\n", self.num_parallel));
         out.push_str(&format!("tee_mode = {}\n", self.tee_mode));
+        out.push_str(&format!("tee_policy_mode = \"{}\"\n", self.tee_policy_mode));
         out.push_str(&format!("redact_logs = {}\n", self.redact_logs));
 
         // GPU block
@@ -629,6 +1135,99 @@ impl PowerConfig {
             out.push_str(&format!("  tensor_split = [{}]\n", splits.join(", ")));
         }
         out.push_str("}\n");
+
+        // GPU confidential-computing evidence binding
+        if self.gpu_attestation.evidence_configured()
+            || self.gpu_attestation.verdict_configured()
+            || self.gpu_attestation.provider != default_gpu_attestation_provider()
+            || self.gpu_attestation.source != GpuAttestationSource::Configured
+        {
+            out.push_str("\ngpu_attestation {\n");
+            out.push_str(&format!("  source = \"{}\"\n", self.gpu_attestation.source));
+            out.push_str(&format!(
+                "  provider = \"{}\"\n",
+                self.gpu_attestation.provider
+            ));
+            if let Some(ref evidence_hex) = self.gpu_attestation.evidence_hex {
+                out.push_str(&format!("  evidence_hex = \"{}\"\n", evidence_hex));
+            }
+            if let Some(ref evidence_path) = self.gpu_attestation.evidence_path {
+                out.push_str(&format!(
+                    "  evidence_path = \"{}\"\n",
+                    evidence_path.display()
+                ));
+            }
+            if let Some(ref verdict_hex) = self.gpu_attestation.verdict_hex {
+                out.push_str(&format!("  verdict_hex = \"{}\"\n", verdict_hex));
+            }
+            if let Some(ref verdict_path) = self.gpu_attestation.verdict_path {
+                out.push_str(&format!(
+                    "  verdict_path = \"{}\"\n",
+                    verdict_path.display()
+                ));
+            }
+            if matches!(
+                self.gpu_attestation.source,
+                GpuAttestationSource::NvattestCli | GpuAttestationSource::NrasRest
+            ) {
+                if let Some(ref url) = self.gpu_attestation.nras_url {
+                    out.push_str(&format!("  nras_url = \"{}\"\n", url));
+                }
+            }
+            if self.gpu_attestation.source == GpuAttestationSource::NvattestCli {
+                out.push_str(&format!(
+                    "  nvattest_path = \"{}\"\n",
+                    self.gpu_attestation.nvattest_path.display()
+                ));
+                out.push_str(&format!(
+                    "  nvattest_verifier = \"{}\"\n",
+                    self.gpu_attestation.nvattest_verifier
+                ));
+                out.push_str(&format!(
+                    "  nvattest_gpu_evidence_source = \"{}\"\n",
+                    self.gpu_attestation.nvattest_gpu_evidence_source
+                ));
+                if let Some(ref architecture) = self.gpu_attestation.nvattest_gpu_architecture {
+                    out.push_str(&format!(
+                        "  nvattest_gpu_architecture = \"{}\"\n",
+                        architecture
+                    ));
+                }
+                if let Some(ref url) = self.gpu_attestation.rim_url {
+                    out.push_str(&format!("  rim_url = \"{}\"\n", url));
+                }
+                if let Some(ref url) = self.gpu_attestation.ocsp_url {
+                    out.push_str(&format!("  ocsp_url = \"{}\"\n", url));
+                }
+                if let Some(ref path) = self.gpu_attestation.relying_party_policy_path {
+                    out.push_str(&format!(
+                        "  relying_party_policy_path = \"{}\"\n",
+                        path.display()
+                    ));
+                }
+                out.push_str(&format!(
+                    "  nvattest_timeout_secs = {}\n",
+                    self.gpu_attestation.nvattest_timeout_secs
+                ));
+            }
+            if self.gpu_attestation.source == GpuAttestationSource::NrasRest {
+                if let Some(ref architecture) = self.gpu_attestation.nras_gpu_architecture {
+                    out.push_str(&format!("  nras_gpu_architecture = \"{}\"\n", architecture));
+                }
+                out.push_str(&format!(
+                    "  nras_claims_version = \"{}\"\n",
+                    self.gpu_attestation.nras_claims_version
+                ));
+                if let Some(ref token_env) = self.gpu_attestation.nras_bearer_token_env {
+                    out.push_str(&format!("  nras_bearer_token_env = \"{}\"\n", token_env));
+                }
+                out.push_str(&format!(
+                    "  nras_timeout_secs = {}\n",
+                    self.gpu_attestation.nras_timeout_secs
+                ));
+            }
+            out.push_str("}\n");
+        }
 
         // Model hashes
         if !self.model_hashes.is_empty() {
@@ -703,6 +1302,25 @@ impl PowerConfig {
                 self.max_concurrent_requests
             ));
         }
+        if !self.proxy_upstreams.is_empty() {
+            out.push_str("proxy_upstreams = {\n");
+            for (name, upstream) in &self.proxy_upstreams {
+                out.push_str(&format!("  \"{}\" = \"{}\"\n", name, upstream));
+            }
+            out.push_str("}\n");
+        }
+        if self.proxy_effective_prompt_digest {
+            out.push_str("proxy_effective_prompt_digest = true\n");
+        }
+        if self.proxy_effective_prompt_digest_required {
+            out.push_str("proxy_effective_prompt_digest_required = true\n");
+        }
+        if self.proxy_effective_prompt_digest_path != default_proxy_effective_prompt_digest_path() {
+            out.push_str(&format!(
+                "proxy_effective_prompt_digest_path = \"{}\"\n",
+                self.proxy_effective_prompt_digest_path
+            ));
+        }
 
         // TEE in-memory decryption / token metrics
         if self.in_memory_decrypt {
@@ -722,6 +1340,35 @@ impl PowerConfig {
     pub fn bind_address(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
+
+    /// Return true when production attestation checks must fail closed.
+    pub fn strict_attestation(&self) -> bool {
+        matches!(
+            self.tee_policy_mode,
+            TeePolicyMode::Strict | TeePolicyMode::GpuConfidential
+        )
+    }
+
+    /// Return the effective TEE type allowlist for the configured policy.
+    pub fn effective_allowed_tee_types(&self) -> Vec<String> {
+        if !self.allowed_tee_types.is_empty() {
+            if self.strict_attestation() {
+                return self
+                    .allowed_tee_types
+                    .iter()
+                    .filter(|tee_type| tee_type.as_str() != "simulated")
+                    .cloned()
+                    .collect();
+            }
+            return self.allowed_tee_types.clone();
+        }
+
+        if self.strict_attestation() {
+            return vec!["sev-snp".to_string(), "tdx".to_string()];
+        }
+
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -736,6 +1383,7 @@ mod tests {
         assert_eq!(config.port, 11434);
         assert_eq!(config.max_loaded_models, 1);
         assert!(!config.tee_mode);
+        assert_eq!(config.tee_policy_mode, TeePolicyMode::Strict);
         assert!(!config.redact_logs);
         assert!(config.model_hashes.is_empty());
     }
@@ -780,6 +1428,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             max_loaded_models: 5,
             gpu: GpuConfig::default(),
+            gpu_attestation: GpuAttestationConfig::default(),
             spec_mode: "prompt-lookup".to_string(),
             keep_alive: "5m".to_string(),
             use_mlock: false,
@@ -787,6 +1436,7 @@ mod tests {
             flash_attention: false,
             num_parallel: 4,
             tee_mode: true,
+            tee_policy_mode: TeePolicyMode::Development,
             redact_logs: true,
             model_hashes: HashMap::new(),
             model_key_source: None,
@@ -810,6 +1460,9 @@ mod tests {
             rate_limit_rps: 0,
             max_concurrent_requests: 0,
             proxy_upstreams: HashMap::new(),
+            proxy_effective_prompt_digest: false,
+            proxy_effective_prompt_digest_required: false,
+            proxy_effective_prompt_digest_path: default_proxy_effective_prompt_digest_path(),
             timing_padding_ms: None,
         };
         config.save().unwrap();
@@ -857,6 +1510,228 @@ mod tests {
         let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
         assert_eq!(config.gpu.gpu_layers, 0);
         assert_eq!(config.gpu.main_gpu, 0);
+    }
+
+    #[test]
+    fn test_gpu_attestation_config_defaults() {
+        let config = PowerConfig::default();
+        assert_eq!(
+            config.gpu_attestation.source,
+            GpuAttestationSource::Configured
+        );
+        assert_eq!(config.gpu_attestation.provider, "nvidia-nras");
+        assert_eq!(
+            config.gpu_attestation.nvattest_path,
+            PathBuf::from("nvattest")
+        );
+        assert_eq!(config.gpu_attestation.nvattest_verifier, "remote");
+        assert_eq!(config.gpu_attestation.nvattest_gpu_evidence_source, "nvml");
+        assert_eq!(config.gpu_attestation.nvattest_timeout_secs, 30);
+        assert_eq!(config.gpu_attestation.nras_claims_version, "3.0");
+        assert_eq!(config.gpu_attestation.nras_timeout_secs, 30);
+        assert!(!config.gpu_attestation.evidence_configured());
+        assert!(!config.gpu_attestation.verdict_configured());
+    }
+
+    #[test]
+    fn test_gpu_attestation_config_deserialize_hcl() {
+        let hcl_str = r#"
+            gpu_attestation {
+                source = "configured"
+                provider = "nvidia-nras"
+                evidence_path = "/run/a3s/gpu.evidence"
+                verdict_path = "/run/a3s/nras.verdict"
+            }
+        "#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(
+            config.gpu_attestation.source,
+            GpuAttestationSource::Configured
+        );
+        assert_eq!(config.gpu_attestation.provider, "nvidia-nras");
+        assert_eq!(
+            config.gpu_attestation.evidence_path,
+            Some(PathBuf::from("/run/a3s/gpu.evidence"))
+        );
+        assert_eq!(
+            config.gpu_attestation.verdict_path,
+            Some(PathBuf::from("/run/a3s/nras.verdict"))
+        );
+    }
+
+    #[test]
+    fn test_gpu_attestation_config_serialization() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                evidence_hex: Some("0011".to_string()),
+                verdict_hex: Some("2233".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let serialized = config.to_hcl();
+        assert!(serialized.contains("gpu_attestation {"));
+        assert!(serialized.contains("evidence_hex = \"0011\""));
+        assert!(serialized.contains("verdict_hex = \"2233\""));
+    }
+
+    #[test]
+    fn test_gpu_attestation_nvattest_cli_deserialize_hcl() {
+        let hcl_str = r#"
+            gpu_attestation {
+                source = "nvattest-cli"
+                provider = "nvidia-nras"
+                nvattest_path = "/usr/local/bin/nvattest"
+                nvattest_verifier = "remote"
+                nvattest_gpu_evidence_source = "nvml"
+                nras_url = "https://nras.attestation.nvidia.com"
+                nvattest_timeout_secs = 45
+            }
+        "#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(
+            config.gpu_attestation.source,
+            GpuAttestationSource::NvattestCli
+        );
+        assert_eq!(
+            config.gpu_attestation.nvattest_path,
+            PathBuf::from("/usr/local/bin/nvattest")
+        );
+        assert_eq!(config.gpu_attestation.nvattest_verifier, "remote");
+        assert_eq!(
+            config.gpu_attestation.nras_url.as_deref(),
+            Some("https://nras.attestation.nvidia.com")
+        );
+        assert_eq!(config.gpu_attestation.nvattest_timeout_secs, 45);
+    }
+
+    #[test]
+    fn test_gpu_attestation_nvattest_cli_serialization() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                source: GpuAttestationSource::NvattestCli,
+                nras_url: Some("https://nras.attestation.nvidia.com".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let serialized = config.to_hcl();
+        assert!(serialized.contains("source = \"nvattest-cli\""));
+        assert!(serialized.contains("nvattest_path = \"nvattest\""));
+        assert!(serialized.contains("nvattest_verifier = \"remote\""));
+        assert!(serialized.contains("nras_url = \"https://nras.attestation.nvidia.com\""));
+    }
+
+    #[test]
+    fn test_gpu_attestation_nras_rest_deserialize_hcl() {
+        let hcl_str = r#"
+            gpu_attestation {
+                source = "nras-rest"
+                provider = "nvidia-nras"
+                evidence_path = "/run/a3s/gpu-evidence.json"
+                nras_url = "https://nras.attestation.nvidia.com"
+                nras_gpu_architecture = "HOPPER"
+                nras_claims_version = "3.0"
+                nras_bearer_token_env = "NRAS_TOKEN"
+                nras_timeout_secs = 45
+            }
+        "#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(
+            config.gpu_attestation.source,
+            GpuAttestationSource::NrasRest
+        );
+        assert_eq!(
+            config.gpu_attestation.evidence_path,
+            Some(PathBuf::from("/run/a3s/gpu-evidence.json"))
+        );
+        assert_eq!(
+            config.gpu_attestation.nras_gpu_architecture.as_deref(),
+            Some("HOPPER")
+        );
+        assert_eq!(config.gpu_attestation.nras_claims_version, "3.0");
+        assert_eq!(
+            config.gpu_attestation.nras_bearer_token_env.as_deref(),
+            Some("NRAS_TOKEN")
+        );
+        assert_eq!(config.gpu_attestation.nras_timeout_secs, 45);
+    }
+
+    #[test]
+    fn test_gpu_attestation_nras_rest_serialization() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                source: GpuAttestationSource::NrasRest,
+                evidence_hex: Some("0011".to_string()),
+                nras_url: Some("https://nras.attestation.nvidia.com".to_string()),
+                nras_gpu_architecture: Some("HOPPER".to_string()),
+                nras_bearer_token_env: Some("NRAS_TOKEN".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let serialized = config.to_hcl();
+        assert!(serialized.contains("source = \"nras-rest\""));
+        assert!(serialized.contains("evidence_hex = \"0011\""));
+        assert!(serialized.contains("nras_url = \"https://nras.attestation.nvidia.com\""));
+        assert!(serialized.contains("nras_gpu_architecture = \"HOPPER\""));
+        assert!(serialized.contains("nras_claims_version = \"3.0\""));
+        assert!(serialized.contains("nras_bearer_token_env = \"NRAS_TOKEN\""));
+        assert!(serialized.contains("nras_timeout_secs = 30"));
+    }
+
+    #[test]
+    fn test_proxy_effective_prompt_digest_defaults() {
+        let config = PowerConfig::default();
+        assert!(!config.proxy_effective_prompt_digest);
+        assert!(!config.proxy_effective_prompt_digest_required);
+        assert_eq!(
+            config.proxy_effective_prompt_digest_path,
+            "/v1/chat/effective-prompt-digest"
+        );
+    }
+
+    #[test]
+    fn test_proxy_effective_prompt_digest_deserialize_hcl() {
+        let hcl_str = r#"
+            proxy_upstreams = {
+                "llama-70b" = "http://vllm:8000"
+            }
+            proxy_effective_prompt_digest = true
+            proxy_effective_prompt_digest_required = true
+            proxy_effective_prompt_digest_path = "/v1/rendered-prompt-digest"
+        "#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+        assert_eq!(
+            config.proxy_upstreams.get("llama-70b").map(String::as_str),
+            Some("http://vllm:8000")
+        );
+        assert!(config.proxy_effective_prompt_digest);
+        assert!(config.proxy_effective_prompt_digest_required);
+        assert_eq!(
+            config.proxy_effective_prompt_digest_path,
+            "/v1/rendered-prompt-digest"
+        );
+    }
+
+    #[test]
+    fn test_proxy_effective_prompt_digest_serialization() {
+        let mut proxy_upstreams = HashMap::new();
+        proxy_upstreams.insert("llama-70b".to_string(), "http://vllm:8000".to_string());
+        let config = PowerConfig {
+            proxy_upstreams,
+            proxy_effective_prompt_digest: true,
+            proxy_effective_prompt_digest_required: true,
+            proxy_effective_prompt_digest_path: "/v1/rendered-prompt-digest".to_string(),
+            ..Default::default()
+        };
+        let serialized = config.to_hcl();
+        assert!(serialized.contains("proxy_upstreams = {"));
+        assert!(serialized.contains("\"llama-70b\" = \"http://vllm:8000\""));
+        assert!(serialized.contains("proxy_effective_prompt_digest = true"));
+        assert!(serialized.contains("proxy_effective_prompt_digest_required = true"));
+        assert!(serialized
+            .contains("proxy_effective_prompt_digest_path = \"/v1/rendered-prompt-digest\""));
     }
 
     #[test]
@@ -978,6 +1853,156 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_env_a3s_power_gpu_attestation_paths() {
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_PROVIDER", "nvidia-nras");
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_SOURCE", "configured");
+        std::env::set_var(
+            "A3S_POWER_GPU_ATTESTATION_EVIDENCE_PATH",
+            "/tmp/gpu.evidence",
+        );
+        std::env::set_var(
+            "A3S_POWER_GPU_ATTESTATION_VERDICT_PATH",
+            "/tmp/nras.verdict",
+        );
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(
+            config.gpu_attestation.source,
+            GpuAttestationSource::Configured
+        );
+        assert_eq!(config.gpu_attestation.provider, "nvidia-nras");
+        assert_eq!(
+            config.gpu_attestation.evidence_path,
+            Some(PathBuf::from("/tmp/gpu.evidence"))
+        );
+        assert_eq!(
+            config.gpu_attestation.verdict_path,
+            Some(PathBuf::from("/tmp/nras.verdict"))
+        );
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_PROVIDER");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_SOURCE");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_EVIDENCE_PATH");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_VERDICT_PATH");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_gpu_attestation_nvattest_cli() {
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_SOURCE", "nvattest-cli");
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_NVATTEST_PATH", "/opt/nvattest");
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_NVATTEST_VERIFIER", "remote");
+        std::env::set_var(
+            "A3S_POWER_GPU_ATTESTATION_NVATTEST_GPU_EVIDENCE_SOURCE",
+            "nvml",
+        );
+        std::env::set_var(
+            "A3S_POWER_GPU_ATTESTATION_NRAS_URL",
+            "https://nras.attestation.nvidia.com",
+        );
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS", "45");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(
+            config.gpu_attestation.source,
+            GpuAttestationSource::NvattestCli
+        );
+        assert_eq!(
+            config.gpu_attestation.nvattest_path,
+            PathBuf::from("/opt/nvattest")
+        );
+        assert_eq!(config.gpu_attestation.nvattest_verifier, "remote");
+        assert_eq!(
+            config.gpu_attestation.nras_url.as_deref(),
+            Some("https://nras.attestation.nvidia.com")
+        );
+        assert_eq!(config.gpu_attestation.nvattest_timeout_secs, 45);
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_SOURCE");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NVATTEST_PATH");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NVATTEST_VERIFIER");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NVATTEST_GPU_EVIDENCE_SOURCE");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NRAS_URL");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_gpu_attestation_nras_rest() {
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_SOURCE", "nras-rest");
+        std::env::set_var(
+            "A3S_POWER_GPU_ATTESTATION_EVIDENCE_PATH",
+            "/tmp/gpu-evidence.json",
+        );
+        std::env::set_var(
+            "A3S_POWER_GPU_ATTESTATION_NRAS_URL",
+            "https://nras.attestation.nvidia.com",
+        );
+        std::env::set_var(
+            "A3S_POWER_GPU_ATTESTATION_NRAS_GPU_ARCHITECTURE",
+            "BLACKWELL",
+        );
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_NRAS_CLAIMS_VERSION", "3.0");
+        std::env::set_var(
+            "A3S_POWER_GPU_ATTESTATION_NRAS_BEARER_TOKEN_ENV",
+            "NRAS_TOKEN",
+        );
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS", "45");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(
+            config.gpu_attestation.source,
+            GpuAttestationSource::NrasRest
+        );
+        assert_eq!(
+            config.gpu_attestation.evidence_path,
+            Some(PathBuf::from("/tmp/gpu-evidence.json"))
+        );
+        assert_eq!(
+            config.gpu_attestation.nras_url.as_deref(),
+            Some("https://nras.attestation.nvidia.com")
+        );
+        assert_eq!(
+            config.gpu_attestation.nras_gpu_architecture.as_deref(),
+            Some("BLACKWELL")
+        );
+        assert_eq!(config.gpu_attestation.nras_claims_version, "3.0");
+        assert_eq!(
+            config.gpu_attestation.nras_bearer_token_env.as_deref(),
+            Some("NRAS_TOKEN")
+        );
+        assert_eq!(config.gpu_attestation.nras_timeout_secs, 45);
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_SOURCE");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_EVIDENCE_PATH");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NRAS_URL");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NRAS_GPU_ARCHITECTURE");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NRAS_CLAIMS_VERSION");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NRAS_BEARER_TOKEN_ENV");
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_proxy_effective_prompt_digest() {
+        std::env::set_var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST", "true");
+        std::env::set_var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED", "1");
+        std::env::set_var(
+            "A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_PATH",
+            "/v1/rendered-prompt-digest",
+        );
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert!(config.proxy_effective_prompt_digest);
+        assert!(config.proxy_effective_prompt_digest_required);
+        assert_eq!(
+            config.proxy_effective_prompt_digest_path,
+            "/v1/rendered-prompt-digest"
+        );
+        std::env::remove_var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST");
+        std::env::remove_var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED");
+        std::env::remove_var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_PATH");
+    }
+
+    #[test]
+    #[serial]
     fn test_env_a3s_power_tee_mode() {
         std::env::set_var("A3S_POWER_TEE_MODE", "true");
         let mut config = PowerConfig::default();
@@ -1066,6 +2091,7 @@ mod tests {
     fn test_config_tee_fields_from_hcl() {
         let hcl_str = r#"
             tee_mode = true
+            tee_policy_mode = "development"
             redact_logs = true
 
             model_hashes = {
@@ -1074,6 +2100,7 @@ mod tests {
         "#;
         let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
         assert!(config.tee_mode);
+        assert_eq!(config.tee_policy_mode, TeePolicyMode::Development);
         assert!(config.redact_logs);
         assert_eq!(
             config.model_hashes.get("llama3"),
@@ -1366,6 +2393,72 @@ mod tests {
         let hcl_str = r#"allowed_tee_types = ["sev-snp", "tdx"]"#;
         let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
         assert_eq!(config.allowed_tee_types, vec!["sev-snp", "tdx"]);
+    }
+
+    #[test]
+    fn test_expected_measurements_from_hcl() {
+        let hcl_str = r#"
+expected_measurements = {
+  "sev-snp" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+"#;
+        let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
+
+        assert_eq!(
+            config.expected_measurements.get("sev-snp").map(String::as_str),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
+    #[test]
+    fn test_tee_policy_mode_from_hcl() {
+        let config: PowerConfig = hcl::from_str(r#"tee_policy_mode = "gpu-confidential""#).unwrap();
+        assert_eq!(config.tee_policy_mode, TeePolicyMode::GpuConfidential);
+        assert!(config.strict_attestation());
+    }
+
+    #[test]
+    fn test_effective_allowed_tee_types_strict_defaults_to_hardware() {
+        let config = PowerConfig::default();
+        assert_eq!(
+            config.effective_allowed_tee_types(),
+            vec!["sev-snp".to_string(), "tdx".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_effective_allowed_tee_types_development_remains_permissive() {
+        let config = PowerConfig {
+            tee_policy_mode: TeePolicyMode::Development,
+            ..Default::default()
+        };
+        assert!(config.effective_allowed_tee_types().is_empty());
+    }
+
+    #[test]
+    fn test_effective_allowed_tee_types_strict_filters_simulated() {
+        let config = PowerConfig {
+            allowed_tee_types: vec![
+                "sev-snp".to_string(),
+                "simulated".to_string(),
+                "tdx".to_string(),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            config.effective_allowed_tee_types(),
+            vec!["sev-snp".to_string(), "tdx".to_string()]
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_tee_policy_mode() {
+        std::env::set_var("A3S_POWER_TEE_POLICY_MODE", "gpu-confidential");
+        let mut config = PowerConfig::default();
+        config.apply_env_overrides();
+        assert_eq!(config.tee_policy_mode, TeePolicyMode::GpuConfidential);
+        std::env::remove_var("A3S_POWER_TEE_POLICY_MODE");
     }
 
     #[test]

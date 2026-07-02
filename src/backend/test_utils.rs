@@ -1,13 +1,13 @@
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures::Stream;
 
 use crate::backend::types::{
-    ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk, EmbeddingRequest,
-    EmbeddingResponse,
+    ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
+    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse,
 };
 use crate::backend::{Backend, BackendRegistry};
 use crate::config::PowerConfig;
@@ -20,10 +20,23 @@ use crate::server::state::AppState;
 /// A mock backend for testing handlers without real inference.
 pub struct MockBackend {
     load_succeeds: bool,
+    memory_load_succeeds: bool,
+    supports_memory_load: bool,
+    streaming_load_succeeds: bool,
+    supports_streaming_load: bool,
     unload_succeeds: bool,
     cleanup_succeeds: bool,
     /// When true, chat() emits chunks simulating `<think>reasoning</think>answer`.
     emit_thinking: bool,
+    effective_prompt: Option<EffectivePromptDigest>,
+    last_chat_request: Arc<Mutex<Option<ChatRequest>>>,
+    last_completion_request: Arc<Mutex<Option<CompletionRequest>>>,
+    /// Counter for file-backed load calls (for test verification).
+    pub load_count: Arc<AtomicU32>,
+    /// Counter for in-memory load calls (for test verification).
+    pub memory_load_count: Arc<AtomicU32>,
+    /// Counter for layer-streaming decrypted load calls (for test verification).
+    pub streaming_load_count: Arc<AtomicU32>,
     /// Counter for cleanup_request calls (for test verification).
     pub cleanup_count: Arc<AtomicU32>,
 }
@@ -33,9 +46,19 @@ impl MockBackend {
     pub fn success() -> Self {
         Self {
             load_succeeds: true,
+            memory_load_succeeds: true,
+            supports_memory_load: false,
+            streaming_load_succeeds: true,
+            supports_streaming_load: false,
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: false,
+            effective_prompt: None,
+            last_chat_request: Arc::new(Mutex::new(None)),
+            last_completion_request: Arc::new(Mutex::new(None)),
+            load_count: Arc::new(AtomicU32::new(0)),
+            memory_load_count: Arc::new(AtomicU32::new(0)),
+            streaming_load_count: Arc::new(AtomicU32::new(0)),
             cleanup_count: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -44,9 +67,19 @@ impl MockBackend {
     pub fn load_fails() -> Self {
         Self {
             load_succeeds: false,
+            memory_load_succeeds: false,
+            supports_memory_load: false,
+            streaming_load_succeeds: false,
+            supports_streaming_load: false,
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: false,
+            effective_prompt: None,
+            last_chat_request: Arc::new(Mutex::new(None)),
+            last_completion_request: Arc::new(Mutex::new(None)),
+            load_count: Arc::new(AtomicU32::new(0)),
+            memory_load_count: Arc::new(AtomicU32::new(0)),
+            streaming_load_count: Arc::new(AtomicU32::new(0)),
             cleanup_count: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -55,9 +88,19 @@ impl MockBackend {
     pub fn unload_fails() -> Self {
         Self {
             load_succeeds: true,
+            memory_load_succeeds: true,
+            supports_memory_load: false,
+            streaming_load_succeeds: true,
+            supports_streaming_load: false,
             unload_succeeds: false,
             cleanup_succeeds: true,
             emit_thinking: false,
+            effective_prompt: None,
+            last_chat_request: Arc::new(Mutex::new(None)),
+            last_completion_request: Arc::new(Mutex::new(None)),
+            load_count: Arc::new(AtomicU32::new(0)),
+            memory_load_count: Arc::new(AtomicU32::new(0)),
+            streaming_load_count: Arc::new(AtomicU32::new(0)),
             cleanup_count: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -66,9 +109,19 @@ impl MockBackend {
     pub fn cleanup_fails() -> Self {
         Self {
             load_succeeds: true,
+            memory_load_succeeds: true,
+            supports_memory_load: false,
+            streaming_load_succeeds: true,
+            supports_streaming_load: false,
             unload_succeeds: true,
             cleanup_succeeds: false,
             emit_thinking: false,
+            effective_prompt: None,
+            last_chat_request: Arc::new(Mutex::new(None)),
+            last_completion_request: Arc::new(Mutex::new(None)),
+            load_count: Arc::new(AtomicU32::new(0)),
+            memory_load_count: Arc::new(AtomicU32::new(0)),
+            streaming_load_count: Arc::new(AtomicU32::new(0)),
             cleanup_count: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -77,11 +130,51 @@ impl MockBackend {
     pub fn with_thinking() -> Self {
         Self {
             load_succeeds: true,
+            memory_load_succeeds: true,
+            supports_memory_load: false,
+            streaming_load_succeeds: true,
+            supports_streaming_load: false,
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: true,
+            effective_prompt: None,
+            last_chat_request: Arc::new(Mutex::new(None)),
+            last_completion_request: Arc::new(Mutex::new(None)),
+            load_count: Arc::new(AtomicU32::new(0)),
+            memory_load_count: Arc::new(AtomicU32::new(0)),
+            streaming_load_count: Arc::new(AtomicU32::new(0)),
             cleanup_count: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    /// Add an effective prompt digest claim to this mock backend.
+    pub fn with_effective_prompt(mut self, digest: EffectivePromptDigest) -> Self {
+        self.effective_prompt = Some(digest);
+        self
+    }
+
+    /// Allow tests to exercise encrypted in-memory model loading.
+    pub fn with_memory_load(mut self) -> Self {
+        self.supports_memory_load = true;
+        self.memory_load_succeeds = true;
+        self
+    }
+
+    /// Allow tests to exercise encrypted streaming-decrypt model loading.
+    pub fn with_streaming_load(mut self) -> Self {
+        self.supports_streaming_load = true;
+        self.streaming_load_succeeds = true;
+        self
+    }
+
+    /// Share a handle that captures the most recent chat request.
+    pub fn chat_request_capture(&self) -> Arc<Mutex<Option<ChatRequest>>> {
+        self.last_chat_request.clone()
+    }
+
+    /// Share a handle that captures the most recent completion request.
+    pub fn completion_request_capture(&self) -> Arc<Mutex<Option<CompletionRequest>>> {
+        self.last_completion_request.clone()
     }
 }
 
@@ -96,10 +189,51 @@ impl Backend for MockBackend {
     }
 
     async fn load(&self, _manifest: &ModelManifest) -> Result<()> {
+        self.load_count.fetch_add(1, Ordering::Relaxed);
         if self.load_succeeds {
             Ok(())
         } else {
             Err(PowerError::InferenceFailed("mock load failure".to_string()))
+        }
+    }
+
+    fn supports_memory_load(&self, format: &ModelFormat) -> bool {
+        self.supports_memory_load && self.supports(format)
+    }
+
+    async fn load_from_memory(
+        &self,
+        _manifest: &ModelManifest,
+        plaintext: crate::tee::encrypted_model::MemoryDecryptedModel,
+    ) -> Result<()> {
+        self.memory_load_count.fetch_add(1, Ordering::Relaxed);
+        drop(plaintext);
+        if self.memory_load_succeeds {
+            Ok(())
+        } else {
+            Err(PowerError::InferenceFailed(
+                "mock memory load failure".to_string(),
+            ))
+        }
+    }
+
+    fn supports_streaming_decrypt_load(&self, format: &ModelFormat) -> bool {
+        self.supports_streaming_load && self.supports(format)
+    }
+
+    async fn load_from_streaming_decrypt(
+        &self,
+        _manifest: &ModelManifest,
+        plaintext: crate::tee::encrypted_model::LayerStreamingDecryptedModel,
+    ) -> Result<()> {
+        self.streaming_load_count.fetch_add(1, Ordering::Relaxed);
+        drop(plaintext);
+        if self.streaming_load_succeeds {
+            Ok(())
+        } else {
+            Err(PowerError::InferenceFailed(
+                "mock streaming decrypt load failure".to_string(),
+            ))
         }
     }
 
@@ -116,8 +250,13 @@ impl Backend for MockBackend {
     async fn chat(
         &self,
         _model_name: &str,
-        _request: ChatRequest,
+        request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
+        *self
+            .last_chat_request
+            .lock()
+            .expect("chat request lock poisoned") = Some(request);
+
         let chunks = if self.emit_thinking {
             vec![
                 Ok(ChatResponseChunk {
@@ -173,11 +312,24 @@ impl Backend for MockBackend {
         Ok(Box::pin(futures::stream::iter(chunks)))
     }
 
+    async fn effective_chat_prompt_digest(
+        &self,
+        _model_name: &str,
+        _request: &ChatRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        Ok(self.effective_prompt.clone())
+    }
+
     async fn complete(
         &self,
         _model_name: &str,
-        _request: CompletionRequest,
+        request: CompletionRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<CompletionResponseChunk>> + Send>>> {
+        *self
+            .last_completion_request
+            .lock()
+            .expect("completion request lock poisoned") = Some(request);
+
         let chunks = vec![
             Ok(CompletionResponseChunk {
                 text: "World".to_string(),
@@ -312,6 +464,7 @@ mod tests {
             response_format: None,
             tools: None,
             tool_choice: None,
+            parallel_tool_calls: None,
             repeat_last_n: None,
             penalize_newline: None,
             num_batch: None,
@@ -361,6 +514,7 @@ mod tests {
             response_format: None,
             tools: None,
             tool_choice: None,
+            parallel_tool_calls: None,
             repeat_last_n: None,
             penalize_newline: None,
             num_batch: None,

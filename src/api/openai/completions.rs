@@ -53,6 +53,46 @@ pub async fn handler(
         }
     };
 
+    let runtime_policy = match crate::api::prompt_policy::runtime_policy_claim_with_gpu_config(
+        &manifest,
+        Some(&state.config.gpu),
+    ) {
+        Ok(policy) => policy,
+        Err(e) => {
+            state.metrics.decrement_active_requests();
+            return openai_error(
+                "receipt_failed",
+                &format!("failed to build runtime policy receipt claim: {e}"),
+            )
+            .into_response();
+        }
+    };
+    let attestation_receipt =
+        match crate::api::receipt::completion_receipt_with_runtime_policy(&request, runtime_policy)
+        {
+            Ok(receipt) => receipt,
+            Err(e) => {
+                state.metrics.decrement_active_requests();
+                return openai_error(
+                    "receipt_failed",
+                    &format!("failed to build attestation receipt: {e}"),
+                )
+                .into_response();
+            }
+        };
+    let attestation_receipt_sha256 = match crate::api::receipt::receipt_digest(&attestation_receipt)
+    {
+        Ok(digest) => digest,
+        Err(e) => {
+            state.metrics.decrement_active_requests();
+            return openai_error(
+                "receipt_failed",
+                &format!("failed to digest attestation receipt: {e}"),
+            )
+            .into_response();
+        }
+    };
+
     let backend = match state.find_backend(&manifest.format, manifest.size) {
         Ok(b) => b,
         Err(e) => {
@@ -87,23 +127,23 @@ pub async fn handler(
         max_tokens: request.max_tokens,
         stop: request.stop.clone(),
         stream: is_stream,
-        top_k: None,
-        min_p: None,
-        repeat_penalty: None,
+        top_k: request.top_k,
+        min_p: request.min_p,
+        repeat_penalty: request.repeat_penalty,
         frequency_penalty: request.frequency_penalty,
         presence_penalty: request.presence_penalty,
         seed: request.seed,
-        num_ctx: None,
-        mirostat: None,
-        mirostat_tau: None,
-        mirostat_eta: None,
-        tfs_z: None,
-        typical_p: None,
+        num_ctx: request.num_ctx,
+        mirostat: request.mirostat,
+        mirostat_tau: request.mirostat_tau,
+        mirostat_eta: request.mirostat_eta,
+        tfs_z: request.tfs_z,
+        typical_p: request.typical_p,
         response_format: None,
         images: None,
         projector_path: None,
-        repeat_last_n: None,
-        penalize_newline: None,
+        repeat_last_n: request.repeat_last_n,
+        penalize_newline: request.penalize_newline,
         num_batch: None,
         num_thread: state.config.num_thread,
         num_thread_batch: None,
@@ -161,12 +201,14 @@ pub async fn handler(
                 let model_for_cleanup = model_name.clone();
                 let backend_cleanup = backend.clone();
                 let ctx_cleanup = ctx.clone();
-                let id_for_usage = request_id.clone();
-                let model_for_usage = model_name.clone();
                 let audit_stream = state.audit.clone();
                 let ctx_audit = ctx.clone();
                 let state_cleanup = state.clone();
                 let model_for_unload = model_name.clone();
+                let id_for_receipt = request_id.clone();
+                let model_for_receipt = model_name.clone();
+                let receipt_for_usage = attestation_receipt.clone();
+                let receipt_digest_for_usage = attestation_receipt_sha256.clone();
 
                 let sse_stream = stream.map(move |chunk| {
                     let data = match chunk {
@@ -204,6 +246,8 @@ pub async fn handler(
                                     total_tokens: 0,
                                 },
                                 system_fingerprint: None,
+                                attestation_receipt: None,
+                                attestation_receipt_sha256: None,
                             };
                             super::sse_json_data(&resp)
                         }
@@ -261,37 +305,35 @@ pub async fn handler(
                     Ok(Event::default().data("[DONE]"))
                 });
 
-                // Emit a final usage chunk with rounded token counts before [DONE]
-                // when suppress_token_metrics is active or stream_options.include_usage is set.
+                // Emit a final receipt chunk before [DONE]. It also carries rounded token
+                // counts when suppress_token_metrics is active or stream_options.include_usage is set.
                 // Reads are deferred into an async closure so they execute after sse_stream
                 // is fully consumed (counters have final values at that point).
-                let usage_event = if include_usage_chunk {
-                    futures::stream::once(async move {
-                        let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
-                        let pt2 = prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
-                        let rp = super::round_tokens(pt2);
-                        let rc = super::round_tokens(eval_count2);
-                        let resp = CompletionResponse {
-                            id: id_for_usage,
-                            object: "text_completion".to_string(),
-                            created,
-                            model: model_for_usage,
-                            choices: vec![],
-                            usage: Usage {
-                                prompt_tokens: rp,
-                                completion_tokens: rc,
-                                total_tokens: rp + rc,
-                            },
-                            system_fingerprint: None,
-                        };
-                        Ok::<_, Infallible>(super::sse_json_event(&resp))
-                    })
-                    .left_stream()
-                } else {
-                    futures::stream::empty().right_stream()
-                };
+                let receipt_event = futures::stream::once(async move {
+                    let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
+                    let pt2 = prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
+                    let rp = super::round_tokens(pt2);
+                    let rc = super::round_tokens(eval_count2);
+                    let mut val = serde_json::json!({
+                        "id": id_for_receipt,
+                        "object": "text_completion",
+                        "created": created,
+                        "model": model_for_receipt,
+                        "choices": [],
+                        "attestation_receipt": receipt_for_usage,
+                        "attestation_receipt_sha256": receipt_digest_for_usage
+                    });
+                    if include_usage_chunk {
+                        val["usage"] = serde_json::json!({
+                            "prompt_tokens": rp,
+                            "completion_tokens": rc,
+                            "total_tokens": rp + rc
+                        });
+                    }
+                    Ok::<_, Infallible>(super::sse_json_event(&val))
+                });
 
-                Sse::new(sse_stream.chain(usage_event).chain(done_event))
+                Sse::new(sse_stream.chain(receipt_event).chain(done_event))
                     .keep_alive(KeepAlive::default())
                     .into_response()
             } else {
@@ -369,6 +411,8 @@ pub async fn handler(
                         total_tokens: reported_prompt + reported_completion,
                     },
                     system_fingerprint: Some("fp_a3s_power".to_string()),
+                    attestation_receipt: Some(attestation_receipt),
+                    attestation_receipt_sha256: Some(attestation_receipt_sha256),
                 };
 
                 // Privacy: zeroize inference buffers in TEE mode
@@ -512,6 +556,18 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("World"));
+        assert_eq!(
+            json["attestation_receipt"]["schema"],
+            "a3s.power.inference-receipt.v2"
+        );
+        assert_eq!(
+            json["attestation_receipt"]["request_type"],
+            "text-completion"
+        );
+        assert_eq!(
+            json["attestation_receipt_sha256"].as_str().unwrap().len(),
+            64
+        );
 
         std::env::remove_var("A3S_POWER_HOME");
     }
@@ -545,6 +601,14 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(content_type.contains("text/event-stream"));
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8_lossy(&body);
+        assert!(
+            body_str.contains("\"attestation_receipt_sha256\""),
+            "expected attestation receipt digest in SSE stream"
+        );
 
         std::env::remove_var("A3S_POWER_HOME");
     }
@@ -607,6 +671,77 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["object"], "text_completion");
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_completions_forwards_extended_sampling_controls() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let mock = MockBackend::success();
+        let completion_request_capture = mock.completion_request_capture();
+        let state = test_state_with_mock(mock);
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"test",
+                    "prompt":"hi",
+                    "stream":false,
+                    "top_k":40,
+                    "min_p":0.5,
+                    "repeat_penalty":1.25,
+                    "repeat_last_n":64,
+                    "penalize_newline":false,
+                    "num_ctx":2048,
+                    "mirostat":1,
+                    "mirostat_tau":4.0,
+                    "mirostat_eta":0.25,
+                    "tfs_z":0.75,
+                    "typical_p":0.5
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let captured = completion_request_capture
+            .lock()
+            .expect("completion request lock poisoned")
+            .clone()
+            .expect("expected backend completion request to be captured");
+        assert_eq!(captured.top_k, Some(40));
+        assert_eq!(captured.min_p, Some(0.5));
+        assert_eq!(captured.repeat_penalty, Some(1.25));
+        assert_eq!(captured.repeat_last_n, Some(64));
+        assert_eq!(captured.penalize_newline, Some(false));
+        assert_eq!(captured.num_ctx, Some(2048));
+        assert_eq!(captured.mirostat, Some(1));
+        assert_eq!(captured.mirostat_tau, Some(4.0));
+        assert_eq!(captured.mirostat_eta, Some(0.25));
+        assert_eq!(captured.tfs_z, Some(0.75));
+        assert_eq!(captured.typical_p, Some(0.5));
+        assert_eq!(
+            json["attestation_receipt"]["decoding"]["parameters"]["top_k"],
+            serde_json::json!(40)
+        );
+        assert_eq!(
+            json["attestation_receipt"]["decoding"]["parameters"]["penalize_newline"],
+            serde_json::json!(false)
+        );
 
         std::env::remove_var("A3S_POWER_HOME");
     }

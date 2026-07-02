@@ -4,12 +4,15 @@
 //! Two decryption modes:
 //! - `DecryptedModel` — writes plaintext to a temp `.dec` file, securely wiped on drop.
 //! - `MemoryDecryptedModel` — decrypts entirely in RAM, locked with mlock (never touches disk).
+//! - `LayerStreamingDecryptedModel` — decrypts into locked RAM and exposes
+//!   zeroizing chunk reads for backends that explicitly support this source.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{AeadCore, Aes256Gcm, Nonce};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::error::{PowerError, Result};
@@ -82,6 +85,39 @@ pub fn encrypt_model_file(plain_path: &Path, key: &[u8; 32]) -> Result<PathBuf> 
     Ok(enc_path)
 }
 
+/// Compute the SHA-256 digest of an encrypted model's decrypted plaintext.
+pub fn compute_plaintext_sha256(encrypted_path: &Path, key: &[u8; 32]) -> Result<String> {
+    let mut plaintext = decrypt_plaintext(encrypted_path, key)?;
+    let digest = Sha256::digest(&plaintext);
+    plaintext.zeroize();
+    Ok(format!("{digest:x}"))
+}
+
+fn decrypt_plaintext(encrypted_path: &Path, key: &[u8; 32]) -> Result<Vec<u8>> {
+    let data = fs::read(encrypted_path).map_err(PowerError::Io)?;
+
+    if data.len() < NONCE_SIZE + 16 {
+        return Err(PowerError::Config(
+            "Encrypted file too small (missing nonce or auth tag)".to_string(),
+        ));
+    }
+
+    let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
+    #[allow(deprecated)]
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| PowerError::Config(format!("Invalid AES key: {e}")))?;
+
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| PowerError::IntegrityCheckFailed {
+            model: encrypted_path.display().to_string(),
+            expected: "valid AES-256-GCM ciphertext".to_string(),
+            actual: "decryption failed (wrong key or tampered data)".to_string(),
+        })
+}
+
 /// A decrypted model file that securely wipes itself on drop.
 ///
 /// The temporary decrypted file is written to the same directory as the
@@ -98,29 +134,7 @@ impl DecryptedModel {
     /// Reads `[12-byte nonce][ciphertext+tag]`, decrypts with AES-256-GCM,
     /// writes plaintext to a temporary `.dec` file in the same directory.
     pub fn decrypt(encrypted_path: &Path, key: &[u8; 32]) -> Result<Self> {
-        let data = fs::read(encrypted_path).map_err(PowerError::Io)?;
-
-        if data.len() < NONCE_SIZE + 16 {
-            return Err(PowerError::Config(
-                "Encrypted file too small (missing nonce or auth tag)".to_string(),
-            ));
-        }
-
-        let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
-        #[allow(deprecated)]
-        let nonce = Nonce::from_slice(nonce_bytes);
-
-        let cipher = Aes256Gcm::new_from_slice(key)
-            .map_err(|e| PowerError::Config(format!("Invalid AES key: {e}")))?;
-
-        let mut plaintext =
-            cipher
-                .decrypt(nonce, ciphertext)
-                .map_err(|_| PowerError::IntegrityCheckFailed {
-                    model: encrypted_path.display().to_string(),
-                    expected: "valid AES-256-GCM ciphertext".to_string(),
-                    actual: "decryption failed (wrong key or tampered data)".to_string(),
-                })?;
+        let mut plaintext = decrypt_plaintext(encrypted_path, key)?;
 
         // Write to temp file
         let dec_path = encrypted_path.with_extension("dec");
@@ -213,29 +227,7 @@ impl MemoryDecryptedModel {
             .unwrap_or("unknown")
             .to_string();
 
-        let data = fs::read(encrypted_path).map_err(PowerError::Io)?;
-
-        if data.len() < NONCE_SIZE + 16 {
-            return Err(PowerError::Config(
-                "Encrypted file too small (missing nonce or auth tag)".to_string(),
-            ));
-        }
-
-        let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
-        #[allow(deprecated)]
-        let nonce = Nonce::from_slice(nonce_bytes);
-
-        let cipher = Aes256Gcm::new_from_slice(key)
-            .map_err(|e| PowerError::Config(format!("Invalid AES key: {e}")))?;
-
-        let plaintext =
-            cipher
-                .decrypt(nonce, ciphertext)
-                .map_err(|_| PowerError::IntegrityCheckFailed {
-                    model: encrypted_path.display().to_string(),
-                    expected: "valid AES-256-GCM ciphertext".to_string(),
-                    actual: "decryption failed (wrong key or tampered data)".to_string(),
-                })?;
+        let plaintext = decrypt_plaintext(encrypted_path, key)?;
 
         let (locked, mlock_error) = lock_zeroizing_buffer(plaintext);
         if let Some(e) = mlock_error {
@@ -333,12 +325,11 @@ fn munlock_bytes(data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A streaming decryptor for encrypted model files used with the picolm backend.
+/// A chunked plaintext access primitive for encrypted model files.
 ///
-/// Unlike `MemoryDecryptedModel` (which decrypts the entire model into mlock-pinned RAM),
-/// this type decrypts one logical chunk at a time on demand. Each chunk is zeroized
-/// immediately after use, keeping peak plaintext in RAM proportional to one chunk
-/// rather than the full model.
+/// This type is for backend paths that can consume verified plaintext ranges
+/// directly. Backends must explicitly opt in before autoload will pass them a
+/// `LayerStreamingDecryptedModel`.
 ///
 /// # Design
 ///
@@ -348,22 +339,20 @@ fn munlock_bytes(data: &[u8]) -> std::io::Result<()> {
 ///
 /// 1. Decrypts the full ciphertext once into a `Zeroizing<Vec<u8>>` (same as `MemoryDecryptedModel`)
 /// 2. Provides `read_chunk()` to yield fixed-size slices on demand
-/// 3. Zeroizes each returned chunk buffer after the caller signals it is done
+/// 3. Lets each returned `Zeroizing<Vec<u8>>` chunk buffer zeroize on drop
 ///
 /// The key difference from `MemoryDecryptedModel` is the access pattern: callers
-/// process one chunk at a time and call `zeroize_chunk()` after each use, so the
-/// working plaintext footprint is bounded by `chunk_size` rather than the full model.
+/// can process one copied chunk at a time, so the active chunk buffer footprint is
+/// bounded by `chunk_size`. Because AES-GCM is not seekable, the full decrypted
+/// plaintext remains locked in RAM until the handle is dropped.
 ///
-/// # Usage with picolm
+/// # Backend usage with picolm
 ///
-/// The picolm backend calls `read_chunk(layer_offset, layer_size)` for each transformer
-/// layer, processes it, then calls `zeroize_chunk()`. At any point, only one layer's
-/// worth of plaintext is in an active working buffer.
-///
-/// # Constraint
-///
-/// Only usable with the picolm backend. mistralrs and llamacpp require the full model
-/// to be accessible before inference begins — use `MemoryDecryptedModel` for those.
+/// A direct chunk-source backend can call `read_chunk(layer_offset, layer_size)`
+/// for each transformer layer, process the returned buffer, and then let that
+/// buffer drop so the copied chunk is zeroized. The picolm backend consumes this
+/// handle directly for encrypted GGUF loading and keeps the locked plaintext
+/// alive for inference.
 #[derive(Debug)]
 pub struct LayerStreamingDecryptedModel {
     /// Full decrypted plaintext, locked in RAM.
@@ -387,29 +376,7 @@ impl LayerStreamingDecryptedModel {
             .unwrap_or("unknown")
             .to_string();
 
-        let data = std::fs::read(encrypted_path).map_err(PowerError::Io)?;
-
-        if data.len() < NONCE_SIZE + 16 {
-            return Err(PowerError::Config(
-                "Encrypted file too small (missing nonce or auth tag)".to_string(),
-            ));
-        }
-
-        let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
-        #[allow(deprecated)]
-        let nonce = Nonce::from_slice(nonce_bytes);
-
-        let cipher = Aes256Gcm::new_from_slice(key)
-            .map_err(|e| PowerError::Config(format!("Invalid AES key: {e}")))?;
-
-        let plaintext =
-            cipher
-                .decrypt(nonce, ciphertext)
-                .map_err(|_| PowerError::IntegrityCheckFailed {
-                    model: encrypted_path.display().to_string(),
-                    expected: "valid AES-256-GCM ciphertext".to_string(),
-                    actual: "decryption failed (wrong key or tampered data)".to_string(),
-                })?;
+        let plaintext = decrypt_plaintext(encrypted_path, key)?;
 
         let plaintext_size = plaintext.len();
         let (locked, mlock_error) = lock_zeroizing_buffer(plaintext);
@@ -465,6 +432,16 @@ impl LayerStreamingDecryptedModel {
     /// Returns true if the plaintext is empty.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
+    }
+
+    /// Return the full plaintext byte view for crate-internal backend parsers.
+    ///
+    /// Public callers should prefer `read_chunk()` so copied chunk buffers are
+    /// bounded and zeroized promptly. Backends that keep this view must own the
+    /// `LayerStreamingDecryptedModel` for at least as long as any borrowed bytes
+    /// can be used.
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.data
     }
 }
 
@@ -665,6 +642,22 @@ mod tests {
         // Decrypt
         let decrypted = DecryptedModel::decrypt(&enc_path, &key).unwrap();
         assert_eq!(fs::read(&decrypted.path).unwrap(), original_data);
+    }
+
+    #[test]
+    fn test_compute_plaintext_sha256_matches_plain_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        let original_data = b"fake model weights for testing encryption";
+        fs::write(&plain_path, original_data).unwrap();
+
+        let key = test_key();
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+
+        assert_eq!(
+            compute_plaintext_sha256(&enc_path, &key).unwrap(),
+            crate::model::storage::compute_sha256(original_data)
+        );
     }
 
     #[test]

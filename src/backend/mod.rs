@@ -24,10 +24,11 @@ use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest};
 use crate::server::request_context::RequestContext;
+use crate::tee::encrypted_model::{LayerStreamingDecryptedModel, MemoryDecryptedModel};
 
 use types::{
-    ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk, EmbeddingRequest,
-    EmbeddingResponse,
+    ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
+    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse,
 };
 
 /// Trait for inference backends that can load models and run inference.
@@ -42,6 +43,59 @@ pub trait Backend: Send + Sync {
     /// Load a model into memory, ready for inference.
     async fn load(&self, manifest: &ModelManifest) -> Result<()>;
 
+    /// Return true when this backend can load a decrypted model without writing
+    /// plaintext back to disk.
+    fn supports_memory_load(&self, _format: &ModelFormat) -> bool {
+        false
+    }
+
+    /// Load a model from locked plaintext memory.
+    ///
+    /// Backends must take ownership of `plaintext` or otherwise keep the bytes
+    /// alive for as long as inference can access them. The default fails closed
+    /// so encrypted in-memory loading is never silently downgraded to a file path.
+    async fn load_from_memory(
+        &self,
+        manifest: &ModelManifest,
+        plaintext: MemoryDecryptedModel,
+    ) -> Result<()> {
+        drop(plaintext);
+        Err(PowerError::BackendNotAvailable(format!(
+            "backend '{}' does not support locked in-memory model loading for format {} \
+             (model '{}')",
+            self.name(),
+            manifest.format,
+            manifest.name
+        )))
+    }
+
+    /// Return true when this backend can load a decrypted model from the
+    /// layer-streaming plaintext source without writing plaintext back to disk.
+    fn supports_streaming_decrypt_load(&self, _format: &ModelFormat) -> bool {
+        false
+    }
+
+    /// Load a model from the layer-streaming decrypted plaintext source.
+    ///
+    /// Backends must take ownership of `plaintext` or otherwise keep the bytes
+    /// alive for as long as inference can access them. The default fails closed
+    /// so encrypted streaming decrypt loading is never silently downgraded to a
+    /// file path.
+    async fn load_from_streaming_decrypt(
+        &self,
+        manifest: &ModelManifest,
+        plaintext: LayerStreamingDecryptedModel,
+    ) -> Result<()> {
+        drop(plaintext);
+        Err(PowerError::BackendNotAvailable(format!(
+            "backend '{}' does not support layer-streaming decrypted model loading for format {} \
+             (model '{}')",
+            self.name(),
+            manifest.format,
+            manifest.name
+        )))
+    }
+
     /// Unload a model from memory.
     async fn unload(&self, model_name: &str) -> Result<()>;
 
@@ -51,6 +105,19 @@ pub trait Backend: Send + Sync {
         model_name: &str,
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>>;
+
+    /// Return the digest of the exact rendered chat prompt used for inference.
+    ///
+    /// Backends should return `None` unless they locally render the prompt and can
+    /// guarantee the same bytes are passed to the model. This keeps receipts from
+    /// overclaiming for delegated renderers such as upstream proxy servers.
+    async fn effective_chat_prompt_digest(
+        &self,
+        _model_name: &str,
+        _request: &ChatRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        Ok(None)
+    }
 
     /// Run text completion inference, returning a stream of token chunks.
     async fn complete(

@@ -16,6 +16,8 @@ use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest};
 
+#[cfg(feature = "mistralrs")]
+use super::types::EffectivePromptDigest;
 use super::types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk, EmbeddingRequest,
     EmbeddingResponse,
@@ -60,6 +62,62 @@ async fn send_mistralrs_chat_result(
             false
         }
     }
+}
+
+#[cfg(feature = "mistralrs")]
+fn request_has_mistralrs_images(request: &ChatRequest) -> bool {
+    request.messages.iter().any(|m| {
+        m.images.as_ref().is_some_and(|v| !v.is_empty())
+            || matches!(&m.content, super::types::MessageContent::Parts(parts) if
+                parts.iter().any(|p| matches!(p, super::types::ContentPart::ImageUrl { .. }))
+            )
+    }) || request.images.as_ref().is_some_and(|v| !v.is_empty())
+}
+
+#[cfg(feature = "mistralrs")]
+fn mistralrs_message_images(request: &ChatRequest, msg: &super::types::ChatMessage) -> Vec<String> {
+    let mut images = Vec::new();
+
+    if let super::types::MessageContent::Parts(parts) = &msg.content {
+        images.extend(parts.iter().filter_map(|p| {
+            if let super::types::ContentPart::ImageUrl { image_url } = p {
+                Some(image_url.url.clone())
+            } else {
+                None
+            }
+        }));
+    }
+
+    if let Some(message_images) = &msg.images {
+        images.extend(message_images.iter().cloned());
+    }
+
+    if let Some(request_images) = &request.images {
+        images.extend(request_images.iter().cloned());
+    }
+
+    images
+}
+
+#[cfg(feature = "mistralrs")]
+fn mistralrs_text_role(role: &str) -> mistralrs::TextMessageRole {
+    match role {
+        "system" => mistralrs::TextMessageRole::System,
+        "user" => mistralrs::TextMessageRole::User,
+        "assistant" => mistralrs::TextMessageRole::Assistant,
+        "tool" => mistralrs::TextMessageRole::Tool,
+        _ => mistralrs::TextMessageRole::User,
+    }
+}
+
+#[cfg(feature = "mistralrs")]
+fn mistralrs_text_messages(request: &ChatRequest) -> mistralrs::TextMessages {
+    request
+        .messages
+        .iter()
+        .fold(mistralrs::TextMessages::new(), |messages, msg| {
+            messages.add_message(mistralrs_text_role(&msg.role), msg.content.text())
+        })
 }
 
 impl MistralRsBackend {
@@ -215,11 +273,7 @@ impl Backend for MistralRsBackend {
         use mistralrs::{RequestBuilder, TextMessageRole};
 
         // Check if this is a vision request (has images) and route accordingly.
-        let has_images = request.messages.iter().any(|m| {
-            matches!(&m.content, super::types::MessageContent::Parts(parts) if
-                parts.iter().any(|p| matches!(p, super::types::ContentPart::ImageUrl { .. }))
-            )
-        }) || request.images.as_ref().is_some_and(|v| !v.is_empty());
+        let has_images = request_has_mistralrs_images(&request);
 
         // Try vision model first if images present, fall back to text model.
         let model = if has_images {
@@ -288,27 +342,7 @@ impl Backend for MistralRsBackend {
                 _ => TextMessageRole::User,
             };
 
-            // Extract inline images from multimodal content parts (OpenAI format).
-            let inline_images: Vec<String> = match &msg.content {
-                super::types::MessageContent::Parts(parts) => parts
-                    .iter()
-                    .filter_map(|p| {
-                        if let super::types::ContentPart::ImageUrl { image_url } = p {
-                            Some(image_url.url.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect(),
-                _ => vec![],
-            };
-
-            // Combine inline images with top-level images field (Ollama-native format).
-            let all_images: Vec<String> = if inline_images.is_empty() {
-                request.images.clone().unwrap_or_default()
-            } else {
-                inline_images
-            };
+            let all_images = mistralrs_message_images(&request, msg);
 
             if all_images.is_empty() {
                 req_builder = req_builder.add_message(role, msg.content.text());
@@ -459,6 +493,46 @@ impl Backend for MistralRsBackend {
         Ok(Box::pin(stream))
     }
 
+    async fn effective_chat_prompt_digest(
+        &self,
+        model_name: &str,
+        request: &ChatRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        if request_has_mistralrs_images(request) {
+            return Ok(None);
+        }
+
+        let model = {
+            let models = self.models.read().await;
+            models
+                .get(model_name)
+                .map(|m| Arc::clone(&m.model))
+                .ok_or_else(|| {
+                    PowerError::InferenceFailed(format!("Model '{model_name}' not loaded"))
+                })?
+        };
+
+        let token_ids = model
+            .tokenize(
+                either::Either::Left(mistralrs_text_messages(request)),
+                None,
+                true,
+                true,
+                None,
+            )
+            .await
+            .map_err(|e| {
+                PowerError::InferenceFailed(format!(
+                    "mistral.rs effective prompt tokenization failed: {e}"
+                ))
+            })?;
+
+        Ok(Some(EffectivePromptDigest::chat_prompt_token_ids(
+            "mistral.rs",
+            &token_ids,
+        )))
+    }
+
     async fn complete(
         &self,
         model_name: &str,
@@ -495,6 +569,7 @@ impl Backend for MistralRsBackend {
             response_format: request.response_format.clone(),
             tools: None,
             tool_choice: None,
+            parallel_tool_calls: None,
             repeat_last_n: request.repeat_last_n,
             penalize_newline: request.penalize_newline,
             num_batch: request.num_batch,
@@ -854,6 +929,8 @@ impl Backend for MistralRsBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "mistralrs")]
+    use crate::backend::types::{ChatMessage, ContentPart, ImageUrl, MessageContent};
     use crate::backend::Backend;
     use crate::model::manifest::ModelFormat;
 
@@ -918,6 +995,147 @@ mod tests {
         let config = PowerConfig::default();
         let backend = MistralRsBackend::new(Arc::new(config));
         assert_eq!(backend.config.gpu.gpu_layers, 0);
+    }
+
+    #[cfg(feature = "mistralrs")]
+    fn text_chat_request() -> ChatRequest {
+        ChatRequest {
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: MessageContent::Text("be precise".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    images: None,
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: MessageContent::Text("hi".to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    images: None,
+                },
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop: None,
+            stream: false,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
+            num_parallel: None,
+            session_id: None,
+            images: None,
+        }
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_mistralrs_text_messages_match_text_chat_path() {
+        let messages: Vec<_> = mistralrs_text_messages(&text_chat_request()).into();
+        assert_eq!(
+            messages[0]["role"].as_ref().left().map(String::as_str),
+            Some("system")
+        );
+        assert_eq!(
+            messages[0]["content"].as_ref().left().map(String::as_str),
+            Some("be precise")
+        );
+        assert_eq!(
+            messages[1]["role"].as_ref().left().map(String::as_str),
+            Some("user")
+        );
+        assert_eq!(
+            messages[1]["content"].as_ref().left().map(String::as_str),
+            Some("hi")
+        );
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_mistralrs_image_detection_covers_top_level_images() {
+        let mut request = text_chat_request();
+        assert!(!request_has_mistralrs_images(&request));
+        request.images = Some(vec!["base64-image".to_string()]);
+        assert!(request_has_mistralrs_images(&request));
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_mistralrs_image_detection_covers_message_images() {
+        let mut request = text_chat_request();
+        assert!(!request_has_mistralrs_images(&request));
+        request.messages[1].images = Some(vec!["message-base64-image".to_string()]);
+        assert!(request_has_mistralrs_images(&request));
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_mistralrs_image_detection_covers_openai_parts() {
+        let mut request = text_chat_request();
+        request.messages[1].content = MessageContent::Parts(vec![ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: "data:image/png;base64,abc".to_string(),
+                detail: None,
+            },
+        }]);
+        assert!(request_has_mistralrs_images(&request));
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_mistralrs_message_images_combines_supported_sources() {
+        let mut request = text_chat_request();
+        request.images = Some(vec!["request-base64-image".to_string()]);
+        request.messages[1].images = Some(vec!["message-base64-image".to_string()]);
+        request.messages[1].content = MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "describe this".to_string(),
+            },
+            ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,part-base64-image".to_string(),
+                    detail: None,
+                },
+            },
+        ]);
+
+        let images = mistralrs_message_images(&request, &request.messages[1]);
+
+        assert_eq!(
+            images,
+            vec![
+                "data:image/png;base64,part-base64-image".to_string(),
+                "message-base64-image".to_string(),
+                "request-base64-image".to_string(),
+            ]
+        );
     }
 
     #[cfg(not(feature = "mistralrs"))]

@@ -5,6 +5,7 @@ use crate::backend::Backend;
 use crate::config::parse_keep_alive;
 use crate::error::Result;
 use crate::model::manifest::ModelManifest;
+use crate::model::storage;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 use crate::tee::encrypted_model::{
@@ -100,6 +101,9 @@ pub async fn ensure_loaded_with_keep_alive(
     // Decrypt encrypted models (.enc) if key source is configured
     let is_encrypted = manifest.path.extension().is_some_and(|ext| ext == "enc");
     let load_manifest;
+    let mut encrypted_plaintext_hash = None;
+    let mut memory_plaintext = None;
+    let mut streaming_plaintext = None;
     if is_encrypted {
         // Resolve key: prefer key_provider in AppState, fall back to model_key_source config
         let key = if let Some(ref kp) = state.key_provider {
@@ -122,21 +126,34 @@ pub async fn ensure_loaded_with_keep_alive(
         tracing::info!(model = %model_name, in_memory = state.config.in_memory_decrypt, streaming = state.config.streaming_decrypt, "Decrypting encrypted model");
 
         if state.config.streaming_decrypt {
-            // Layer-streaming decryption: chunk-by-chunk access for picolm backend.
-            // Peak plaintext in RAM = one transformer layer (~50–200MB).
-            let stream_model = LayerStreamingDecryptedModel::decrypt(&manifest.path, &key)?;
-            state.store_streaming_decrypted(model_name, stream_model);
+            if !backend.supports_streaming_decrypt_load(&manifest.format) {
+                return Err(unsupported_memory_decrypt_mode_error(
+                    model_name,
+                    "streaming_decrypt",
+                    backend.name(),
+                ));
+            }
+
+            let decrypted = LayerStreamingDecryptedModel::decrypt(&manifest.path, &key)?;
+            encrypted_plaintext_hash = Some(storage::compute_sha256(decrypted.as_bytes()));
+            streaming_plaintext = Some(decrypted);
             load_manifest = manifest.clone();
         } else if state.config.in_memory_decrypt {
-            // Decrypt into mlock-pinned RAM — plaintext never touches disk
-            let mem_model = MemoryDecryptedModel::decrypt(&manifest.path, &key)?;
-            state.store_memory_decrypted(model_name, mem_model);
-            // Backend loads from the original encrypted path; in-memory path is
-            // used by backends that support direct byte loading. For file-based
-            // backends we fall back to the disk path (no plaintext written).
+            if !backend.supports_memory_load(&manifest.format) {
+                return Err(unsupported_memory_decrypt_mode_error(
+                    model_name,
+                    "in_memory_decrypt",
+                    backend.name(),
+                ));
+            }
+
+            let decrypted = MemoryDecryptedModel::decrypt(&manifest.path, &key)?;
+            encrypted_plaintext_hash = Some(storage::compute_sha256(decrypted.as_bytes()));
+            memory_plaintext = Some(decrypted);
             load_manifest = manifest.clone();
         } else {
             let decrypted = DecryptedModel::decrypt(&manifest.path, &key)?;
+            encrypted_plaintext_hash = Some(storage::compute_sha256_path(&decrypted.path)?);
             let mut m = manifest.clone();
             m.path = decrypted.path.clone();
             state.store_decrypted(model_name, decrypted);
@@ -151,12 +168,16 @@ pub async fn ensure_loaded_with_keep_alive(
     // This catches models added after startup (e.g. via pull) that were
     // never checked at boot time.
     if let Some(expected_hash) = state.config.model_hashes.get(model_name) {
-        let ok = crate::tee::model_seal::verify_model_integrity(&load_manifest.path, expected_hash)
-            .map_err(|e| {
-                crate::error::PowerError::Config(format!(
-                    "Integrity check failed for model '{model_name}': {e}"
-                ))
-            })?;
+        let ok = if let Some(ref actual_hash) = encrypted_plaintext_hash {
+            actual_hash == expected_hash
+        } else {
+            crate::tee::model_seal::verify_model_integrity(&load_manifest.path, expected_hash)
+                .map_err(|e| {
+                    crate::error::PowerError::Config(format!(
+                        "Integrity check failed for model '{model_name}': {e}"
+                    ))
+                })?
+        };
         if !ok {
             return Err(crate::error::PowerError::Config(format!(
                 "Model '{model_name}' failed SHA-256 integrity check"
@@ -167,17 +188,38 @@ pub async fn ensure_loaded_with_keep_alive(
 
     // Re-verify model signature if a signing key is configured.
     if let Some(ref signing_key) = state.config.model_signing_key {
-        crate::tee::model_seal::verify_model_signature(&load_manifest.path, signing_key).map_err(
-            |e| {
+        if let Some(ref plaintext_hash) = encrypted_plaintext_hash {
+            crate::tee::model_seal::verify_model_signature_hash(
+                model_name,
+                plaintext_hash,
+                &manifest.path,
+                signing_key,
+            )
+            .map_err(|e| {
                 crate::error::PowerError::Config(format!(
-                    "Signature verification failed for model '{model_name}': {e}"
+                    "Signature verification failed for encrypted model '{model_name}': {e}"
                 ))
-            },
-        )?;
+            })?;
+        } else {
+            crate::tee::model_seal::verify_model_signature(&load_manifest.path, signing_key)
+                .map_err(|e| {
+                    crate::error::PowerError::Config(format!(
+                        "Signature verification failed for model '{model_name}': {e}"
+                    ))
+                })?;
+        }
         tracing::debug!(model = %model_name, "Model signature verified");
     }
 
-    backend.load(&load_manifest).await?;
+    if let Some(plaintext) = streaming_plaintext.take() {
+        backend
+            .load_from_streaming_decrypt(&load_manifest, plaintext)
+            .await?;
+    } else if let Some(plaintext) = memory_plaintext.take() {
+        backend.load_from_memory(&load_manifest, plaintext).await?;
+    } else {
+        backend.load(&load_manifest).await?;
+    }
     let load_duration = load_start.elapsed();
 
     // Record model load duration and estimated memory (file size as proxy)
@@ -204,6 +246,19 @@ pub async fn ensure_loaded_with_keep_alive(
             })
         }
     }
+}
+
+fn unsupported_memory_decrypt_mode_error(
+    model_name: &str,
+    mode: &str,
+    backend_name: &str,
+) -> crate::error::PowerError {
+    crate::error::PowerError::Config(format!(
+        "Model '{model_name}' requested {mode}=true for encrypted .enc loading, but backend \
+         '{backend_name}' cannot load from that decrypted plaintext source yet. Disable {mode} \
+         to use file-backed DecryptedModel loading, or use a backend path that explicitly \
+         consumes decrypted bytes."
+    ))
 }
 
 /// Unload a model after a request-scoped `keep_alive=0` inference completes.
@@ -302,6 +357,30 @@ mod tests {
             family: None,
             families: None,
         }
+    }
+
+    fn encrypted_test_artifact(
+        model_name: &str,
+    ) -> (
+        tempfile::TempDir,
+        crate::model::manifest::ModelManifest,
+        crate::tee::encrypted_model::KeySource,
+    ) {
+        use crate::tee::encrypted_model::{encrypt_model_file, KeySource};
+
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        std::fs::write(&plain_path, b"fake model weights").unwrap();
+        let key = [0x42; 32];
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+
+        let key_path = dir.path().join("model.key");
+        std::fs::write(&key_path, hex::encode(key)).unwrap();
+
+        let mut manifest = sample_manifest(model_name);
+        manifest.path = enc_path;
+
+        (dir, manifest, KeySource::File(key_path))
     }
 
     #[cfg(any(feature = "mistralrs", feature = "llamacpp"))]
@@ -524,6 +603,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ensure_loaded_in_memory_decrypt_fails_before_backend_load() {
+        let (_dir, manifest, key_source) = encrypted_test_artifact("mem-model");
+        let config = Arc::new(PowerConfig {
+            model_key_source: Some(key_source),
+            in_memory_decrypt: true,
+            ..Default::default()
+        });
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(MockBackend::load_fails()));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        let result = ensure_loaded(&state, "mem-model", &manifest, &backend).await;
+
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("in_memory_decrypt=true"));
+        assert!(!err.contains("mock load failure"));
+        assert!(!state.is_model_loaded("mem-model"));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_in_memory_decrypt_uses_memory_backend() {
+        let (_dir, manifest, key_source) = encrypted_test_artifact("mem-model");
+        let config = Arc::new(PowerConfig {
+            model_key_source: Some(key_source),
+            in_memory_decrypt: true,
+            ..Default::default()
+        });
+        let mock = MockBackend::success().with_memory_load();
+        let file_load_count = mock.load_count.clone();
+        let memory_load_count = mock.memory_load_count.clone();
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(mock));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+        let dec_path = manifest.path.with_extension("dec");
+
+        let result = ensure_loaded(&state, "mem-model", &manifest, &backend).await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            file_load_count.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            memory_load_count.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert!(!dec_path.exists());
+        assert!(state.is_model_loaded("mem-model"));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_streaming_decrypt_fails_before_backend_load() {
+        let (_dir, manifest, key_source) = encrypted_test_artifact("stream-model");
+        let config = Arc::new(PowerConfig {
+            model_key_source: Some(key_source),
+            streaming_decrypt: true,
+            ..Default::default()
+        });
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(MockBackend::load_fails()));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        let result = ensure_loaded(&state, "stream-model", &manifest, &backend).await;
+
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("streaming_decrypt=true"));
+        assert!(!err.contains("mock load failure"));
+        assert!(!state.is_model_loaded("stream-model"));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_streaming_decrypt_uses_streaming_backend() {
+        let (_dir, manifest, key_source) = encrypted_test_artifact("stream-model");
+        let config = Arc::new(PowerConfig {
+            model_key_source: Some(key_source),
+            streaming_decrypt: true,
+            ..Default::default()
+        });
+        let mock = MockBackend::success().with_streaming_load();
+        let file_load_count = mock.load_count.clone();
+        let memory_load_count = mock.memory_load_count.clone();
+        let streaming_load_count = mock.streaming_load_count.clone();
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(mock));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+        let dec_path = manifest.path.with_extension("dec");
+
+        let result = ensure_loaded(&state, "stream-model", &manifest, &backend).await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            file_load_count.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            memory_load_count.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            streaming_load_count.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert!(!dec_path.exists());
+        assert!(state.is_model_loaded("stream-model"));
+    }
+
+    #[tokio::test]
     async fn test_ensure_loaded_encrypted_model_decrypts_and_loads() {
         use crate::tee::encrypted_model::{encrypt_model_file, KeySource};
 
@@ -559,6 +749,40 @@ mod tests {
         let result = ensure_loaded(&state, "enc-model", &manifest, &backend).await;
         assert!(result.is_ok());
         assert!(state.is_model_loaded("enc-model"));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_loaded_encrypted_model_integrity_uses_plaintext_hash() {
+        use crate::tee::encrypted_model::{encrypt_model_file, KeySource};
+
+        let dir = tempfile::tempdir().unwrap();
+        let plain_path = dir.path().join("model.gguf");
+        let plaintext = b"fake model weights";
+        std::fs::write(&plain_path, plaintext).unwrap();
+        let key = [0x42; 32];
+        let enc_path = encrypt_model_file(&plain_path, &key).unwrap();
+
+        let key_path = dir.path().join("model.key");
+        std::fs::write(&key_path, hex::encode(key)).unwrap();
+
+        let config = Arc::new(PowerConfig {
+            model_key_source: Some(KeySource::File(key_path)),
+            model_hashes: std::collections::HashMap::from([(
+                "enc-model".to_string(),
+                crate::model::storage::compute_sha256(plaintext),
+            )]),
+            ..Default::default()
+        });
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(MockBackend::success()));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+
+        let mut manifest = sample_manifest("enc-model");
+        manifest.path = enc_path;
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+
+        let result = ensure_loaded(&state, "enc-model", &manifest, &backend).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

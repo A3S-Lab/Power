@@ -79,7 +79,7 @@ The difference: every other inference server asks you to **trust**. Power lets y
 | Remote attestation (hardware-signed proof) | ❌ | ❌ | ❌ | ✅ |
 | Model-attestation binding (prove which model runs) | ❌ | ❌ | ❌ | ✅ |
 | RA-TLS (attestation in TLS handshake) | ❌ | ❌ | ❌ | ✅ |
-| Encrypted model loading (AES-256-GCM, 3 modes) | ❌ | ❌ | ❌ | ✅ |
+| Encrypted model loading (AES-256-GCM file-backed, picolm RAM, chunk primitive) | ❌ | ❌ | ❌ | ✅ |
 | Deep log redaction (10 keys + error sanitization) | ❌ | ❌ | ❌ | ✅ |
 | Memory zeroing (zeroize on drop) | ❌ | ❌ | ❌ | ✅ |
 | Client-side verification SDK | ❌ | ❌ | ❌ | ✅ |
@@ -103,11 +103,12 @@ These features exist in no other LLM inference server:
 
 - **TEE-Aware Runtime**: Auto-detects AMD SEV-SNP (`/dev/sev-guest`) and Intel TDX (`/dev/tdx_guest`) at startup; simulated mode for development (`A3S_TEE_SIMULATE=1`)
 - **Remote Attestation**: Real hardware ioctl — AMD `SNP_GET_REPORT` and Intel `TDX_CMD_GET_REPORT0` — generates firmware-signed proof that inference runs in a genuine TEE; full raw reports included for client verification
-- **Model-Attestation Binding**: `GET /v1/attestation?model=<name>` embeds the model's SHA-256 hash into `report_data` alongside the nonce — layout `[nonce(32)][model_sha256(32)]` — cryptographically tying the attestation to the specific model being served; you can't swap the model without invalidating the attestation
+- **Model/Runtime/GPU-Attestation Binding**: `GET /v1/attestation?model=<name>` re-hashes the current local model artifact (file, deterministic directory manifest, or encrypted artifact), emits an `AttestationClaimsV2` claim set, and binds `sha256(canonical_claims_v2)` into CPU TEE `report_data`; encrypted model pins cover decrypted plaintext when configured and include ciphertext provenance digests; model-bound claims include applied chat-template digests plus a canonical GPU execution/offload digest, and `tee_policy_mode = "gpu-confidential"` additionally binds NVIDIA GPU CC evidence, NRAS verdict digests, and structured NVIDIA device identity/freshness claims from live `nvattest-cli` collection or direct NRAS REST attestation using the same request nonce
+- **Request-Level Inference Receipts**: Chat and text completion responses include `attestation_receipt` plus `attestation_receipt_sha256`, covering prompt-bearing API input, model runtime chat-template/GPU execution policy claims, exposed decoding parameters, stream options, stop tokens, response format, tools, tool choice, and parallel tool-call policy; local renderers, mistralrs text tokenization, and opt-in proxy upstreams can add an `effective_prompt` digest; streaming responses emit the receipt in a final SSE event before `[DONE]`
 - **RA-TLS Transport**: TLS certificate embeds the attestation report as a custom X.509 extension (OID `1.3.6.1.4.1.56560.1.1`) — clients verify the TEE during the TLS handshake itself, no separate API call needed
-- **Hardware Signature Verification**: Client-side SDK verifies attestation signatures against AMD KDS (ECDSA P-384) and Intel PCS (ECDSA P-256) certificate chains — closes the loop from hardware root of trust to client
-- **Client Verification CLI**: `a3s-power-verify` independently verifies nonce binding, model hash binding, platform measurement, and hardware signatures from any running Power server
-- **Encrypted Model Loading**: AES-256-GCM with 3 modes — `DecryptedModel` (temp file, zero-overwrite on drop), `MemoryDecryptedModel` (mlock-pinned RAM, never touches disk), `LayerStreamingDecryptedModel` (chunk-by-chunk for picolm); the infrastructure operator cannot read model weights from disk or swap
+- **Hardware Signature Verification**: Client-side SDK has `VerificationPolicy::strict()` / `verify_report_strict()` for fail-closed verification with mandatory hardware signatures, operator-pinned launch measurement verification, simulated-report rejection, optional required GPU evidence/device-claim/runtime policy checks, NVIDIA NRAS verdict digest pinning, NVIDIA GPU provider/format/evidence-count, exact GPU/NVSwitch topology, claims schema version, and GPU plus NVSwitch UEID/OEM ID/hwmodel/firmware pinning, GPU driver pinning, request receipt shape/digest/policy helpers, attestation-to-receipt runtime policy binding, and effective-prompt digest pinning when a receipt exposes it
+- **Client Verification CLI**: `a3s-power-verify` defaults to strict verification with mandatory `--expected-measurement`; skipping hardware signatures and measurement pinning requires the explicit `--allow-offline` development/offline flag; NVIDIA GPU confidential-computing deployments can use `--gpu-confidential` to require v2 claims, nonce freshness, pinned NVIDIA NRAS verdict digest binding, verifier-pinned GPU provider/format/count policy, structured NVIDIA device claims, verifier-pinned exact GPU topology, claims schema version, and identity/version policy, runtime policy, and a pinned GPU execution digest; individual GPU/runtime pins remain available with `--require-gpu-evidence`, `--require-gpu-device-claims`, `--gpu-provider`, `--gpu-evidence-format`, `--gpu-verdict-format`, `--gpu-evidence-count`, `--gpu-count`, `--nvswitch-count`, `--gpu-claims-version`, `--gpu-ueid`, `--gpu-oemid`, `--gpu-hwmodel`, `--gpu-driver-version`, `--gpu-firmware-version`, `--nvswitch-claims-version`, `--nvswitch-ueid`, `--nvswitch-oemid`, `--nvswitch-hwmodel`, `--nvswitch-firmware-version`, `--require-runtime-policy`, and `--gpu-execution-digest`; `--print-gpu-execution-digest` computes GPU execution pins with Power's canonicalizer
+- **Encrypted Model Loading**: AES-256-GCM file-backed `DecryptedModel` loading with zero-overwrite cleanup; `in_memory_decrypt = true` loads verified plaintext directly from `MemoryDecryptedModel` locked RAM when the backend supports it (`picolm` GGUF), otherwise fails closed; `streaming_decrypt = true` passes `LayerStreamingDecryptedModel` plaintext to supporting backends (`picolm` GGUF), with unsupported backends failing closed. Configured encrypted-model integrity pins and signatures are checked against decrypted plaintext SHA-256, with ciphertext SHA-256 exposed separately in attestation claims
 - **KeyProvider Trait**: Abstract key loading for HSM integration; `StaticKeyProvider` (file/env) + `RotatingKeyProvider` (zero-downtime rotation)
 - **Deep Log Redaction**: Strips inference content from all log output — 10 sensitive JSON keys (`content`, `prompt`, `text`, `arguments`, `input`, `delta`, `system`, `message`, `query`, `instruction`); `sanitize_error()` strips prompt fragments from error messages; `suppress_token_metrics` rounds token counts to nearest 10 to prevent side-channel inference
 - **Memory Zeroing**: `SensitiveString` wrapper auto-zeroizes on drop; all inference buffers cleared via `zeroize` crate — the operator cannot recover prompts or responses from memory dumps
@@ -129,7 +130,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **Thinking & Reasoning**: Streaming `<think>` block parser for DeepSeek-R1, QwQ reasoning models
 - **Chat Template Engine**: Jinja2-compatible rendering via `minijinja` (Llama 3, ChatML, Phi, Gemma, custom)
 - **KV Cache Reuse**: Prefix matching across multi-turn requests for conversation speedup
-- **HuggingFace Hub Pull**: `POST /v1/models/pull` with SSE progress, Range resume, concurrent dedup, HF token auth
+- **Remote Model Hub Pull**: `POST /v1/models/pull` with SSE progress, Range resume, concurrent dedup, source-specific token auth for ModelScope or HuggingFace Hub
 
 ### Operations
 
@@ -322,8 +323,8 @@ Model           Content-addressed SHA-256 storage, GGUF memory estimation
                 for EPC budget planning
 
 TEE             Attestation (SEV-SNP/TDX ioctl), AES-256-GCM encryption
-                (3 modes: file/RAM/streaming), Ed25519 model signatures,
-                key rotation, policy enforcement, log redaction (9 keys),
+                (file-backed loading plus RAM/streaming primitives), Ed25519 model signatures,
+                key rotation, policy enforcement, log redaction (10 keys),
                 SensitiveString (auto-zeroize), EPC memory detection
 
 Verify          Client-side: nonce binding, model hash binding,
@@ -345,16 +346,24 @@ Verify          Client-side: nonce binding, model hash binding,
               │ DecryptedMo│   │ MemoryDecrypt│   │ LayerStreamingDecry │
               │ del (file) │   │ edModel (RAM)│   │ ptedModel (chunks)  │
               │            │   │              │   │                     │
-              │ Temp .dec  │   │ mlock-pinned │   │ Chunk-by-chunk      │
-              │ file on    │   │ RAM buffer,  │   │ Zeroizing<Vec<u8>>  │
-              │ disk, zero │   │ never touches│   │ per layer, for      │
-              │ overwrite  │   │ disk, zeroize│   │ picolm streaming    │
-              │ + delete   │   │ on drop      │   │ O(layer_size) peak  │
+              │ Temp .dec  │   │ mlock-pinned │   │ Chunked plaintext   │
+              │ file on    │   │ RAM buffer,  │   │ access primitive    │
+              │ disk, zero │   │ zeroize on   │   │ with Zeroizing      │
+              │ overwrite  │   │ drop         │   │ chunk buffers       │
+              │ + delete   │   │              │   │                     │
               │ on drop    │   │              │   │                     │
               └────────────┘   └──────────────┘   └─────────────────────┘
-                  Any              Any                  picolm only
-                backend          backend
+              End-to-end       End-to-end with        End-to-end with
+              backend path      picolm GGUF           picolm GGUF;
+              today             memory loading        unsupported
+                                                        backends fail closed
 ```
+
+Encrypted-model autoload supports `in_memory_decrypt = true` only when the
+selected backend explicitly accepts locked plaintext buffers. Today that means
+`picolm` for GGUF models; other backends fail closed before load.
+`streaming_decrypt = true` similarly requires a backend that explicitly accepts
+`LayerStreamingDecryptedModel`; today that path is `picolm` for GGUF models.
 
 ### Backend Trait
 
@@ -486,9 +495,17 @@ keep_alive = "5m"
 
 # TEE privacy protection
 tee_mode = true
+tee_policy_mode = "strict"
 redact_logs = true
 
-# Model integrity verification (checked at startup when tee_mode = true)
+# Production TEE launch measurement pinning. Strict/gpu-confidential policy
+# requires the detected hardware TEE type to have a 48-byte measurement pin.
+expected_measurements = {
+  "sev-snp" = "<96-char-measurement-hex>"
+  # "tdx" = "<96-char-mrtd-hex>"
+}
+
+# Model integrity verification (required by strict policy when tee_mode = true)
 model_hashes = {
   "llama3.2:3b" = "sha256:abc123..."
   "qwen2.5:7b"  = "sha256:def456..."
@@ -499,6 +516,44 @@ gpu {
   gpu_layers = -1    # -1 = offload all layers, 0 = CPU only
   main_gpu   = 0
 }
+
+# NVIDIA GPU confidential-computing evidence binding
+# Required only when tee_policy_mode = "gpu-confidential".
+gpu_attestation {
+  # Preferred live path: invoke NVIDIA nvattest for each attestation request.
+  source = "nvattest-cli"
+  provider = "nvidia-nras"
+  nvattest_path = "/usr/local/bin/nvattest"
+  nvattest_verifier = "remote"
+  nvattest_gpu_evidence_source = "nvml"
+  # nras_url = "https://<your-nras-endpoint>"
+
+  # Alternative compatibility path for external evidence pipelines:
+  # The configured verdict must be NVIDIA nvattest/NRAS JSON whose eat_nonce
+  # matches each /v1/attestation nonce; stale verdicts fail closed.
+  # source = "configured"
+  # evidence_path = "/run/a3s/nvidia-gpu-evidence.json"
+  # verdict_path  = "/run/a3s/nvidia-nras-verdict.json"
+
+  # Direct NRAS REST path for deployments that collect DeviceEvidenceV2 JSON
+  # through their own NVIDIA evidence collector:
+  # source = "nras-rest"
+  # evidence_path = "/run/a3s/nvidia-gpu-evidence-list.json"
+  # nras_url = "https://nras.attestation.nvidia.com"
+  # nras_gpu_architecture = "HOPPER" # or "BLACKWELL"
+  # nras_claims_version = "3.0"
+  # nras_bearer_token_env = "NRAS_BEARER_TOKEN"
+}
+
+# Optional proxy backend integration.
+# When enabled, Power asks the upstream for the exact rendered prompt digest
+# before proxied chat inference. If required = true, missing support fails closed.
+# proxy_upstreams = {
+#   "llama-70b" = "http://vllm:8000"
+# }
+# proxy_effective_prompt_digest = true
+# proxy_effective_prompt_digest_required = false
+# proxy_effective_prompt_digest_path = "/v1/chat/effective-prompt-digest"
 ```
 
 ### Configuration Reference
@@ -515,19 +570,44 @@ gpu {
 | `flash_attention` | `false` | Enable flash attention |
 | `num_parallel` | `1` | Concurrent inference slots |
 | `tee_mode` | `false` | Enable TEE: attestation, integrity checks, log redaction |
+| `tee_policy_mode` | `"strict"` | TEE attestation policy: `"strict"` for production, `"development"` for simulated/local tests, `"gpu-confidential"` for NVIDIA GPU confidential-computing deployments with bound GPU evidence |
+| `expected_measurements` | `{}` | Expected 48-byte launch measurements per detected hardware TEE type; required by strict and GPU-confidential policy (`"sev-snp"` measurement or `"tdx"` MRTD) |
 | `redact_logs` | `false` | Redact inference content from logs |
 | `model_hashes` | `{}` | Expected SHA-256 hashes for model verification |
 | `model_signing_key` | `null` | Ed25519 public key (hex) for verifying model `.sig` signatures |
 | `gpu.gpu_layers` | `0` | GPU layer offloading (`-1` = all) |
 | `gpu.main_gpu` | `0` | Primary GPU index |
+| `gpu_attestation.source` | `"configured"` | GPU CC evidence source: `"configured"` for file/hex bytes, `"nvattest-cli"` for live NVIDIA `nvattest`, or `"nras-rest"` for direct NVIDIA NRAS REST attestation |
+| `gpu_attestation.provider` | `"nvidia-nras"` | Provider label for NVIDIA GPU confidential-computing evidence claims; `gpu-confidential` production policy requires `"nvidia-nras"` |
+| `gpu_attestation.evidence_path` | `null` | Path to raw NVIDIA GPU CC evidence bytes; mutually exclusive with `evidence_hex`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when file-backed evidence is configured |
+| `gpu_attestation.evidence_hex` | `null` | Hex-encoded raw NVIDIA GPU CC evidence bytes; mutually exclusive with `evidence_path` |
+| `gpu_attestation.verdict_path` | `null` | Path to raw NVIDIA NRAS verdict bytes; mutually exclusive with `verdict_hex`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when configured evidence uses a file-backed verdict |
+| `gpu_attestation.verdict_hex` | `null` | Hex-encoded raw NVIDIA NRAS verdict bytes; mutually exclusive with `verdict_path` |
+| `gpu_attestation.nvattest_path` | `"nvattest"` | Path to NVIDIA's `nvattest` CLI when `source = "nvattest-cli"`; `gpu-confidential` production policy requires an absolute path to an existing executable file |
+| `gpu_attestation.nvattest_verifier` | `"remote"` | `nvattest attest --verifier` value; `gpu-confidential` mode requires `"remote"` for NRAS |
+| `gpu_attestation.nvattest_gpu_evidence_source` | `"nvml"` | `nvattest collect-evidence --gpu-evidence-source`; use `"nvml"` for H100 confidential-computing deployments |
+| `gpu_attestation.nvattest_gpu_architecture` | `null` | GPU architecture value required only for `corelib` evidence collection |
+| `gpu_attestation.nras_url` | `null` | Optional NRAS URL. For `nvattest-cli`, passed to `nvattest attest --nras-url`; for `nras-rest`, may be the service root or full `/v4/attest/gpu` endpoint. In `gpu-confidential` production policy, custom NRAS URLs must use HTTPS |
+| `gpu_attestation.nras_gpu_architecture` | `null` | GPU architecture for `nras-rest`: `"HOPPER"` or `"BLACKWELL"` |
+| `gpu_attestation.nras_claims_version` | `"3.0"` | NVIDIA NRAS REST claims version (`"2.0"` or `"3.0"`) |
+| `gpu_attestation.nras_bearer_token_env` | `null` | Optional environment variable containing a bearer token for direct NRAS REST calls |
+| `gpu_attestation.nras_timeout_secs` | `30` | Timeout for each direct NRAS REST request |
+| `gpu_attestation.rim_url` | `null` | Optional RIM URL passed to `nvattest attest --rim-url`; `gpu-confidential` production policy requires HTTPS when configured |
+| `gpu_attestation.ocsp_url` | `null` | Optional OCSP URL passed to `nvattest attest --ocsp-url`; `gpu-confidential` production policy requires HTTPS when configured |
+| `gpu_attestation.relying_party_policy_path` | `null` | Optional relying-party policy file for `nvattest attest`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when configured |
+| `gpu_attestation.nvattest_timeout_secs` | `30` | Timeout for each `nvattest` command |
 | `model_key_source` | `null` | Decryption key for `.enc` model files: `{ file = "/path/to/key.hex" }` or `{ env = "MY_KEY_VAR" }` |
 | `key_provider` | `"static"` | Key provider type: `"static"` (uses `model_key_source`) or `"rotating"` (uses `key_rotation_sources`) |
 | `key_rotation_sources` | `[]` | For rotating provider: list of key sources in rotation order |
-| `in_memory_decrypt` | `false` | Decrypt `.enc` models entirely in RAM with `mlock` (never writes plaintext to disk) |
+| `in_memory_decrypt` | `false` | Load encrypted GGUF plaintext from locked RAM when the selected backend supports it (`picolm`); unsupported backends fail closed |
+| `streaming_decrypt` | `false` | Load encrypted GGUF plaintext through `LayerStreamingDecryptedModel` when the selected backend supports it (`picolm`); unsupported backends fail closed |
 | `suppress_token_metrics` | `false` | Round token counts in responses to nearest 10 (prevents exact token-count side-channel) |
 | `rate_limit_rps` | `0` | Max requests per second for `/v1/*` endpoints (`0` = unlimited) |
 | `max_concurrent_requests` | `0` | Max concurrent in-flight inference requests; excess **queue** for an admission permit held across the streamed response (`0` = unlimited) |
 | `proxy_upstreams` | `{}` | Map of model name → upstream base URL to proxy to an OpenAI-compatible server (vLLM/TGI/SGLang/OpenAI), e.g. `{ "llama-70b" = "http://vllm:8000" }`. Proxied inference runs on the upstream, outside any TEE |
+| `proxy_effective_prompt_digest` | `false` | Ask proxy upstreams for a rendered chat prompt digest before inference and include it in receipts when returned |
+| `proxy_effective_prompt_digest_required` | `false` | Fail closed when a proxy upstream does not support or cannot return the rendered prompt digest |
+| `proxy_effective_prompt_digest_path` | `"/v1/chat/effective-prompt-digest"` | Upstream endpoint path for proxy rendered prompt digest requests |
 | `tls_port` | `null` | TLS server port; when set, a TLS server starts in parallel (`tls` feature required) |
 | `ra_tls` | `false` | Embed TEE attestation in TLS cert (RA-TLS); requires `tls_port` + `tee_mode` |
 | `vsock_port` | `null` | Vsock port for guest-host communication (`vsock` feature, Linux only) |
@@ -542,8 +622,34 @@ gpu {
 | `A3S_POWER_DATA_DIR` | Model storage directory |
 | `A3S_POWER_MAX_MODELS` | Max concurrent loaded models |
 | `A3S_POWER_KEEP_ALIVE` | Default keep-alive duration |
+| `A3S_POWER_MODEL_SOURCE` | Remote model hub source for pull (`"modelscope"`, `"hf"`, or `"huggingface"`); invalid configured values fail closed |
+| `A3S_POWER_HUB_TOKEN` | Generic bearer token fallback for remote model hub pulls |
 | `A3S_POWER_GPU_LAYERS` | GPU layer offloading |
+| `A3S_POWER_GPU_ATTESTATION_SOURCE` | GPU CC evidence source (`"configured"`, `"nvattest-cli"`, or `"nras-rest"`) |
+| `A3S_POWER_GPU_ATTESTATION_PROVIDER` | Provider label for NVIDIA GPU CC evidence claims |
+| `A3S_POWER_GPU_ATTESTATION_EVIDENCE_PATH` | Path to raw NVIDIA GPU CC evidence bytes |
+| `A3S_POWER_GPU_ATTESTATION_EVIDENCE_HEX` | Hex-encoded raw NVIDIA GPU CC evidence bytes |
+| `A3S_POWER_GPU_ATTESTATION_VERDICT_PATH` | Path to raw NVIDIA NRAS verdict bytes |
+| `A3S_POWER_GPU_ATTESTATION_VERDICT_HEX` | Hex-encoded raw NVIDIA NRAS verdict bytes |
+| `A3S_POWER_GPU_ATTESTATION_NVATTEST_PATH` | Path to NVIDIA's `nvattest` CLI |
+| `A3S_POWER_GPU_ATTESTATION_NVATTEST_VERIFIER` | `nvattest attest --verifier` value |
+| `A3S_POWER_GPU_ATTESTATION_NVATTEST_GPU_EVIDENCE_SOURCE` | Live GPU evidence source (`"nvml"` or `"corelib"`) |
+| `A3S_POWER_GPU_ATTESTATION_NVATTEST_GPU_ARCHITECTURE` | Architecture value for `corelib` evidence collection |
+| `A3S_POWER_GPU_ATTESTATION_NRAS_URL` | Optional NRAS URL |
+| `A3S_POWER_GPU_ATTESTATION_NRAS_GPU_ARCHITECTURE` | GPU architecture for direct NRAS REST (`"HOPPER"` or `"BLACKWELL"`) |
+| `A3S_POWER_GPU_ATTESTATION_NRAS_CLAIMS_VERSION` | Claims version for direct NRAS REST (`"2.0"` or `"3.0"`) |
+| `A3S_POWER_GPU_ATTESTATION_NRAS_BEARER_TOKEN_ENV` | Environment variable containing an optional NRAS REST bearer token |
+| `A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS` | Timeout for each direct NRAS REST request |
+| `A3S_POWER_GPU_ATTESTATION_RIM_URL` | Optional RIM URL |
+| `A3S_POWER_GPU_ATTESTATION_OCSP_URL` | Optional OCSP URL |
+| `A3S_POWER_GPU_ATTESTATION_RELYING_PARTY_POLICY_PATH` | Optional relying-party policy file |
+| `A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS` | Timeout for each `nvattest` command |
+| `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST` | Enable proxy upstream rendered prompt digest requests |
+| `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED` | Require proxy upstream rendered prompt digest support and fail closed when missing |
+| `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_PATH` | Upstream endpoint path for rendered prompt digest requests |
 | `A3S_POWER_TEE_MODE` | Enable TEE mode (`"1"` or `"true"`) |
+| `A3S_POWER_TEE_POLICY_MODE` | Set TEE policy mode (`"strict"`, `"development"`, or `"gpu-confidential"`) |
+| `A3S_POWER_TEE_STRICT` | Legacy shortcut: `"1"` selects strict policy and removes simulated TEE from the allowlist |
 | `A3S_POWER_REDACT_LOGS` | Enable log redaction (`"1"` or `"true"`) |
 | `A3S_POWER_TLS_PORT` | TLS server port (`tls` feature required) |
 | `A3S_POWER_RA_TLS` | Enable RA-TLS attestation embedding (`"1"` or `"true"`) |
@@ -554,12 +660,103 @@ gpu {
 
 ### Model Integrity Verification
 
-When `tee_mode = true` and `model_hashes` is configured, Power verifies every model file's SHA-256 hash at startup. If any model fails verification, the server refuses to start.
+When `tee_mode = true`, Power uses `tee_policy_mode = "strict"` by default. Strict policy refuses to start unless the detected hardware TEE type has a 48-byte `expected_measurements` launch-measurement pin and local models are pinned with `model_hashes` or covered by `model_signing_key`; it also rejects simulated TEE evidence. Use `tee_policy_mode = "development"` only for local tests that intentionally rely on `A3S_TEE_SIMULATE=1`.
+
+`tee_policy_mode = "gpu-confidential"` is for deployments that require NVIDIA GPU confidential-computing evidence to be bound into the CPU TEE attestation. Power supports ordinary CUDA acceleration separately, but ordinary CUDA is not a GPU confidential-computing attestation claim. In GPU confidential mode, startup requires final `gpu.gpu_layers != 0` so a CPU-only execution policy cannot be paired with GPU evidence; use `tee_policy_mode = "strict"` for CPU-only TEE deployments. On NVIDIA CUDA hosts, the default GPU auto-configuration sets `gpu_layers = -1` unless the operator overrides it. In GPU confidential mode, `/v1/attestation` requires a 32-byte nonce, encoded as 64 hex characters. Power gives that same nonce to the GPU evidence provider, hashes the raw GPU evidence and NRAS verdict bytes, emits a `GpuEvidenceClaim`, and binds it together with the CPU nonce into `sha256(canonical_claims_v2)` in CPU TEE `report_data`. For live `nvattest-cli`, direct `nras-rest`, and configured NVIDIA verdict JSON paths that expose claims, the GPU claim also includes structured NVIDIA device claims extracted from the verdict: device type, `eat_nonce`, hardware model, UEID/OEM ID, driver and firmware versions, measurement result, secure-boot/debug status, and normalized validation booleans for report signature, nonce match, FWID match, RIM schema validation, RIM signature, version match, and measurement availability. Power fails closed if an NVIDIA GPU/NVSwitch claim reports `measres != "success"`, omits `secboot` or sets it to `false`, omits `dbgstat`, or reports a debug state other than `disabled`.
+
+When `gpu_attestation.source = "configured"`, Power reads externally produced
+GPU evidence and verdict bytes from file or hex configuration. Startup verifies
+that evidence and verdict sources exist, and file-backed sources must use
+absolute paths to existing non-empty regular files in the production profile.
+Each nonce-bound `/v1/attestation` call then requires the configured verdict to
+be NVIDIA nvattest or NRAS JSON whose device `eat_nonce` matches the request
+nonce; stale or non-parseable verdicts fail closed instead of being rebound to a
+fresh CPU nonce.
+
+When `gpu_attestation.source = "nvattest-cli"`, Power invokes NVIDIA's
+`nvattest` binary for collection and attestation. Configure remote NRAS
+credentials, service keys, and relying-party policy according to the NVIDIA
+`nvattest` deployment instructions; Power does not store NRAS service keys in
+HCL. In `gpu-confidential` policy mode, startup requires
+`provider = "nvidia-nras"`, an absolute executable `nvattest_path`, and
+`nvattest_verifier = "remote"` so NVIDIA NRAS verifies the GPU evidence; local
+`nvattest` verification and PATH-resolved CLI lookup are reserved for
+development or non-production experiments outside the production profile. If a
+relying-party policy path is configured, it must be an absolute path to an
+existing non-empty regular file. If custom `nras_url`, `rim_url`, or `ocsp_url`
+values are configured in the production profile, they must be HTTPS URLs. The
+temporary evidence file passed from `nvattest collect-evidence` to
+`nvattest attest` is created with exclusive create semantics and owner-only
+permissions on Unix.
+
+When `gpu_attestation.source = "nras-rest"`, Power reads configured
+DeviceEvidenceV2 JSON from `evidence_path` or `evidence_hex`, posts
+`nonce`, `arch`, `evidence_list`, and `claims_version` to NVIDIA NRAS
+`/v4/attest/gpu`, then binds the returned detached EAT JSON as the verdict.
+File-backed evidence must use an absolute path to an existing non-empty regular
+file in the production profile.
+GPU confidential mode requires clients to send a 64-character hex nonce to
+`/v1/attestation`. The evidence JSON may be a single
+`{ evidence, certificate, firmware_version? }` object, an `evidence_list`
+array, or an `nvattest collect-evidence` wrapper whose embedded nonce matches
+the attestation nonce. In the production profile, the default NVIDIA NRAS
+endpoint is used when `nras_url` is omitted; any configured override must use
+HTTPS.
+
+Verifiers can pin the exact GPU deployment identity with
+`ExpectedGpuEvidence` and `ExpectedGpuDevices` in the SDK or with CLI flags
+such as `--gpu-provider`, `--gpu-evidence-format`, `--gpu-verdict-format`,
+`--gpu-evidence-count`, `--gpu-count`, `--nvswitch-count`,
+`--gpu-claims-version`, `--gpu-ueid`, `--gpu-oemid`, `--gpu-hwmodel`,
+`--gpu-driver-version`, `--gpu-firmware-version`, `--nvswitch-claims-version`,
+`--nvswitch-ueid`, `--nvswitch-oemid`, `--nvswitch-hwmodel`, and
+`--nvswitch-firmware-version`. UEID pinning is an exact device-set check;
+GPU/NVSwitch counts pin the attested topology; claims version, OEM ID, hwmodel,
+driver version, and firmware version pins are allow-lists applied to every
+attested NVIDIA GPU or NVSwitch claim for the matching device type. OEM ID is
+supplemental and does not replace exact UEID pinning or deployment-specific
+model/version pins in the production profile.
+For production NVIDIA GPU confidential-computing deployments, prefer
+`a3s-power-verify --gpu-confidential`: it requires a 32-byte `--nonce`,
+`--gpu-verdict-digest`, and bundles v2 claims, nonce freshness, NVIDIA NRAS
+verdict binding, required GPU provider/format/count pins, structured NVIDIA
+device claims, required exact GPU topology plus claims-version and
+identity/version pins, runtime policy, and GPU
+execution/offload digest checks into one verifier profile. The production
+profile requires `--gpu-claims-version` plus either an exact `--gpu-ueid` set or
+`--gpu-count` together with at least one of `--gpu-hwmodel`,
+`--gpu-driver-version`, or `--gpu-firmware-version`, and it rejects NVIDIA
+device claims unless secure boot is enabled and debug is disabled. When
+`--nvswitch-count` is greater than zero, the production profile also requires
+`--nvswitch-claims-version` plus either an exact `--nvswitch-ueid` set or at
+least one of `--nvswitch-hwmodel` or `--nvswitch-firmware-version`.
+Verifiers can also pin the model execution/offload policy with
+`--require-runtime-policy --gpu-execution-digest <64-char-hex>`, which checks
+the attested `runtime.execution.gpu_sha256` digest over canonical
+`gpu_layers`, `main_gpu`, and `tensor_split` values. To compute that value
+without reimplementing Power's canonical JSON semantics, use:
+
+```bash
+a3s-power-verify --print-gpu-execution-digest \
+  --gpu-layers <N> \
+  --main-gpu <N> \
+  --tensor-split <CSV>
+```
 
 ```hcl
 tee_mode = true
+tee_policy_mode = "gpu-confidential"
 model_hashes = {
   "llama3.2:3b" = "sha256:a1b2c3d4e5f6..."
+}
+
+gpu_attestation {
+  source = "nvattest-cli"
+  provider = "nvidia-nras"
+  nvattest_path = "/usr/local/bin/nvattest"
+  nvattest_verifier = "remote"
+  nvattest_gpu_evidence_source = "nvml"
+  # nras_url = "https://<your-nras-endpoint>"
 }
 ```
 
@@ -577,7 +774,7 @@ The `TeeProvider` detects the TEE environment and generates attestation reports:
 |----------|-----------|-------------|
 | AMD SEV-SNP | `/dev/sev-guest` | Hardware memory encryption + attestation |
 | Intel TDX | `/dev/tdx_guest` | Trust Domain Extensions |
-| Simulated | `A3S_TEE_SIMULATE=1` | Development/testing mode |
+| Simulated | `A3S_TEE_SIMULATE=1` | Development/testing mode; rejected by strict production policy |
 | None | (default) | No TEE detected |
 
 The `/health` endpoint exposes TEE status:
@@ -634,7 +831,79 @@ Error messages that echo prompt content are also sanitized via `sanitize_error()
 | `DELETE` | `/v1/models/:name` | Unload and deregister a model |
 | `POST` | `/v1/models/pull` | Pull a GGUF model from HuggingFace Hub (`name`, `force` body fields); streams SSE progress events; requires `hf` feature; concurrent pulls of the same model are deduplicated |
 | `GET` | `/v1/models/pull/:name/status` | Get persisted pull progress for a model (`status`, `completed`, `total`, `error`); URL-encode names that contain `/` or `:` |
-| `GET` | `/v1/attestation` | TEE attestation report (returns 503 if TEE not enabled); optional `?nonce=<hex>` binds client nonce; optional `?model=<name>` binds model SHA-256 into `report_data` |
+| `GET` | `/v1/attestation` | TEE attestation report (returns 503 if TEE not enabled); optional `?nonce=<hex>` binds client nonce; optional `?model=<name>` emits v2 model/runtime claims and binds the claims digest into `report_data`; `gpu-confidential` mode also binds GPU evidence claims and requires a 32-byte `?nonce=<64-hex>` |
+
+The `a3s-power models show` and `a3s-power models rm` commands encode model
+names as URL path segments automatically. Manual HTTP clients must percent-encode
+path parameters that contain `/`, `:`, spaces, or query-special characters.
+
+Chat and text completion responses include an `attestation_receipt` object and
+`attestation_receipt_sha256`. For streaming calls, Power emits a final SSE event
+with those fields before `[DONE]`; when `stream_options.include_usage = true` or
+`suppress_token_metrics = true`, that final event also includes `usage`.
+
+The v2 receipt covers prompt-bearing API input, model runtime
+chat-template/GPU execution policy claims, request decoding parameters
+including extended local sampling controls, stop tokens, response format, tools,
+tool choice, and parallel tool-call policy. Chat receipts also include
+`effective_prompt` when the selected backend can expose the exact prompt
+representation it submits to the model. llama.cpp and picolm text-only chat
+emit `kind = "chat.rendered-prompt"` for post-template prompt bytes. mistralrs
+text chat emits `kind = "chat.prompt-token-ids"` for a domain-separated SHA-256
+over the token ID sequence produced by mistralrs' own chat tokenization path;
+vision and multimodal llama.cpp/picolm/mistralrs requests leave the field absent.
+Proxy backends leave the field absent by default, but can include an
+upstream-declared digest when
+`proxy_effective_prompt_digest = true` and the upstream implements the configured
+digest endpoint. The proxy sends the same OpenAI-compatible chat body used for
+inference, including structured multimodal content, tools, tool choice,
+parallel tool-call policy, response format, and sampling controls, with
+`stream = false`; the endpoint should return either
+`{ "sha256": "<64 hex>", "kind": "chat.rendered-prompt", "backend": "..." }` or
+the same object nested under `effective_prompt`. Unsupported proxy endpoints are
+ignored unless `proxy_effective_prompt_digest_required = true`; malformed
+digests fail closed.
+
+`a3s-power-verify` can bind a saved receipt back to a saved or fetched
+attestation report. Receipt verification first checks the receipt schema,
+request type/input-kind pairing, and all receipt digest fields before comparing
+the receipt runtime policy with the attested runtime policy. Verifiers can also
+pin receipt-level policy with `--receipt-model`, `--receipt-request-type`,
+`--receipt-input-digest`, `--receipt-decoding-parameters-digest`,
+`--receipt-stream-options-digest`, `--receipt-stop-tokens-digest`,
+`--receipt-response-format-digest`, `--receipt-tools-digest`,
+`--receipt-tool-choice-digest`, `--effective-prompt-digest`,
+`--require-effective-prompt-absent`, `--effective-prompt-backend`, and
+`--effective-prompt-kind`:
+
+```bash
+a3s-power-verify --file report.json \
+  --receipt-file receipt.json \
+  --receipt-digest <64-char-hex> \
+  --receipt-model llama3 \
+  --receipt-request-type chat-completion \
+  --receipt-input-digest <64-char-hex> \
+  --receipt-decoding-parameters-digest <64-char-hex> \
+  --receipt-stream-options-digest <64-char-hex> \
+  --receipt-stop-tokens-digest <64-char-hex> \
+  --allow-offline
+```
+
+Use `--effective-prompt-digest <64-char-hex>` when receipt policy pins the
+exact rendered-prompt or prompt-token-ID digest exposed in `effective_prompt`.
+Use `--require-effective-prompt-absent` for opaque multimodal paths where the
+receipt must prove that Power did not overclaim a post-template prompt digest.
+Use `--require-runtime-policy --gpu-execution-digest <64-char-hex>` when
+verifier policy pins the exact GPU execution/offload configuration used by the
+attested server.
+Use this command to calculate that pin with Power's own canonicalizer:
+
+```bash
+a3s-power-verify --print-gpu-execution-digest \
+  --gpu-layers <N> \
+  --main-gpu <N> \
+  --tensor-split <CSV>
+```
 
 ### Examples
 
@@ -729,9 +998,13 @@ curl http://localhost:11434/v1/chat/completions \
 curl http://localhost:11434/v1/models
 ```
 
-#### Pull a Model from HuggingFace Hub
+#### Pull a Model from a Remote Hub
 
-Requires the `hf` feature (`cargo build --features hf`). Streams SSE progress:
+Requires the `hf` feature (`cargo build --features hf`). Power pulls from
+ModelScope by default; set `A3S_POWER_MODEL_SOURCE=hf` or
+`A3S_POWER_MODEL_SOURCE=huggingface` to use HuggingFace Hub. Any other
+configured source value fails closed instead of silently falling back. Streams
+SSE progress:
 
 ```bash
 # By quantization tag (resolves filename via HF API)
@@ -744,7 +1017,7 @@ curl -N http://localhost:11434/v1/models/pull \
   -H "Content-Type: application/json" \
   -d '{"name": "bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruct-Q4_K_M.gguf"}'
 
-# Private/gated model with HF token
+# Private/gated model with a hub token
 curl -N http://localhost:11434/v1/models/pull \
   -H "Content-Type: application/json" \
   -d '{"name": "meta-llama/Llama-3.1-8B-Instruct/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "token": "hf_..."}'
@@ -754,8 +1027,12 @@ curl -N http://localhost:11434/v1/models/pull \
   -H "Content-Type: application/json" \
   -d '{"name": "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M", "force": true}'
 
-# Check persisted progress for a pull; URL-encode names containing "/" or ":"
+# Check persisted progress for a pull; manual HTTP clients must URL-encode names
+# containing "/", ":", spaces, or query-special characters.
 curl http://localhost:11434/v1/models/pull/bartowski%2FLlama-3.2-3B-Instruct-GGUF%3AQ4_K_M/status
+
+# The CLI encodes the model name automatically.
+a3s-power models status bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M
 ```
 
 SSE response stream:
@@ -766,7 +1043,7 @@ data: {"status":"verifying"}
 data: {"status":"success","id":"bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M","object":"model","created":1234567890}
 ```
 
-Interrupted downloads resume automatically on retry — the partial file is identified by a SHA-256 of the download URL and picked up via HTTP `Range` requests. Set `HF_TOKEN` env var as an alternative to passing `token` in the request body.
+Interrupted downloads resume automatically on retry — the partial file is identified by a SHA-256 of the canonical download URL and picked up via HTTP `Range` requests. Hub download and file-list URLs are built with a URL parser, preserving intended repo/file subdirectories while percent-encoding spaces and query-special characters. Set the selected hub's token env var (`MODELSCOPE_TOKEN` or `HF_TOKEN`) or `A3S_POWER_HUB_TOKEN` as an alternative to passing `token` in the request body.
 
 #### Health Check (with TEE status)
 
@@ -799,7 +1076,7 @@ Model files are stored by SHA-256 hash, enabling deduplication and integrity ver
 | `mistralrs` | ✅ enabled | Pure Rust inference backend via `mistralrs` (candle-based). No C++ inference toolchain required. Ideal for TEE auditing. |
 | `llamacpp` | ❌ disabled | llama.cpp inference backend via `llama-cpp-2`. Requires C++ compiler + CMake. Full-featured (KV cache, LoRA, grammar, mirostat). |
 | `picolm` | ❌ disabled | Pure Rust layer-streaming GGUF inference. Real transformer ops (multi-head attention, SwiGLU FFN, RoPE, RMSNorm). Peak RAM = O(layer_size) not O(model_size) via `madvise(DONTNEED)`. FP16 KV cache with fused f16 dot/accumulate. Fused dequant+dot kernels. NEON SIMD (aarch64) + AVX2 (x86_64). Batch prefill, speculative decoding, tool calling, grammar-constrained output. 14+ tok/s decode on Apple Silicon. Enables 7B+ models in 512MB TEE EPC. No C/C++ inference backend. ~4,500 lines of pure Rust. |
-| `hf` | ❌ disabled | HuggingFace Hub model pull (`POST /v1/models/pull`). Range resume, SSE progress, HF_TOKEN auth. |
+| `hf` | ❌ disabled | Remote model hub pull (`POST /v1/models/pull`). Range resume, SSE progress, source-specific hub token auth. |
 | `tls` | ❌ disabled | RA-TLS transport: TLS server with self-signed cert + optional attestation X.509 extension. Adds `axum-server`, `rcgen`, `time` deps. |
 | `vsock` | ❌ disabled | Vsock transport for a3s-box MicroVM guest-host HTTP. **Linux only** — requires `AF_VSOCK` kernel support. Adds `tokio-vsock` and `hyper-util` deps. |
 | `hw-verify` | ❌ disabled | Hardware attestation signature verification. AMD KDS (ECDSA P-384) + Intel PCS (ECDSA P-256) certificate chain validation. |
@@ -830,7 +1107,7 @@ The `tee-minimal` profile minimizes this surface:
 
 - **picolm backend**: Pure Rust layer-streaming GGUF inference (~4,500 lines, fully auditable). Real transformer ops, 14+ tok/s decode, FP16 KV cache, true O(layer_size) peak RAM.
 - **Full TEE stack**: attestation, model integrity (SHA-256), log redaction, memory zeroing
-- **Encrypted model loading**: AES-256-GCM with `in_memory_decrypt` or `streaming_decrypt`
+- **Encrypted model loading**: AES-256-GCM file-backed loading plus `picolm` GGUF loading from locked plaintext RAM or `LayerStreamingDecryptedModel`; unsupported backends fail closed before load
 - **RA-TLS transport**: attestation embedded in X.509 cert
 - **Vsock transport**: for a3s-box MicroVM guest-host communication
 
@@ -918,22 +1195,29 @@ for layer in 0..n_layers {
 
 #### Encrypted Model Support
 
-For encrypted models (`.enc`), `LayerStreamingDecryptedModel` decrypts one chunk at a time. Each chunk is wrapped in `Zeroizing<Vec<u8>>` — automatically zeroed when dropped. This means:
+For encrypted models (`.enc`), `LayerStreamingDecryptedModel` exposes chunked
+plaintext access where each returned chunk is wrapped in `Zeroizing<Vec<u8>>`.
+`streaming_decrypt = true` passes this source to backends that explicitly support
+it. Today that means `picolm` for GGUF models; unsupported backends fail closed
+before load.
 
-- Plaintext weights for only one layer exist in RAM at any moment
-- Each chunk is cryptographically erased after use
-- The infrastructure operator cannot recover weights from memory dumps
+- Chunk buffers are zeroized when dropped
+- The full decrypted plaintext is still held in locked memory because the current
+  AES-GCM artifact format is not independently seekable
+- End-to-end inference from chunked plaintext requires a backend loader that
+  consumes this source directly
 
 ```
 Encrypted layer-streaming:
 ┌─────────────────────────────────────────────────────┐
 │  model.gguf.enc (AES-256-GCM encrypted on disk)      │
 │                                                       │
-│  for each layer:                                      │
-│    chunk = decrypt_chunk(key, layer_offset, layer_len)│
+│  after AES-GCM authentication + decrypt to locked RAM: │
+│  for each requested range:                             │
+│    chunk = read_chunk(layer_offset, layer_len)         │
 │    chunk: Zeroizing<Vec<u8>>  ← auto-zeroed on drop   │
-│    forward_pass(hidden_state, &chunk)                  │
-│    // chunk dropped → memory zeroed immediately        │
+│    // future backend path consumes chunk directly      │
+│    // chunk dropped → chunk memory zeroed immediately  │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -1012,15 +1296,18 @@ Remaining optimization opportunities (diminishing returns):
 #### Configuration
 
 ```hcl
-# config.hcl — TEE deployment with layer-streaming
+# config.hcl — TEE deployment with file-backed encrypted-model loading
 tee_mode        = true
 redact_logs     = true
 
-# For encrypted models: decrypt one layer at a time (requires picolm feature)
-streaming_decrypt = true
+# File-backed DecryptedModel loading works with file-based backends.
+# in_memory_decrypt works for GGUF models when the selected backend is picolm;
+# other backends fail closed rather than reading the encrypted path.
 
-# Or: decrypt full model into mlock RAM (compatible with all backends)
+# Direct plaintext-buffer mode:
 # in_memory_decrypt = true
+# LayerStreamingDecryptedModel mode; requires a supporting backend such as picolm GGUF:
+# streaming_decrypt = true
 ```
 
 ### Supply-chain audit
@@ -1093,6 +1380,7 @@ power/
     ├── api/                     # API layer — OpenAI-compatible HTTP handlers
     │   ├── mod.rs               # Shared utilities, timestamp helpers
     │   ├── types.rs             # OpenAI request/response types (chat, completion, embedding)
+    │   ├── receipt.rs           # Request-level attestation receipt hashing
     │   ├── health.rs            # GET /health (TEE status, version, uptime, loaded models)
     │   ├── autoload.rs          # Model lifecycle: LRU eviction → decrypt → verify → load
     │   └── openai/              # OpenAI-compatible endpoint handlers
@@ -1156,7 +1444,7 @@ power/
     │   ├── key_provider.rs      # KeyProvider trait: StaticKeyProvider + RotatingKeyProvider
     │   ├── model_seal.rs        # SHA-256 integrity + Ed25519 signature verification
     │   ├── policy.rs            # TeePolicy trait: allowlist + measurement pinning
-    │   ├── privacy.rs           # PrivacyProvider: log redaction (9 keys), SensitiveString, zeroize
+    │   ├── privacy.rs           # PrivacyProvider: log redaction (10 keys), SensitiveString, zeroize
     │   ├── epc.rs               # EPC memory detection (/proc/meminfo), 75% threshold routing
     │   └── cert.rs              # RA-TLS X.509 cert with attestation extension (feature: tls)
     │
@@ -1165,7 +1453,7 @@ power/
     │   └── hw_verify.rs         # SevSnpVerifier (AMD KDS) + TdxVerifier (Intel PCS)
     │
     └── bin/
-        └── a3s-power-verify.rs  # CLI for offline attestation report verification
+        └── a3s-power-verify.rs  # CLI for strict attestation report verification
 ```
 
 ## A3S Ecosystem
@@ -1239,24 +1527,28 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 - [x] KeyProvider trait — `StaticKeyProvider` (wraps file/env key source) + `RotatingKeyProvider` (multiple keys, zero-downtime rotation via `rotate_key()`); initialized on server startup; `AppState.key_provider` field
 - [x] Deep log redaction — `PrivacyProvider` covers 10 sensitive JSON keys; `sanitize_error()` strips prompt fragments from error messages
 - [x] Token metric suppression — `suppress_token_metrics` config rounds token counts to nearest 10 to prevent side-channel inference
-- [x] In-memory decryption config — `in_memory_decrypt` field; `MemoryDecryptedModel` decrypts into `mlock`-pinned RAM, never writes plaintext to disk
+- [x] In-memory encrypted-model backend loading — `in_memory_decrypt` decrypts into `MemoryDecryptedModel` locked RAM and loads GGUF plaintext through `picolm`; unsupported backends fail closed before load
 - [x] Rate limiting — token-bucket middleware (`rate_limit_rps`) + concurrency cap (`max_concurrent_requests`) on `/v1/*`; returns `429` with OpenAI-style error
-- [x] Model-attestation binding — `build_report_data(nonce, model_hash)` layout `[nonce(32)][sha256(32)]`; `TeeProvider::attestation_report_with_model()` default impl; `GET /v1/attestation?model=<name>` ties attestation to specific model
+- [x] Model/runtime/GPU-attestation binding — `AttestationClaimsV2` + `sha256(canonical_claims_v2)` in CPU TEE `report_data`; `GET /v1/attestation?model=<name>` re-hashes the current local model artifact, including deterministic directory manifests and encrypted plaintext/ciphertext claims, and fails on missing or stale hashes; model-bound claims include applied chat-template digests plus canonical GPU execution/offload digests; `gpu-confidential` mode binds NVIDIA GPU CC evidence, NRAS verdict digests, and structured NVIDIA device identity/freshness claims from live `nvattest-cli` collection or direct `nras-rest` attestation and requires a 32-byte nonce
 - [x] Embedding model support — `ModelFormat::HuggingFace` variant; `MistralRsBackend` loads HF embedding models via `EmbeddingModelBuilder` with local path; `POST /v1/embeddings` fully functional; register with `format=huggingface`
 - [x] SafeTensors inference — `ModelFormat::SafeTensors` variant; `MistralRsBackend` loads local safetensors chat models via `TextModelBuilder` with ISQ on-load quantization; ISQ type configurable via `default_parameters.isq` (Q4_0, Q4K, Q6K, Q8_0, HQQ4, HQQ8, etc.); defaults to Q8_0; register with `format=safetensors`
-- [x] Client attestation verification SDK — `verify` module with `verify_report()`, `verify_nonce_binding()`, `verify_model_hash_binding()`, `verify_measurement()`; `HardwareVerifier` trait for pluggable hardware signature verification; `a3s-power-verify` CLI binary
+- [x] Client attestation verification SDK — `verify` module with `verify_report()`, `verify_report_strict()`, `VerificationPolicy`, `ExpectedGpuEvidence`, `ExpectedGpuDevices`, `ExpectedReceipt`, `verify_nonce_binding()`, `verify_model_hash_binding()`, `verify_claims_gpu_evidence_binding()`, `verify_claims_expected_gpu_evidence()`, `verify_claims_gpu_device_claims()`, `verify_claims_expected_gpu_devices()`, `verify_claims_runtime_policy_binding()`, `verify_receipt_well_formed()`, `verify_receipt_policy()`, `verify_receipt_against_attestation()`, `verify_receipt_digest_hex()`, `verify_receipt_effective_prompt_digest_hex()`, and `verify_measurement()`; `HardwareVerifier` trait for pluggable hardware signature verification; strict verification requires hardware signatures and an expected launch measurement; `VerificationPolicy::gpu_confidential()` and `a3s-power-verify --gpu-confidential` bundle production NVIDIA GPU confidential-computing checks and require a 32-byte nonce, `--gpu-verdict-digest`, GPU provider/format/count, exact GPU/NVSwitch topology, claims schema version, and identity/version pins; `a3s-power-verify` defaults to strict mode, requires `--expected-measurement`, requires `--allow-offline` to skip hardware signatures/measurement pinning, supports GPU provider/format/count, GPU execution digest, exact GPU/NVSwitch count pins, GPU/NVSwitch claims version pins, and device identity pins including UEID/OEM ID plus `--receipt-file` / `--receipt-digest` / `--receipt-model` / `--receipt-request-type` / `--receipt-input-digest` / receipt decoding, stream-options, and output-policy digest pins / `--effective-prompt-digest` for attestation-to-receipt verification, and requires `--nonce` when GPU evidence, device-claim, or identity pinning is used
 - [x] Graceful shutdown — SIGTERM + Ctrl-C handled via `shutdown_signal()`; unloads all models (triggers RAII zeroize of decrypted weights); flushes audit log via `AuditLogger::flush()` before exit; `AsyncJsonLinesAuditLogger` flush uses oneshot channel to wait for background writer to drain
-- [x] HuggingFace Hub model pull — `hf` feature: `POST /v1/models/pull` downloads GGUF models from HuggingFace Hub; supports `owner/repo:Q4_K_M` (resolves filename via HF API) and `owner/repo/file.gguf` (direct); streams SSE progress events (`resuming`, `downloading`, `verifying`, `success`); resume interrupted downloads via HTTP Range requests (deterministic partial filename = SHA-256 of URL); HF token auth for private/gated models via `token` request field or `HF_TOKEN` env var; stores in content-addressed blob store; SHA-256 verified; `force` flag for re-download
+- [x] Remote model hub pull — `hf` feature: `POST /v1/models/pull` downloads GGUF models from ModelScope or HuggingFace Hub; supports `owner/repo:Q4_K_M` (resolves filename via hub API) and `owner/repo/file.gguf` (direct); streams SSE progress events (`resuming`, `downloading`, `verifying`, `success`); resume interrupted downloads via HTTP Range requests (deterministic partial filename = SHA-256 of the canonical URL); hub/API URLs percent-encode repo, filename, and query components while preserving intended subdirectories; source-specific token auth for private/gated models via `token` request field, `MODELSCOPE_TOKEN`/`HF_TOKEN`, or `A3S_POWER_HUB_TOKEN`; stores in content-addressed blob store; SHA-256 verified; `force` flag for re-download
 - [x] Pull concurrent control — `Mutex<HashSet>` in `AppState` deduplicates concurrent pulls of the same model; returns `409 Conflict` if a pull is already in progress
 - [x] Pull progress persistence — JSON state files in `~/.a3s/power/pulls/`; `GET /v1/models/pull/:name/status` returns `{status, completed, total, error}` and accepts URL-encoded model names; survives server restarts; throttled writes (every 5%) to minimize disk I/O
 - [x] True token-by-token streaming — `stream_chat_request` replaces non-streaming path; each `Response::Chunk` forwarded immediately via mpsc channel; `Response::Done` sets `finish_reason`
+- [x] Request-level inference receipts — `/v1/chat/completions` and `/v1/completions` return v2 `attestation_receipt` plus `attestation_receipt_sha256`; receipts include model runtime chat-template/GPU execution policy claims, request decoding/output policy digests, and stream-options digests; streaming responses emit the receipt in a final SSE event before `[DONE]`
+- [x] Effective prompt digest coverage for deterministic chat paths — llama.cpp and picolm text-only chat return local rendered-prompt digests; mistralrs text chat returns a domain-separated prompt-token-ID digest; proxy backends can include an upstream-declared digest through the opt-in `/v1/chat/effective-prompt-digest` contract
+- [ ] Effective prompt digest coverage for remaining opaque renderers — llama.cpp, picolm, and mistralrs vision/multimodal paths must either expose exact prompt representations or continue leaving `effective_prompt` absent
 - [x] Vision/multimodal inference — `ModelFormat::Vision` variant; `MistralRsBackend` loads vision models via `VisionModelBuilder` with ISQ; base64 images accepted via `images` field or OpenAI `image_url` content parts; decoded with `image` + `base64` crates
 - [x] picolm backend — pure Rust layer-streaming GGUF inference (`picolm` feature); real transformer forward pass (multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm); fused dequant+dot kernels (Q4_K, Q6_K, Q8_0); rayon parallel matmul; FP16 KV cache; pre-computed RoPE tables; tensor cache (zero HashMap lookups); pre-allocated buffers (zero heap allocation in hot path); true O(layer_size) peak RAM via `madvise(MADV_DONTNEED)` page release; BPE tokenizer with ChatML template; 14+ tok/s decode on Apple Silicon; ~4,500 lines of pure Rust; no C/C++ inference backend
 - [x] picolm features — batch prefill (faster time-to-first-token); speculative decoding via prompt-lookup; tool/function calling (OpenAI-compatible `tool_calls`); grammar-constrained structured output (JSON Schema enforcement); repeat/frequency/presence penalty
 - [x] picolm SIMD — NEON (aarch64): softmax, RMSNorm, SiLU, add_residual, Q4_K nibble extraction; AVX2 (x86_64): Q4_K, Q6_K vec_dot kernels
 - [x] picolm performance — fused f16 KV attention (`k_dot`/`v_accumulate` skip intermediate f32 buffer); zero-alloc sampler (pre-allocated probs/indices in ForwardBuffers); zero-alloc repeat penalty (stack-based `[(u32,u32); 64]` dedup); Q4_K NEON register-based nibble extraction; decode profiling instrumentation (per-stage timing breakdown); 900+ tests across current validation profiles
 - [x] EPC memory detection — `tee::epc` module reads `/proc/meminfo`; `BackendRegistry::find_for_tee()` auto-routes to picolm when model exceeds 75% of available EPC
-- [x] `LayerStreamingDecryptedModel` — chunk-by-chunk access to AES-256-GCM encrypted models; each chunk returned as `Zeroizing<Vec<u8>>`, zeroized on drop; `streaming_decrypt` config field
+- [x] `LayerStreamingDecryptedModel` primitive — chunked access to AES-256-GCM encrypted models; each returned chunk is `Zeroizing<Vec<u8>>`; `streaming_decrypt = true` passes this plaintext source to supporting backends and fails closed for unsupported backends
+- [x] End-to-end chunked encrypted-model backend loading — `picolm` GGUF consumes `LayerStreamingDecryptedModel` plaintext for streaming decrypt mode instead of loading the encrypted path; the current AES-GCM artifact format is still non-seekable, so full plaintext remains locked in RAM while the handle is live
 - [x] `tee-minimal` feature profile — `picolm` + `tls` + `vsock`; smallest auditable TEE build (~1,220 dep tree lines vs ~2,000 for default); no mistralrs/candle and no C++ inference engine; TLS/crypto still brings native `ring`/`aws-lc-sys` build dependencies
 - [x] Supply-chain audit document — `docs/supply-chain.md`; per-profile dependency listing, audit status table, threat model
 

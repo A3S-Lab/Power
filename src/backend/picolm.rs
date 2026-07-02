@@ -30,13 +30,14 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::backend::types::{
     ChatMessage, ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
-    EmbeddingRequest, EmbeddingResponse, MessageContent,
+    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse, MessageContent,
 };
 use crate::backend::Backend;
 use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest};
 use crate::server::request_context::RequestContext;
+use crate::tee::encrypted_model::{LayerStreamingDecryptedModel, MemoryDecryptedModel};
 
 #[cfg(feature = "picolm")]
 use super::gguf_stream::{GgufFile, GgufMeta};
@@ -54,6 +55,16 @@ use super::picolm_ops::rope::RopeTable;
 use super::picolm_ops::tensor_cache::TensorCache;
 #[cfg(feature = "picolm")]
 use super::picolm_ops::tokenizer::BpeTokenizer;
+
+#[cfg(any(feature = "picolm", test))]
+fn request_has_picolm_images(request: &ChatRequest) -> bool {
+    request.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
+        || request.messages.iter().any(|m| {
+            m.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
+                || matches!(&m.content, MessageContent::Parts(parts)
+                    if parts.iter().any(|p| matches!(p, crate::backend::types::ContentPart::ImageUrl { .. })))
+        })
+}
 
 // ── Loaded model state ────────────────────────────────────────────────────────
 
@@ -1386,6 +1397,121 @@ impl PicolmBackend {
             spec_mode,
         }
     }
+
+    #[cfg(feature = "picolm")]
+    fn load_gguf_model(&self, name: String, gguf: GgufFile) -> Result<()> {
+        let max_seq_cap = self.max_seq_len;
+
+        let meta = &gguf.meta;
+        let arch = &meta.arch;
+        let supported = ["llama", "mistral", "phi", "gemma", "qwen"];
+        if !supported.iter().any(|a| arch.contains(a)) {
+            return Err(PowerError::InvalidFormat(format!(
+                "picolm only supports LLaMA-compatible architectures, got '{arch}'."
+            )));
+        }
+
+        let shape = build_picolm_model_shape(meta, max_seq_cap)?;
+        let cfg = shape.cfg;
+        let head_dim = cfg.head_dim;
+        let rope_dim = cfg.rope_dim;
+        let max_seq = shape.max_seq;
+        let kv_mem = shape.kv_mem;
+        let derived_mem = shape.derived_mem;
+
+        // Determine activation
+        let activation = if arch.contains("gemma") {
+            FfnActivation::Gelu
+        } else {
+            FfnActivation::Silu
+        };
+
+        // Build tokenizer from GGUF metadata
+        let tokenizer = BpeTokenizer::from_gguf(
+            &meta.vocab_tokens,
+            &meta.vocab_scores,
+            &meta.vocab_types,
+            cfg.bos_token_id,
+            cfg.eos_token_id,
+        );
+
+        // Use model's context length from GGUF metadata, capped by backend limit.
+        // This avoids the hardcoded 2048 that silently truncated long-context models.
+        // Pre-compute RoPE cos/sin tables (eliminates powf/sin/cos from hot path)
+        let rope_table = RopeTable::new(max_seq, head_dim, rope_dim, cfg.rope_theta);
+
+        // Pre-dequantize only the output norm (used every token).
+        // Per-layer norms are dequantized on-the-fly in the forward pass —
+        // they are tiny (n_embd floats) and take microseconds each.
+        let n_embd = cfg.n_embd;
+        let out_norm_name = "output_norm.weight";
+        let out_norm_raw = gguf.tensor_bytes(out_norm_name).map_err(|e| {
+            PowerError::InferenceFailed(format!("picolm: missing {out_norm_name}: {e}"))
+        })?;
+        let out_norm_type = gguf.tensor_type(out_norm_name).map_err(|e| {
+            PowerError::InferenceFailed(format!("picolm: missing {out_norm_name} type: {e}"))
+        })?;
+        let mut output_norm = vec![0.0f32; n_embd];
+        super::picolm_ops::matmul::extract_row(
+            out_norm_raw,
+            out_norm_type,
+            n_embd,
+            0,
+            &mut output_norm,
+        );
+
+        // Build per-layer tensor pointer cache (eliminates HashMap lookups from hot path).
+        let tensor_cache =
+            super::picolm_ops::tensor_cache::TensorCache::build(&gguf, meta.n_layers).map_err(
+                |e| PowerError::InferenceFailed(format!("picolm: tensor cache build failed: {e}")),
+            )?;
+
+        // Startup self-test: verify inference kernels produce correct results.
+        // In TEE, there's no debugger — if memory corruption causes wrong output,
+        // this catches it at load time instead of silently producing garbage.
+        startup_self_test()?;
+
+        // Clone metadata fields before moving gguf into Arc.
+        let model_chat_template = meta.chat_template.clone();
+        let log_arch = meta.arch.clone();
+        let log_n_layers = meta.n_layers;
+        let log_n_embd = meta.n_embd;
+        let log_n_ff = meta.n_ff;
+        let log_vocab_size = meta.vocab_size;
+
+        tracing::info!(
+            model = %name,
+            arch = %log_arch,
+            n_layers = log_n_layers,
+            n_embd = log_n_embd,
+            n_ff = log_n_ff,
+            vocab_size = log_vocab_size,
+            max_seq_len = max_seq,
+            kv_cache_mb = kv_mem / (1024 * 1024),
+            derived_mem_mb = derived_mem / (1024 * 1024),
+            "picolm: model loaded (layer-streaming mode, optimized)"
+        );
+
+        let mut loaded = self.loaded.lock().map_err(|_| {
+            PowerError::InferenceFailed("picolm: loaded models lock poisoned".to_string())
+        })?;
+        loaded.insert(
+            name,
+            LoadedModel {
+                gguf: Arc::new(gguf),
+                cfg,
+                tokenizer: Arc::new(tokenizer),
+                activation,
+                rope_table: Arc::new(rope_table),
+                output_norm: Arc::new(output_norm),
+                tensor_cache: Arc::new(tensor_cache),
+                chat_template: model_chat_template,
+                max_seq_len: max_seq,
+                sessions: HashMap::new(),
+            },
+        );
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1411,7 +1537,6 @@ impl Backend for PicolmBackend {
         {
             let path = manifest.path.clone();
             let name = manifest.name.clone();
-            let max_seq_cap = self.max_seq_len;
 
             let gguf = tokio::task::spawn_blocking(move || GgufFile::open(&path))
                 .await
@@ -1420,118 +1545,98 @@ impl Backend for PicolmBackend {
                     PowerError::InferenceFailed(format!("picolm: failed to open GGUF: {e}"))
                 })?;
 
-            let meta = &gguf.meta;
-            let arch = &meta.arch;
-            let supported = ["llama", "mistral", "phi", "gemma", "qwen"];
-            if !supported.iter().any(|a| arch.contains(a)) {
-                return Err(PowerError::InvalidFormat(format!(
-                    "picolm only supports LLaMA-compatible architectures, got '{arch}'."
-                )));
-            }
+            self.load_gguf_model(name, gguf)
+        }
+    }
 
-            let shape = build_picolm_model_shape(meta, max_seq_cap)?;
-            let cfg = shape.cfg;
-            let head_dim = cfg.head_dim;
-            let rope_dim = cfg.rope_dim;
-            let max_seq = shape.max_seq;
-            let kv_mem = shape.kv_mem;
-            let derived_mem = shape.derived_mem;
+    fn supports_memory_load(&self, format: &ModelFormat) -> bool {
+        #[cfg(feature = "picolm")]
+        {
+            self.supports(format)
+        }
+        #[cfg(not(feature = "picolm"))]
+        {
+            let _ = format;
+            false
+        }
+    }
 
-            // Determine activation
-            let activation = if arch.contains("gemma") {
-                FfnActivation::Gelu
-            } else {
-                FfnActivation::Silu
-            };
+    async fn load_from_memory(
+        &self,
+        manifest: &ModelManifest,
+        plaintext: MemoryDecryptedModel,
+    ) -> Result<()> {
+        #[cfg(not(feature = "picolm"))]
+        {
+            let _ = manifest;
+            drop(plaintext);
+            return Err(PowerError::BackendNotAvailable(
+                "picolm feature not enabled — rebuild with --features picolm".to_string(),
+            ));
+        }
 
-            // Build tokenizer from GGUF metadata
-            let tokenizer = BpeTokenizer::from_gguf(
-                &meta.vocab_tokens,
-                &meta.vocab_scores,
-                &meta.vocab_types,
-                cfg.bos_token_id,
-                cfg.eos_token_id,
-            );
+        #[cfg(feature = "picolm")]
+        {
+            let name = manifest.name.clone();
+            let gguf =
+                tokio::task::spawn_blocking(move || GgufFile::from_memory_decrypted(plaintext))
+                    .await
+                    .map_err(|e| {
+                        PowerError::InferenceFailed(format!("picolm memory load task: {e}"))
+                    })?
+                    .map_err(|e| {
+                        PowerError::InferenceFailed(format!(
+                            "picolm: failed to parse in-memory GGUF: {e}"
+                        ))
+                    })?;
 
-            // Use model's context length from GGUF metadata, capped by backend limit.
-            // This avoids the hardcoded 2048 that silently truncated long-context models.
-            // Pre-compute RoPE cos/sin tables (eliminates powf/sin/cos from hot path)
-            let rope_table = RopeTable::new(max_seq, head_dim, rope_dim, cfg.rope_theta);
+            self.load_gguf_model(name, gguf)
+        }
+    }
 
-            // Pre-dequantize only the output norm (used every token).
-            // Per-layer norms are dequantized on-the-fly in the forward pass —
-            // they are tiny (n_embd floats) and take microseconds each.
-            let n_embd = cfg.n_embd;
-            let out_norm_name = "output_norm.weight";
-            let out_norm_raw = gguf.tensor_bytes(out_norm_name).map_err(|e| {
-                PowerError::InferenceFailed(format!("picolm: missing {out_norm_name}: {e}"))
-            })?;
-            let out_norm_type = gguf.tensor_type(out_norm_name).map_err(|e| {
-                PowerError::InferenceFailed(format!("picolm: missing {out_norm_name} type: {e}"))
-            })?;
-            let mut output_norm = vec![0.0f32; n_embd];
-            super::picolm_ops::matmul::extract_row(
-                out_norm_raw,
-                out_norm_type,
-                n_embd,
-                0,
-                &mut output_norm,
-            );
+    fn supports_streaming_decrypt_load(&self, format: &ModelFormat) -> bool {
+        #[cfg(feature = "picolm")]
+        {
+            self.supports(format)
+        }
+        #[cfg(not(feature = "picolm"))]
+        {
+            let _ = format;
+            false
+        }
+    }
 
-            // Build per-layer tensor pointer cache (eliminates HashMap lookups from hot path).
-            let tensor_cache = super::picolm_ops::tensor_cache::TensorCache::build(
-                &gguf,
-                meta.n_layers,
-            )
+    async fn load_from_streaming_decrypt(
+        &self,
+        manifest: &ModelManifest,
+        plaintext: LayerStreamingDecryptedModel,
+    ) -> Result<()> {
+        #[cfg(not(feature = "picolm"))]
+        {
+            let _ = manifest;
+            drop(plaintext);
+            return Err(PowerError::BackendNotAvailable(
+                "picolm feature not enabled — rebuild with --features picolm".to_string(),
+            ));
+        }
+
+        #[cfg(feature = "picolm")]
+        {
+            let name = manifest.name.clone();
+            let gguf = tokio::task::spawn_blocking(move || {
+                GgufFile::from_layer_streaming_decrypted(plaintext)
+            })
+            .await
             .map_err(|e| {
-                PowerError::InferenceFailed(format!("picolm: tensor cache build failed: {e}"))
+                PowerError::InferenceFailed(format!("picolm streaming decrypt load task: {e}"))
+            })?
+            .map_err(|e| {
+                PowerError::InferenceFailed(format!(
+                    "picolm: failed to parse layer-streaming decrypted GGUF: {e}"
+                ))
             })?;
 
-            // Startup self-test: verify inference kernels produce correct results.
-            // In TEE, there's no debugger — if memory corruption causes wrong output,
-            // this catches it at load time instead of silently producing garbage.
-            startup_self_test()?;
-
-            // Clone metadata fields before moving gguf into Arc.
-            let model_chat_template = meta.chat_template.clone();
-            let log_arch = meta.arch.clone();
-            let log_n_layers = meta.n_layers;
-            let log_n_embd = meta.n_embd;
-            let log_n_ff = meta.n_ff;
-            let log_vocab_size = meta.vocab_size;
-
-            tracing::info!(
-                model = %name,
-                arch = %log_arch,
-                n_layers = log_n_layers,
-                n_embd = log_n_embd,
-                n_ff = log_n_ff,
-                vocab_size = log_vocab_size,
-                max_seq_len = max_seq,
-                kv_cache_mb = kv_mem / (1024 * 1024),
-                derived_mem_mb = derived_mem / (1024 * 1024),
-                "picolm: model loaded (layer-streaming mode, optimized)"
-            );
-
-            let mut loaded = self.loaded.lock().map_err(|_| {
-                PowerError::InferenceFailed("picolm: loaded models lock poisoned".to_string())
-            })?;
-            loaded.insert(
-                name,
-                LoadedModel {
-                    gguf: Arc::new(gguf),
-                    cfg,
-                    tokenizer: Arc::new(tokenizer),
-                    activation,
-                    rope_table: Arc::new(rope_table),
-                    output_norm: Arc::new(output_norm),
-                    tensor_cache: Arc::new(tensor_cache),
-                    chat_template: model_chat_template,
-                    max_seq_len: max_seq,
-                    sessions: HashMap::new(),
-                },
-            );
-            Ok(())
+            self.load_gguf_model(name, gguf)
         }
     }
 
@@ -1569,6 +1674,13 @@ impl Backend for PicolmBackend {
 
         #[cfg(feature = "picolm")]
         {
+            if request_has_picolm_images(&request) {
+                return Err(PowerError::InvalidFormat(
+                    "picolm does not support image inputs; use a vision-capable backend"
+                        .to_string(),
+                ));
+            }
+
             let (
                 gguf,
                 cfg,
@@ -1744,6 +1856,40 @@ impl Backend for PicolmBackend {
         }
     }
 
+    async fn effective_chat_prompt_digest(
+        &self,
+        model_name: &str,
+        request: &ChatRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        #[cfg(not(feature = "picolm"))]
+        {
+            let _ = (model_name, request);
+            Ok(None)
+        }
+
+        #[cfg(feature = "picolm")]
+        {
+            if request_has_picolm_images(request) {
+                return Ok(None);
+            }
+
+            let chat_template = {
+                let loaded = self.loaded.lock().map_err(|_| {
+                    PowerError::InferenceFailed("picolm: loaded models lock poisoned".to_string())
+                })?;
+                let model = loaded
+                    .get(model_name)
+                    .ok_or_else(|| PowerError::ModelNotFound(model_name.to_string()))?;
+                model.chat_template.clone()
+            };
+
+            let prompt = build_prompt(&request.messages, chat_template.as_deref());
+            Ok(Some(EffectivePromptDigest::chat_rendered_prompt(
+                "picolm", &prompt,
+            )))
+        }
+    }
+
     async fn complete(
         &self,
         model_name: &str,
@@ -1864,14 +2010,15 @@ fn completion_to_chat(req: CompletionRequest) -> ChatRequest {
         presence_penalty: req.presence_penalty,
         seed: req.seed,
         num_ctx: req.num_ctx,
-        mirostat: None,
-        mirostat_tau: None,
-        mirostat_eta: None,
-        tfs_z: None,
-        typical_p: None,
+        mirostat: req.mirostat,
+        mirostat_tau: req.mirostat_tau,
+        mirostat_eta: req.mirostat_eta,
+        tfs_z: req.tfs_z,
+        typical_p: req.typical_p,
         response_format: req.response_format,
         tools: None,
         tool_choice: None,
+        parallel_tool_calls: None,
         repeat_last_n: req.repeat_last_n,
         penalize_newline: req.penalize_newline,
         num_batch: req.num_batch,
@@ -1892,9 +2039,57 @@ fn completion_to_chat(req: CompletionRequest) -> ChatRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::types::{ContentPart, ImageUrl};
 
     fn test_config() -> Arc<PowerConfig> {
         Arc::new(PowerConfig::default())
+    }
+
+    fn test_chat_request() -> ChatRequest {
+        ChatRequest {
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("Hello".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop: None,
+            stream: false,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
+            num_parallel: None,
+            images: None,
+            session_id: None,
+        }
     }
 
     #[test]
@@ -1909,6 +2104,113 @@ mod tests {
         assert!(!b.supports(&ModelFormat::SafeTensors));
         assert!(!b.supports(&ModelFormat::HuggingFace));
         assert!(!b.supports(&ModelFormat::Vision));
+    }
+
+    #[test]
+    fn test_request_has_picolm_images_covers_all_image_sources() {
+        let mut request = test_chat_request();
+        assert!(!request_has_picolm_images(&request));
+
+        request.messages[0].images = Some(vec!["message-base64-image".to_string()]);
+        assert!(request_has_picolm_images(&request));
+
+        request.messages[0].images = None;
+        request.messages[0].content = MessageContent::Parts(vec![ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: "data:image/png;base64,part-base64-image".to_string(),
+                detail: None,
+            },
+        }]);
+        assert!(request_has_picolm_images(&request));
+
+        request.messages[0].content = MessageContent::Text("Hello".to_string());
+        request.images = Some(vec!["request-base64-image".to_string()]);
+        assert!(request_has_picolm_images(&request));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[tokio::test]
+    async fn test_picolm_chat_rejects_image_inputs() {
+        let backend = PicolmBackend::new(test_config());
+        let mut request = test_chat_request();
+        request.images = Some(vec!["request-base64-image".to_string()]);
+
+        let err = match backend.chat("not-loaded", request).await {
+            Ok(_) => panic!("expected picolm image request to fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("does not support image inputs"));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[tokio::test]
+    async fn test_picolm_effective_prompt_absent_for_image_inputs() {
+        let backend = PicolmBackend::new(test_config());
+        let mut request = test_chat_request();
+        request.images = Some(vec!["request-base64-image".to_string()]);
+
+        let digest = backend
+            .effective_chat_prompt_digest("not-loaded", &request)
+            .await
+            .unwrap();
+
+        assert!(digest.is_none());
+    }
+
+    #[test]
+    fn test_completion_to_chat_preserves_extended_sampling_controls() {
+        let request = CompletionRequest {
+            prompt: "Hello".to_string(),
+            session_id: Some("session-1".to_string()),
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            max_tokens: Some(128),
+            stop: Some(vec!["</s>".to_string()]),
+            stream: true,
+            top_k: Some(40),
+            min_p: Some(0.5),
+            repeat_penalty: Some(1.25),
+            frequency_penalty: Some(0.1),
+            presence_penalty: Some(0.2),
+            seed: Some(7),
+            num_ctx: Some(4096),
+            mirostat: Some(2),
+            mirostat_tau: Some(5.0),
+            mirostat_eta: Some(0.25),
+            tfs_z: Some(0.75),
+            typical_p: Some(0.5),
+            response_format: Some(serde_json::json!("json")),
+            images: Some(vec!["request-base64-image".to_string()]),
+            projector_path: None,
+            repeat_last_n: Some(64),
+            penalize_newline: Some(true),
+            num_batch: Some(256),
+            num_thread: Some(4),
+            num_thread_batch: Some(2),
+            flash_attention: Some(true),
+            num_gpu: Some(0),
+            main_gpu: Some(0),
+            use_mmap: Some(true),
+            use_mlock: Some(false),
+            num_parallel: Some(2),
+            suffix: Some("suffix".to_string()),
+            context: Some(vec![1, 2, 3]),
+        };
+
+        let chat = completion_to_chat(request);
+
+        assert_eq!(chat.mirostat, Some(2));
+        assert_eq!(chat.mirostat_tau, Some(5.0));
+        assert_eq!(chat.mirostat_eta, Some(0.25));
+        assert_eq!(chat.tfs_z, Some(0.75));
+        assert_eq!(chat.typical_p, Some(0.5));
+        assert_eq!(chat.top_k, Some(40));
+        assert_eq!(chat.repeat_last_n, Some(64));
+        assert_eq!(
+            chat.images.as_deref(),
+            Some(&["request-base64-image".to_string()][..])
+        );
     }
 
     #[cfg(feature = "picolm")]

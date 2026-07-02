@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::api::receipt::AttestationReceipt;
 use crate::backend::types::{MessageContent, Tool, ToolCall, ToolChoice};
 
 // Re-import FunctionCall for use in tests
@@ -29,6 +30,29 @@ pub struct ChatCompletionRequest {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Extended sampling controls accepted by local backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_last_n: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub penalize_newline: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_ctx: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirostat: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirostat_tau: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirostat_eta: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tfs_z: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typical_p: Option<f32>,
     #[serde(default)]
     pub stop: Option<Vec<String>>,
     #[serde(default)]
@@ -120,6 +144,12 @@ pub struct ChatCompletionResponse {
     /// Server-side determinism fingerprint (model + sampling config hash).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
+    /// Request-level receipt covering prompt and decoding policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_receipt: Option<AttestationReceipt>,
+    /// SHA-256 digest of `attestation_receipt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_receipt_sha256: Option<String>,
 }
 
 /// A single choice in a chat completion response.
@@ -177,6 +207,29 @@ pub struct CompletionRequest {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Extended sampling controls accepted by local backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_last_n: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub penalize_newline: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_ctx: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirostat: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirostat_tau: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirostat_eta: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tfs_z: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typical_p: Option<f32>,
     #[serde(default)]
     pub stop: Option<Vec<String>>,
     #[serde(default)]
@@ -207,6 +260,12 @@ pub struct CompletionResponse {
     /// Server-side determinism fingerprint (model + sampling config hash).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
+    /// Request-level receipt covering prompt and decoding policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_receipt: Option<AttestationReceipt>,
+    /// SHA-256 digest of `attestation_receipt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_receipt_sha256: Option<String>,
 }
 
 /// A single choice in a completion response.
@@ -429,10 +488,13 @@ mod tests {
                 total_tokens: 8,
             },
             system_fingerprint: None,
+            attestation_receipt: None,
+            attestation_receipt_sha256: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("chatcmpl-123"));
         assert!(json.contains("Hello!"));
+        assert!(!json.contains("attestation_receipt"));
     }
 
     #[test]
@@ -543,6 +605,68 @@ mod tests {
         assert_eq!(req.frequency_penalty, Some(0.5));
         assert_eq!(req.presence_penalty, Some(0.3));
         assert_eq!(req.seed, Some(42));
+    }
+
+    #[test]
+    fn test_chat_completion_request_with_extended_sampling_controls() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "top_k": 40,
+            "min_p": 0.05,
+            "repeat_penalty": 1.1,
+            "repeat_last_n": 64,
+            "penalize_newline": true,
+            "num_ctx": 4096,
+            "mirostat": 2,
+            "mirostat_tau": 5.0,
+            "mirostat_eta": 0.1,
+            "tfs_z": 0.95,
+            "typical_p": 0.9
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.top_k, Some(40));
+        assert_eq!(req.min_p, Some(0.05));
+        assert_eq!(req.repeat_penalty, Some(1.1));
+        assert_eq!(req.repeat_last_n, Some(64));
+        assert_eq!(req.penalize_newline, Some(true));
+        assert_eq!(req.num_ctx, Some(4096));
+        assert_eq!(req.mirostat, Some(2));
+        assert_eq!(req.mirostat_tau, Some(5.0));
+        assert_eq!(req.mirostat_eta, Some(0.1));
+        assert_eq!(req.tfs_z, Some(0.95));
+        assert_eq!(req.typical_p, Some(0.9));
+    }
+
+    #[test]
+    fn test_completion_request_with_extended_sampling_controls() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "hi",
+            "top_k": 40,
+            "min_p": 0.05,
+            "repeat_penalty": 1.1,
+            "repeat_last_n": 64,
+            "penalize_newline": false,
+            "num_ctx": 2048,
+            "mirostat": 1,
+            "mirostat_tau": 4.0,
+            "mirostat_eta": 0.2,
+            "tfs_z": 0.9,
+            "typical_p": 0.8
+        }"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.top_k, Some(40));
+        assert_eq!(req.min_p, Some(0.05));
+        assert_eq!(req.repeat_penalty, Some(1.1));
+        assert_eq!(req.repeat_last_n, Some(64));
+        assert_eq!(req.penalize_newline, Some(false));
+        assert_eq!(req.num_ctx, Some(2048));
+        assert_eq!(req.mirostat, Some(1));
+        assert_eq!(req.mirostat_tau, Some(4.0));
+        assert_eq!(req.mirostat_eta, Some(0.2));
+        assert_eq!(req.tfs_z, Some(0.9));
+        assert_eq!(req.typical_p, Some(0.8));
     }
 
     #[test]

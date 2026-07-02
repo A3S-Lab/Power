@@ -55,6 +55,30 @@ cargo build --release --no-default-features --features tee-minimal
 - RA-TLS transport (`tls` feature): axum-server, rcgen
 - Vsock transport (`vsock` feature): tokio-vsock
 - picolm layer-streaming inference: memmap2, half, candle-core
+- Optional NVIDIA GPU confidential-computing evidence binding through
+  `gpu_attestation.source = "nvattest-cli"` invokes the external NVIDIA
+  `nvattest` binary. That binary, its installation path, and its NRAS policy
+  configuration are part of the deployment supply chain, even though they do not
+  add Rust crate dependencies. Power also extracts structured NVIDIA device
+  identity and validation fields from `nvattest` verdict JSON, so deployments
+  should pin and test the `nvattest` version they operate. In
+  `tee_policy_mode = "gpu-confidential"`, Power requires
+  `provider = "nvidia-nras"`, an absolute executable `nvattest_path`, and
+  `nvattest_verifier = "remote"` so PATH lookup and local CLI verification
+  cannot stand in for the pinned NVIDIA NRAS production path. If configured,
+  `relying_party_policy_path` must be an absolute path to an existing non-empty
+  regular file. Custom NRAS, RIM, and OCSP endpoints in this production profile
+  must use HTTPS. Power writes the intermediate
+  `nvattest collect-evidence` JSON to an exclusively created temporary file
+  with owner-only permissions on Unix before invoking `nvattest attest`.
+- Optional `gpu_attestation.source = "nras-rest"` uses Power's existing
+  `reqwest`/rustls HTTP client to call NVIDIA NRAS directly. This avoids adding
+  an external CLI binary to the trusted path, but deployments still need to pin
+  their evidence collector, NRAS endpoint, relying-party policy, and token
+  provisioning process. In `tee_policy_mode = "gpu-confidential"`, file-backed
+  evidence sources must use absolute paths to existing non-empty regular files,
+  and any custom NRAS REST endpoint must use HTTPS; omitting `nras_url` uses
+  NVIDIA's default HTTPS endpoint.
 
 **What is excluded**:
 - mistralrs / candle ecosystem (large, not auditable in a day)
@@ -135,7 +159,10 @@ and in `encrypted_model.rs` for `mlock`/`munlock` syscalls (standard TEE practic
 
 ## Streaming Decryption Security Properties
 
-`LayerStreamingDecryptedModel` provides the following guarantees:
+`LayerStreamingDecryptedModel` is a plaintext access primitive for backend
+integration. With `streaming_decrypt = true`, encrypted GGUF autoload passes this
+source to `picolm`; unsupported backends fail closed before load. The primitive
+itself provides the following guarantees:
 
 1. **No disk writes**: Plaintext never touches disk (same as `MemoryDecryptedModel`)
 2. **mlock**: Full plaintext is locked in RAM (prevents swap)
@@ -144,10 +171,11 @@ and in `encrypted_model.rs` for `mlock`/`munlock` syscalls (standard TEE practic
 4. **Drop zeroization**: The full plaintext buffer is zeroized when the model
    is unloaded (via `Zeroizing<Vec<u8>>` drop)
 
-**Limitation**: The full plaintext is still decrypted into RAM at load time
-(AES-GCM is not seekable). The security benefit over `MemoryDecryptedModel`
-is the bounded working set: callers process one chunk at a time and drop it
-immediately, so the active plaintext footprint is `chunk_size` not `model_size`.
+**Limitations**: The full plaintext is still decrypted into RAM at load time
+(AES-GCM is not seekable), and no current inference backend consumes this source
+directly. The security benefit over `MemoryDecryptedModel` applies only after a
+backend is wired to process one chunk at a time and drop it immediately, so the
+active plaintext footprint is `chunk_size` rather than `model_size`.
 
 ---
 
@@ -160,6 +188,6 @@ immediately, so the active plaintext footprint is `chunk_size` not `model_size`.
 | Tampered model file | SHA-256 integrity check at startup |
 | Replay attack on attestation | Nonce binding in `report_data` |
 | Supply-chain attack via inference dep | `tee-minimal` minimizes dep surface |
-| Plaintext model on disk | `in_memory_decrypt` / `streaming_decrypt` |
+| Plaintext model on disk | File-backed `.dec` mode zero-overwrites on unload; `picolm` can load encrypted GGUF plaintext from locked RAM or `LayerStreamingDecryptedModel`; unsupported backends fail closed when direct RAM/chunk loading is requested |
 | Token count side-channel | `suppress_token_metrics` rounds to nearest 10 |
 | Timing side-channel | `timing_padding_ms` adds jitter to responses |

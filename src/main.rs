@@ -53,7 +53,7 @@ fn init_tracing() {
 async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
     match cmd {
         ModelsCommand::List(args) => {
-            let resp: serde_json::Value = http_get(&format!("{}/v1/models", args.url)).await?;
+            let resp: serde_json::Value = http_get(&api_url(&args.url, &["v1", "models"])?).await?;
             if let Some(data) = resp.get("data").and_then(|d| d.as_array()) {
                 if data.is_empty() {
                     println!("No models registered.");
@@ -81,7 +81,7 @@ async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
                 "name": args.name,
                 "force": args.force,
             });
-            let url = format!("{}/v1/models/pull", args.url);
+            let url = api_url(&args.url, &["v1", "models", "pull"])?;
             let client = reqwest::Client::new();
             let resp = client
                 .post(&url)
@@ -137,8 +137,17 @@ async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        ModelsCommand::Status(args) => {
+            let resp: serde_json::Value = http_get(&api_url(
+                &args.url,
+                &["v1", "models", "pull", &args.name, "status"],
+            )?)
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+            Ok(())
+        }
         ModelsCommand::Remove(args) => {
-            let url = format!("{}/v1/models/{}", args.url, args.name);
+            let url = api_url(&args.url, &["v1", "models", &args.name])?;
             let client = reqwest::Client::new();
             let resp = client
                 .delete(&url)
@@ -155,7 +164,7 @@ async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
         }
         ModelsCommand::Show(args) => {
             let resp: serde_json::Value =
-                http_get(&format!("{}/v1/models/{}", args.url, args.name)).await?;
+                http_get(&api_url(&args.url, &["v1", "models", &args.name])?).await?;
             println!("{}", serde_json::to_string_pretty(&resp)?);
             Ok(())
         }
@@ -202,7 +211,7 @@ async fn run_chat(args: ChatArgs) -> anyhow::Result<()> {
         });
 
         let resp = client
-            .post(format!("{}/v1/chat/completions", args.url))
+            .post(api_url(&args.url, &["v1", "chat", "completions"])?)
             .json(&body)
             .send()
             .await
@@ -256,7 +265,7 @@ async fn run_chat(args: ChatArgs) -> anyhow::Result<()> {
 // ── Ps ───────────────────────────────────────────────────────────────────────
 
 async fn run_ps(args: PsArgs) -> anyhow::Result<()> {
-    let resp: serde_json::Value = http_get(&format!("{}/v1/models", args.url)).await?;
+    let resp: serde_json::Value = http_get(&api_url(&args.url, &["v1", "models"])?).await?;
     if let Some(data) = resp.get("data").and_then(|d| d.as_array()) {
         let loaded: Vec<_> = data
             .iter()
@@ -284,6 +293,23 @@ async fn run_ps(args: PsArgs) -> anyhow::Result<()> {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn api_url(base_url: &str, segments: &[&str]) -> anyhow::Result<String> {
+    let mut url = reqwest::Url::parse(&format!("{}/", base_url.trim_end_matches('/')))
+        .map_err(|e| anyhow::anyhow!("invalid server URL {base_url:?}: {e}"))?;
+    url.set_query(None);
+    url.set_fragment(None);
+    {
+        let mut path = url
+            .path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("server URL {base_url:?} cannot be used as a base URL"))?;
+        path.pop_if_empty();
+        for segment in segments {
+            path.push(segment);
+        }
+    }
+    Ok(url.to_string())
+}
 
 async fn http_get(url: &str) -> anyhow::Result<serde_json::Value> {
     let client = reqwest::Client::new();
@@ -336,6 +362,68 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_api_url_encodes_model_path_segment() {
+        let url = api_url(
+            "http://127.0.0.1:11434/",
+            &["v1", "models", "owner/repo:Q4_K_M & draft=1"],
+        )
+        .unwrap();
+
+        assert_eq!(
+            url,
+            "http://127.0.0.1:11434/v1/models/owner%2Frepo:Q4_K_M%20&%20draft=1"
+        );
+    }
+
+    #[test]
+    fn test_api_url_encodes_pull_status_model_segment() {
+        let url = api_url(
+            "http://127.0.0.1:11434/",
+            &[
+                "v1",
+                "models",
+                "pull",
+                "owner/repo:Q4_K_M?draft=1",
+                "status",
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            url,
+            "http://127.0.0.1:11434/v1/models/pull/owner%2Frepo:Q4_K_M%3Fdraft=1/status"
+        );
+    }
+
+    #[test]
+    fn test_api_url_preserves_base_path() {
+        let url = api_url("http://127.0.0.1:11434/api", &["v1", "models"]).unwrap();
+
+        assert_eq!(url, "http://127.0.0.1:11434/api/v1/models");
+    }
+
+    #[test]
+    fn test_parse_models_status_command() {
+        let cli = Cli::try_parse_from([
+            "a3s-power",
+            "models",
+            "status",
+            "owner/repo:Q4_K_M",
+            "--url",
+            "http://127.0.0.1:11434/api",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Models(ModelsCommand::Status(args))) => {
+                assert_eq!(args.name, "owner/repo:Q4_K_M");
+                assert_eq!(args.url, "http://127.0.0.1:11434/api");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
 
     #[test]
     fn test_format_response_error_includes_body() {

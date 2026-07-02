@@ -58,6 +58,7 @@ fn chat_req() -> ChatRequest {
         response_format: None,
         tools: None,
         tool_choice: None,
+        parallel_tool_calls: None,
         repeat_last_n: None,
         penalize_newline: None,
         num_batch: None,

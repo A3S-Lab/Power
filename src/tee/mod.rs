@@ -14,6 +14,7 @@ pub mod attestation;
 pub mod cert;
 pub mod encrypted_model;
 pub mod epc;
+pub mod gpu;
 pub mod key_provider;
 pub mod model_seal;
 pub mod policy;

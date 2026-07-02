@@ -494,6 +494,7 @@ mod tests {
             raw_report: raw,
             timestamp: chrono::Utc::now(),
             nonce: None,
+            claims: None,
         }
     }
 

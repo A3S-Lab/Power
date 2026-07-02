@@ -57,6 +57,9 @@ pub enum ModelsCommand {
     /// Pull a model from HuggingFace Hub
     Pull(ModelsPullArgs),
 
+    /// Show persisted pull progress for a model
+    Status(ModelsStatusArgs),
+
     /// Delete a model
     #[command(name = "rm")]
     Remove(ModelsRemoveArgs),
@@ -84,6 +87,16 @@ pub struct ModelsPullArgs {
     /// Force re-download even if model exists
     #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct ModelsStatusArgs {
+    /// Model name whose persisted pull state should be shown
+    pub name: String,
+
+    /// Server URL
+    #[arg(long, default_value = "http://127.0.0.1:11434")]
+    pub url: String,
 }
 
 #[derive(Parser, Debug)]

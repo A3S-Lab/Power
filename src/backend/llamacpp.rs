@@ -24,6 +24,8 @@ use crate::model::manifest::{ModelFormat, ModelManifest};
 
 #[cfg(feature = "llamacpp")]
 use super::chat_template::{self, ChatTemplateKind};
+#[cfg(feature = "llamacpp")]
+use super::types::EffectivePromptDigest;
 use super::types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk, EmbeddingRequest,
     EmbeddingResponse,
@@ -202,6 +204,37 @@ fn collect_llamacpp_openai_images(
             super::types::ContentPart::Text { .. } => None,
         })
         .collect()
+}
+
+#[cfg(any(feature = "llamacpp", test))]
+fn request_has_llamacpp_images(request: &ChatRequest) -> bool {
+    request.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
+        || request.messages.iter().any(|m| {
+            m.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
+                || matches!(&m.content, super::types::MessageContent::Parts(parts)
+                    if parts.iter().any(|p| matches!(p, super::types::ContentPart::ImageUrl { .. })))
+        })
+}
+
+#[cfg(any(feature = "llamacpp", test))]
+fn collect_llamacpp_chat_images(request: &ChatRequest) -> Result<Vec<String>> {
+    let mut images = Vec::new();
+
+    for (message_index, message) in request.messages.iter().enumerate() {
+        if let Some(ollama_images) = &message.images {
+            images.extend(ollama_images.iter().cloned());
+        }
+
+        if let super::types::MessageContent::Parts(parts) = &message.content {
+            images.extend(collect_llamacpp_openai_images(message_index, parts)?);
+        }
+    }
+
+    if let Some(request_images) = &request.images {
+        images.extend(request_images.iter().cloned());
+    }
+
+    Ok(images)
 }
 
 #[cfg(any(feature = "llamacpp", test))]
@@ -534,31 +567,17 @@ impl Backend for LlamaCppBackend {
             PowerError::InferenceFailed(format!("Chat template rendering task failed: {e}"))
         })?;
 
-        // Check if images are present in the request
-        let has_images = request.messages.iter().any(|m| {
-            m.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
-                || matches!(&m.content, super::types::MessageContent::Parts(parts)
-                    if parts.iter().any(|p| matches!(p, super::types::ContentPart::ImageUrl { .. })))
-        });
-
+        let has_images = request_has_llamacpp_images(&request);
         ensure_llamacpp_images_supported(model_name, has_images, projector_path.is_some())?;
         if has_images {
             tracing::info!("Vision inference with multimodal projector");
         }
 
-        // Extract base64 images from messages for vision inference.
-        let mut images: Vec<String> = Vec::new();
-        if has_images {
-            for (message_index, message) in request.messages.iter().enumerate() {
-                if let Some(ollama_images) = &message.images {
-                    images.extend(ollama_images.iter().cloned());
-                }
-
-                if let super::types::MessageContent::Parts(parts) = &message.content {
-                    images.extend(collect_llamacpp_openai_images(message_index, parts)?);
-                }
-            }
-        }
+        let images = if has_images {
+            collect_llamacpp_chat_images(&request)?
+        } else {
+            Vec::new()
+        };
 
         let completion_req = CompletionRequest {
             prompt,
@@ -664,6 +683,38 @@ impl Backend for LlamaCppBackend {
         });
 
         Ok(Box::pin(chat_stream))
+    }
+
+    async fn effective_chat_prompt_digest(
+        &self,
+        model_name: &str,
+        request: &ChatRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        if request_has_llamacpp_images(request) {
+            return Ok(None);
+        }
+
+        let (template, raw_template) = {
+            let models = self.models.read().await;
+            let model = models.get(model_name).ok_or_else(|| {
+                PowerError::InferenceFailed(format!("Model '{model_name}' not loaded"))
+            })?;
+            (model.chat_template.clone(), model.raw_template.clone())
+        };
+
+        let messages = request.messages.clone();
+        let prompt = tokio::task::spawn_blocking(move || {
+            chat_template::format_chat_prompt(&messages, &template, raw_template.as_deref())
+        })
+        .await
+        .map_err(|e| {
+            PowerError::InferenceFailed(format!("Chat template rendering task failed: {e}"))
+        })?;
+
+        Ok(Some(EffectivePromptDigest::chat_rendered_prompt(
+            "llama.cpp",
+            &prompt,
+        )))
     }
 
     async fn complete(
@@ -1595,12 +1646,59 @@ impl Backend for LlamaCppBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::types::{ContentPart, ImageUrl};
+    use crate::backend::types::{ChatMessage, ContentPart, ImageUrl, MessageContent};
     use crate::backend::Backend;
     use crate::model::manifest::ModelFormat;
 
     fn test_config() -> Arc<PowerConfig> {
         Arc::new(PowerConfig::default())
+    }
+
+    fn test_chat_request() -> ChatRequest {
+        ChatRequest {
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("describe this".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop: None,
+            stream: false,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
+            num_parallel: None,
+            images: None,
+            session_id: None,
+        }
     }
 
     #[test]
@@ -1694,6 +1792,58 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("message 3"), "error: {msg}");
         assert!(msg.contains("empty image data"), "error: {msg}");
+    }
+
+    #[test]
+    fn test_request_has_llamacpp_images_covers_top_level_images() {
+        let mut request = test_chat_request();
+        assert!(!request_has_llamacpp_images(&request));
+        request.images = Some(vec!["request-base64-image".to_string()]);
+        assert!(request_has_llamacpp_images(&request));
+    }
+
+    #[test]
+    fn test_collect_llamacpp_chat_images_combines_supported_sources() {
+        let mut request = test_chat_request();
+        request.messages[0].images = Some(vec!["message-base64-image".to_string()]);
+        request.messages[0].content = MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "describe this".to_string(),
+            },
+            ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,part-base64-image".to_string(),
+                    detail: None,
+                },
+            },
+        ]);
+        request.images = Some(vec!["request-base64-image".to_string()]);
+
+        let images = collect_llamacpp_chat_images(&request).unwrap();
+
+        assert_eq!(
+            images,
+            vec![
+                "message-base64-image".to_string(),
+                "part-base64-image".to_string(),
+                "request-base64-image".to_string(),
+            ]
+        );
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[tokio::test]
+    async fn test_effective_prompt_digest_absent_for_llamacpp_images() {
+        let backend = LlamaCppBackend::new(test_config());
+        let mut request = test_chat_request();
+        request.images = Some(vec!["request-base64-image".to_string()]);
+
+        let digest = backend
+            .effective_chat_prompt_digest("not-loaded", &request)
+            .await
+            .unwrap();
+
+        assert!(digest.is_none());
     }
 
     #[test]
@@ -1862,6 +2012,7 @@ mod tests {
             response_format: None,
             tools: None,
             tool_choice: None,
+            parallel_tool_calls: None,
             repeat_last_n: None,
             penalize_newline: None,
             num_batch: None,

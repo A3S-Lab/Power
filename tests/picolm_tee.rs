@@ -348,8 +348,17 @@ mod picolm_tests {
 
 mod tee_integration {
     use super::*;
+    use a3s_power::api::autoload::ensure_loaded;
     use a3s_power::backend::picolm::PicolmBackend;
+    use a3s_power::backend::types::{ChatMessage, ChatRequest, MessageContent};
     use a3s_power::backend::Backend;
+    use a3s_power::backend::BackendRegistry;
+    use a3s_power::model::registry::ModelRegistry;
+    use a3s_power::model::storage;
+    use a3s_power::server::state::AppState;
+    use a3s_power::tee::encrypted_model::{encrypt_model_file, KeySource};
+    use futures::StreamExt;
+    use std::collections::HashMap;
 
     #[tokio::test]
     async fn test_picolm_with_tee_mode_config() {
@@ -376,6 +385,101 @@ mod tee_integration {
         );
 
         backend.unload("tee-model").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_picolm_autoload_streaming_decrypt_encrypted_gguf_runs_chat() {
+        let dir = TempDir::new().unwrap();
+        let plain_path = dir.path().join("streaming.gguf");
+        write_fake_gguf(&plain_path);
+
+        let plaintext_hash = storage::compute_sha256_path(&plain_path).unwrap();
+        let key = [0x51; 32];
+        let encrypted_path = encrypt_model_file(&plain_path, &key).unwrap();
+        let key_path = dir.path().join("streaming.key");
+        std::fs::write(&key_path, hex::encode(key)).unwrap();
+
+        let model_name = "encrypted-streaming-model";
+        let config = Arc::new(PowerConfig {
+            model_key_source: Some(KeySource::File(key_path)),
+            streaming_decrypt: true,
+            model_hashes: HashMap::from([(model_name.to_string(), plaintext_hash)]),
+            ..Default::default()
+        });
+
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(PicolmBackend::new(config.clone())));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+
+        let manifest = fake_manifest(model_name, encrypted_path.clone());
+        let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
+        ensure_loaded(&state, model_name, &manifest, &backend)
+            .await
+            .unwrap();
+
+        assert!(state.is_model_loaded(model_name));
+        assert!(
+            !encrypted_path.with_extension("dec").exists(),
+            "streaming_decrypt must not materialize a .dec plaintext file"
+        );
+
+        let req = ChatRequest {
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("a b c".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            }],
+            session_id: None,
+            temperature: Some(0.0),
+            top_p: None,
+            max_tokens: Some(4),
+            stop: None,
+            stream: true,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: Some(7),
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
+            num_parallel: None,
+            images: None,
+        };
+
+        let mut stream = backend.chat(model_name, req).await.unwrap();
+        let mut saw_done = false;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            if chunk.done {
+                saw_done = true;
+                break;
+            }
+        }
+
+        assert!(saw_done, "encrypted streaming-decrypt chat must terminate");
+        backend.unload(model_name).await.unwrap();
+        state.mark_unloaded(model_name);
     }
 
     #[tokio::test]

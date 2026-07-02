@@ -12,6 +12,8 @@
 use std::collections::HashMap;
 #[cfg(feature = "picolm")]
 use std::path::Path;
+#[cfg(feature = "picolm")]
+use std::sync::Arc;
 
 #[cfg(all(feature = "picolm", unix))]
 extern crate libc;
@@ -21,6 +23,8 @@ use memmap2::Mmap;
 
 #[cfg(feature = "picolm")]
 use crate::error::{PowerError, Result};
+#[cfg(feature = "picolm")]
+use crate::tee::encrypted_model::{LayerStreamingDecryptedModel, MemoryDecryptedModel};
 
 // Page size for madvise alignment (4 KiB on all supported platforms).
 #[cfg(feature = "picolm")]
@@ -125,22 +129,53 @@ pub struct TensorDesc {
 
 // ── GGUF parser ───────────────────────────────────────────────────────────────
 
-/// A memory-mapped GGUF file with parsed metadata.
+/// A GGUF model with parsed metadata.
 ///
-/// The file is mmap'd read-only; no weights are copied into RAM at construction.
-/// Use `layer_weights()` to stream individual layers on demand.
+/// The backing storage is either a read-only mmap or a locked plaintext buffer.
+/// Use tensor accessors to stream individual layer weights on demand.
+#[cfg(feature = "picolm")]
+enum GgufStorage {
+    Mmap(Mmap),
+    LockedMemory(Arc<MemoryDecryptedModel>),
+    LayerStreaming(Arc<LayerStreamingDecryptedModel>),
+}
+
+#[cfg(feature = "picolm")]
+impl GgufStorage {
+    fn as_ptr_len(&self) -> (*const u8, usize) {
+        match self {
+            Self::Mmap(mmap) => (mmap.as_ptr(), mmap.len()),
+            Self::LockedMemory(model) => (model.as_bytes().as_ptr(), model.len()),
+            Self::LayerStreaming(model) => (model.as_bytes().as_ptr(), model.len()),
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Mmap(_) => "mmap",
+            Self::LockedMemory(_) => "locked-memory",
+            Self::LayerStreaming(_) => "layer-streaming-locked-memory",
+        }
+    }
+
+    fn is_mmap(&self) -> bool {
+        matches!(self, Self::Mmap(_))
+    }
+}
+
 #[cfg(feature = "picolm")]
 pub struct GgufFile {
     // Note: Debug is implemented manually below because raw pointers are not Debug.
-    _mmap: Mmap,
-    /// Raw pointer into the mmap for zero-copy reads.
+    storage: GgufStorage,
+    /// Raw pointer into the backing storage for zero-copy reads.
     data: *const u8,
     data_len: usize,
     pub meta: GgufMeta,
 }
 
 #[cfg(feature = "picolm")]
-// Safety: Mmap is Send+Sync; data pointer is valid for the lifetime of _mmap.
+// Safety: storage is immutable after construction and owns the backing bytes;
+// data points into that storage and remains valid for the lifetime of GgufFile.
 unsafe impl Send for GgufFile {}
 #[cfg(feature = "picolm")]
 unsafe impl Sync for GgufFile {}
@@ -149,6 +184,7 @@ unsafe impl Sync for GgufFile {}
 impl std::fmt::Debug for GgufFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GgufFile")
+            .field("storage", &self.storage.kind())
             .field("data_len", &self.data_len)
             .field("meta", &self.meta)
             .finish()
@@ -162,13 +198,26 @@ impl GgufFile {
         let file = std::fs::File::open(path).map_err(PowerError::Io)?;
         // Safety: the file is opened read-only and we never mutate the mapping.
         let mmap = unsafe { Mmap::map(&file).map_err(PowerError::Io)? };
-        let data = mmap.as_ptr();
-        let data_len = mmap.len();
+        Self::from_storage(GgufStorage::Mmap(mmap))
+    }
+
+    /// Parse a GGUF model that has already been decrypted into locked memory.
+    pub fn from_memory_decrypted(model: MemoryDecryptedModel) -> Result<Self> {
+        Self::from_storage(GgufStorage::LockedMemory(Arc::new(model)))
+    }
+
+    /// Parse a GGUF model from a layer-streaming decrypted plaintext source.
+    pub fn from_layer_streaming_decrypted(model: LayerStreamingDecryptedModel) -> Result<Self> {
+        Self::from_storage(GgufStorage::LayerStreaming(Arc::new(model)))
+    }
+
+    fn from_storage(storage: GgufStorage) -> Result<Self> {
+        let (data, data_len) = storage.as_ptr_len();
 
         let meta = parse_gguf_header(data, data_len)?;
 
         Ok(Self {
-            _mmap: mmap,
+            storage,
             data,
             data_len,
             meta,
@@ -226,6 +275,10 @@ impl GgufFile {
     ///
     /// Silently succeeds if the tensor is not found (non-fatal).
     pub fn advise_dontneed(&self, name: &str) -> Result<()> {
+        if !self.storage.is_mmap() {
+            return Ok(());
+        }
+
         let desc = match self.meta.tensors.get(name) {
             Some(d) => d,
             None => return Ok(()), // tensor absent — nothing to release
@@ -1571,6 +1624,41 @@ mod tests {
         // Write 32 bytes of zeros — wrong magic
         std::fs::write(&path, vec![0u8; 32]).unwrap();
         let result = GgufFile::open(&path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("GGUF"));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_from_memory_decrypted_invalid_magic_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.gguf");
+        std::fs::write(&path, vec![0u8; 32]).unwrap();
+        let key = [0x42; 32];
+        let enc_path = crate::tee::encrypted_model::encrypt_model_file(&path, &key).unwrap();
+        let decrypted =
+            crate::tee::encrypted_model::MemoryDecryptedModel::decrypt(&enc_path, &key).unwrap();
+
+        let result = GgufFile::from_memory_decrypted(decrypted);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("GGUF"));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_from_layer_streaming_decrypted_invalid_magic_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.gguf");
+        std::fs::write(&path, vec![0u8; 32]).unwrap();
+        let key = [0x42; 32];
+        let enc_path = crate::tee::encrypted_model::encrypt_model_file(&path, &key).unwrap();
+        let decrypted =
+            crate::tee::encrypted_model::LayerStreamingDecryptedModel::decrypt(&enc_path, &key)
+                .unwrap();
+
+        let result = GgufFile::from_layer_streaming_decrypted(decrypted);
+
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("GGUF"));
     }

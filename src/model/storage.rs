@@ -1,11 +1,30 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::dirs;
 use crate::error::{PowerError, Result};
 use crate::model::manifest::ModelManifest;
+
+#[derive(Serialize)]
+struct DirectoryManifestDigest<'a> {
+    schema: &'static str,
+    entries: &'a [DirectoryDigestEntry],
+}
+
+#[derive(Serialize)]
+struct DirectoryDigestEntry {
+    path: String,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+}
 
 /// Store a model file in the content-addressed blob store.
 ///
@@ -88,6 +107,165 @@ pub fn compute_sha256_file(path: &std::path::Path) -> Result<String> {
     }
     let result = hasher.finalize();
     Ok(format!("{result:x}"))
+}
+
+/// Compute a SHA-256 digest for either a file or a deterministic directory manifest.
+pub fn compute_sha256_path(path: &std::path::Path) -> Result<String> {
+    if path.is_file() {
+        return compute_sha256_file(path);
+    }
+    if path.is_dir() {
+        return compute_sha256_directory(path);
+    }
+    Err(PowerError::Io(std::io::Error::other(format!(
+        "Path is neither a regular file nor a directory: {}",
+        path.display()
+    ))))
+}
+
+/// Compute SHA-256 over a canonical manifest of all files in a directory.
+pub fn compute_sha256_directory(path: &std::path::Path) -> Result<String> {
+    let mut entries = Vec::new();
+    let metadata = std::fs::symlink_metadata(path).map_err(|e| {
+        PowerError::Io(std::io::Error::other(format!(
+            "Failed to inspect directory {}: {e}",
+            path.display()
+        )))
+    })?;
+    if !metadata.is_dir() {
+        return Err(PowerError::Io(std::io::Error::other(format!(
+            "Path is not a directory: {}",
+            path.display()
+        ))));
+    }
+
+    entries.push(DirectoryDigestEntry {
+        path: ".".to_string(),
+        kind: "directory",
+        mode: permission_mode(&metadata),
+        size: None,
+        sha256: None,
+    });
+    collect_directory_digest_entries(path, path, &mut entries)?;
+
+    let manifest = DirectoryManifestDigest {
+        schema: "a3s.power.directory-manifest.v1",
+        entries: &entries,
+    };
+    let bytes = serde_json::to_vec(&manifest).map_err(|e| {
+        PowerError::Config(format!(
+            "Failed to serialize directory digest manifest: {e}"
+        ))
+    })?;
+    Ok(compute_sha256(&bytes))
+}
+
+fn collect_directory_digest_entries(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    entries: &mut Vec<DirectoryDigestEntry>,
+) -> Result<()> {
+    let mut children = std::fs::read_dir(dir)
+        .map_err(|e| {
+            PowerError::Io(std::io::Error::other(format!(
+                "Failed to read directory {}: {e}",
+                dir.display()
+            )))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| {
+            PowerError::Io(std::io::Error::other(format!(
+                "Failed to read directory entry in {}: {e}",
+                dir.display()
+            )))
+        })?;
+    children.sort_by_key(|entry| entry.file_name());
+
+    for child in children {
+        let path = child.path();
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
+            PowerError::Io(std::io::Error::other(format!(
+                "Failed to inspect directory entry {}: {e}",
+                path.display()
+            )))
+        })?;
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() {
+            return Err(PowerError::Config(format!(
+                "Directory model digest does not support symlinks: {}",
+                path.display()
+            )));
+        }
+
+        let relative_path = canonical_relative_path(root, &path)?;
+        if file_type.is_dir() {
+            entries.push(DirectoryDigestEntry {
+                path: relative_path,
+                kind: "directory",
+                mode: permission_mode(&metadata),
+                size: None,
+                sha256: None,
+            });
+            collect_directory_digest_entries(root, &path, entries)?;
+        } else if file_type.is_file() {
+            entries.push(DirectoryDigestEntry {
+                path: relative_path,
+                kind: "file",
+                mode: permission_mode(&metadata),
+                size: Some(metadata.len()),
+                sha256: Some(compute_sha256_file(&path)?),
+            });
+        } else {
+            return Err(PowerError::Config(format!(
+                "Directory model digest does not support special files: {}",
+                path.display()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn canonical_relative_path(root: &std::path::Path, path: &std::path::Path) -> Result<String> {
+    let relative = path.strip_prefix(root).map_err(|e| {
+        PowerError::Config(format!(
+            "Failed to build relative path for {} under {}: {e}",
+            path.display(),
+            root.display()
+        ))
+    })?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                let Some(part) = part.to_str() else {
+                    return Err(PowerError::Config(format!(
+                        "Directory model digest requires UTF-8 paths: {}",
+                        path.display()
+                    )));
+                };
+                parts.push(part.to_string());
+            }
+            _ => {
+                return Err(PowerError::Config(format!(
+                    "Directory model digest encountered unsupported path component: {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+#[cfg(unix)]
+fn permission_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode() & 0o7777)
+}
+
+#[cfg(not(unix))]
+fn permission_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
+    None
 }
 
 /// Store a local file into the content-addressed blob store by copying it.
@@ -385,6 +563,46 @@ mod tests {
             hash,
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn test_compute_sha256_directory_is_order_stable() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+
+        std::fs::create_dir(first.path().join("nested")).unwrap();
+        std::fs::write(first.path().join("config.json"), br#"{"model":"a"}"#).unwrap();
+        std::fs::write(
+            first.path().join("nested").join("weights.safetensors"),
+            b"weights",
+        )
+        .unwrap();
+
+        std::fs::create_dir(second.path().join("nested")).unwrap();
+        std::fs::write(
+            second.path().join("nested").join("weights.safetensors"),
+            b"weights",
+        )
+        .unwrap();
+        std::fs::write(second.path().join("config.json"), br#"{"model":"a"}"#).unwrap();
+
+        assert_eq!(
+            compute_sha256_directory(first.path()).unwrap(),
+            compute_sha256_directory(second.path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_compute_sha256_directory_changes_when_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.safetensors");
+        std::fs::write(&model_path, b"weights-v1").unwrap();
+        let first = compute_sha256_directory(dir.path()).unwrap();
+
+        std::fs::write(&model_path, b"weights-v2").unwrap();
+        let second = compute_sha256_directory(dir.path()).unwrap();
+
+        assert_ne!(first, second);
     }
 
     #[test]
