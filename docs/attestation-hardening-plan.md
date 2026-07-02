@@ -179,6 +179,8 @@ Landed in the current working tree:
 - Tightened proxy embeddings response parsing so malformed or out-of-range
   embedding vectors fail closed instead of being silently converted to empty or
   partial vectors.
+- Tightened proxy embeddings response validation so upstreams must return
+  exactly one embedding vector per requested input item.
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.

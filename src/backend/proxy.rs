@@ -276,6 +276,7 @@ impl Backend for ProxyBackend {
         request: EmbeddingRequest,
     ) -> Result<EmbeddingResponse> {
         let url = proxy_endpoint_url(&self.upstream(model_name)?, &["v1", "embeddings"])?;
+        let expected_embeddings = request.input.len();
         let body = serde_json::json!({ "model": model_name, "input": request.input });
         let resp =
             self.http.post(&url).json(&body).send().await.map_err(|e| {
@@ -289,6 +290,7 @@ impl Backend for ProxyBackend {
         }
         let json = read_proxy_embeddings_response_json(resp).await?;
         let embeddings = parse_proxy_embeddings_response(&json)?;
+        validate_proxy_embeddings_count(expected_embeddings, embeddings.len())?;
         Ok(EmbeddingResponse { embeddings })
     }
 }
@@ -392,6 +394,15 @@ fn parse_proxy_embeddings_response(json: &serde_json::Value) -> Result<Vec<Vec<f
                 .collect()
         })
         .collect()
+}
+
+fn validate_proxy_embeddings_count(expected: usize, actual: usize) -> Result<()> {
+    if actual != expected {
+        return Err(PowerError::InferenceFailed(format!(
+            "proxy embeddings response returned {actual} embedding(s), expected {expected}"
+        )));
+    }
+    Ok(())
 }
 
 fn proxy_endpoint_url(upstream: &str, segments: &[&str]) -> Result<String> {
@@ -1239,7 +1250,7 @@ mod tests {
             .embed(
                 "llama-70b",
                 EmbeddingRequest {
-                    input: vec!["hello".to_string()],
+                    input: vec!["hello".to_string(), "world".to_string()],
                 },
             )
             .await
@@ -1277,6 +1288,37 @@ mod tests {
         let err = err.to_string();
         assert!(err.contains("embedding"), "error: {err}");
         assert!(err.contains("number"), "error: {err}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn embed_rejects_embedding_count_mismatch() {
+        let app = axum::Router::new().route(
+            "/v1/embeddings",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "data": [
+                        { "embedding": [1.0] }
+                    ]
+                }))
+            }),
+        );
+        let (upstream, server) = spawn_test_server(app).await;
+        let backend = ProxyBackend::new(Arc::new(proxy_config(upstream)));
+
+        let err = backend
+            .embed(
+                "llama-70b",
+                EmbeddingRequest {
+                    input: vec!["hello".to_string(), "world".to_string()],
+                },
+            )
+            .await
+            .unwrap_err();
+
+        let err = err.to_string();
+        assert!(err.contains("returned 1 embedding"), "error: {err}");
+        assert!(err.contains("expected 2"), "error: {err}");
         server.abort();
     }
 
