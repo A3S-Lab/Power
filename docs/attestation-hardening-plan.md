@@ -181,6 +181,8 @@ Landed in the current working tree:
   partial vectors.
 - Tightened proxy embeddings response validation so upstreams must return
   exactly one embedding vector per requested input item.
+- Tightened proxy embeddings shape validation so upstream vectors must be
+  non-empty and have consistent dimensions within each response.
 - Extended receipt policy pins so `ExpectedReceipt` / `verify_receipt_policy`
   can directly require a matching `effective_prompt` digest, while still
   detecting conflicts with explicit effective-prompt absence.

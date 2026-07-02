@@ -291,6 +291,7 @@ impl Backend for ProxyBackend {
         let json = read_proxy_embeddings_response_json(resp).await?;
         let embeddings = parse_proxy_embeddings_response(&json)?;
         validate_proxy_embeddings_count(expected_embeddings, embeddings.len())?;
+        validate_proxy_embeddings_dimensions(&embeddings)?;
         Ok(EmbeddingResponse { embeddings })
     }
 }
@@ -371,6 +372,11 @@ fn parse_proxy_embeddings_response(json: &serde_json::Value) -> Result<Vec<Vec<f
                         "proxy embeddings response data[{item_index}].embedding must be an array"
                     ))
                 })?;
+            if embedding.is_empty() {
+                return Err(PowerError::InferenceFailed(format!(
+                    "proxy embeddings response data[{item_index}].embedding must not be empty"
+                )));
+            }
 
             embedding
                 .iter()
@@ -402,6 +408,23 @@ fn validate_proxy_embeddings_count(expected: usize, actual: usize) -> Result<()>
             "proxy embeddings response returned {actual} embedding(s), expected {expected}"
         )));
     }
+    Ok(())
+}
+
+fn validate_proxy_embeddings_dimensions(embeddings: &[Vec<f32>]) -> Result<()> {
+    let Some(expected_dimension) = embeddings.first().map(Vec::len) else {
+        return Ok(());
+    };
+
+    for (index, embedding) in embeddings.iter().enumerate() {
+        let actual_dimension = embedding.len();
+        if actual_dimension != expected_dimension {
+            return Err(PowerError::InferenceFailed(format!(
+                "proxy embeddings response data[{index}].embedding dimension {actual_dimension} does not match expected dimension {expected_dimension}"
+            )));
+        }
+    }
+
     Ok(())
 }
 
@@ -1238,7 +1261,7 @@ mod tests {
                 axum::Json(serde_json::json!({
                     "data": [
                         { "embedding": [1.0, 2.5] },
-                        { "embedding": [3.0] }
+                        { "embedding": [3.0, 4.0] }
                     ]
                 }))
             }),
@@ -1256,7 +1279,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.embeddings, vec![vec![1.0, 2.5], vec![3.0]]);
+        assert_eq!(response.embeddings, vec![vec![1.0, 2.5], vec![3.0, 4.0]]);
         server.abort();
     }
 
@@ -1322,12 +1345,52 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn embed_rejects_inconsistent_embedding_dimensions() {
+        let app = axum::Router::new().route(
+            "/v1/embeddings",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "data": [
+                        { "embedding": [1.0, 2.0] },
+                        { "embedding": [3.0] }
+                    ]
+                }))
+            }),
+        );
+        let (upstream, server) = spawn_test_server(app).await;
+        let backend = ProxyBackend::new(Arc::new(proxy_config(upstream)));
+
+        let err = backend
+            .embed(
+                "llama-70b",
+                EmbeddingRequest {
+                    input: vec!["hello".to_string(), "world".to_string()],
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("dimension"));
+        server.abort();
+    }
+
     #[test]
     fn parse_proxy_embeddings_response_rejects_missing_data() {
         let err = parse_proxy_embeddings_response(&serde_json::json!({}))
             .expect_err("missing data must fail");
 
         assert!(err.to_string().contains("data"));
+    }
+
+    #[test]
+    fn parse_proxy_embeddings_response_rejects_empty_vectors() {
+        let err = parse_proxy_embeddings_response(&serde_json::json!({
+            "data": [{ "embedding": [] }]
+        }))
+        .expect_err("empty embedding vectors must fail");
+
+        assert!(err.to_string().contains("empty"));
     }
 
     #[test]
