@@ -539,7 +539,7 @@ gpu_attestation {
   # through their own NVIDIA evidence collector:
   # source = "nras-rest"
   # evidence_path = "/run/a3s/nvidia-gpu-evidence-list.json"
-  # nras_url = "https://nras.attestation.nvidia.com"
+  # nras_url = "https://nras.attestation.nvidia.com" # no embedded credentials
   # nras_gpu_architecture = "HOPPER" # or "BLACKWELL"
   # nras_claims_version = "3.0"
   # nras_bearer_token_env = "NRAS_BEARER_TOKEN"
@@ -587,10 +587,10 @@ gpu_attestation {
 | `gpu_attestation.nvattest_verifier` | `"remote"` | `nvattest attest --verifier` value; `gpu-confidential` mode requires `"remote"` for NRAS |
 | `gpu_attestation.nvattest_gpu_evidence_source` | `"nvml"` | `nvattest collect-evidence --gpu-evidence-source`; use `"nvml"` for H100 confidential-computing deployments |
 | `gpu_attestation.nvattest_gpu_architecture` | `null` | GPU architecture value required only for `corelib` evidence collection |
-| `gpu_attestation.nras_url` | `null` | Optional NRAS URL. For `nvattest-cli`, passed to `nvattest attest --nras-url`; for `nras-rest`, may be the service root or full `/v4/attest/gpu` endpoint. In `gpu-confidential` production policy, custom NRAS URLs must use HTTPS |
+| `gpu_attestation.nras_url` | `null` | Optional NRAS URL. For `nvattest-cli`, passed to `nvattest attest --nras-url`; for `nras-rest`, may be the service root or full `/v4/attest/gpu` endpoint. In `gpu-confidential` production policy, custom NRAS URLs must use HTTPS and must not include embedded credentials |
 | `gpu_attestation.nras_gpu_architecture` | `null` | GPU architecture for `nras-rest`: `"HOPPER"` or `"BLACKWELL"` |
 | `gpu_attestation.nras_claims_version` | `"3.0"` | NVIDIA NRAS REST claims version (`"2.0"` or `"3.0"`) |
-| `gpu_attestation.nras_bearer_token_env` | `null` | Optional environment variable containing a bearer token for direct NRAS REST calls |
+| `gpu_attestation.nras_bearer_token_env` | `null` | Optional environment variable containing a bearer token for direct NRAS REST calls; use this instead of embedding credentials in `nras_url` |
 | `gpu_attestation.nras_timeout_secs` | `30` | Timeout for each direct NRAS REST request |
 | `gpu_attestation.rim_url` | `null` | Optional RIM URL passed to `nvattest attest --rim-url`; `gpu-confidential` production policy requires HTTPS when configured |
 | `gpu_attestation.ocsp_url` | `null` | Optional OCSP URL passed to `nvattest attest --ocsp-url`; `gpu-confidential` production policy requires HTTPS when configured |

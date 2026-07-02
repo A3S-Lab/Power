@@ -717,8 +717,20 @@ fn normalize_nras_rest_endpoint(url: Option<&str>) -> Result<String> {
         format!("{}/v4/attest/gpu", url.trim_end_matches('/'))
     };
 
-    reqwest::Url::parse(&endpoint)
+    let parsed = reqwest::Url::parse(&endpoint)
         .map_err(|e| PowerError::Config(format!("gpu_attestation.nras_url is invalid: {e}")))?;
+    if parsed.scheme() != "https" {
+        return Err(PowerError::Config(format!(
+            "gpu_attestation.nras_url must use https, got {:?}",
+            parsed.scheme()
+        )));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(PowerError::Config(
+            "gpu_attestation.nras_url must not include embedded credentials; use nras_bearer_token_env instead"
+                .to_string(),
+        ));
+    }
     Ok(endpoint)
 }
 
@@ -1731,6 +1743,35 @@ mod tests {
     }
 
     #[test]
+    fn nras_rest_endpoint_accepts_https_root() {
+        let endpoint =
+            normalize_nras_rest_endpoint(Some("https://nras.attestation.nvidia.com")).unwrap();
+
+        assert_eq!(
+            endpoint,
+            "https://nras.attestation.nvidia.com/v4/attest/gpu"
+        );
+    }
+
+    #[test]
+    fn nras_rest_endpoint_rejects_http() {
+        let err =
+            normalize_nras_rest_endpoint(Some("http://nras.attestation.nvidia.com")).unwrap_err();
+
+        assert!(err.to_string().contains("must use https"));
+    }
+
+    #[test]
+    fn nras_rest_endpoint_rejects_embedded_credentials() {
+        let err = normalize_nras_rest_endpoint(Some("https://token@nras.attestation.nvidia.com"))
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("must not include embedded credentials"));
+    }
+
+    #[test]
     fn nras_rest_evidence_list_normalizes_nvattest_output() {
         let nonce = "1111111111111111111111111111111111111111111111111111111111111111";
         let evidence = format!(
@@ -1811,15 +1852,16 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let provider = NrasRestGpuEvidenceProvider::from_config(&GpuAttestationConfig {
+        let mut provider = NrasRestGpuEvidenceProvider::from_config(&GpuAttestationConfig {
             source: GpuAttestationSource::NrasRest,
             evidence_path: Some(evidence_path),
-            nras_url: Some(format!("http://{addr}")),
+            nras_url: Some("https://nras.attestation.nvidia.com".to_string()),
             nras_gpu_architecture: Some("hopper".to_string()),
             nras_timeout_secs: 5,
             ..Default::default()
         })
         .unwrap();
+        provider.endpoint = format!("http://{addr}/v4/attest/gpu");
 
         let claim = provider
             .evidence_claim_for_nonce(Some(&nonce))

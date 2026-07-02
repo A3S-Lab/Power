@@ -44,10 +44,10 @@ Landed in the current working tree:
 - Added production startup validation for NVIDIA GPU confidential-computing
   metadata: `gpu-confidential` requires the canonical `nvidia-nras` provider
   label, an absolute executable `nvattest_path` for the live CLI path, HTTPS
-  custom NRAS/RIM/OCSP service URLs, and an absolute existing non-empty
-  relying-party policy file when one is configured; file-backed configured and
-  direct NRAS REST evidence/verdict sources must also use absolute paths to
-  existing non-empty regular files.
+  custom NRAS/RIM/OCSP service URLs without embedded credentials, and an
+  absolute existing non-empty relying-party policy file when one is configured;
+  file-backed configured and direct NRAS REST evidence/verdict sources must
+  also use absolute paths to existing non-empty regular files.
 - Changed `/v1/attestation?model=...` to re-hash the current local model
   artifact and fail on missing, malformed, or stale model hashes instead of
   silently omitting the model binding.
@@ -491,7 +491,9 @@ Code changes:
   CPU-only TEE deployments.
 - In `gpu-confidential` policy mode, startup rejects custom NVIDIA NRAS, RIM,
   and OCSP URLs that are not HTTPS for live `nvattest-cli`; direct `nras-rest`
-  also rejects custom NRAS URLs that are not HTTPS.
+  also rejects custom NRAS URLs that are not HTTPS. Both startup validation and
+  the direct NRAS REST provider reject embedded URL credentials so bearer tokens
+  stay in `nras_bearer_token_env`.
 - Make ordinary CUDA acceleration a separate declared mode that does not claim
   GPU confidential-computing guarantees.
 
