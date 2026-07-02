@@ -18,12 +18,16 @@ use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
 
-fn unsupported_local_tool_choice_message(request: &ChatCompletionRequest) -> Option<String> {
-    let tool_choice = request.effective_tool_choice()?;
-    let has_tools = request
+fn has_effective_tools(request: &ChatCompletionRequest) -> bool {
+    request
         .effective_tools()
         .as_ref()
-        .is_some_and(|tools| !tools.is_empty());
+        .is_some_and(|tools| !tools.is_empty())
+}
+
+fn unsupported_local_tool_choice_message(request: &ChatCompletionRequest) -> Option<String> {
+    let tool_choice = request.effective_tool_choice()?;
+    let has_tools = has_effective_tools(request);
 
     match tool_choice {
         ToolChoice::String(value) if value == "auto" => None,
@@ -43,6 +47,19 @@ fn unsupported_local_tool_choice_message(request: &ChatCompletionRequest) -> Opt
             "local chat backends cannot enforce named tool_choice or legacy function_call; use tool_choice=\"auto\" or a remote model"
                 .to_string(),
         ),
+    }
+}
+
+fn unsupported_local_parallel_tool_calls_message(
+    request: &ChatCompletionRequest,
+) -> Option<String> {
+    if request.parallel_tool_calls == Some(false) && has_effective_tools(request) {
+        Some(
+            "local chat backends cannot enforce parallel_tool_calls=false while tools are provided; omit tools or use a remote model"
+                .to_string(),
+        )
+    } else {
+        None
     }
 }
 
@@ -170,6 +187,10 @@ pub async fn handler(
         if let Some(message) = unsupported_local_tool_choice_message(&request) {
             state.metrics.decrement_active_requests();
             return openai_error("unsupported_tool_choice", &message).into_response();
+        }
+        if let Some(message) = unsupported_local_parallel_tool_calls_message(&request) {
+            state.metrics.decrement_active_requests();
+            return openai_error("unsupported_parallel_tool_calls", &message).into_response();
         }
     }
 
@@ -840,6 +861,62 @@ mod tests {
             .contains("named tool_choice"));
     }
 
+    #[test]
+    fn local_parallel_tool_calls_validation_rejects_false_with_tools() {
+        let false_without_tools: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{"role":"user","content":"hi"}],
+                "parallel_tool_calls":false
+            }"#,
+        )
+        .unwrap();
+        assert!(
+            super::unsupported_local_parallel_tool_calls_message(&false_without_tools).is_none()
+        );
+
+        let true_with_tools: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{"role":"user","content":"hi"}],
+                "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],
+                "parallel_tool_calls":true
+            }"#,
+        )
+        .unwrap();
+        assert!(super::unsupported_local_parallel_tool_calls_message(&true_with_tools).is_none());
+
+        let false_with_tools: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{"role":"user","content":"hi"}],
+                "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],
+                "parallel_tool_calls":false
+            }"#,
+        )
+        .unwrap();
+        assert!(
+            super::unsupported_local_parallel_tool_calls_message(&false_with_tools)
+                .unwrap()
+                .contains("cannot enforce parallel_tool_calls=false")
+        );
+
+        let false_with_legacy_functions: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{"role":"user","content":"hi"}],
+                "functions":[{"name":"lookup","parameters":{"type":"object"}}],
+                "parallel_tool_calls":false
+            }"#,
+        )
+        .unwrap();
+        assert!(
+            super::unsupported_local_parallel_tool_calls_message(&false_with_legacy_functions)
+                .unwrap()
+                .contains("cannot enforce parallel_tool_calls=false")
+        );
+    }
+
     #[tokio::test]
     async fn test_openai_chat_model_not_found() {
         let state = test_state_with_mock(MockBackend::success());
@@ -1296,6 +1373,46 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("named tool_choice"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_rejects_local_parallel_tool_calls_false_with_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"test",
+                    "messages":[{"role":"user","content":"hi"}],
+                    "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],
+                    "parallel_tool_calls":false
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_parallel_tool_calls");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot enforce parallel_tool_calls=false"));
+        assert_eq!(state.metrics.active_requests(), 0);
 
         std::env::remove_var("A3S_POWER_HOME");
     }
@@ -1844,8 +1961,7 @@ mod tests {
                     "mirostat_tau":5.0,
                     "mirostat_eta":0.25,
                     "tfs_z":0.75,
-                    "typical_p":0.5,
-                    "parallel_tool_calls":false
+                    "typical_p":0.5
                 }"#,
             ))
             .unwrap();
@@ -1872,7 +1988,6 @@ mod tests {
         assert_eq!(captured.mirostat_eta, Some(0.25));
         assert_eq!(captured.tfs_z, Some(0.75));
         assert_eq!(captured.typical_p, Some(0.5));
-        assert_eq!(captured.parallel_tool_calls, Some(false));
         assert_eq!(
             json["attestation_receipt"]["decoding"]["parameters"]["top_k"],
             serde_json::json!(40)
@@ -1881,6 +1996,55 @@ mod tests {
             json["attestation_receipt"]["decoding"]["parameters"]["penalize_newline"],
             serde_json::json!(true)
         );
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_preserves_remote_parallel_tool_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let mock = MockBackend::success().with_remote_support();
+        let chat_request_capture = mock.chat_request_capture();
+        let state = test_state_with_mock(mock);
+        let mut manifest = sample_manifest("test");
+        manifest.format = ModelFormat::Remote;
+        state.registry.register(manifest).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                    "model":"test",
+                    "messages":[{"role":"user","content":"hi"}],
+                    "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],
+                    "parallel_tool_calls":false
+                }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let captured = chat_request_capture
+            .lock()
+            .expect("chat request lock poisoned")
+            .clone()
+            .expect("expected backend chat request to be captured");
+        assert_eq!(captured.parallel_tool_calls, Some(false));
+        assert!(captured
+            .tools
+            .as_ref()
+            .is_some_and(|tools| !tools.is_empty()));
         assert_eq!(
             json["attestation_receipt"]["decoding"]["parameters"]["parallel_tool_calls"],
             serde_json::json!(false)

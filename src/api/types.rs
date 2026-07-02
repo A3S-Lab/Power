@@ -117,7 +117,8 @@ pub struct ChatCompletionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function_call: Option<LegacyFunctionChoice>,
     /// Whether the model may generate multiple tool calls in parallel.
-    /// Accepted for API compatibility; the model decides based on its training.
+    /// Forwarded for remote models; local models reject `false` with tools
+    /// because the local backend cannot enforce single tool-call generation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
     /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").

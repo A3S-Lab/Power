@@ -98,8 +98,9 @@ Landed in the current working tree:
   them through to backend inference requests, and include them in receipt
   decoding-parameter hashes.
 - OpenAI-compatible chat requests preserve `parallel_tool_calls` through the
-  backend/proxy inference path and include it in receipt decoding-parameter
-  hashes.
+  remote/proxy inference path and include it in receipt decoding-parameter
+  hashes. Local chat backends reject `parallel_tool_calls=false` when tools are
+  provided because they cannot enforce single tool-call generation.
 - OpenAI-compatible chat and completion requests now explicitly accept the
   default single-choice output (`n = 1`) and reject unsupported multi-choice
   requests, with explicit `n` values covered by receipt decoding-parameter
