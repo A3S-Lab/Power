@@ -708,6 +708,25 @@ impl Backend for LlamaCppBackend {
         )))
     }
 
+    async fn effective_completion_prompt_digest(
+        &self,
+        _model_name: &str,
+        request: &CompletionRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        if request
+            .images
+            .as_ref()
+            .is_some_and(|images| !images.is_empty())
+        {
+            return Ok(None);
+        }
+
+        Ok(Some(EffectivePromptDigest::text_prompt(
+            "llama.cpp",
+            &request.prompt,
+        )))
+    }
+
     async fn complete(
         &self,
         model_name: &str,

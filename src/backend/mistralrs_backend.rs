@@ -523,6 +523,61 @@ impl Backend for MistralRsBackend {
         )))
     }
 
+    async fn effective_completion_prompt_digest(
+        &self,
+        model_name: &str,
+        request: &CompletionRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        let chat_request = ChatRequest {
+            messages: vec![super::types::ChatMessage {
+                role: "user".to_string(),
+                content: super::types::MessageContent::Text(request.prompt.clone()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            }],
+            temperature: request.temperature,
+            top_p: request.top_p,
+            max_tokens: request.max_tokens,
+            stop: request.stop.clone(),
+            stream: request.stream,
+            top_k: request.top_k,
+            min_p: request.min_p,
+            repeat_penalty: request.repeat_penalty,
+            frequency_penalty: request.frequency_penalty,
+            presence_penalty: request.presence_penalty,
+            seed: request.seed,
+            num_ctx: request.num_ctx,
+            mirostat: request.mirostat,
+            mirostat_tau: request.mirostat_tau,
+            mirostat_eta: request.mirostat_eta,
+            tfs_z: request.tfs_z,
+            typical_p: request.typical_p,
+            response_format: request.response_format.clone(),
+            stream_options: request.stream_options.clone(),
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            repeat_last_n: request.repeat_last_n,
+            penalize_newline: request.penalize_newline,
+            num_batch: request.num_batch,
+            num_thread: request.num_thread,
+            num_thread_batch: request.num_thread_batch,
+            flash_attention: request.flash_attention,
+            num_gpu: request.num_gpu,
+            main_gpu: request.main_gpu,
+            use_mmap: request.use_mmap,
+            use_mlock: request.use_mlock,
+            num_parallel: request.num_parallel,
+            images: None,
+            session_id: request.session_id.clone(),
+        };
+
+        self.effective_chat_prompt_digest(model_name, &chat_request)
+            .await
+    }
+
     async fn complete(
         &self,
         model_name: &str,

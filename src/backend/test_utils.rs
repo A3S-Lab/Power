@@ -407,6 +407,14 @@ impl Backend for MockBackend {
         Ok(Box::pin(futures::stream::iter(chunks)))
     }
 
+    async fn effective_completion_prompt_digest(
+        &self,
+        _model_name: &str,
+        _request: &CompletionRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        Ok(self.effective_prompt.clone())
+    }
+
     async fn embed(
         &self,
         _model_name: &str,

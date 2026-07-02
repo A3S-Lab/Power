@@ -2406,8 +2406,8 @@ mod tests {
     use super::*;
     use crate::api::receipt::{
         chat_receipt, chat_receipt_with_runtime_policy_and_effective_prompt, completion_receipt,
-        receipt_digest, AttestationReceipt, ReceiptDecodingPolicy, ReceiptInputDigest,
-        ReceiptRequestType,
+        completion_receipt_with_runtime_policy_and_effective_prompt, receipt_digest,
+        AttestationReceipt, ReceiptDecodingPolicy, ReceiptInputDigest, ReceiptRequestType,
     };
     use crate::api::types::{
         ChatCompletionMessage, ChatCompletionRequest, CompletionRequest, StreamOptions,
@@ -3313,6 +3313,22 @@ mod tests {
         .unwrap();
 
         verify_receipt_matches_chat_request(&receipt, &request).unwrap();
+    }
+
+    #[test]
+    fn test_verify_receipt_matches_completion_request_allows_runtime_and_effective_prompt_claims() {
+        let request = completion_request();
+        let runtime = RuntimePolicyClaim::new().with_decoding(DecodingPolicyClaim {
+            parameters_sha256: vec![0x44; 32],
+        });
+        let receipt = completion_receipt_with_runtime_policy_and_effective_prompt(
+            &request,
+            Some(runtime),
+            Some(EffectivePromptDigest::text_prompt("test-backend", "hello")),
+        )
+        .unwrap();
+
+        verify_receipt_matches_completion_request(&receipt, &request).unwrap();
     }
 
     #[test]

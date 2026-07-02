@@ -126,6 +126,19 @@ pub trait Backend: Send + Sync {
         request: CompletionRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<CompletionResponseChunk>> + Send>>>;
 
+    /// Return the digest of the exact text-completion prompt used for inference.
+    ///
+    /// Backends should return `None` unless they can guarantee the same prompt
+    /// bytes or token IDs are passed to the model. Delegating/proxy backends
+    /// should stay absent unless the upstream exposes an explicit digest.
+    async fn effective_completion_prompt_digest(
+        &self,
+        _model_name: &str,
+        _request: &CompletionRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        Ok(None)
+    }
+
     /// Generate embeddings for the given input texts.
     async fn embed(&self, model_name: &str, request: EmbeddingRequest)
         -> Result<EmbeddingResponse>;

@@ -1880,6 +1880,16 @@ impl Backend for PicolmBackend {
         }
     }
 
+    async fn effective_completion_prompt_digest(
+        &self,
+        model_name: &str,
+        request: &CompletionRequest,
+    ) -> Result<Option<EffectivePromptDigest>> {
+        let chat_req = completion_to_chat(request.clone());
+        self.effective_chat_prompt_digest(model_name, &chat_req)
+            .await
+    }
+
     async fn complete(
         &self,
         model_name: &str,

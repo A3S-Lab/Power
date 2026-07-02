@@ -268,6 +268,11 @@ Landed in the current working tree:
   including multimodal input digests and exact presence/absence of optional
   output-policy digests, before separately checking attestation runtime policy
   or effective-prompt pins.
+- Added text-completion `effective_prompt` receipt coverage for backends that
+  own the exact submitted prompt representation. llama.cpp emits the raw text
+  prompt digest; picolm and mistralrs reuse their completion-as-chat rendered
+  prompt/token-ID digest paths; proxy completions remain absent unless an exact
+  upstream representation is exposed later.
 - Tightened receipt well-formed verification so embedded runtime-policy digests
   must be 32-byte SHA-256 values, including prompt, decoding, and GPU execution
   digests.
@@ -332,10 +337,11 @@ Still open:
   decoding parameters, stop tokens, response format, tools, tool choice, and
   parallel tool-call policy.
   llama.cpp and picolm text-only chat additionally emit an `effective_prompt`
-  digest for the exact rendered chat prompt; proxy can emit an
-  upstream-declared digest through an explicit opt-in endpoint; mistralrs text
-  chat emits a prompt-token-ID digest. Remaining opaque multimodal paths leave
-  that field absent.
+  digest for the exact rendered chat prompt; text completions emit exact prompt
+  digests when the serving backend owns that representation; proxy can emit an
+  upstream-declared chat digest through an explicit opt-in endpoint; mistralrs
+  text chat emits a prompt-token-ID digest. Remaining opaque multimodal and
+  delegated paths leave that field absent.
 
 ## Baseline Findings
 

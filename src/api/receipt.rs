@@ -158,6 +158,15 @@ pub fn completion_receipt_with_runtime_policy(
     request: &CompletionRequest,
     runtime_policy: Option<RuntimePolicyClaim>,
 ) -> crate::error::Result<AttestationReceipt> {
+    completion_receipt_with_runtime_policy_and_effective_prompt(request, runtime_policy, None)
+}
+
+/// Build a text-completion receipt with model runtime policy and effective prompt claims.
+pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
+    request: &CompletionRequest,
+    runtime_policy: Option<RuntimePolicyClaim>,
+    effective_prompt: Option<EffectivePromptDigest>,
+) -> crate::error::Result<AttestationReceipt> {
     let input = ReceiptInputDigest {
         kind: "text.prompt".to_string(),
         sha256: digest_json(&request.prompt)?,
@@ -204,7 +213,7 @@ pub fn completion_receipt_with_runtime_policy(
         model: request.model.clone(),
         input,
         runtime_policy,
-        effective_prompt: None,
+        effective_prompt,
         decoding: ReceiptDecodingPolicy {
             parameters,
             stream_options_sha256: digest_optional_json(request.stream_options.as_ref())?,
@@ -425,6 +434,49 @@ mod tests {
                 "test-backend",
                 "rendered prompt",
             )),
+        )
+        .unwrap();
+
+        assert!(with_effective.effective_prompt.is_some());
+        assert_ne!(
+            receipt_digest(&base).unwrap(),
+            receipt_digest(&with_effective).unwrap()
+        );
+    }
+
+    #[test]
+    fn completion_receipt_effective_prompt_changes_digest() {
+        let request = CompletionRequest {
+            model: "llama3".to_string(),
+            prompt: "hello".to_string(),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            stop: None,
+            stream: Some(false),
+            stream_options: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            response_format: None,
+            keep_alive: None,
+        };
+        let base = completion_receipt(&request).unwrap();
+        let with_effective = completion_receipt_with_runtime_policy_and_effective_prompt(
+            &request,
+            None,
+            Some(EffectivePromptDigest::text_prompt("test-backend", "hello")),
         )
         .unwrap();
 

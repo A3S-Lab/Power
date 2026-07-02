@@ -67,31 +67,6 @@ pub async fn handler(
             .into_response();
         }
     };
-    let attestation_receipt =
-        match crate::api::receipt::completion_receipt_with_runtime_policy(&request, runtime_policy)
-        {
-            Ok(receipt) => receipt,
-            Err(e) => {
-                state.metrics.decrement_active_requests();
-                return openai_error(
-                    "receipt_failed",
-                    &format!("failed to build attestation receipt: {e}"),
-                )
-                .into_response();
-            }
-        };
-    let attestation_receipt_sha256 = match crate::api::receipt::receipt_digest(&attestation_receipt)
-    {
-        Ok(digest) => digest,
-        Err(e) => {
-            state.metrics.decrement_active_requests();
-            return openai_error(
-                "receipt_failed",
-                &format!("failed to digest attestation receipt: {e}"),
-            )
-            .into_response();
-        }
-    };
 
     let backend = match state.find_backend(&manifest.format, manifest.size) {
         Ok(b) => b,
@@ -121,7 +96,7 @@ pub async fn handler(
     let unload_after_use = load_result.unload_after_use;
 
     let backend_request = crate::backend::types::CompletionRequest {
-        prompt: request.prompt,
+        prompt: request.prompt.clone(),
         temperature: request.temperature,
         top_p: request.top_p,
         max_tokens: request.max_tokens,
@@ -171,6 +146,58 @@ pub async fn handler(
         suffix: None,
         context: None,
         session_id: None,
+    };
+
+    let effective_prompt = match backend
+        .effective_completion_prompt_digest(&model_name, &backend_request)
+        .await
+    {
+        Ok(digest) => digest,
+        Err(e) => {
+            if unload_after_use {
+                crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
+            }
+            state.metrics.decrement_active_requests();
+            return openai_error(
+                "receipt_failed",
+                &format!("failed to build effective prompt receipt claim: {e}"),
+            )
+            .into_response();
+        }
+    };
+    let attestation_receipt =
+        match crate::api::receipt::completion_receipt_with_runtime_policy_and_effective_prompt(
+            &request,
+            runtime_policy,
+            effective_prompt,
+        ) {
+            Ok(receipt) => receipt,
+            Err(e) => {
+                if unload_after_use {
+                    crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
+                }
+                state.metrics.decrement_active_requests();
+                return openai_error(
+                    "receipt_failed",
+                    &format!("failed to build attestation receipt: {e}"),
+                )
+                .into_response();
+            }
+        };
+    let attestation_receipt_sha256 = match crate::api::receipt::receipt_digest(&attestation_receipt)
+    {
+        Ok(digest) => digest,
+        Err(e) => {
+            if unload_after_use {
+                crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
+            }
+            state.metrics.decrement_active_requests();
+            return openai_error(
+                "receipt_failed",
+                &format!("failed to digest attestation receipt: {e}"),
+            )
+            .into_response();
+        }
     };
 
     // Admission control: hold a permit for the whole request (including the
@@ -470,6 +497,7 @@ pub async fn handler(
 #[cfg(test)]
 mod tests {
     use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
+    use crate::backend::types::EffectivePromptDigest;
     use crate::model::manifest::ModelFormat;
     use crate::server::router;
     use axum::body::Body;
@@ -574,6 +602,47 @@ mod tests {
         assert_eq!(
             json["attestation_receipt_sha256"].as_str().unwrap().len(),
             64
+        );
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_completions_receipt_includes_effective_prompt_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let prompt_digest = EffectivePromptDigest::text_prompt("mock", "hi");
+        let state = test_state_with_mock(
+            MockBackend::success().with_effective_prompt(prompt_digest.clone()),
+        );
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","prompt":"hi","stream":false}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            json["attestation_receipt"]["effective_prompt"]["kind"],
+            "text.prompt"
+        );
+        assert_eq!(
+            json["attestation_receipt"]["effective_prompt"]["sha256"],
+            prompt_digest.sha256
         );
 
         std::env::remove_var("A3S_POWER_HOME");

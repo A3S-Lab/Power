@@ -281,6 +281,14 @@ impl EffectivePromptDigest {
         }
     }
 
+    pub fn text_prompt(backend: impl Into<String>, prompt: &str) -> Self {
+        Self {
+            backend: backend.into(),
+            kind: "text.prompt".to_string(),
+            sha256: hex::encode(Sha256::digest(prompt.as_bytes())),
+        }
+    }
+
     pub fn chat_prompt_token_ids(backend: impl Into<String>, token_ids: &[u32]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"a3s.power.chat.prompt-token-ids.v1\0");
@@ -529,6 +537,18 @@ mod tests {
         let a = EffectivePromptDigest::chat_prompt_token_ids("test", &[1, 2]);
         let b = EffectivePromptDigest::chat_prompt_token_ids("test", &[2, 1]);
         assert_ne!(a.sha256, b.sha256);
+    }
+
+    #[test]
+    fn test_effective_text_prompt_digest_uses_text_kind() {
+        let digest = EffectivePromptDigest::text_prompt("test", "hello");
+
+        assert_eq!(digest.backend, "test");
+        assert_eq!(digest.kind, "text.prompt");
+        assert_eq!(
+            digest.sha256,
+            hex::encode(Sha256::digest("hello".as_bytes()))
+        );
     }
 
     #[test]
