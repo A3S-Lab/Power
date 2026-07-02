@@ -1138,6 +1138,31 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mistralrs")]
+    #[tokio::test]
+    async fn test_mistralrs_effective_prompt_absent_for_image_inputs() {
+        let backend = MistralRsBackend::new(test_config());
+        let mut request = text_chat_request();
+        request.messages[1].content = MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "describe this".to_string(),
+            },
+            ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,part-base64-image".to_string(),
+                    detail: None,
+                },
+            },
+        ]);
+
+        let digest = backend
+            .effective_chat_prompt_digest("not-loaded", &request)
+            .await
+            .unwrap();
+
+        assert!(digest.is_none());
+    }
+
     #[cfg(not(feature = "mistralrs"))]
     #[tokio::test]
     async fn test_stub_load_returns_error() {

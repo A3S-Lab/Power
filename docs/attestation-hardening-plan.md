@@ -657,6 +657,9 @@ Tests:
 - Template override changes the effective prompt-policy or receipt hash for
   backends that expose `effective_prompt`.
 - Receipt generation is available for streaming and non-streaming responses.
+- llama.cpp, picolm, and mistralrs image-bearing chat paths keep
+  `effective_prompt` absent unless the backend can expose the exact
+  post-template multimodal representation.
 
 ### Phase 8: Documentation and release notes
 
