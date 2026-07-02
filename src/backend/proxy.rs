@@ -34,6 +34,7 @@ use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest};
 
 const MAX_PROXY_EFFECTIVE_PROMPT_DIGEST_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_PROXY_EMBEDDINGS_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PROXY_SSE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 /// Forwards inference to upstream OpenAI-compatible servers.
@@ -286,10 +287,7 @@ impl Backend for ProxyBackend {
                 resp.status()
             )));
         }
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| PowerError::InferenceFailed(format!("proxy embed decode failed: {e}")))?;
+        let json = read_proxy_embeddings_response_json(resp).await?;
         let embeddings = json["data"]
             .as_array()
             .map(|arr| {
@@ -312,31 +310,58 @@ impl Backend for ProxyBackend {
 }
 
 async fn read_effective_prompt_digest_response_json(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
 ) -> Result<serde_json::Value> {
+    read_bounded_proxy_json_response(
+        response,
+        "proxy effective prompt digest",
+        MAX_PROXY_EFFECTIVE_PROMPT_DIGEST_RESPONSE_BYTES,
+    )
+    .await
+}
+
+async fn read_proxy_embeddings_response_json(
+    response: reqwest::Response,
+) -> Result<serde_json::Value> {
+    read_bounded_proxy_json_response(
+        response,
+        "proxy embeddings",
+        MAX_PROXY_EMBEDDINGS_RESPONSE_BYTES,
+    )
+    .await
+}
+
+async fn read_bounded_proxy_json_response(
+    mut response: reqwest::Response,
+    label: &'static str,
+    max_bytes: usize,
+) -> Result<serde_json::Value> {
+    if let Some(content_length) = response.content_length() {
+        let max_bytes_u64 = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+        if content_length > max_bytes_u64 {
+            return Err(PowerError::InferenceFailed(format!(
+                "{label} response body must be at most {max_bytes} bytes, got content-length {content_length}"
+            )));
+        }
+    }
+
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| {
-        PowerError::InferenceFailed(format!(
-            "failed to read proxy effective prompt digest response body: {e}"
-        ))
+        PowerError::InferenceFailed(format!("failed to read {label} response body: {e}"))
     })? {
         let next_len = body.len().checked_add(chunk.len()).ok_or_else(|| {
-            PowerError::InferenceFailed(
-                "proxy effective prompt digest response body length overflowed usize".to_string(),
-            )
+            PowerError::InferenceFailed(format!("{label} response body length overflowed usize"))
         })?;
-        if next_len > MAX_PROXY_EFFECTIVE_PROMPT_DIGEST_RESPONSE_BYTES {
+        if next_len > max_bytes {
             return Err(PowerError::InferenceFailed(format!(
-                "proxy effective prompt digest response body must be at most {} bytes, got at least {next_len}",
-                MAX_PROXY_EFFECTIVE_PROMPT_DIGEST_RESPONSE_BYTES
+                "{label} response body must be at most {max_bytes} bytes, got at least {next_len}"
             )));
         }
         body.extend_from_slice(&chunk);
     }
 
-    serde_json::from_slice(&body).map_err(|e| {
-        PowerError::InferenceFailed(format!("proxy effective prompt digest decode failed: {e}"))
-    })
+    serde_json::from_slice(&body)
+        .map_err(|e| PowerError::InferenceFailed(format!("{label} decode failed: {e}")))
 }
 
 fn proxy_endpoint_url(upstream: &str, segments: &[&str]) -> Result<String> {
@@ -1161,6 +1186,60 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("at most"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn embed_success_parses_embeddings() {
+        let app = axum::Router::new().route(
+            "/v1/embeddings",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "data": [
+                        { "embedding": [1.0, 2.5] },
+                        { "embedding": [3.0] }
+                    ]
+                }))
+            }),
+        );
+        let (upstream, server) = spawn_test_server(app).await;
+        let backend = ProxyBackend::new(Arc::new(proxy_config(upstream)));
+
+        let response = backend
+            .embed(
+                "llama-70b",
+                EmbeddingRequest {
+                    input: vec!["hello".to_string()],
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.embeddings, vec![vec![1.0, 2.5], vec![3.0]]);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn bounded_proxy_json_response_rejects_oversized_content_length() {
+        let app = axum::Router::new().route(
+            "/v1/embeddings",
+            axum::routing::post(|| async { vec![b'{'; 5] }),
+        );
+        let (upstream, server) = spawn_test_server(app).await;
+        let resp = reqwest::Client::new()
+            .post(format!("{upstream}/v1/embeddings"))
+            .send()
+            .await
+            .unwrap();
+
+        let err = read_bounded_proxy_json_response(resp, "proxy embeddings", 4)
+            .await
+            .unwrap_err();
+
+        let err = err.to_string();
+        assert!(err.contains("proxy embeddings"), "error: {err}");
+        assert!(err.contains("at most"), "error: {err}");
+        assert!(err.contains("content-length"), "error: {err}");
         server.abort();
     }
 
