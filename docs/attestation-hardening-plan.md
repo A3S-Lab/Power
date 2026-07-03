@@ -455,6 +455,9 @@ Landed in the current working tree:
   are rejected, `key_provider = "rotating"` requires at least one
   `key_rotation_sources` entry, and provider construction now follows the
   configured provider type instead of inferring rotation from source presence.
+- Made transport port environment overrides fail closed:
+  malformed `A3S_POWER_TLS_PORT` and `A3S_POWER_VSOCK_PORT` values now abort
+  configuration loading instead of silently leaving those listeners disabled.
 
 Still open:
 

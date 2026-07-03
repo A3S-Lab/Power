@@ -1085,9 +1085,10 @@ impl PowerConfig {
         }
 
         if let Ok(tls_port_str) = std::env::var("A3S_POWER_TLS_PORT") {
-            if let Some(port) = parse_env_override::<u16>("A3S_POWER_TLS_PORT", &tls_port_str) {
-                self.tls_port = Some(port);
-            }
+            self.tls_port = Some(parse_required_env_override::<u16>(
+                "A3S_POWER_TLS_PORT",
+                &tls_port_str,
+            )?);
         }
 
         if let Ok(ra_tls_str) = std::env::var("A3S_POWER_RA_TLS") {
@@ -1095,9 +1096,10 @@ impl PowerConfig {
         }
 
         if let Ok(vsock_str) = std::env::var("A3S_POWER_VSOCK_PORT") {
-            if let Some(port) = parse_env_override::<u32>("A3S_POWER_VSOCK_PORT", &vsock_str) {
-                self.vsock_port = Some(port);
-            }
+            self.vsock_port = Some(parse_required_env_override::<u32>(
+                "A3S_POWER_VSOCK_PORT",
+                &vsock_str,
+            )?);
         }
 
         if let Ok(keys_str) = std::env::var("A3S_POWER_API_KEYS") {
@@ -2291,12 +2293,13 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_env_a3s_power_tls_port_invalid_ignored() {
+    fn test_env_a3s_power_tls_port_invalid_rejected() {
         std::env::set_var("A3S_POWER_TLS_PORT", "not-a-port");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides().unwrap();
-        assert!(config.tls_port.is_none());
+        let err = config.apply_env_overrides().unwrap_err();
         std::env::remove_var("A3S_POWER_TLS_PORT");
+
+        assert!(err.to_string().contains("A3S_POWER_TLS_PORT"));
     }
 
     #[test]
@@ -2341,12 +2344,13 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_env_a3s_power_vsock_port_invalid_ignored() {
+    fn test_env_a3s_power_vsock_port_invalid_rejected() {
         std::env::set_var("A3S_POWER_VSOCK_PORT", "not-a-port");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides().unwrap();
-        assert!(config.vsock_port.is_none());
+        let err = config.apply_env_overrides().unwrap_err();
         std::env::remove_var("A3S_POWER_VSOCK_PORT");
+
+        assert!(err.to_string().contains("A3S_POWER_VSOCK_PORT"));
     }
 
     #[test]
