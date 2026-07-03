@@ -635,21 +635,6 @@ where
     })
 }
 
-fn parse_bool_env_override(name: &str, value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => {
-            tracing::warn!(
-                env = name,
-                value,
-                "Invalid boolean environment override; expected true/false, 1/0, yes/no, or on/off"
-            );
-            None
-        }
-    }
-}
-
 fn parse_required_bool_env_override(name: &str, value: &str) -> Result<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
@@ -1085,9 +1070,7 @@ impl PowerConfig {
         }
 
         if let Ok(ra_tls_str) = std::env::var("A3S_POWER_RA_TLS") {
-            if let Some(ra_tls) = parse_bool_env_override("A3S_POWER_RA_TLS", &ra_tls_str) {
-                self.ra_tls = ra_tls;
-            }
+            self.ra_tls = parse_required_bool_env_override("A3S_POWER_RA_TLS", &ra_tls_str)?;
         }
 
         if let Ok(vsock_str) = std::env::var("A3S_POWER_VSOCK_PORT") {
@@ -1118,8 +1101,8 @@ impl PowerConfig {
             }
         }
 
-        if std::env::var("A3S_POWER_AUDIT_LOG").as_deref() == Ok("1") {
-            self.audit_log = true;
+        if let Ok(audit_log) = std::env::var("A3S_POWER_AUDIT_LOG") {
+            self.audit_log = parse_required_bool_env_override("A3S_POWER_AUDIT_LOG", &audit_log)?;
         }
 
         if let Ok(enabled) = std::env::var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST") {
@@ -2129,19 +2112,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn test_env_invalid_bool_values_ignored() {
-        std::env::set_var("A3S_POWER_RA_TLS", "maybe");
-        let mut config = PowerConfig {
-            ra_tls: true,
-            ..Default::default()
-        };
-        config.apply_env_overrides().unwrap();
-        assert!(config.ra_tls);
-        std::env::remove_var("A3S_POWER_RA_TLS");
-    }
-
-    #[test]
     fn test_config_new_fields_defaults() {
         let config = PowerConfig::default();
         assert!(!config.use_mlock);
@@ -2571,6 +2541,19 @@ expected_measurements = {
     }
 
     #[test]
+    #[serial]
+    fn test_audit_log_env_false_overrides_true() {
+        std::env::set_var("A3S_POWER_AUDIT_LOG", "false");
+        let mut config = PowerConfig {
+            audit_log: true,
+            ..Default::default()
+        };
+        config.apply_env_overrides().unwrap();
+        assert!(!config.audit_log);
+        std::env::remove_var("A3S_POWER_AUDIT_LOG");
+    }
+
+    #[test]
     fn test_model_signing_key_defaults_to_none() {
         let config = PowerConfig::default();
         assert!(config.model_signing_key.is_none());
@@ -2900,5 +2883,33 @@ expected_measurements = {
         assert!(err
             .to_string()
             .contains("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_invalid_env_ra_tls() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, "").unwrap();
+        std::env::set_var("A3S_POWER_RA_TLS", "maybe");
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        std::env::remove_var("A3S_POWER_RA_TLS");
+
+        assert!(err.to_string().contains("A3S_POWER_RA_TLS"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_invalid_env_audit_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, "").unwrap();
+        std::env::set_var("A3S_POWER_AUDIT_LOG", "audit-ish");
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        std::env::remove_var("A3S_POWER_AUDIT_LOG");
+
+        assert!(err.to_string().contains("A3S_POWER_AUDIT_LOG"));
     }
 }

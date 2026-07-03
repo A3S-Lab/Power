@@ -439,6 +439,9 @@ Landed in the current working tree:
   `A3S_POWER_TEE_MODE`, `A3S_POWER_REDACT_LOGS`, and proxy effective-prompt
   digest booleans now reject malformed values instead of silently keeping the
   previous/default policy.
+- Extended that fail-closed boolean parsing to `A3S_POWER_RA_TLS` and
+  `A3S_POWER_AUDIT_LOG`, so malformed RA-TLS or audit logging overrides cannot
+  silently leave those controls disabled.
 
 Still open:
 

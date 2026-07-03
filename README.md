@@ -654,7 +654,8 @@ gpu_attestation {
 | `A3S_POWER_TEE_STRICT` | Legacy shortcut: `"1"` selects strict policy and removes simulated TEE from the allowlist |
 | `A3S_POWER_REDACT_LOGS` | Enable log redaction (`"1"` or `"true"`); invalid values fail closed |
 | `A3S_POWER_TLS_PORT` | TLS server port (`tls` feature required) |
-| `A3S_POWER_RA_TLS` | Enable RA-TLS attestation embedding (`"1"` or `"true"`) |
+| `A3S_POWER_RA_TLS` | Enable RA-TLS attestation embedding (`"1"` or `"true"`); invalid values fail closed |
+| `A3S_POWER_AUDIT_LOG` | Enable structured audit logging (`"1"` or `"true"`); invalid values fail closed |
 | `A3S_POWER_VSOCK_PORT` | Vsock port (`vsock` feature, Linux only) |
 | `A3S_TEE_SIMULATE` | Simulate TEE environment for development (`"1"`) |
 
