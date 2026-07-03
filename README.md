@@ -614,7 +614,7 @@ gpu_attestation {
 | `proxy_effective_prompt_digest_required` | `false` | Fail closed when a proxy upstream does not support or cannot return the rendered prompt digest |
 | `proxy_effective_prompt_digest_path` | `"/v1/chat/effective-prompt-digest"` | Upstream endpoint path for proxy rendered prompt digest requests |
 | `tls_port` | `null` | TLS server port; when set, a TLS server starts in parallel; configuration validation fails unless the binary was built with the `tls` feature |
-| `ra_tls` | `false` | Embed TEE attestation in TLS cert (RA-TLS); fails configuration validation unless `tls_port` and `tee_mode = true` are set |
+| `ra_tls` | `false` | Embed TEE attestation in TLS cert (RA-TLS); fails configuration validation unless `tls_port` and `tee_mode = true` are set, and startup fails closed if no attestation report can be embedded |
 | `vsock_port` | `null` | Vsock port for guest-host communication (`vsock` feature, Linux only) |
 
 ### Environment Variables
@@ -1412,7 +1412,7 @@ tls_port = 11443
 ra_tls   = true
 ```
 
-At startup, the TLS server binds on the configured port with a fresh self-signed ECDSA P-256 certificate. When `ra_tls = true` and a TEE provider is active, the certificate includes the attestation report as OID extension `1.3.6.1.4.1.56560.1.1`. Clients can extract and verify this extension to confirm they are communicating with a genuine TEE before trusting inference output.
+At startup, the TLS server binds on the configured port with a fresh self-signed ECDSA P-256 certificate. When `ra_tls = true`, startup first requires a TEE provider to generate an attestation report and embeds it as OID extension `1.3.6.1.4.1.56560.1.1`; report generation failures abort startup before the TLS listener is bound. Clients can extract and verify this extension to confirm they are communicating with a genuine TEE before trusting inference output.
 
 ## Development
 

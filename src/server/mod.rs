@@ -298,8 +298,8 @@ fn configure_audit_logger(
 
 /// Spawn a TLS (RA-TLS) server in a background task.
 ///
-/// Generates a self-signed certificate at startup. When `ra_tls = true` and a
-/// TEE provider is present, the attestation report is embedded in the cert as
+/// Generates a self-signed certificate at startup. When `ra_tls = true`, a TEE
+/// provider must produce an attestation report that is embedded in the cert as
 /// a custom X.509 extension (OID 1.3.6.1.4.1.56560.1.1).
 #[cfg(feature = "tls")]
 async fn spawn_tls_server(
@@ -311,20 +311,18 @@ async fn spawn_tls_server(
         PowerError::Config("tls_port must be configured before starting TLS server".to_string())
     })?;
 
-    // Optionally get an attestation report to embed in the certificate.
+    // Get the attestation report before binding the TLS listener so RA-TLS
+    // never serves a certificate that silently lacks the expected extension.
     let attestation = if config.ra_tls && config.tee_mode {
         match tee_provider {
-            Some(provider) => match provider.attestation_report(None).await {
-                Ok(report) => Some(report),
-                Err(e) => {
-                    tracing::warn!("RA-TLS: failed to get attestation report, proceeding without embedding: {e}");
-                    None
-                }
-            },
-            None => {
-                tracing::warn!("RA-TLS requested but no TEE provider configured; proceeding without attestation");
-                None
-            }
+            Some(provider) => Some(provider.attestation_report(None).await.map_err(|e| {
+                PowerError::Config(format!(
+                    "ra_tls = true requires a TEE attestation report, but report generation failed: {e}"
+                ))
+            })?),
+            None => return Err(PowerError::Config(
+                "ra_tls = true requires a TEE provider before starting the TLS listener".to_string(),
+            )),
         }
     } else {
         None
@@ -964,6 +962,45 @@ mod tests {
     fn test_server_module_exports() {
         // Verify that the module exports the expected items
         let _ = start;
+    }
+
+    #[cfg(feature = "tls")]
+    fn ra_tls_test_config() -> PowerConfig {
+        PowerConfig {
+            tls_port: Some(0),
+            tee_mode: true,
+            ra_tls: true,
+            ..Default::default()
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn test_spawn_tls_server_ra_tls_rejects_missing_tee_provider() {
+        let config = ra_tls_test_config();
+
+        let err = spawn_tls_server(&config, axum::Router::new(), None)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("requires a TEE provider"));
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn test_spawn_tls_server_ra_tls_rejects_attestation_report_failure() {
+        let config = ra_tls_test_config();
+        let provider: Arc<dyn TeeProvider> = Arc::new(
+            crate::tee::attestation::DefaultTeeProvider::with_type(TeeType::None),
+        );
+
+        let err = spawn_tls_server(&config, axum::Router::new(), Some(&provider))
+            .await
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("requires a TEE attestation report"));
     }
 
     #[tokio::test]

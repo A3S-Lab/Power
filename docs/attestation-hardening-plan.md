@@ -451,6 +451,10 @@ Landed in the current working tree:
 - Made RA-TLS configuration fail closed: `ra_tls = true` now requires both
   `tls_port` and `tee_mode = true`, and configured TLS listeners are rejected
   when the binary was not built with the `tls` feature.
+- Made RA-TLS startup fail closed: when `ra_tls = true`, missing TEE providers
+  or attestation report generation failures now abort startup before the TLS
+  listener binds instead of serving a certificate without the attestation
+  extension.
 - Made model key-provider selection fail closed: unknown `key_provider` values
   are rejected, `key_provider = "rotating"` requires at least one
   `key_rotation_sources` entry, and provider construction now follows the
