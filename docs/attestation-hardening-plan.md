@@ -150,6 +150,9 @@ Landed in the current working tree:
   and image URL fields during parsing and reject them instead of silently
   dropping prompt or multimodal policy before proxy forwarding and receipt
   binding.
+- OpenAI-compatible local chat backends now reject unsupported message roles
+  instead of silently coercing unknown roles to `user`; remote/proxy models keep
+  role passthrough for upstream enforcement.
 - OpenAI-compatible chat requests now accept only the default text output
   modality (`modalities = ["text"]`) and reject unsupported output controls
   (`audio`, `prediction`, and `reasoning_effort`) instead of silently ignoring

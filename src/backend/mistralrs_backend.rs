@@ -90,24 +90,25 @@ fn mistralrs_message_images(request: &ChatRequest, msg: &super::types::ChatMessa
 }
 
 #[cfg(feature = "mistralrs")]
-fn mistralrs_text_role(role: &str) -> mistralrs::TextMessageRole {
+fn mistralrs_text_role(role: &str) -> Result<mistralrs::TextMessageRole> {
     match role {
-        "system" => mistralrs::TextMessageRole::System,
-        "user" => mistralrs::TextMessageRole::User,
-        "assistant" => mistralrs::TextMessageRole::Assistant,
-        "tool" => mistralrs::TextMessageRole::Tool,
-        _ => mistralrs::TextMessageRole::User,
+        "system" => Ok(mistralrs::TextMessageRole::System),
+        "user" => Ok(mistralrs::TextMessageRole::User),
+        "assistant" => Ok(mistralrs::TextMessageRole::Assistant),
+        "tool" => Ok(mistralrs::TextMessageRole::Tool),
+        unsupported => Err(PowerError::InferenceFailed(format!(
+            "unsupported chat message role '{unsupported}' for mistral.rs text path; supported roles are system, user, assistant, and tool"
+        ))),
     }
 }
 
 #[cfg(feature = "mistralrs")]
-fn mistralrs_text_messages(request: &ChatRequest) -> mistralrs::TextMessages {
-    request
-        .messages
-        .iter()
-        .fold(mistralrs::TextMessages::new(), |messages, msg| {
-            messages.add_message(mistralrs_text_role(&msg.role), msg.content.text())
-        })
+fn mistralrs_text_messages(request: &ChatRequest) -> Result<mistralrs::TextMessages> {
+    let mut messages = mistralrs::TextMessages::new();
+    for msg in &request.messages {
+        messages = messages.add_message(mistralrs_text_role(&msg.role)?, msg.content.text());
+    }
+    Ok(messages)
 }
 
 impl MistralRsBackend {
@@ -260,7 +261,7 @@ impl Backend for MistralRsBackend {
         model_name: &str,
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
-        use mistralrs::{RequestBuilder, TextMessageRole};
+        use mistralrs::RequestBuilder;
 
         // Check if this is a vision request (has images) and route accordingly.
         let has_images = request.has_image_inputs();
@@ -324,13 +325,7 @@ impl Backend for MistralRsBackend {
         }
 
         for (message_index, msg) in request.messages.iter().enumerate() {
-            let role = match msg.role.as_str() {
-                "system" => TextMessageRole::System,
-                "user" => TextMessageRole::User,
-                "assistant" => TextMessageRole::Assistant,
-                "tool" => TextMessageRole::Tool,
-                _ => TextMessageRole::User,
-            };
+            let role = mistralrs_text_role(&msg.role)?;
 
             let all_images = mistralrs_message_images(&request, msg);
 
@@ -504,7 +499,7 @@ impl Backend for MistralRsBackend {
 
         let token_ids = model
             .tokenize(
-                either::Either::Left(mistralrs_text_messages(request)),
+                either::Either::Left(mistralrs_text_messages(request)?),
                 None,
                 true,
                 true,
@@ -1116,7 +1111,9 @@ mod tests {
     #[cfg(feature = "mistralrs")]
     #[test]
     fn test_mistralrs_text_messages_match_text_chat_path() {
-        let messages: Vec<_> = mistralrs_text_messages(&text_chat_request()).into();
+        let messages: Vec<_> = mistralrs_text_messages(&text_chat_request())
+            .unwrap()
+            .into();
         assert_eq!(
             messages[0]["role"].as_ref().left().map(String::as_str),
             Some("system")
@@ -1133,6 +1130,18 @@ mod tests {
             messages[1]["content"].as_ref().left().map(String::as_str),
             Some("hi")
         );
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn test_mistralrs_text_messages_rejects_unsupported_role() {
+        let mut request = text_chat_request();
+        request.messages[1].role = "developer".to_string();
+
+        let err = mistralrs_text_messages(&request).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unsupported chat message role 'developer'"));
     }
 
     #[cfg(feature = "mistralrs")]

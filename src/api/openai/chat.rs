@@ -63,6 +63,21 @@ fn unsupported_local_parallel_tool_calls_message(
     }
 }
 
+fn unsupported_local_message_role_message(request: &ChatCompletionRequest) -> Option<String> {
+    for (index, message) in request.messages.iter().enumerate() {
+        if !matches!(
+            message.role.as_str(),
+            "system" | "user" | "assistant" | "tool"
+        ) {
+            return Some(format!(
+                "unsupported local chat message role at messages[{index}]: '{}'; supported roles are system, user, assistant, and tool",
+                message.role
+            ));
+        }
+    }
+    None
+}
+
 /// POST /v1/chat/completions - OpenAI-compatible chat completion.
 pub async fn handler(
     State(state): State<AppState>,
@@ -210,6 +225,10 @@ pub async fn handler(
         }
     };
     if !matches!(manifest.format, crate::model::manifest::ModelFormat::Remote) {
+        if let Some(message) = unsupported_local_message_role_message(&request) {
+            state.metrics.decrement_active_requests();
+            return openai_error("unsupported_message_role", &message).into_response();
+        }
         if let Some(message) = unsupported_local_tool_choice_message(&request) {
             state.metrics.decrement_active_requests();
             return openai_error("unsupported_tool_choice", &message).into_response();
@@ -1017,6 +1036,52 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("service_tier"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_unsupported_local_message_role() {
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"developer","content":"policy"}]}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_message_role");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("developer"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_allows_remote_message_role_passthrough() {
+        let mock = MockBackend::success().with_remote_support();
+        let state = test_state_with_mock(mock);
+        let mut manifest = sample_manifest("test");
+        manifest.format = ModelFormat::Remote;
+        state.registry.register_transient(manifest).unwrap();
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"developer","content":"policy"}]}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
