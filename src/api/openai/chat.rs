@@ -262,6 +262,14 @@ pub async fn handler(
                 .into_response();
         }
     };
+    if let Some(message) = super::unsupported_local_response_format_for_backend(
+        &manifest.format,
+        backend.name(),
+        request.response_format.as_ref(),
+    ) {
+        state.metrics.decrement_active_requests();
+        return openai_error("unsupported_response_format", &message).into_response();
+    }
 
     let load_result = match crate::api::autoload::ensure_loaded_with_keep_alive(
         &state,

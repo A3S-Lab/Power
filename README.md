@@ -126,7 +126,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
-- **JSON Schema Structured Output**: Constrain model output via JSON Schema → GBNF grammar conversion
+- **JSON Schema Structured Output**: Constrain local llama.cpp output via JSON Schema → GBNF grammar conversion; unsupported local backend/schema combinations fail closed instead of silently ignoring output policy
 - **Thinking & Reasoning**: Streaming `<think>` block parser for DeepSeek-R1, QwQ reasoning models
 - **Chat Template Engine**: Jinja2-compatible rendering via `minijinja` (Llama 3, ChatML, Phi, Gemma, custom); model-provided raw templates fail closed on render errors instead of silently switching prompt formats
 - **KV Cache Reuse**: Prefix matching across multi-turn requests for conversation speedup
@@ -1050,6 +1050,11 @@ curl http://localhost:11434/v1/chat/completions \
     }
   }'
 ```
+
+Local JSON Schema enforcement requires a backend that can apply the requested
+grammar. Power rejects unsupported local backend/schema combinations instead of
+silently ignoring `response_format`; remote models preserve the OpenAI wire
+shape for upstream enforcement.
 
 #### List Models
 

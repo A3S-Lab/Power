@@ -1220,12 +1220,30 @@ impl Backend for LlamaCppBackend {
 
             // JSON grammar constraint (supports "json" string or JSON Schema object)
             if let Some(ref fmt) = response_format {
-                if let Some(grammar) = super::json_schema::format_to_gbnf(fmt) {
-                    match LlamaSampler::grammar(&model_arc, &grammar, "root") {
-                        Ok(s) => samplers.push(s),
-                        Err(e) => {
-                            tracing::warn!("Failed to create grammar sampler: {e}, ignoring");
+                match super::json_schema::format_to_gbnf(fmt) {
+                    Ok(Some(grammar)) => {
+                        match LlamaSampler::grammar(&model_arc, &grammar, "root") {
+                            Ok(s) => samplers.push(s),
+                            Err(e) => {
+                                send_completion_result(
+                                    &tx,
+                                    Err(PowerError::InferenceFailed(format!(
+                                        "Failed to create grammar sampler: {e}"
+                                    ))),
+                                );
+                                return;
+                            }
                         }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        send_completion_result(
+                            &tx,
+                            Err(PowerError::InvalidRequest(format!(
+                                "unsupported response_format grammar: {e}"
+                            ))),
+                        );
+                        return;
                     }
                 }
             }

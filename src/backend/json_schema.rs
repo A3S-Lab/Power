@@ -10,11 +10,11 @@ use serde_json::Value;
 /// Convert a JSON Schema to a GBNF grammar string.
 ///
 /// Returns a grammar where `root` matches the top-level schema.
-pub fn schema_to_gbnf(schema: &Value) -> String {
+pub fn schema_to_gbnf(schema: &Value) -> Result<String, String> {
     let mut rules = Vec::new();
     let mut ctx = GbnfContext::new();
 
-    let root_rule = ctx.generate_rule("root", schema);
+    let root_rule = ctx.generate_rule("root", schema)?;
     rules.push(root_rule);
     rules.extend(ctx.extra_rules);
 
@@ -27,7 +27,7 @@ pub fn schema_to_gbnf(schema: &Value) -> String {
     rules.push(NULL_RULE.to_string());
     rules.push(VALUE_RULE.to_string());
 
-    rules.join("\n")
+    Ok(rules.join("\n"))
 }
 
 /// Fallback GBNF grammar for unconstrained JSON output.
@@ -90,40 +90,54 @@ impl GbnfContext {
         format!("{prefix}{}", self.counter)
     }
 
-    fn generate_rule(&mut self, name: &str, schema: &Value) -> String {
+    fn generate_rule(&mut self, name: &str, schema: &Value) -> Result<String, String> {
         // Handle enum constraint
         if let Some(enum_values) = schema.get("enum").and_then(|v| v.as_array()) {
-            let alternatives: Vec<String> = enum_values
+            let alternatives: Result<Vec<String>, String> = enum_values
                 .iter()
                 .map(|v| match v {
-                    Value::String(s) => format!("\"\\\"{}\\\"\"", escape_gbnf(s)),
-                    Value::Number(n) => format!("\"{}\"", n),
-                    Value::Bool(b) => format!("\"{}\"", b),
-                    Value::Null => "\"null\"".to_string(),
-                    _ => "value".to_string(),
+                    Value::String(s) => Ok(format!("\"\\\"{}\\\"\"", escape_gbnf(s))),
+                    Value::Number(n) => Ok(format!("\"{}\"", n)),
+                    Value::Bool(b) => Ok(format!("\"{}\"", b)),
+                    Value::Null => Ok("\"null\"".to_string()),
+                    _ => Err(
+                        "unsupported JSON Schema enum value; supported enum values are strings, numbers, booleans, and null"
+                            .to_string(),
+                    ),
                 })
                 .collect();
-            return format!("{name} ::= ({}) ws", alternatives.join(" | "));
+            return Ok(format!("{name} ::= ({}) ws", alternatives?.join(" | ")));
         }
 
-        let type_str = schema
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("object");
+        let type_value = schema.get("type");
+        let type_str = match type_value {
+            Some(Value::String(s)) => s.as_str(),
+            Some(_) => {
+                return Err("unsupported JSON Schema type value; type must be a string".to_string())
+            }
+            None if schema.get("properties").is_some() => "object",
+            None => {
+                return Err(
+                    "unsupported JSON Schema without type; specify type or properties".to_string(),
+                )
+            }
+        };
 
         match type_str {
             "object" => self.generate_object_rule(name, schema),
             "array" => self.generate_array_rule(name, schema),
-            "string" => format!("{name} ::= string"),
-            "number" => format!("{name} ::= number"),
-            "integer" => format!("{name} ::= integer"),
-            "boolean" => format!("{name} ::= boolean"),
-            "null" => format!("{name} ::= null"),
-            _ => format!("{name} ::= value"),
+            "string" => Ok(format!("{name} ::= string")),
+            "number" => Ok(format!("{name} ::= number")),
+            "integer" => Ok(format!("{name} ::= integer")),
+            "boolean" => Ok(format!("{name} ::= boolean")),
+            "null" => Ok(format!("{name} ::= null")),
+            _ => Err(format!(
+                "unsupported JSON Schema type '{type_str}'; supported types are object, array, string, number, integer, boolean, and null"
+            )),
         }
     }
 
-    fn generate_object_rule(&mut self, name: &str, schema: &Value) -> String {
+    fn generate_object_rule(&mut self, name: &str, schema: &Value) -> Result<String, String> {
         let properties = schema.get("properties").and_then(|v| v.as_object());
         let required: Vec<&str> = schema
             .get("required")
@@ -135,9 +149,9 @@ impl GbnfContext {
             Some(props) if !props.is_empty() => props,
             _ => {
                 // No properties defined — allow any JSON object
-                return format!(
+                return Ok(format!(
                     "{name} ::= \"{{\" ws (string \":\" ws value (\",\" ws string \":\" ws value)*)? \"}}\" ws"
-                );
+                ));
             }
         };
 
@@ -145,7 +159,7 @@ impl GbnfContext {
         let mut prop_parts = Vec::new();
         for (key, prop_schema) in properties {
             let prop_rule_name = self.next_name(&format!("{name}-"));
-            let rule = self.generate_rule(&prop_rule_name, prop_schema);
+            let rule = self.generate_rule(&prop_rule_name, prop_schema)?;
             self.extra_rules.push(rule);
             prop_parts.push((key.clone(), prop_rule_name));
         }
@@ -165,7 +179,7 @@ impl GbnfContext {
         }
 
         if field_exprs.is_empty() && optional_exprs.is_empty() {
-            return format!("{name} ::= \"{{\" ws \"}}\" ws");
+            return Ok(format!("{name} ::= \"{{\" ws \"}}\" ws"));
         }
 
         // Build: required fields separated by commas, then optional fields
@@ -187,24 +201,24 @@ impl GbnfContext {
         }
 
         let body = parts.join(" ");
-        format!("{name} ::= \"{{\" ws {body} \"}}\" ws")
+        Ok(format!("{name} ::= \"{{\" ws {body} \"}}\" ws"))
     }
 
-    fn generate_array_rule(&mut self, name: &str, schema: &Value) -> String {
+    fn generate_array_rule(&mut self, name: &str, schema: &Value) -> Result<String, String> {
         let items = schema.get("items");
 
         match items {
             Some(item_schema) => {
                 let item_rule_name = self.next_name(&format!("{name}-item"));
-                let rule = self.generate_rule(&item_rule_name, item_schema);
+                let rule = self.generate_rule(&item_rule_name, item_schema)?;
                 self.extra_rules.push(rule);
-                format!(
+                Ok(format!(
                     "{name} ::= \"[\" ws ({item_rule_name} (\",\" ws {item_rule_name})*)? \"]\" ws"
-                )
+                ))
             }
-            None => {
-                format!("{name} ::= \"[\" ws (value (\",\" ws value)*)? \"]\" ws")
-            }
+            None => Ok(format!(
+                "{name} ::= \"[\" ws (value (\",\" ws value)*)? \"]\" ws"
+            )),
         }
     }
 }
@@ -221,27 +235,35 @@ fn escape_gbnf(s: &str) -> String {
 /// - `{"type": "object", ...}` → schema-specific grammar
 /// - `{"type": "json_object"}` → generic JSON grammar (OpenAI compat)
 ///
-/// Returns `None` if no grammar constraint should be applied.
-pub fn format_to_gbnf(format: &Value) -> Option<String> {
+/// Returns `Ok(None)` if no grammar constraint should be applied.
+pub fn format_to_gbnf(format: &Value) -> Result<Option<String>, String> {
     match format {
-        Value::String(s) if s == "json" => Some(GENERIC_JSON_GRAMMAR.to_string()),
+        Value::String(s) if s == "json" => Ok(Some(GENERIC_JSON_GRAMMAR.to_string())),
+        Value::String(s) if s == "text" => Ok(None),
         Value::Object(obj) => {
             let type_val = obj.get("type").and_then(|v| v.as_str());
             match type_val {
-                Some("json_object") => Some(GENERIC_JSON_GRAMMAR.to_string()),
+                Some("text") => Ok(None),
+                Some("json_object") => Ok(Some(GENERIC_JSON_GRAMMAR.to_string())),
                 Some("object") | Some("array") | Some("string") | Some("number")
-                | Some("integer") | Some("boolean") => Some(schema_to_gbnf(format)),
+                | Some("integer") | Some("boolean") | Some("null") => {
+                    schema_to_gbnf(format).map(Some)
+                }
                 _ => {
                     // If it has "properties", treat as object schema
                     if obj.contains_key("properties") {
-                        Some(schema_to_gbnf(format))
+                        schema_to_gbnf(format).map(Some)
                     } else {
-                        None
+                        Err(
+                            "unsupported response_format grammar; expected json_object, text, or a supported JSON Schema"
+                                .to_string(),
+                        )
                     }
                 }
             }
         }
-        _ => None,
+        Value::Null => Ok(None),
+        _ => Err("unsupported response_format grammar value".to_string()),
     }
 }
 
@@ -269,7 +291,7 @@ mod tests {
             },
             "required": ["name"]
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::="));
         assert!(grammar.contains("name"));
         assert!(grammar.contains("age"));
@@ -291,7 +313,7 @@ mod tests {
                 }
             }
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::="));
         assert!(grammar.contains("address"));
         assert!(grammar.contains("street"));
@@ -304,7 +326,7 @@ mod tests {
             "type": "array",
             "items": {"type": "string"}
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::="));
         assert!(grammar.contains("["));
         assert!(grammar.contains("]"));
@@ -317,7 +339,7 @@ mod tests {
             "type": "string",
             "enum": ["red", "green", "blue"]
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::="));
         assert!(grammar.contains("red"));
         assert!(grammar.contains("green"));
@@ -327,28 +349,28 @@ mod tests {
     #[test]
     fn test_schema_to_gbnf_boolean() {
         let schema = json!({"type": "boolean"});
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::= boolean"));
     }
 
     #[test]
     fn test_schema_to_gbnf_number() {
         let schema = json!({"type": "number"});
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::= number"));
     }
 
     #[test]
     fn test_schema_to_gbnf_null() {
         let schema = json!({"type": "null"});
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::= null"));
     }
 
     #[test]
     fn test_schema_to_gbnf_empty_object() {
         let schema = json!({"type": "object"});
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::="));
         assert!(grammar.contains("{"));
     }
@@ -356,21 +378,21 @@ mod tests {
     #[test]
     fn test_schema_to_gbnf_array_without_items() {
         let schema = json!({"type": "array"});
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::="));
         assert!(grammar.contains("value"));
     }
 
     #[test]
     fn test_format_to_gbnf_string_json() {
-        let result = format_to_gbnf(&json!("json"));
+        let result = format_to_gbnf(&json!("json")).unwrap();
         assert!(result.is_some());
         assert!(result.unwrap().contains("root"));
     }
 
     #[test]
     fn test_format_to_gbnf_json_object_type() {
-        let result = format_to_gbnf(&json!({"type": "json_object"}));
+        let result = format_to_gbnf(&json!({"type": "json_object"})).unwrap();
         assert!(result.is_some());
     }
 
@@ -381,20 +403,21 @@ mod tests {
             "properties": {
                 "name": {"type": "string"}
             }
-        }));
+        }))
+        .unwrap();
         assert!(result.is_some());
         assert!(result.unwrap().contains("name"));
     }
 
     #[test]
-    fn test_format_to_gbnf_unknown_returns_none() {
-        let result = format_to_gbnf(&json!("text"));
+    fn test_format_to_gbnf_text_returns_none() {
+        let result = format_to_gbnf(&json!("text")).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_format_to_gbnf_null_returns_none() {
-        let result = format_to_gbnf(&Value::Null);
+        let result = format_to_gbnf(&Value::Null).unwrap();
         assert!(result.is_none());
     }
 
@@ -405,7 +428,8 @@ mod tests {
             "properties": {
                 "x": {"type": "number"}
             }
-        }));
+        }))
+        .unwrap();
         assert!(result.is_some());
     }
 
@@ -419,7 +443,7 @@ mod tests {
             },
             "required": ["required_field"]
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("required_field"));
         assert!(grammar.contains("optional_field"));
     }
@@ -429,7 +453,7 @@ mod tests {
         let schema = json!({
             "enum": [1, 2, 3]
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("\"1\""));
         assert!(grammar.contains("\"2\""));
         assert!(grammar.contains("\"3\""));
@@ -440,7 +464,7 @@ mod tests {
         let schema = json!({
             "enum": [true, false]
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("\"true\""));
         assert!(grammar.contains("\"false\""));
     }
@@ -471,7 +495,7 @@ mod tests {
             },
             "required": ["users"]
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::="));
         assert!(grammar.contains("users"));
         assert!(grammar.contains("name"));
@@ -484,7 +508,7 @@ mod tests {
         let schema = json!({
             "enum": [null, "value"]
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("\"null\""));
         assert!(grammar.contains("value"));
     }
@@ -492,29 +516,29 @@ mod tests {
     #[test]
     fn test_schema_to_gbnf_integer_type() {
         let schema = json!({"type": "integer"});
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::= integer"));
     }
 
     #[test]
     fn test_schema_to_gbnf_string_type() {
         let schema = json!({"type": "string"});
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::= string"));
     }
 
     #[test]
-    fn test_schema_to_gbnf_unknown_type() {
+    fn test_schema_to_gbnf_unknown_type_returns_error() {
         let schema = json!({"type": "unknown"});
-        let grammar = schema_to_gbnf(&schema);
-        assert!(grammar.contains("root ::= value"));
+        let err = schema_to_gbnf(&schema).unwrap_err();
+        assert!(err.contains("unsupported JSON Schema type"));
     }
 
     #[test]
-    fn test_schema_to_gbnf_no_type() {
+    fn test_schema_to_gbnf_no_type_returns_error() {
         let schema = json!({});
-        let grammar = schema_to_gbnf(&schema);
-        assert!(grammar.contains("root ::="));
+        let err = schema_to_gbnf(&schema).unwrap_err();
+        assert!(err.contains("without type"));
     }
 
     #[test]
@@ -522,39 +546,40 @@ mod tests {
         let result = format_to_gbnf(&json!({
             "type": "array",
             "items": {"type": "string"}
-        }));
+        }))
+        .unwrap();
         assert!(result.is_some());
         assert!(result.unwrap().contains("string"));
     }
 
     #[test]
     fn test_format_to_gbnf_string_type() {
-        let result = format_to_gbnf(&json!({"type": "string"}));
+        let result = format_to_gbnf(&json!({"type": "string"})).unwrap();
         assert!(result.is_some());
     }
 
     #[test]
     fn test_format_to_gbnf_number_type() {
-        let result = format_to_gbnf(&json!({"type": "number"}));
+        let result = format_to_gbnf(&json!({"type": "number"})).unwrap();
         assert!(result.is_some());
     }
 
     #[test]
     fn test_format_to_gbnf_integer_type() {
-        let result = format_to_gbnf(&json!({"type": "integer"}));
+        let result = format_to_gbnf(&json!({"type": "integer"})).unwrap();
         assert!(result.is_some());
     }
 
     #[test]
     fn test_format_to_gbnf_boolean_type() {
-        let result = format_to_gbnf(&json!({"type": "boolean"}));
+        let result = format_to_gbnf(&json!({"type": "boolean"})).unwrap();
         assert!(result.is_some());
     }
 
     #[test]
-    fn test_format_to_gbnf_empty_object() {
-        let result = format_to_gbnf(&json!({}));
-        assert!(result.is_none());
+    fn test_format_to_gbnf_empty_object_returns_error() {
+        let err = format_to_gbnf(&json!({})).unwrap_err();
+        assert!(err.contains("unsupported response_format grammar"));
     }
 
     #[test]
@@ -576,7 +601,7 @@ mod tests {
                 "field2": {"type": "number"}
             }
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("field1"));
         assert!(grammar.contains("field2"));
     }
@@ -587,7 +612,7 @@ mod tests {
             "type": "object",
             "properties": {}
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("root ::="));
     }
 
@@ -600,7 +625,7 @@ mod tests {
                 "items": {"type": "integer"}
             }
         });
-        let grammar = schema_to_gbnf(&schema);
+        let grammar = schema_to_gbnf(&schema).unwrap();
         assert!(grammar.contains("integer"));
     }
 }

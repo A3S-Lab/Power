@@ -150,6 +150,14 @@ pub async fn handler(
                 .into_response();
         }
     };
+    if let Some(message) = super::unsupported_local_response_format_for_backend(
+        &manifest.format,
+        backend.name(),
+        request.response_format.as_ref(),
+    ) {
+        state.metrics.decrement_active_requests();
+        return openai_error("unsupported_response_format", &message).into_response();
+    }
 
     let load_result = match crate::api::autoload::ensure_loaded_with_keep_alive(
         &state,
@@ -1283,12 +1291,11 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_openai_completions_forwards_response_format() {
+    async fn test_openai_completions_rejects_response_format_for_unenforcing_backend() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
 
         let mock = MockBackend::success();
-        let completion_request_capture = mock.completion_request_capture();
         let state = test_state_with_mock(mock);
         state.registry.register(sample_manifest("test")).unwrap();
         state.mark_loaded("test");
@@ -1315,23 +1322,16 @@ mod tests {
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-        let captured = completion_request_capture
-            .lock()
-            .expect("completion request lock poisoned")
-            .clone()
-            .expect("expected backend completion request to be captured");
-        let response_format = captured
-            .response_format
-            .expect("expected response format to be forwarded");
-        assert_eq!(response_format["type"], "object");
-        assert_eq!(response_format["properties"]["answer"]["type"], "string");
-        assert!(json["attestation_receipt"]["decoding"]["response_format_sha256"].is_string());
+        assert_eq!(json["error"]["code"], "unsupported_response_format");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("backend 'mock' does not support response_format.type json_schema"));
 
         std::env::remove_var("A3S_POWER_HOME");
     }

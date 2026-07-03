@@ -419,6 +419,11 @@ Landed in the current working tree:
 - Made local raw Jinja chat-template rendering fail closed for llama.cpp and
   picolm when a model-provided template cannot be parsed or rendered, instead
   of silently replacing it with a hardcoded prompt format.
+- Made local `response_format` enforcement backend-aware: llama.cpp rejects
+  JSON Schema values that cannot be converted or installed as grammar
+  constraints, picolm rejects schema-specific constraints it cannot enforce,
+  and mistral.rs rejects local response-format constraints instead of silently
+  ignoring receipt-bound output policy. Remote models keep upstream passthrough.
 
 Still open:
 

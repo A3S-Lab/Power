@@ -67,6 +67,50 @@ pub(super) fn backend_response_format(
     })
 }
 
+pub(super) fn unsupported_local_response_format_for_backend(
+    format: &ModelFormat,
+    backend_name: &str,
+    response_format: Option<&ResponseFormat>,
+) -> Option<String> {
+    if matches!(format, ModelFormat::Remote) {
+        return None;
+    }
+
+    let response_format = response_format?;
+    match response_format.r#type.as_str() {
+        "text" => None,
+        "json_object" => match backend_name {
+            "llama.cpp" | "picolm" => None,
+            _ => Some(format!(
+                "backend '{backend_name}' does not support response_format.type json_object"
+            )),
+        },
+        "json_schema" => match backend_name {
+            "llama.cpp" => {
+                let local_format = local_backend_response_format(response_format);
+                match crate::backend::json_schema::format_to_gbnf(&local_format) {
+                    Ok(Some(_)) => None,
+                    Ok(None) => Some(
+                        "response_format.type json_schema did not produce a grammar constraint"
+                            .to_string(),
+                    ),
+                    Err(e) => Some(format!(
+                        "backend 'llama.cpp' cannot enforce response_format.type json_schema: {e}"
+                    )),
+                }
+            }
+            "picolm" => Some(
+                "backend 'picolm' supports response_format.type json_object but not schema-specific json_schema constraints"
+                    .to_string(),
+            ),
+            _ => Some(format!(
+                "backend '{backend_name}' does not support response_format.type json_schema"
+            )),
+        },
+        _ => None,
+    }
+}
+
 fn local_backend_response_format(format: &ResponseFormat) -> serde_json::Value {
     if format.r#type == "json_schema" {
         if let Some(ref spec) = format.json_schema {
@@ -187,6 +231,7 @@ pub(super) fn round_tokens(n: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::manifest::ModelFormat;
 
     #[test]
     fn test_openai_error_structure() {
@@ -251,6 +296,112 @@ mod tests {
         let data = sse_json_data(&FailingSerialize);
         assert!(data.contains("sse_serialization_failed"));
         assert!(data.contains("boom"));
+    }
+
+    fn response_format(value: serde_json::Value) -> ResponseFormat {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn test_remote_response_format_passthrough_does_not_apply_local_backend_limits() {
+        let format = response_format(serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "Any",
+                "schema": {"type": "unknown"}
+            }
+        }));
+
+        assert!(unsupported_local_response_format_for_backend(
+            &ModelFormat::Remote,
+            "mistral.rs",
+            Some(&format)
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_mistralrs_rejects_local_response_format_constraints() {
+        let format = response_format(serde_json::json!({"type": "json_object"}));
+
+        let message = unsupported_local_response_format_for_backend(
+            &ModelFormat::Gguf,
+            "mistral.rs",
+            Some(&format),
+        )
+        .unwrap();
+
+        assert!(message.contains("does not support response_format.type json_object"));
+    }
+
+    #[test]
+    fn test_picolm_accepts_json_object_but_rejects_json_schema() {
+        let json_object = response_format(serde_json::json!({"type": "json_object"}));
+        assert!(unsupported_local_response_format_for_backend(
+            &ModelFormat::Gguf,
+            "picolm",
+            Some(&json_object)
+        )
+        .is_none());
+
+        let json_schema = response_format(serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "Answer",
+                "schema": {"type": "object"}
+            }
+        }));
+        let message = unsupported_local_response_format_for_backend(
+            &ModelFormat::Gguf,
+            "picolm",
+            Some(&json_schema),
+        )
+        .unwrap();
+
+        assert!(message.contains("not schema-specific json_schema constraints"));
+    }
+
+    #[test]
+    fn test_llamacpp_accepts_enforceable_json_schema() {
+        let format = response_format(serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "Answer",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"}
+                    }
+                }
+            }
+        }));
+
+        assert!(unsupported_local_response_format_for_backend(
+            &ModelFormat::Gguf,
+            "llama.cpp",
+            Some(&format),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_llamacpp_rejects_unenforceable_json_schema() {
+        let format = response_format(serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "Answer",
+                "schema": {"type": "unknown"}
+            }
+        }));
+
+        let message = unsupported_local_response_format_for_backend(
+            &ModelFormat::Gguf,
+            "llama.cpp",
+            Some(&format),
+        )
+        .unwrap();
+
+        assert!(message.contains("cannot enforce response_format.type json_schema"));
     }
 
     #[test]
