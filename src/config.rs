@@ -778,12 +778,25 @@ impl PowerConfig {
             validate_model_signing_key(key).map_err(PowerError::Config)?;
         }
 
-        // Warn if ra_tls is enabled but tls_port is not set (RA-TLS requires a TLS listener).
-        if self.ra_tls && self.tls_port.is_none() {
-            tracing::warn!(
-                "ra_tls = true but tls_port is not set. RA-TLS requires a TLS listener. \
-                 Set tls_port to enable the TLS server."
-            );
+        if self.ra_tls {
+            if self.tls_port.is_none() {
+                return Err(PowerError::Config(
+                    "ra_tls = true requires tls_port so the RA-TLS listener is started".to_string(),
+                ));
+            }
+            if !self.tee_mode {
+                return Err(PowerError::Config(
+                    "ra_tls = true requires tee_mode = true so the TLS certificate contains attestation"
+                        .to_string(),
+                ));
+            }
+        }
+
+        #[cfg(not(feature = "tls"))]
+        if self.tls_port.is_some() {
+            return Err(PowerError::Config(
+                "tls_port requires building a3s-power with the tls feature enabled".to_string(),
+            ));
         }
 
         // Warn if key_provider is "rotating" but key_rotation_sources is empty.
@@ -2673,23 +2686,52 @@ expected_measurements = {
     }
 
     #[test]
-    fn test_validate_ra_tls_without_tls_port_emits_warning() {
+    fn test_validate_rejects_ra_tls_without_tls_port() {
         let config = PowerConfig {
             ra_tls: true,
+            tee_mode: true,
             tls_port: None,
             ..Default::default()
         };
-        config.validate().unwrap(); // must not panic; warning is emitted via tracing
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("tls_port"));
     }
 
     #[test]
-    fn test_validate_ra_tls_with_tls_port_is_valid() {
+    fn test_validate_rejects_ra_tls_without_tee_mode() {
         let config = PowerConfig {
             ra_tls: true,
             tls_port: Some(11435),
             ..Default::default()
         };
-        config.validate().unwrap(); // must not panic, no warning
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("tee_mode"));
+    }
+
+    #[cfg(not(feature = "tls"))]
+    #[test]
+    fn test_validate_rejects_tls_port_without_tls_feature() {
+        let config = PowerConfig {
+            tls_port: Some(11435),
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("tls feature"));
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn test_validate_ra_tls_with_tls_port_and_tee_mode_is_valid() {
+        let config = PowerConfig {
+            ra_tls: true,
+            tee_mode: true,
+            tls_port: Some(11435),
+            ..Default::default()
+        };
+        config.validate().unwrap();
     }
 
     #[test]
@@ -2785,6 +2827,7 @@ expected_measurements = {
     }
 
     #[test]
+    #[serial]
     fn test_load_from_rejects_invalid_model_signing_key() {
         let dir = tempfile::tempdir().unwrap();
         let hcl_path = dir.path().join("config.hcl");

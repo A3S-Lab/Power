@@ -448,6 +448,9 @@ Landed in the current working tree:
 - Made audit log startup fail closed: when `audit_log = true`, plain and
   encrypted audit logger open failures now abort startup instead of disabling
   audit logging.
+- Made RA-TLS configuration fail closed: `ra_tls = true` now requires both
+  `tls_port` and `tee_mode = true`, and configured TLS listeners are rejected
+  when the binary was not built with the `tls` feature.
 
 Still open:
 

@@ -613,8 +613,8 @@ gpu_attestation {
 | `proxy_effective_prompt_digest` | `false` | Ask proxy upstreams for a rendered chat prompt digest before inference and include it in receipts when returned |
 | `proxy_effective_prompt_digest_required` | `false` | Fail closed when a proxy upstream does not support or cannot return the rendered prompt digest |
 | `proxy_effective_prompt_digest_path` | `"/v1/chat/effective-prompt-digest"` | Upstream endpoint path for proxy rendered prompt digest requests |
-| `tls_port` | `null` | TLS server port; when set, a TLS server starts in parallel (`tls` feature required) |
-| `ra_tls` | `false` | Embed TEE attestation in TLS cert (RA-TLS); requires `tls_port` + `tee_mode` |
+| `tls_port` | `null` | TLS server port; when set, a TLS server starts in parallel; configuration validation fails unless the binary was built with the `tls` feature |
+| `ra_tls` | `false` | Embed TEE attestation in TLS cert (RA-TLS); fails configuration validation unless `tls_port` and `tee_mode = true` are set |
 | `vsock_port` | `null` | Vsock port for guest-host communication (`vsock` feature, Linux only) |
 
 ### Environment Variables
