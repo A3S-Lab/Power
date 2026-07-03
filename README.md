@@ -623,7 +623,7 @@ gpu_attestation {
 |----------|-------------|
 | `A3S_POWER_HOME` | Base directory for all Power data (default: `~/.a3s/power`) |
 | `A3S_POWER_HOST` | Server bind address |
-| `A3S_POWER_PORT` | Server port |
+| `A3S_POWER_PORT` | Server port; invalid values fail closed |
 | `A3S_POWER_DATA_DIR` | Model storage directory |
 | `A3S_POWER_MAX_MODELS` | Max concurrent loaded models |
 | `A3S_POWER_KEEP_ALIVE` | Default keep-alive duration |

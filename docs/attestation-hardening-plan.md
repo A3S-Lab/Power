@@ -456,8 +456,9 @@ Landed in the current working tree:
   `key_rotation_sources` entry, and provider construction now follows the
   configured provider type instead of inferring rotation from source presence.
 - Made transport port environment overrides fail closed:
-  malformed `A3S_POWER_TLS_PORT` and `A3S_POWER_VSOCK_PORT` values now abort
-  configuration loading instead of silently leaving those listeners disabled.
+  malformed `A3S_POWER_PORT`, `A3S_POWER_TLS_PORT`, and
+  `A3S_POWER_VSOCK_PORT` values now abort configuration loading instead of
+  silently leaving listeners disabled or bound to an unintended fallback port.
 
 Still open:
 

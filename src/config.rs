@@ -939,9 +939,7 @@ impl PowerConfig {
         }
 
         if let Ok(port_str) = std::env::var("A3S_POWER_PORT") {
-            if let Some(port) = parse_env_override::<u16>("A3S_POWER_PORT", &port_str) {
-                self.port = port;
-            }
+            self.port = parse_required_env_override::<u16>("A3S_POWER_PORT", &port_str)?;
         }
 
         if let Ok(data_dir) = std::env::var("A3S_POWER_DATA_DIR") {
@@ -1882,6 +1880,17 @@ mod tests {
         config.apply_env_overrides().unwrap();
         assert_eq!(config.port, 8080);
         std::env::remove_var("A3S_POWER_PORT");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_port_invalid_rejected() {
+        std::env::set_var("A3S_POWER_PORT", "not-a-port");
+        let mut config = PowerConfig::default();
+        let err = config.apply_env_overrides().unwrap_err();
+        std::env::remove_var("A3S_POWER_PORT");
+
+        assert!(err.to_string().contains("A3S_POWER_PORT"));
     }
 
     #[test]
