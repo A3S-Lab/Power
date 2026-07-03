@@ -589,9 +589,9 @@ gpu_attestation {
 | `gpu_attestation.verdict_path` | `null` | Path to raw NVIDIA NRAS verdict bytes; mutually exclusive with `verdict_hex`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when configured evidence uses a file-backed verdict; configured verdict sources are capped at 64 MiB |
 | `gpu_attestation.verdict_hex` | `null` | Hex-encoded raw NVIDIA NRAS verdict bytes; mutually exclusive with `verdict_path`; configured verdict sources are capped at 64 MiB |
 | `gpu_attestation.nvattest_path` | `"nvattest"` | Path to NVIDIA's `nvattest` CLI when `source = "nvattest-cli"`; `gpu-confidential` production policy requires an absolute path to an existing executable file |
-| `gpu_attestation.nvattest_verifier` | `"remote"` | `nvattest attest --verifier` value; `gpu-confidential` mode requires `"remote"` for NRAS |
-| `gpu_attestation.nvattest_gpu_evidence_source` | `"nvml"` | `nvattest collect-evidence --gpu-evidence-source`; use `"nvml"` for H100 confidential-computing deployments |
-| `gpu_attestation.nvattest_gpu_architecture` | `null` | GPU architecture value required only for `corelib` evidence collection |
+| `gpu_attestation.nvattest_verifier` | `"remote"` | `nvattest attest --verifier` value; must be `"remote"` or `"local"` when `source = "nvattest-cli"`; `gpu-confidential` mode requires `"remote"` for NRAS |
+| `gpu_attestation.nvattest_gpu_evidence_source` | `"nvml"` | `nvattest collect-evidence --gpu-evidence-source`; must be `"nvml"` or `"corelib"` when `source = "nvattest-cli"`; use `"nvml"` for H100 confidential-computing deployments |
+| `gpu_attestation.nvattest_gpu_architecture` | `null` | GPU architecture value required when `source = "nvattest-cli"` and `nvattest_gpu_evidence_source = "corelib"` |
 | `gpu_attestation.nras_url` | `null` | Optional NRAS URL. For `nvattest-cli`, passed to `nvattest attest --nras-url`; for `nras-rest`, may be a service root/base path or full `/v4/attest/gpu` endpoint. In `gpu-confidential` production policy, custom NRAS URLs must use HTTPS and must not include embedded credentials |
 | `gpu_attestation.nras_gpu_architecture` | `null` | GPU architecture for `nras-rest`: `"HOPPER"` or `"BLACKWELL"` |
 | `gpu_attestation.nras_claims_version` | `"3.0"` | NVIDIA NRAS REST claims version (`"2.0"` or `"3.0"`) |
@@ -600,7 +600,7 @@ gpu_attestation {
 | `gpu_attestation.rim_url` | `null` | Optional RIM URL passed to `nvattest attest --rim-url`; `gpu-confidential` production policy requires HTTPS when configured |
 | `gpu_attestation.ocsp_url` | `null` | Optional OCSP URL passed to `nvattest attest --ocsp-url`; `gpu-confidential` production policy requires HTTPS when configured |
 | `gpu_attestation.relying_party_policy_path` | `null` | Optional relying-party policy file for `nvattest attest`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when configured |
-| `gpu_attestation.nvattest_timeout_secs` | `30` | Timeout for each `nvattest` command |
+| `gpu_attestation.nvattest_timeout_secs` | `30` | Timeout for each `nvattest` command; must be greater than zero when `source = "nvattest-cli"` |
 | `model_key_source` | `null` | Decryption key for `.enc` model files: `{ file = "/path/to/key.hex" }` or `{ env = "MY_KEY_VAR" }` |
 | `key_provider` | `"static"` | Key provider type: `"static"` (uses `model_key_source`) or `"rotating"` (uses `key_rotation_sources`); unknown values fail configuration validation |
 | `key_rotation_sources` | `[]` | For rotating provider: list of key sources in rotation order; required when `key_provider = "rotating"` |

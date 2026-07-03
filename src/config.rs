@@ -844,42 +844,42 @@ impl PowerConfig {
         if self.gpu_attestation.source == GpuAttestationSource::NvattestCli
             && self.gpu_attestation.nvattest_timeout_secs == 0
         {
-            tracing::warn!(
-                "gpu_attestation.nvattest_timeout_secs = 0 is invalid; nvattest CLI provider \
-                 requires a positive timeout."
-            );
+            return Err(PowerError::Config(
+                "gpu_attestation.nvattest_timeout_secs must be greater than zero".to_string(),
+            ));
         }
 
-        if self.gpu_attestation.source == GpuAttestationSource::NvattestCli
-            && !matches!(
-                self.gpu_attestation
-                    .nvattest_verifier
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str(),
-                "local" | "remote"
-            )
-        {
-            tracing::warn!(
-                verifier = %self.gpu_attestation.nvattest_verifier,
-                "gpu_attestation.nvattest_verifier should be \"remote\" or \"local\"."
-            );
-        }
+        if self.gpu_attestation.source == GpuAttestationSource::NvattestCli {
+            let verifier = self
+                .gpu_attestation
+                .nvattest_verifier
+                .trim()
+                .to_ascii_lowercase();
+            if !matches!(verifier.as_str(), "local" | "remote") {
+                return Err(PowerError::Config(format!(
+                    "gpu_attestation.nvattest_verifier must be \"remote\" or \"local\", got {:?}",
+                    self.gpu_attestation.nvattest_verifier
+                )));
+            }
 
-        if self.gpu_attestation.source == GpuAttestationSource::NvattestCli
-            && !matches!(
-                self.gpu_attestation
-                    .nvattest_gpu_evidence_source
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str(),
-                "nvml" | "corelib"
-            )
-        {
-            tracing::warn!(
-                source = %self.gpu_attestation.nvattest_gpu_evidence_source,
-                "gpu_attestation.nvattest_gpu_evidence_source should be \"nvml\" or \"corelib\"."
-            );
+            let evidence_source = self
+                .gpu_attestation
+                .nvattest_gpu_evidence_source
+                .trim()
+                .to_ascii_lowercase();
+            if !matches!(evidence_source.as_str(), "nvml" | "corelib") {
+                return Err(PowerError::Config(format!(
+                    "gpu_attestation.nvattest_gpu_evidence_source must be \"nvml\" or \"corelib\", got {:?}",
+                    self.gpu_attestation.nvattest_gpu_evidence_source
+                )));
+            }
+            if evidence_source == "corelib"
+                && self.gpu_attestation.nvattest_gpu_architecture.is_none()
+            {
+                return Err(PowerError::Config(
+                    "gpu_attestation.nvattest_gpu_architecture is required when nvattest_gpu_evidence_source = \"corelib\"".to_string(),
+                ));
+            }
         }
 
         if self.gpu_attestation.source == GpuAttestationSource::NrasRest {
@@ -2801,6 +2801,82 @@ expected_measurements = {
 
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("key_provider"));
+    }
+
+    #[test]
+    fn test_validate_rejects_nvattest_zero_timeout() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                source: GpuAttestationSource::NvattestCli,
+                nvattest_timeout_secs: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("nvattest_timeout_secs"));
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_nvattest_verifier() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                source: GpuAttestationSource::NvattestCli,
+                nvattest_verifier: "maybe".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("nvattest_verifier"));
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_nvattest_gpu_evidence_source() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                source: GpuAttestationSource::NvattestCli,
+                nvattest_gpu_evidence_source: "driver".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("nvattest_gpu_evidence_source"));
+    }
+
+    #[test]
+    fn test_validate_rejects_corelib_nvattest_without_architecture() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                source: GpuAttestationSource::NvattestCli,
+                nvattest_gpu_evidence_source: "corelib".to_string(),
+                nvattest_gpu_architecture: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("nvattest_gpu_architecture"));
+    }
+
+    #[test]
+    fn test_validate_accepts_corelib_nvattest_with_architecture() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                source: GpuAttestationSource::NvattestCli,
+                nvattest_gpu_evidence_source: "corelib".to_string(),
+                nvattest_gpu_architecture: Some("HOPPER".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        config.validate().unwrap();
     }
 
     #[test]

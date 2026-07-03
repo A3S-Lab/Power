@@ -464,6 +464,10 @@ Landed in the current working tree:
   `A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS`, and
   `A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS` values now abort
   configuration loading instead of silently keeping previous values.
+- Made `nvattest-cli` GPU attestation configuration fail closed during config
+  validation: invalid verifier values, invalid GPU evidence source values, zero
+  timeouts, and missing `corelib` GPU architecture now error before provider
+  startup.
 
 Still open:
 
