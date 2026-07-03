@@ -136,7 +136,7 @@ impl KeyProvider for RotatingKeyProvider {
 ///
 /// Returns `None` if no key source is configured.
 pub fn from_config(config: &crate::config::PowerConfig) -> Option<Arc<dyn KeyProvider>> {
-    if !config.key_rotation_sources.is_empty() {
+    if config.key_provider == "rotating" {
         match RotatingKeyProvider::new(config.key_rotation_sources.clone()) {
             Ok(provider) => {
                 tracing::info!(
@@ -151,7 +151,10 @@ pub fn from_config(config: &crate::config::PowerConfig) -> Option<Arc<dyn KeyPro
         }
     }
 
-    if let Some(ref source) = config.model_key_source {
+    if config.key_provider == "static" {
+        let Some(ref source) = config.model_key_source else {
+            return None;
+        };
         let provider = StaticKeyProvider::new(source.clone());
         tracing::info!("Static key provider initialized");
         return Some(Arc::new(provider));
@@ -300,5 +303,45 @@ mod tests {
             RotatingKeyProvider::new(vec![KeySource::File(key1_path), KeySource::File(key2_path)])
                 .unwrap();
         assert_eq!(provider.key_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_from_config_static_provider_uses_model_key_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let static_key = dir.path().join("static.key");
+        let rotating_key = dir.path().join("rotating.key");
+        write_hex_key(&static_key, 0x11);
+        write_hex_key(&rotating_key, 0x22);
+        let config = crate::config::PowerConfig {
+            key_provider: "static".to_string(),
+            model_key_source: Some(KeySource::File(static_key)),
+            key_rotation_sources: vec![KeySource::File(rotating_key)],
+            ..Default::default()
+        };
+
+        let provider = from_config(&config).unwrap();
+
+        assert_eq!(provider.provider_name(), "static");
+        assert_eq!(provider.get_key().await.unwrap(), [0x11; 32]);
+    }
+
+    #[tokio::test]
+    async fn test_from_config_rotating_provider_uses_rotation_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let static_key = dir.path().join("static.key");
+        let rotating_key = dir.path().join("rotating.key");
+        write_hex_key(&static_key, 0x11);
+        write_hex_key(&rotating_key, 0x22);
+        let config = crate::config::PowerConfig {
+            key_provider: "rotating".to_string(),
+            model_key_source: Some(KeySource::File(static_key)),
+            key_rotation_sources: vec![KeySource::File(rotating_key)],
+            ..Default::default()
+        };
+
+        let provider = from_config(&config).unwrap();
+
+        assert_eq!(provider.provider_name(), "rotating");
+        assert_eq!(provider.get_key().await.unwrap(), [0x22; 32]);
     }
 }

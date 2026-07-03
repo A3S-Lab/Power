@@ -602,8 +602,8 @@ gpu_attestation {
 | `gpu_attestation.relying_party_policy_path` | `null` | Optional relying-party policy file for `nvattest attest`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when configured |
 | `gpu_attestation.nvattest_timeout_secs` | `30` | Timeout for each `nvattest` command |
 | `model_key_source` | `null` | Decryption key for `.enc` model files: `{ file = "/path/to/key.hex" }` or `{ env = "MY_KEY_VAR" }` |
-| `key_provider` | `"static"` | Key provider type: `"static"` (uses `model_key_source`) or `"rotating"` (uses `key_rotation_sources`) |
-| `key_rotation_sources` | `[]` | For rotating provider: list of key sources in rotation order |
+| `key_provider` | `"static"` | Key provider type: `"static"` (uses `model_key_source`) or `"rotating"` (uses `key_rotation_sources`); unknown values fail configuration validation |
+| `key_rotation_sources` | `[]` | For rotating provider: list of key sources in rotation order; required when `key_provider = "rotating"` |
 | `in_memory_decrypt` | `false` | Load encrypted GGUF plaintext from locked RAM when the selected backend supports it (`picolm`); unsupported backends fail closed |
 | `streaming_decrypt` | `false` | Load encrypted GGUF plaintext through `LayerStreamingDecryptedModel` when the selected backend supports it (`picolm`); unsupported backends fail closed |
 | `suppress_token_metrics` | `false` | Round token counts in responses to nearest 10 (prevents exact token-count side-channel) |

@@ -799,12 +799,21 @@ impl PowerConfig {
             ));
         }
 
-        // Warn if key_provider is "rotating" but key_rotation_sources is empty.
-        if self.key_provider == "rotating" && self.key_rotation_sources.is_empty() {
-            tracing::warn!(
-                "key_provider = \"rotating\" but key_rotation_sources is empty. \
-                 No keys are available for model decryption."
-            );
+        match self.key_provider.as_str() {
+            "static" => {}
+            "rotating" => {
+                if self.key_rotation_sources.is_empty() {
+                    return Err(PowerError::Config(
+                        "key_provider = \"rotating\" requires at least one key_rotation_sources entry"
+                            .to_string(),
+                    ));
+                }
+            }
+            other => {
+                return Err(PowerError::Config(format!(
+                    "unsupported key_provider '{other}'; expected one of: static, rotating"
+                )));
+            }
         }
 
         if self.audit_log_encrypt && self.audit_key_source.is_none() {
@@ -2735,13 +2744,39 @@ expected_measurements = {
     }
 
     #[test]
-    fn test_validate_rotating_provider_empty_sources() {
+    fn test_validate_rejects_rotating_provider_empty_sources() {
         let config = PowerConfig {
             key_provider: "rotating".to_string(),
             key_rotation_sources: vec![],
             ..Default::default()
         };
-        config.validate().unwrap(); // must not panic; warning is emitted via tracing
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("key_rotation_sources"));
+    }
+
+    #[test]
+    fn test_validate_rotating_provider_with_sources_is_valid() {
+        let config = PowerConfig {
+            key_provider: "rotating".to_string(),
+            key_rotation_sources: vec![crate::tee::encrypted_model::KeySource::Env(
+                "TEST_MODEL_KEY".to_string(),
+            )],
+            ..Default::default()
+        };
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_key_provider() {
+        let config = PowerConfig {
+            key_provider: "vault-ish".to_string(),
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("key_provider"));
     }
 
     #[test]
