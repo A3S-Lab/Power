@@ -88,7 +88,8 @@ use crate::api::types::{ChatCompletionRequest, CompletionRequest};
 use crate::error::{PowerError, Result};
 use crate::tee::attestation::{
     build_claims_report_data, AttestationClaimsV2, AttestationReport, GpuDeviceClaim,
-    GpuDeviceValidationClaim, GpuEvidenceClaim, ModelDigestClaim, RuntimePolicyClaim, TeeType,
+    GpuDeviceValidationClaim, GpuEvidenceClaim, ModelDigestClaim, ModelDigestKind,
+    RuntimePolicyClaim, TeeType,
 };
 
 pub mod hw_verify;
@@ -950,6 +951,37 @@ fn verify_model_digest_claim_well_formed(
         &format!("{field_prefix}.ciphertext_digest"),
         model.ciphertext_digest.as_deref(),
     )?;
+
+    match model.kind {
+        ModelDigestKind::PlaintextWeightsSha256 => {
+            if let Some(plaintext) = model.plaintext_digest.as_deref() {
+                if !constant_time_eq(&model.digest, plaintext) {
+                    return Err(PowerError::AttestationVerificationFailed(format!(
+                        "{field_prefix}.plaintext_digest must match {field_prefix}.digest when kind is plaintext-weights-sha256"
+                    )));
+                }
+            }
+        }
+        ModelDigestKind::CiphertextArtifactSha256 => {
+            let ciphertext = model.ciphertext_digest.as_deref().ok_or_else(|| {
+                PowerError::AttestationVerificationFailed(format!(
+                    "{field_prefix}.ciphertext_digest is required when kind is ciphertext-artifact-sha256"
+                ))
+            })?;
+            if !constant_time_eq(&model.digest, ciphertext) {
+                return Err(PowerError::AttestationVerificationFailed(format!(
+                    "{field_prefix}.ciphertext_digest must match {field_prefix}.digest when kind is ciphertext-artifact-sha256"
+                )));
+            }
+        }
+        ModelDigestKind::DirectoryManifestSha256 => {
+            if model.plaintext_digest.is_some() || model.ciphertext_digest.is_some() {
+                return Err(PowerError::AttestationVerificationFailed(format!(
+                    "{field_prefix} directory-manifest-sha256 claims must not include plaintext_digest or ciphertext_digest"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -4563,6 +4595,60 @@ mod tests {
         assert!(err
             .to_string()
             .contains("claims.model.digest must be a 32-byte SHA-256 digest"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_mismatched_plaintext_digest() {
+        let (mut report, mut claims) = make_claims_report(Some(b"nonce"), vec![0x02; 32]);
+        claims.model.as_mut().unwrap().plaintext_digest = Some(vec![0x99; 32]);
+        report.report_data = build_claims_report_data(&claims).unwrap();
+        report.claims = Some(claims);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err.to_string().contains("plaintext_digest must match"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_ciphertext_kind_without_ciphertext_digest() {
+        let (mut report, mut claims) = make_claims_report(Some(b"nonce"), vec![0x02; 32]);
+        claims.model.as_mut().unwrap().kind = ModelDigestKind::CiphertextArtifactSha256;
+        report.report_data = build_claims_report_data(&claims).unwrap();
+        report.claims = Some(claims);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err.to_string().contains("ciphertext_digest is required"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_mismatched_ciphertext_digest() {
+        let (mut report, mut claims) = make_claims_report(Some(b"nonce"), vec![0x02; 32]);
+        let model = claims.model.as_mut().unwrap();
+        model.kind = ModelDigestKind::CiphertextArtifactSha256;
+        model.ciphertext_digest = Some(vec![0x99; 32]);
+        report.report_data = build_claims_report_data(&claims).unwrap();
+        report.claims = Some(claims);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err.to_string().contains("ciphertext_digest must match"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_directory_digest_with_plaintext_or_ciphertext() {
+        let (mut report, mut claims) = make_claims_report(Some(b"nonce"), vec![0x02; 32]);
+        let model = claims.model.as_mut().unwrap();
+        model.kind = ModelDigestKind::DirectoryManifestSha256;
+        model.plaintext_digest = Some(vec![0x02; 32]);
+        report.report_data = build_claims_report_data(&claims).unwrap();
+        report.claims = Some(claims);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("must not include plaintext_digest or ciphertext_digest"));
     }
 
     #[test]

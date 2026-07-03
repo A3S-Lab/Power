@@ -64,6 +64,9 @@ Landed in the current working tree:
   encrypted models by decrypted plaintext SHA-256 and model claims include both
   `plaintext_digest` and `ciphertext_digest`; manifest-only fallback emits an
   explicit `ciphertext-artifact-sha256` claim.
+- Tightened verifier-side model digest claim validation so plaintext,
+  ciphertext, and directory-manifest digest kinds must be internally
+  consistent with their typed optional digest fields.
 - Added `VerificationPolicy` and `verify_report_strict()` so production
   verifier callers fail when hardware signature verification is missing and
   reject simulated TEE reports; strict verification now also requires an
@@ -744,6 +747,8 @@ Tests:
 
 - Canonical claim serialization is deterministic.
 - CPU report data equals the claim digest.
+- Typed model digest claims reject inconsistent plaintext/ciphertext/directory
+  optional digest fields.
 - Verifier rejects reports whose claims do not match CPU `report_data`.
 - Legacy reports do not satisfy strict v2 policy.
 
