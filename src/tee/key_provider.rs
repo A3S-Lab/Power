@@ -135,32 +135,28 @@ impl KeyProvider for RotatingKeyProvider {
 /// Build a `KeyProvider` from config.
 ///
 /// Returns `None` if no key source is configured.
-pub fn from_config(config: &crate::config::PowerConfig) -> Option<Arc<dyn KeyProvider>> {
-    if config.key_provider == "rotating" {
-        match RotatingKeyProvider::new(config.key_rotation_sources.clone()) {
-            Ok(provider) => {
-                tracing::info!(
-                    keys = config.key_rotation_sources.len(),
-                    "Rotating key provider initialized"
-                );
-                return Some(Arc::new(provider));
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to create rotating key provider");
-            }
+pub fn from_config(config: &crate::config::PowerConfig) -> Result<Option<Arc<dyn KeyProvider>>> {
+    match config.key_provider.as_str() {
+        "rotating" => {
+            let provider = RotatingKeyProvider::new(config.key_rotation_sources.clone())?;
+            tracing::info!(
+                keys = config.key_rotation_sources.len(),
+                "Rotating key provider initialized"
+            );
+            Ok(Some(Arc::new(provider)))
         }
+        "static" => {
+            let Some(ref source) = config.model_key_source else {
+                return Ok(None);
+            };
+            let provider = StaticKeyProvider::new(source.clone());
+            tracing::info!("Static key provider initialized");
+            Ok(Some(Arc::new(provider)))
+        }
+        other => Err(PowerError::Config(format!(
+            "unsupported key_provider '{other}'; expected one of: static, rotating"
+        ))),
     }
-
-    if config.key_provider == "static" {
-        let Some(ref source) = config.model_key_source else {
-            return None;
-        };
-        let provider = StaticKeyProvider::new(source.clone());
-        tracing::info!("Static key provider initialized");
-        return Some(Arc::new(provider));
-    }
-
-    None
 }
 
 #[cfg(test)]
@@ -319,7 +315,7 @@ mod tests {
             ..Default::default()
         };
 
-        let provider = from_config(&config).unwrap();
+        let provider = from_config(&config).unwrap().unwrap();
 
         assert_eq!(provider.provider_name(), "static");
         assert_eq!(provider.get_key().await.unwrap(), [0x11; 32]);
@@ -339,9 +335,49 @@ mod tests {
             ..Default::default()
         };
 
-        let provider = from_config(&config).unwrap();
+        let provider = from_config(&config).unwrap().unwrap();
 
         assert_eq!(provider.provider_name(), "rotating");
         assert_eq!(provider.get_key().await.unwrap(), [0x22; 32]);
+    }
+
+    #[test]
+    fn test_from_config_static_without_key_source_returns_none() {
+        let config = crate::config::PowerConfig {
+            key_provider: "static".to_string(),
+            model_key_source: None,
+            ..Default::default()
+        };
+
+        assert!(from_config(&config).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_from_config_rotating_without_sources_fails_closed() {
+        let config = crate::config::PowerConfig {
+            key_provider: "rotating".to_string(),
+            key_rotation_sources: vec![],
+            ..Default::default()
+        };
+
+        let err = match from_config(&config) {
+            Ok(_) => panic!("rotating key provider without sources should fail closed"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("at least one key source"));
+    }
+
+    #[test]
+    fn test_from_config_unknown_provider_fails_closed() {
+        let config = crate::config::PowerConfig {
+            key_provider: "vault-ish".to_string(),
+            ..Default::default()
+        };
+
+        let err = match from_config(&config) {
+            Ok(_) => panic!("unknown key provider should fail closed"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("key_provider"));
     }
 }

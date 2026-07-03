@@ -64,7 +64,7 @@ pub async fn start_with_log_buffer(
 
     // Initialize key provider early so startup integrity checks can verify
     // encrypted model plaintext hashes with the same semantics as autoload.
-    let model_key_provider = key_provider::from_config(&config);
+    let model_key_provider = key_provider::from_config(&config)?;
 
     // TEE initialization
     let mut gpu_evidence_provider: Option<Arc<dyn GpuEvidenceProvider>> = None;
