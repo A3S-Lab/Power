@@ -472,6 +472,9 @@ Landed in the current working tree:
   config validation: missing evidence, configured external verdicts, missing or
   invalid GPU architecture, invalid claims versions, and zero timeouts now
   error before provider startup.
+- Made ambiguous GPU attestation byte sources fail closed during config
+  validation: `evidence_hex`/`evidence_path` and `verdict_hex`/`verdict_path`
+  are now rejected as mutually exclusive before provider startup.
 
 Still open:
 

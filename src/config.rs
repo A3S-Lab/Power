@@ -827,18 +827,18 @@ impl PowerConfig {
         if self.gpu_attestation.evidence_hex.is_some()
             && self.gpu_attestation.evidence_path.is_some()
         {
-            tracing::warn!(
-                "gpu_attestation.evidence_hex and gpu_attestation.evidence_path are both set; \
-                 GPU evidence providers require exactly one evidence source."
-            );
+            return Err(PowerError::Config(
+                "gpu_attestation.evidence_hex and gpu_attestation.evidence_path are mutually exclusive"
+                    .to_string(),
+            ));
         }
 
         if self.gpu_attestation.verdict_hex.is_some() && self.gpu_attestation.verdict_path.is_some()
         {
-            tracing::warn!(
-                "gpu_attestation.verdict_hex and gpu_attestation.verdict_path are both set; \
-                 GPU evidence providers require at most one verdict source."
-            );
+            return Err(PowerError::Config(
+                "gpu_attestation.verdict_hex and gpu_attestation.verdict_path are mutually exclusive"
+                    .to_string(),
+            ));
         }
 
         if self.gpu_attestation.source == GpuAttestationSource::NvattestCli
@@ -2820,6 +2820,37 @@ expected_measurements = {
 
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("key_provider"));
+    }
+
+    #[test]
+    fn test_validate_rejects_ambiguous_gpu_evidence_sources() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                evidence_hex: Some("00".to_string()),
+                evidence_path: Some(PathBuf::from("/run/a3s/gpu.evidence")),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn test_validate_rejects_ambiguous_gpu_verdict_sources() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                evidence_hex: Some("00".to_string()),
+                verdict_hex: Some("11".to_string()),
+                verdict_path: Some(PathBuf::from("/run/a3s/nras.verdict")),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("mutually exclusive"));
     }
 
     #[test]
