@@ -686,29 +686,53 @@ impl Backend for MistralRsBackend {
 // Private helpers for the mistralrs backend (not part of the Backend trait).
 #[cfg(feature = "mistralrs")]
 /// Parse an ISQ type string (e.g. `"Q8_0"`) into a `mistralrs::IsqType`.
-/// Returns `Q8_0` for unrecognized values.
-fn parse_isq_type(s: &str) -> mistralrs::IsqType {
-    match s.to_uppercase().as_str() {
-        "Q4_0" => mistralrs::IsqType::Q4_0,
-        "Q4_1" => mistralrs::IsqType::Q4_1,
-        "Q5_0" => mistralrs::IsqType::Q5_0,
-        "Q5_1" => mistralrs::IsqType::Q5_1,
-        "Q8_0" => mistralrs::IsqType::Q8_0,
-        "Q8_1" => mistralrs::IsqType::Q8_1,
-        "Q2K" | "Q2_K" => mistralrs::IsqType::Q2K,
-        "Q3K" | "Q3_K" => mistralrs::IsqType::Q3K,
-        "Q4K" | "Q4_K" => mistralrs::IsqType::Q4K,
-        "Q5K" | "Q5_K" => mistralrs::IsqType::Q5K,
-        "Q6K" | "Q6_K" => mistralrs::IsqType::Q6K,
-        "Q8K" | "Q8_K" => mistralrs::IsqType::Q8K,
-        "HQQ8" => mistralrs::IsqType::HQQ8,
-        "HQQ4" => mistralrs::IsqType::HQQ4,
-        "F8E4M3" => mistralrs::IsqType::F8E4M3,
-        _ => {
-            tracing::warn!(isq = s, "Unknown ISQ type, defaulting to Q8_0");
-            mistralrs::IsqType::Q8_0
-        }
+fn parse_isq_type(s: &str) -> std::result::Result<mistralrs::IsqType, String> {
+    match s.trim().to_ascii_uppercase().as_str() {
+        "Q4_0" => Ok(mistralrs::IsqType::Q4_0),
+        "Q4_1" => Ok(mistralrs::IsqType::Q4_1),
+        "Q5_0" => Ok(mistralrs::IsqType::Q5_0),
+        "Q5_1" => Ok(mistralrs::IsqType::Q5_1),
+        "Q8_0" => Ok(mistralrs::IsqType::Q8_0),
+        "Q8_1" => Ok(mistralrs::IsqType::Q8_1),
+        "Q2K" | "Q2_K" => Ok(mistralrs::IsqType::Q2K),
+        "Q3K" | "Q3_K" => Ok(mistralrs::IsqType::Q3K),
+        "Q4K" | "Q4_K" => Ok(mistralrs::IsqType::Q4K),
+        "Q5K" | "Q5_K" => Ok(mistralrs::IsqType::Q5K),
+        "Q6K" | "Q6_K" => Ok(mistralrs::IsqType::Q6K),
+        "Q8K" | "Q8_K" => Ok(mistralrs::IsqType::Q8K),
+        "HQQ8" => Ok(mistralrs::IsqType::HQQ8),
+        "HQQ4" => Ok(mistralrs::IsqType::HQQ4),
+        "F8E4M3" => Ok(mistralrs::IsqType::F8E4M3),
+        "" => Err("value must be non-empty".to_string()),
+        unsupported => Err(format!(
+            "unsupported ISQ type '{unsupported}'; supported values include Q4_0, Q4K, Q6K, Q8_0, HQQ4, and HQQ8"
+        )),
     }
+}
+
+#[cfg(feature = "mistralrs")]
+fn manifest_isq_type(manifest: &ModelManifest) -> Result<mistralrs::IsqType> {
+    let Some(value) = manifest
+        .default_parameters
+        .as_ref()
+        .and_then(|parameters| parameters.get("isq"))
+    else {
+        return Ok(mistralrs::IsqType::Q8_0);
+    };
+
+    let Some(isq) = value.as_str() else {
+        return Err(PowerError::Config(format!(
+            "model '{}' default_parameters.isq must be a string",
+            manifest.name
+        )));
+    };
+
+    parse_isq_type(isq).map_err(|message| {
+        PowerError::Config(format!(
+            "model '{}' has unsupported default_parameters.isq: {message}",
+            manifest.name
+        ))
+    })
 }
 
 #[cfg(feature = "mistralrs")]
@@ -752,14 +776,7 @@ impl MistralRsBackend {
     /// ISQ type is read from `manifest.default_parameters["isq"]` (e.g. `"Q8_0"`).
     /// Defaults to `Q8_0` if not specified.
     async fn load_safetensors_model(&self, manifest: &ModelManifest) -> Result<()> {
-        // Resolve ISQ type from manifest default_parameters, fallback to Q8_0.
-        let isq = manifest
-            .default_parameters
-            .as_ref()
-            .and_then(|p| p.get("isq"))
-            .and_then(|v| v.as_str())
-            .map(parse_isq_type)
-            .unwrap_or(mistralrs::IsqType::Q8_0);
+        let isq = manifest_isq_type(manifest)?;
 
         tracing::info!(
             model = %manifest.name,
@@ -808,13 +825,7 @@ impl MistralRsBackend {
     /// ISQ type is read from `manifest.default_parameters["isq"]` (e.g. `"Q8_0"`).
     /// Defaults to `Q8_0` if not specified.
     async fn load_vision_model(&self, manifest: &ModelManifest) -> Result<()> {
-        let isq = manifest
-            .default_parameters
-            .as_ref()
-            .and_then(|p| p.get("isq"))
-            .and_then(|v| v.as_str())
-            .map(parse_isq_type)
-            .unwrap_or(mistralrs::IsqType::Q8_0);
+        let isq = manifest_isq_type(manifest)?;
 
         tracing::info!(
             model = %manifest.name,
@@ -1488,41 +1499,98 @@ mod tests {
 
     #[cfg(feature = "mistralrs")]
     mod isq_tests {
-        use super::super::parse_isq_type;
+        use super::super::{manifest_isq_type, parse_isq_type};
+        use crate::model::manifest::{ModelFormat, ModelManifest};
         use mistralrs::IsqType;
+        use std::{collections::HashMap, path::PathBuf};
+
+        fn manifest_with_isq(isq: serde_json::Value) -> ModelManifest {
+            ModelManifest {
+                name: "test-model".to_string(),
+                format: ModelFormat::SafeTensors,
+                size: 0,
+                sha256: String::new(),
+                parameters: None,
+                created_at: chrono::Utc::now(),
+                path: PathBuf::from("/tmp/test-model"),
+                system_prompt: None,
+                template_override: None,
+                default_parameters: Some(HashMap::from([("isq".to_string(), isq)])),
+                modelfile_content: None,
+                license: None,
+                adapter_path: None,
+                projector_path: None,
+                messages: vec![],
+                family: None,
+                families: None,
+            }
+        }
 
         #[test]
         fn test_parse_q8_0() {
-            assert!(matches!(parse_isq_type("Q8_0"), IsqType::Q8_0));
-            assert!(matches!(parse_isq_type("q8_0"), IsqType::Q8_0));
+            assert!(matches!(parse_isq_type("Q8_0").unwrap(), IsqType::Q8_0));
+            assert!(matches!(parse_isq_type("q8_0").unwrap(), IsqType::Q8_0));
         }
 
         #[test]
         fn test_parse_q4k() {
-            assert!(matches!(parse_isq_type("Q4K"), IsqType::Q4K));
-            assert!(matches!(parse_isq_type("Q4_K"), IsqType::Q4K));
+            assert!(matches!(parse_isq_type("Q4K").unwrap(), IsqType::Q4K));
+            assert!(matches!(parse_isq_type("Q4_K").unwrap(), IsqType::Q4K));
         }
 
         #[test]
         fn test_parse_q4_0() {
-            assert!(matches!(parse_isq_type("Q4_0"), IsqType::Q4_0));
+            assert!(matches!(parse_isq_type("Q4_0").unwrap(), IsqType::Q4_0));
         }
 
         #[test]
         fn test_parse_q6k() {
-            assert!(matches!(parse_isq_type("Q6K"), IsqType::Q6K));
-            assert!(matches!(parse_isq_type("Q6_K"), IsqType::Q6K));
+            assert!(matches!(parse_isq_type("Q6K").unwrap(), IsqType::Q6K));
+            assert!(matches!(parse_isq_type("Q6_K").unwrap(), IsqType::Q6K));
         }
 
         #[test]
         fn test_parse_hqq8() {
-            assert!(matches!(parse_isq_type("HQQ8"), IsqType::HQQ8));
+            assert!(matches!(parse_isq_type("HQQ8").unwrap(), IsqType::HQQ8));
         }
 
         #[test]
-        fn test_parse_unknown_defaults_to_q8_0() {
-            assert!(matches!(parse_isq_type("UNKNOWN"), IsqType::Q8_0));
-            assert!(matches!(parse_isq_type(""), IsqType::Q8_0));
+        fn test_parse_unknown_rejects() {
+            assert!(parse_isq_type("UNKNOWN")
+                .unwrap_err()
+                .contains("unsupported ISQ type"));
+            assert!(parse_isq_type("").unwrap_err().contains("non-empty"));
+        }
+
+        #[test]
+        fn test_manifest_isq_missing_defaults_to_q8_0() {
+            let mut manifest = manifest_with_isq(serde_json::json!("Q4K"));
+            manifest.default_parameters = None;
+
+            assert!(matches!(
+                manifest_isq_type(&manifest).unwrap(),
+                IsqType::Q8_0
+            ));
+        }
+
+        #[test]
+        fn test_manifest_isq_non_string_rejects() {
+            let manifest = manifest_with_isq(serde_json::json!(123));
+
+            let err = manifest_isq_type(&manifest).unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("default_parameters.isq must be a string"));
+        }
+
+        #[test]
+        fn test_manifest_isq_unknown_rejects() {
+            let manifest = manifest_with_isq(serde_json::json!("not-real"));
+
+            let err = manifest_isq_type(&manifest).unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("unsupported default_parameters.isq"));
         }
     }
 }

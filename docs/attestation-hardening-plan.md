@@ -58,6 +58,8 @@ Landed in the current working tree:
 - Model registration now rejects unsupported `format` values and unknown
   top-level registration or pull request fields instead of silently defaulting
   local artifacts to GGUF or dropping caller-supplied model policy.
+- SafeTensors and vision model loading now reject explicit invalid
+  `default_parameters.isq` values instead of silently falling back to Q8_0.
 - Added typed encrypted model digest semantics. Explicit `model_hashes` pins
   encrypted models by decrypted plaintext SHA-256 and model claims include both
   `plaintext_digest` and `ciphertext_digest`; manifest-only fallback emits an
