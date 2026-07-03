@@ -579,7 +579,7 @@ gpu_attestation {
 | `audit_log_encrypt` | `false` | Encrypt audit log entries at rest; requires `audit_key_source` and fails configuration validation when missing |
 | `audit_key_source` | `null` | AES-256-GCM key source for encrypted audit logs: `{ file = "/path/to/key.hex" }` or `{ env = "AUDIT_KEY_VAR" }` |
 | `model_hashes` | `{}` | Expected SHA-256 hashes for model verification |
-| `model_signing_key` | `null` | Valid 32-byte Ed25519 public key (hex) for verifying model `.sig` signatures; invalid values fail configuration validation |
+| `model_signing_key` | `null` | Valid 32-byte Ed25519 public key (hex) for verifying model `.sig` signatures; invalid values fail configuration validation; `/v1/attestation?model=...` re-verifies the current runtime digest signature when no explicit `model_hashes` pin is configured |
 | `gpu.gpu_layers` | `0` | GPU layer offloading (`-1` = all) |
 | `gpu.main_gpu` | `0` | Primary GPU index |
 | `gpu_attestation.source` | `"configured"` | GPU CC evidence source: `"configured"` for file/hex bytes, `"nvattest-cli"` for live NVIDIA `nvattest`, or `"nras-rest"` for direct NVIDIA NRAS REST attestation |

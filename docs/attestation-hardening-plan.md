@@ -431,6 +431,11 @@ Landed in the current working tree:
 - Made `model_signing_key` fail closed during configuration validation: values
   must be 32-byte hex Ed25519 public keys that parse as verifier keys before
   they can satisfy strict model-integrity policy.
+- Tightened `/v1/attestation?model=...` model binding under signing policy:
+  when `model_signing_key` is configured and no explicit `model_hashes` pin is
+  present, the endpoint re-verifies the current runtime digest signature before
+  binding it instead of relying on manifest hash metadata as the expected
+  value.
 - Made policy-bearing enum environment overrides fail closed:
   `A3S_POWER_TEE_POLICY_MODE` and `A3S_POWER_GPU_ATTESTATION_SOURCE` now reject
   unknown values during configuration loading instead of silently keeping the

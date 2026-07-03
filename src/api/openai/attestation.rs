@@ -117,11 +117,10 @@ fn decode_sha256_hex(
     })
 }
 
-fn expected_model_hash(
-    state: &AppState,
+fn reject_remote_model(
     model_name: &str,
     manifest: &ModelManifest,
-) -> Result<(Vec<u8>, bool), (StatusCode, axum::Json<serde_json::Value>)> {
+) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
     if manifest.format == ModelFormat::Remote {
         return Err(error_json(
             StatusCode::BAD_REQUEST,
@@ -129,14 +128,13 @@ fn expected_model_hash(
             "model_not_attestable",
         ));
     }
+    Ok(())
+}
 
-    let configured_hash = state
-        .config
-        .model_hashes
-        .get(model_name)
-        .map(String::as_str);
-    let hash_str = configured_hash.unwrap_or(manifest.sha256.as_str());
-
+fn decode_expected_model_hash(
+    model_name: &str,
+    hash_str: &str,
+) -> Result<Vec<u8>, (StatusCode, axum::Json<serde_json::Value>)> {
     if hash_str.trim().is_empty() {
         return Err(error_json(
             StatusCode::CONFLICT,
@@ -146,7 +144,27 @@ fn expected_model_hash(
     }
 
     decode_sha256_hex(hash_str, "invalid_model_hash")
-        .map(|digest| (digest, configured_hash.is_some()))
+}
+
+fn verify_signed_model_digest(
+    model_name: &str,
+    manifest: &ModelManifest,
+    model: &ModelDigestClaim,
+    signing_key: &str,
+) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+    crate::tee::model_seal::verify_model_signature_hash(
+        model_name,
+        &hex::encode(&model.digest),
+        &manifest.path,
+        signing_key,
+    )
+    .map_err(|e| {
+        error_json(
+            StatusCode::CONFLICT,
+            format!("model '{model_name}' runtime digest signature verification failed: {e}"),
+            "model_signature_invalid",
+        )
+    })
 }
 
 async fn model_key_for_attestation(
@@ -330,15 +348,37 @@ async fn resolve_model_claims(
         )
     })?;
 
-    let (expected, configured_pin) = expected_model_hash(state, model_name, &manifest)?;
+    reject_remote_model(model_name, &manifest)?;
+
+    let configured_hash = state
+        .config
+        .model_hashes
+        .get(model_name)
+        .map(String::as_str);
+    let configured_pin = configured_hash.is_some();
     let (model, actual) =
         runtime_model_digest(state, model_name, &manifest, configured_pin).await?;
-    if expected != actual {
-        return Err(error_json(
-            StatusCode::CONFLICT,
-            format!("model '{model_name}' current SHA-256 does not match pinned hash"),
-            "model_hash_mismatch",
-        ));
+
+    if let Some(hash_str) = configured_hash {
+        let expected = decode_expected_model_hash(model_name, hash_str)?;
+        if expected != actual {
+            return Err(error_json(
+                StatusCode::CONFLICT,
+                format!("model '{model_name}' current SHA-256 does not match pinned hash"),
+                "model_hash_mismatch",
+            ));
+        }
+    } else if let Some(signing_key) = state.config.model_signing_key.as_deref() {
+        verify_signed_model_digest(model_name, &manifest, &model, signing_key)?;
+    } else {
+        let expected = decode_expected_model_hash(model_name, &manifest.sha256)?;
+        if expected != actual {
+            return Err(error_json(
+                StatusCode::CONFLICT,
+                format!("model '{model_name}' current SHA-256 does not match manifest hash"),
+                "model_hash_mismatch",
+            ));
+        }
     }
 
     let runtime = crate::api::prompt_policy::runtime_policy_claim_with_gpu_config(
@@ -516,6 +556,29 @@ mod tests {
     use crate::tee::gpu::StaticGpuEvidenceProvider;
     use axum::extract::State;
     use std::{collections::HashMap, path::Path, sync::Arc};
+
+    fn signing_keypair() -> (ed25519_dalek::SigningKey, String) {
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let public_key_hex = hex::encode(signing_key.verifying_key().to_bytes());
+        (signing_key, public_key_hex)
+    }
+
+    fn write_signature_for_hash(
+        signature_anchor_path: &Path,
+        hash_hex: &str,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) {
+        use ed25519_dalek::Signer;
+
+        let hash_bytes = hex::decode(hash_hex).unwrap();
+        let signature = signing_key.sign(&hash_bytes);
+        let mut sig_path = signature_anchor_path.as_os_str().to_owned();
+        sig_path.push(".sig");
+        std::fs::write(std::path::PathBuf::from(sig_path), signature.to_bytes()).unwrap();
+    }
 
     fn no_nonce() -> Query<AttestationQuery> {
         Query(AttestationQuery {
@@ -803,6 +866,68 @@ mod tests {
             report.report_data,
             build_claims_report_data(claims).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn test_attestation_with_model_signing_key_uses_signed_runtime_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+        std::fs::write(&model_path, b"model-v1").unwrap();
+        let hash = storage::compute_sha256(b"model-v1");
+        let stale_manifest_hash =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        let (signing_key, public_key_hex) = signing_keypair();
+        write_signature_for_hash(&model_path, &hash, &signing_key);
+        let state = test_state_with_manifest(
+            local_manifest("test-model", &model_path, stale_manifest_hash),
+            PowerConfig {
+                tee_mode: true,
+                model_signing_key: Some(public_key_hex),
+                ..Default::default()
+            },
+        );
+
+        let resp = handler(State(state), with_model("test-model"))
+            .await
+            .into_response();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let report = response_report(resp).await;
+        let claims = report.claims.as_ref().unwrap();
+        let model = claims.model.as_ref().unwrap();
+        assert_eq!(hex::encode(&model.digest), hash);
+        assert_eq!(
+            report.report_data,
+            build_claims_report_data(claims).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_attestation_with_model_signing_key_rejects_tampered_runtime_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+        std::fs::write(&model_path, b"model-v1").unwrap();
+        let signed_hash = storage::compute_sha256(b"model-v1");
+        let (signing_key, public_key_hex) = signing_keypair();
+        write_signature_for_hash(&model_path, &signed_hash, &signing_key);
+        std::fs::write(&model_path, b"model-v2").unwrap();
+        let tampered_hash = storage::compute_sha256(b"model-v2");
+        let state = test_state_with_manifest(
+            local_manifest("test-model", &model_path, &tampered_hash),
+            PowerConfig {
+                tee_mode: true,
+                model_signing_key: Some(public_key_hex),
+                ..Default::default()
+            },
+        );
+
+        let resp = handler(State(state), with_model("test-model"))
+            .await
+            .into_response();
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let json = response_json(resp).await;
+        assert_eq!(json["error"]["code"], "model_signature_invalid");
     }
 
     #[tokio::test]
