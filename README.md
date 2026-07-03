@@ -575,7 +575,7 @@ gpu_attestation {
 | `expected_measurements` | `{}` | Expected 48-byte launch measurements per detected hardware TEE type; required by strict and GPU-confidential policy (`"sev-snp"` measurement or `"tdx"` MRTD) |
 | `redact_logs` | `false` | Redact inference content from logs |
 | `model_hashes` | `{}` | Expected SHA-256 hashes for model verification |
-| `model_signing_key` | `null` | Ed25519 public key (hex) for verifying model `.sig` signatures |
+| `model_signing_key` | `null` | Valid 32-byte Ed25519 public key (hex) for verifying model `.sig` signatures; invalid values fail configuration validation |
 | `gpu.gpu_layers` | `0` | GPU layer offloading (`-1` = all) |
 | `gpu.main_gpu` | `0` | Primary GPU index |
 | `gpu_attestation.source` | `"configured"` | GPU CC evidence source: `"configured"` for file/hex bytes, `"nvattest-cli"` for live NVIDIA `nvattest`, or `"nras-rest"` for direct NVIDIA NRAS REST attestation |

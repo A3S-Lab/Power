@@ -528,6 +528,28 @@ fn is_valid_spec_mode(value: &str) -> bool {
     )
 }
 
+fn validate_model_signing_key(value: &str) -> std::result::Result<(), String> {
+    if value.len() != 64 {
+        return Err(format!(
+            "model_signing_key must be a 64-character hex-encoded Ed25519 public key (32 bytes), got {} characters",
+            value.len()
+        ));
+    }
+
+    let bytes = hex::decode(value).map_err(|e| {
+        format!("model_signing_key must be hex-encoded Ed25519 public key bytes: {e}")
+    })?;
+    let key_bytes: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+        format!(
+            "model_signing_key must decode to 32 bytes, got {} bytes",
+            bytes.len()
+        )
+    })?;
+    ed25519_dalek::VerifyingKey::from_bytes(&key_bytes)
+        .map_err(|e| format!("model_signing_key is not a valid Ed25519 public key: {e}"))?;
+    Ok(())
+}
+
 fn default_num_parallel() -> usize {
     1
 }
@@ -745,15 +767,8 @@ impl PowerConfig {
 
         parse_keep_alive(&self.keep_alive).map_err(PowerError::Config)?;
 
-        // Warn if model_signing_key is set but is not a valid 64-char hex string (Ed25519 pubkey).
         if let Some(ref key) = self.model_signing_key {
-            if key.len() != 64 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
-                tracing::warn!(
-                    "model_signing_key must be a 64-character hex-encoded Ed25519 public key \
-                     (32 bytes). The current value has length {} and may fail at runtime.",
-                    key.len()
-                );
-            }
+            validate_model_signing_key(key).map_err(PowerError::Config)?;
         }
 
         // Warn if ra_tls is enabled but tls_port is not set (RA-TLS requires a TLS listener).
@@ -1398,6 +1413,11 @@ impl PowerConfig {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    fn valid_model_signing_key_hex() -> String {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        hex::encode(signing_key.verifying_key().to_bytes())
+    }
 
     #[test]
     fn test_default_config() {
@@ -2561,7 +2581,7 @@ expected_measurements = {
             allowed_tee_types: vec!["sev-snp".to_string()],
             expected_measurements: measurements,
             audit_log: true,
-            model_signing_key: Some("pubkey123".to_string()),
+            model_signing_key: Some(valid_model_signing_key_hex()),
             ..Default::default()
         };
         let hcl = config.to_hcl();
@@ -2571,7 +2591,6 @@ expected_measurements = {
         assert!(hcl.contains("deadbeef"));
         assert!(hcl.contains("audit_log = true"));
         assert!(hcl.contains("model_signing_key"));
-        assert!(hcl.contains("pubkey123"));
     }
 
     #[test]
@@ -2633,20 +2652,32 @@ expected_measurements = {
     #[test]
     fn test_validate_model_signing_key_valid_hex() {
         let config = PowerConfig {
-            model_signing_key: Some("a".repeat(64)),
+            model_signing_key: Some(valid_model_signing_key_hex()),
             ..Default::default()
         };
         config.validate().unwrap(); // must not panic
     }
 
     #[test]
-    fn test_validate_model_signing_key_wrong_length() {
-        // 32-char key (wrong length for Ed25519 — should emit warning but not panic)
+    fn test_validate_rejects_model_signing_key_wrong_length() {
         let config = PowerConfig {
             model_signing_key: Some("deadbeef".repeat(4)),
             ..Default::default()
         };
-        config.validate().unwrap(); // must not panic
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("model_signing_key"));
+    }
+
+    #[test]
+    fn test_validate_rejects_model_signing_key_non_hex() {
+        let config = PowerConfig {
+            model_signing_key: Some("z".repeat(64)),
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("model_signing_key"));
     }
 
     #[test]
@@ -2757,5 +2788,16 @@ expected_measurements = {
         std::env::remove_var("A3S_POWER_KEEP_ALIVE");
 
         assert!(err.to_string().contains("invalid keep_alive"));
+    }
+
+    #[test]
+    fn test_load_from_rejects_invalid_model_signing_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, r#"model_signing_key = "not-a-public-key""#).unwrap();
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+
+        assert!(err.to_string().contains("model_signing_key"));
     }
 }

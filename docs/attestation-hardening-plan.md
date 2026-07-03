@@ -428,6 +428,9 @@ Landed in the current working tree:
   `A3S_POWER_KEEP_ALIVE` values now fail validation, and invalid per-request
   overrides on chat, completion, and embedding endpoints return
   `invalid_keep_alive` instead of falling back to `5m`.
+- Made `model_signing_key` fail closed during configuration validation: values
+  must be 32-byte hex Ed25519 public keys that parse as verifier keys before
+  they can satisfy strict model-integrity policy.
 
 Still open:
 
