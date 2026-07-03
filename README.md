@@ -564,7 +564,7 @@ gpu_attestation {
 | `port` | `11434` | HTTP server port |
 | `data_dir` | `~/.a3s/power` | Base directory for model storage |
 | `max_loaded_models` | `1` | Maximum models loaded concurrently |
-| `keep_alive` | `"5m"` | Auto-unload idle models (`"0"` = immediate, `"-1"` = never) |
+| `keep_alive` | `"5m"` | Auto-unload idle models (`"0"` = immediate, `"-1"` = never); invalid config or request values fail closed |
 | `spec_mode` | `"prompt-lookup"` | picolm speculative-decoding mode: `"off"`, `"prompt-lookup"`, or `"ngram-context"`; unknown values fail configuration validation |
 | `use_mlock` | `false` | Lock model weights in memory (prevent swapping) |
 | `num_thread` | auto | Thread count for inference |
@@ -1055,6 +1055,10 @@ Local JSON Schema enforcement requires a backend that can apply the requested
 grammar. Power rejects unsupported local backend/schema combinations instead of
 silently ignoring `response_format`; remote models preserve the OpenAI wire
 shape for upstream enforcement.
+
+Per-request `keep_alive` overrides must use the same validated duration format
+as configuration. Invalid values are rejected instead of falling back to the
+server default.
 
 #### List Models
 

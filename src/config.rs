@@ -540,8 +540,13 @@ fn default_num_parallel() -> usize {
 /// - `"30s"` → 30 seconds
 /// - `"0"` → Duration::ZERO (unload immediately)
 /// - `"-1"` → Duration::MAX (never unload)
-pub fn parse_keep_alive(s: &str) -> std::time::Duration {
-    parse_keep_alive_duration(s).unwrap_or_else(|| std::time::Duration::from_secs(300))
+pub fn parse_keep_alive(s: &str) -> std::result::Result<std::time::Duration, String> {
+    parse_keep_alive_duration(s).ok_or_else(|| {
+        format!(
+            "invalid keep_alive '{}'; expected a duration such as \"5m\", \"1h\", \"30s\", raw seconds, \"0\", or \"-1\"",
+            s
+        )
+    })
 }
 
 fn parse_keep_alive_duration(s: &str) -> Option<std::time::Duration> {
@@ -738,16 +743,7 @@ impl PowerConfig {
             )));
         }
 
-        // Warn if keep_alive is set to something unparseable (will fall back to 5m).
-        let ka = self.keep_alive.trim();
-        let parseable = parse_keep_alive_duration(ka).is_some();
-        if !parseable {
-            tracing::warn!(
-                keep_alive = %self.keep_alive,
-                "keep_alive value is not parseable; defaulting to 5m. \
-                 Valid formats: \"5m\", \"1h\", \"30s\", \"0\", \"-1\"."
-            );
-        }
+        parse_keep_alive(&self.keep_alive).map_err(PowerError::Config)?;
 
         // Warn if model_signing_key is set but is not a valid 64-char hex string (Ed25519 pubkey).
         if let Some(ref key) = self.model_signing_key {
@@ -1769,49 +1765,59 @@ mod tests {
 
     #[test]
     fn test_parse_keep_alive_minutes() {
-        assert_eq!(parse_keep_alive("5m"), std::time::Duration::from_secs(300));
+        assert_eq!(
+            parse_keep_alive("5m").unwrap(),
+            std::time::Duration::from_secs(300)
+        );
     }
 
     #[test]
     fn test_parse_keep_alive_hours() {
-        assert_eq!(parse_keep_alive("1h"), std::time::Duration::from_secs(3600));
+        assert_eq!(
+            parse_keep_alive("1h").unwrap(),
+            std::time::Duration::from_secs(3600)
+        );
     }
 
     #[test]
     fn test_parse_keep_alive_seconds() {
-        assert_eq!(parse_keep_alive("30s"), std::time::Duration::from_secs(30));
+        assert_eq!(
+            parse_keep_alive("30s").unwrap(),
+            std::time::Duration::from_secs(30)
+        );
     }
 
     #[test]
     fn test_parse_keep_alive_zero() {
-        assert_eq!(parse_keep_alive("0"), std::time::Duration::ZERO);
+        assert_eq!(parse_keep_alive("0").unwrap(), std::time::Duration::ZERO);
     }
 
     #[test]
     fn test_parse_keep_alive_never() {
-        assert_eq!(parse_keep_alive("-1"), std::time::Duration::MAX);
+        assert_eq!(parse_keep_alive("-1").unwrap(), std::time::Duration::MAX);
     }
 
     #[test]
     fn test_parse_keep_alive_raw_number() {
-        assert_eq!(parse_keep_alive("120"), std::time::Duration::from_secs(120));
+        assert_eq!(
+            parse_keep_alive("120").unwrap(),
+            std::time::Duration::from_secs(120)
+        );
     }
 
     #[test]
-    fn test_parse_keep_alive_invalid_defaults() {
-        assert_eq!(parse_keep_alive("abc"), std::time::Duration::from_secs(300));
+    fn test_parse_keep_alive_invalid_returns_error() {
+        let err = parse_keep_alive("abc").unwrap_err();
+        assert!(err.contains("invalid keep_alive"));
     }
 
     #[test]
-    fn test_parse_keep_alive_overflow_defaults() {
-        assert_eq!(
-            parse_keep_alive("18446744073709551615m"),
-            std::time::Duration::from_secs(300)
-        );
-        assert_eq!(
-            parse_keep_alive("18446744073709551615h"),
-            std::time::Duration::from_secs(300)
-        );
+    fn test_parse_keep_alive_overflow_returns_error() {
+        let err = parse_keep_alive("18446744073709551615m").unwrap_err();
+        assert!(err.contains("invalid keep_alive"));
+
+        let err = parse_keep_alive("18446744073709551615h").unwrap_err();
+        assert!(err.contains("invalid keep_alive"));
     }
 
     // ---------------------------------------------------------------
@@ -2603,13 +2609,25 @@ expected_measurements = {
     }
 
     #[test]
-    fn test_validate_keep_alive_overflow_does_not_panic() {
+    fn test_validate_rejects_invalid_keep_alive() {
+        let config = PowerConfig {
+            keep_alive: "later".to_string(),
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("invalid keep_alive"));
+    }
+
+    #[test]
+    fn test_validate_keep_alive_overflow_returns_error() {
         let config = PowerConfig {
             keep_alive: "18446744073709551615h".to_string(),
             ..Default::default()
         };
 
-        config.validate().unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("invalid keep_alive"));
     }
 
     #[test]
@@ -2713,5 +2731,31 @@ expected_measurements = {
 
         let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
         assert!(err.to_string().contains("unsupported spec_mode"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_invalid_keep_alive() {
+        std::env::remove_var("A3S_POWER_KEEP_ALIVE");
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, r#"keep_alive = "eventually""#).unwrap();
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("invalid keep_alive"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_invalid_env_keep_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, "").unwrap();
+        std::env::set_var("A3S_POWER_KEEP_ALIVE", "eventually");
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        std::env::remove_var("A3S_POWER_KEEP_ALIVE");
+
+        assert!(err.to_string().contains("invalid keep_alive"));
     }
 }

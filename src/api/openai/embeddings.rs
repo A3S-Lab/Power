@@ -53,6 +53,13 @@ pub async fn handler(
             .into_response();
         }
     };
+    let request_keep_alive = match super::parse_request_keep_alive(request.keep_alive.as_deref()) {
+        Ok(keep_alive) => keep_alive,
+        Err(message) => {
+            state.metrics.decrement_active_requests();
+            return openai_error("invalid_keep_alive", &message).into_response();
+        }
+    };
 
     let backend = match state.find_backend(&manifest.format, manifest.size) {
         Ok(b) => b,
@@ -68,7 +75,7 @@ pub async fn handler(
         &model_name,
         &manifest,
         &backend,
-        request.keep_alive.as_deref(),
+        request_keep_alive,
     )
     .await
     {
@@ -352,6 +359,33 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "unsupported_request_fields");
         assert!(json["error"]["message"].as_str().unwrap().contains("user"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_embeddings_rejects_invalid_keep_alive() {
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","input":"hello","keep_alive":"eventually"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_keep_alive");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("keep_alive"));
     }
 
     #[tokio::test]

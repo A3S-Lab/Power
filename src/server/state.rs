@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::backend::BackendRegistry;
-use crate::config::PowerConfig;
+use crate::config::{parse_keep_alive, PowerConfig};
 use crate::model::registry::ModelRegistry;
 use crate::server::audit::AuditLogger;
 use crate::server::auth::AuthProvider;
@@ -58,6 +58,7 @@ pub struct AppState {
     pub registry: Arc<ModelRegistry>,
     pub backends: Arc<BackendRegistry>,
     pub config: Arc<PowerConfig>,
+    default_keep_alive: Duration,
     pub metrics: Arc<Metrics>,
     /// Admission control: bounds concurrent in-flight inference requests.
     pub limiter: Arc<crate::server::limiter::ConcurrencyLimiter>,
@@ -95,6 +96,13 @@ impl AppState {
         config: Arc<PowerConfig>,
         log_buffer: LogBuffer,
     ) -> Self {
+        let default_keep_alive = parse_keep_alive(&config.keep_alive).unwrap_or_else(|e| {
+            tracing::error!(
+                error = %e,
+                "invalid keep_alive config reached AppState after validation; using immediate unload"
+            );
+            Duration::ZERO
+        });
         let metrics = Arc::new(Metrics::new());
         let limiter = Arc::new(crate::server::limiter::ConcurrencyLimiter::new(
             config.max_concurrent_requests,
@@ -104,6 +112,7 @@ impl AppState {
             registry,
             backends,
             config,
+            default_keep_alive,
             metrics,
             limiter,
             log_buffer,
@@ -189,7 +198,7 @@ impl AppState {
 
     /// Record that a model has been loaded with the default keep-alive duration from config.
     pub fn mark_loaded(&self, name: &str) {
-        let keep_alive = crate::config::parse_keep_alive(&self.config.keep_alive);
+        let keep_alive = self.default_keep_alive;
         let was_absent = write_lock(&self.loaded_models)
             .insert(
                 name.to_string(),

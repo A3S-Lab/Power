@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::backend::Backend;
-use crate::config::parse_keep_alive;
 use crate::error::Result;
 use crate::model::manifest::ModelManifest;
 use crate::model::storage;
@@ -27,7 +26,7 @@ pub struct LoadResult {
 ///
 /// If the model is already loaded, updates its last-used time.
 /// If not loaded, evicts the LRU model when at capacity, then loads.
-/// An optional `keep_alive` string from the request overrides the config default.
+/// An optional `keep_alive` duration from the request overrides the config default.
 pub async fn ensure_loaded(
     state: &AppState,
     model_name: &str,
@@ -42,13 +41,11 @@ pub async fn ensure_loaded_with_keep_alive(
     model_name: &str,
     manifest: &ModelManifest,
     backend: &Arc<dyn Backend>,
-    keep_alive: Option<&str>,
+    keep_alive: Option<Duration>,
 ) -> Result<LoadResult> {
     if state.is_model_loaded(model_name) {
         state.touch_model(model_name);
-        let unload_after_use = keep_alive
-            .map(|ka| parse_keep_alive(ka) == Duration::ZERO)
-            .unwrap_or(false);
+        let unload_after_use = keep_alive == Some(Duration::ZERO);
         return Ok(LoadResult {
             load_duration: Duration::ZERO,
             unload_after_use,
@@ -229,8 +226,7 @@ pub async fn ensure_loaded_with_keep_alive(
     state.metrics.set_model_memory(model_name, manifest.size);
 
     match keep_alive {
-        Some(ka) => {
-            let duration = parse_keep_alive(ka);
+        Some(duration) => {
             state.mark_loaded_with_keep_alive(model_name, duration);
             let unload_after_use = duration == Duration::ZERO;
             Ok(LoadResult {
@@ -504,9 +500,14 @@ mod tests {
         let manifest = sample_manifest("ka-model");
         let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
 
-        let result =
-            ensure_loaded_with_keep_alive(&state, "ka-model", &manifest, &backend, Some("5m"))
-                .await;
+        let result = ensure_loaded_with_keep_alive(
+            &state,
+            "ka-model",
+            &manifest,
+            &backend,
+            Some(Duration::from_secs(300)),
+        )
+        .await;
         assert!(result.is_ok());
         assert!(state.is_model_loaded("ka-model"));
     }
@@ -517,9 +518,14 @@ mod tests {
         let manifest = sample_manifest("zero-model");
         let backend = state.backends.find_for_format(&ModelFormat::Gguf).unwrap();
 
-        let result =
-            ensure_loaded_with_keep_alive(&state, "zero-model", &manifest, &backend, Some("0"))
-                .await;
+        let result = ensure_loaded_with_keep_alive(
+            &state,
+            "zero-model",
+            &manifest,
+            &backend,
+            Some(Duration::ZERO),
+        )
+        .await;
         assert!(result.is_ok());
         // keep_alive=0 means unload AFTER inference, not before — model stays loaded here
         assert!(state.is_model_loaded("zero-model"));

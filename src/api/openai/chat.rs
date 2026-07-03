@@ -224,6 +224,14 @@ pub async fn handler(
             .into_response();
         }
     };
+    let request_keep_alive = match super::parse_request_keep_alive(request.keep_alive.as_deref()) {
+        Ok(keep_alive) => keep_alive,
+        Err(message) => {
+            state.metrics.decrement_active_requests();
+            return openai_error("invalid_keep_alive", &message).into_response();
+        }
+    };
+
     if !matches!(manifest.format, crate::model::manifest::ModelFormat::Remote) {
         if let Some(message) = unsupported_local_message_role_message(&request) {
             state.metrics.decrement_active_requests();
@@ -276,7 +284,7 @@ pub async fn handler(
         &model_name,
         &manifest,
         &backend,
-        request.keep_alive.as_deref(),
+        request_keep_alive,
     )
     .await
     {
@@ -2727,6 +2735,33 @@ mod tests {
             .unwrap();
         let _ = app.oneshot(req).await.unwrap();
         assert_eq!(state.metrics.active_requests(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_invalid_keep_alive() {
+        let state = test_state_with_mock(MockBackend::success());
+        state.registry.register(sample_manifest("test")).unwrap();
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"user","content":"hi"}],"keep_alive":"eventually"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_keep_alive");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("keep_alive"));
     }
 
     #[tokio::test]

@@ -424,6 +424,10 @@ Landed in the current working tree:
   constraints, picolm rejects schema-specific constraints it cannot enforce,
   and mistral.rs rejects local response-format constraints instead of silently
   ignoring receipt-bound output policy. Remote models keep upstream passthrough.
+- Made `keep_alive` parsing fail closed: invalid config or
+  `A3S_POWER_KEEP_ALIVE` values now fail validation, and invalid per-request
+  overrides on chat, completion, and embedding endpoints return
+  `invalid_keep_alive` instead of falling back to `5m`.
 
 Still open:
 

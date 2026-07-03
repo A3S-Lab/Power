@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use axum::response::sse::Event;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use std::time::Duration;
 
 use crate::api::types::{JsonSchemaSpec, ResponseFormat};
 use crate::model::manifest::ModelFormat;
@@ -109,6 +110,15 @@ pub(super) fn unsupported_local_response_format_for_backend(
         },
         _ => None,
     }
+}
+
+pub(super) fn parse_request_keep_alive(
+    keep_alive: Option<&str>,
+) -> std::result::Result<Option<Duration>, String> {
+    keep_alive
+        .map(crate::config::parse_keep_alive)
+        .transpose()
+        .map_err(|e| format!("invalid request keep_alive: {e}"))
 }
 
 fn local_backend_response_format(format: &ResponseFormat) -> serde_json::Value {
@@ -402,6 +412,18 @@ mod tests {
         .unwrap();
 
         assert!(message.contains("cannot enforce response_format.type json_schema"));
+    }
+
+    #[test]
+    fn test_parse_request_keep_alive_accepts_valid_value() {
+        let parsed = parse_request_keep_alive(Some("30s")).unwrap();
+        assert_eq!(parsed, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_parse_request_keep_alive_rejects_invalid_value() {
+        let err = parse_request_keep_alive(Some("soon")).unwrap_err();
+        assert!(err.contains("invalid request keep_alive"));
     }
 
     #[test]
