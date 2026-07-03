@@ -1720,7 +1720,7 @@ impl Backend for PicolmBackend {
                 )
             };
 
-            let prompt = build_prompt(&request.messages, chat_template.as_deref());
+            let prompt = build_prompt(&request.messages, chat_template.as_deref())?;
             let input_ids = tokenizer.encode(&prompt);
             let temperature = request.temperature.unwrap_or(0.8);
             let top_p = request.top_p.unwrap_or(0.95);
@@ -1871,7 +1871,7 @@ impl Backend for PicolmBackend {
                 model.chat_template.clone()
             };
 
-            let prompt = build_prompt(&request.messages, chat_template.as_deref());
+            let prompt = build_prompt(&request.messages, chat_template.as_deref())?;
             Ok(Some(EffectivePromptDigest::chat_rendered_prompt(
                 "picolm", &prompt,
             )))
@@ -1929,12 +1929,11 @@ impl Backend for PicolmBackend {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 #[cfg(any(feature = "picolm", test))]
-fn build_prompt(messages: &[ChatMessage], chat_template: Option<&str>) -> String {
+fn build_prompt(messages: &[ChatMessage], chat_template: Option<&str>) -> Result<String> {
     if let Some(tmpl) = chat_template {
-        if let Ok(rendered) = render_jinja_template(tmpl, messages) {
-            return rendered;
-        }
-        // Fall through to ChatML on template error
+        return render_jinja_template(tmpl, messages).map_err(|e| {
+            PowerError::InferenceFailed(format!("picolm: chat template rendering failed: {e}"))
+        });
     }
     // ChatML fallback
     let mut out = String::new();
@@ -1946,7 +1945,7 @@ fn build_prompt(messages: &[ChatMessage], chat_template: Option<&str>) -> String
         ));
     }
     out.push_str("<|im_start|>assistant\n");
-    out
+    Ok(out)
 }
 
 /// Render a Jinja2 chat template with the given messages.
@@ -2350,7 +2349,7 @@ mod tests {
             tool_call_id: None,
             images: None,
         }];
-        let p = build_prompt(&msgs, None);
+        let p = build_prompt(&msgs, None).unwrap();
         assert!(p.ends_with("<|im_start|>assistant\n"));
         assert!(p.contains("Hello"));
     }
@@ -2539,7 +2538,7 @@ mod tests {
                 images: None,
             },
         ];
-        let p = build_prompt(&msgs, None);
+        let p = build_prompt(&msgs, None).unwrap();
         assert!(p.contains("<|im_start|>system"));
         assert!(p.contains("<|im_start|>user"));
         assert!(p.ends_with("<|im_start|>assistant\n"));
@@ -2557,15 +2556,14 @@ mod tests {
             tool_call_id: None,
             images: None,
         }];
-        let p = build_prompt(&msgs, Some(template));
+        let p = build_prompt(&msgs, Some(template)).unwrap();
         assert!(p.contains("<|start_header_id|>user<|end_header_id|>"));
         assert!(p.contains("Hello"));
         assert!(p.contains("<|start_header_id|>assistant<|end_header_id|>"));
     }
 
     #[test]
-    fn test_build_prompt_invalid_template_falls_back() {
-        // Invalid Jinja2 should fall back to ChatML
+    fn test_build_prompt_invalid_raw_template_fails_closed() {
         let msgs = vec![ChatMessage {
             role: "user".to_string(),
             content: MessageContent::Text("Hi".to_string()),
@@ -2574,8 +2572,8 @@ mod tests {
             tool_call_id: None,
             images: None,
         }];
-        let p = build_prompt(&msgs, Some("{% invalid jinja %}"));
-        assert!(p.contains("<|im_start|>"));
+        let err = build_prompt(&msgs, Some("{% invalid jinja %}")).unwrap_err();
+        assert!(err.to_string().contains("chat template rendering failed"));
     }
 
     #[cfg(feature = "picolm")]

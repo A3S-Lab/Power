@@ -52,13 +52,13 @@ pub fn detect(template_str: &str) -> ChatTemplateKind {
 /// The template receives `messages` (array of `{role, content}` objects) and
 /// `add_generation_prompt` (bool). This matches the HuggingFace/Ollama convention.
 ///
-/// Returns `None` if rendering fails, allowing the caller to fall back to
-/// hardcoded template formatting.
+/// Returns an error if parsing or rendering fails. Callers must not silently
+/// replace a model-provided raw template with a different prompt policy.
 pub fn render_jinja(
     template_str: &str,
     messages: &[ChatMessage],
     add_generation_prompt: bool,
-) -> Option<String> {
+) -> Result<String, String> {
     let mut env = minijinja::Environment::new();
     // Limit recursion depth to prevent pathological templates from hanging
     env.set_recursion_limit(64);
@@ -95,38 +95,32 @@ pub fn render_jinja(
     );
 
     match result {
-        Ok(rendered) => Some(rendered),
-        Err(e) => {
-            tracing::warn!(error = %e, "Jinja2 template rendering failed, falling back to hardcoded template");
-            None
-        }
+        Ok(rendered) => Ok(rendered),
+        Err(e) => Err(format!("Jinja2 chat template rendering failed: {e}")),
     }
 }
 
 /// Format chat messages into a prompt string.
 ///
-/// If a raw Jinja2 template string is provided, attempts to render it first.
-/// Falls back to the hardcoded template kind if Jinja2 rendering fails or
-/// no raw template is available.
+/// If a raw Jinja2 template string is provided, it is authoritative and
+/// rendering errors fail closed. Hardcoded template kinds are used only when no
+/// raw template is available.
 pub fn format_chat_prompt(
     messages: &[ChatMessage],
     kind: &ChatTemplateKind,
     raw_template: Option<&str>,
-) -> String {
-    // Try Jinja2 rendering first if a raw template is available
+) -> Result<String, String> {
     if let Some(template_str) = raw_template {
-        if let Some(rendered) = render_jinja(template_str, messages, true) {
-            return rendered;
-        }
+        return render_jinja(template_str, messages, true);
     }
 
-    // Fallback to hardcoded templates
-    match kind {
+    let prompt = match kind {
         ChatTemplateKind::ChatMl => format_chatml(messages),
         ChatTemplateKind::Llama => format_llama(messages),
         ChatTemplateKind::Phi => format_phi(messages),
         ChatTemplateKind::Generic => format_generic(messages),
-    }
+    };
+    Ok(prompt)
 }
 
 fn format_chatml(messages: &[ChatMessage]) -> String {
@@ -245,7 +239,7 @@ mod tests {
     #[test]
     fn test_format_chatml() {
         let msgs = sample_messages();
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, None);
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, None).unwrap();
         assert!(prompt.contains("<|im_start|>system\nYou are helpful.<|im_end|>"));
         assert!(prompt.contains("<|im_start|>user\nHello<|im_end|>"));
         assert!(prompt.ends_with("<|im_start|>assistant\n"));
@@ -254,7 +248,7 @@ mod tests {
     #[test]
     fn test_format_llama() {
         let msgs = sample_messages();
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Llama, None);
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Llama, None).unwrap();
         assert!(prompt.contains("<<SYS>>"));
         assert!(prompt.contains("You are helpful."));
         assert!(prompt.contains("[INST]"));
@@ -264,7 +258,7 @@ mod tests {
     #[test]
     fn test_format_phi() {
         let msgs = sample_messages();
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Phi, None);
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Phi, None).unwrap();
         assert!(prompt.contains("<|system|>\nYou are helpful.<|end|>"));
         assert!(prompt.contains("<|user|>\nHello<|end|>"));
         assert!(prompt.ends_with("<|assistant|>\n"));
@@ -273,7 +267,7 @@ mod tests {
     #[test]
     fn test_format_generic() {
         let msgs = sample_messages();
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Generic, None);
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Generic, None).unwrap();
         assert!(prompt.contains("system: You are helpful."));
         assert!(prompt.contains("user: Hello"));
         assert!(prompt.ends_with("assistant: "));
@@ -282,13 +276,13 @@ mod tests {
     #[test]
     fn test_format_empty_messages() {
         let msgs: Vec<ChatMessage> = vec![];
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, None);
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, None).unwrap();
         assert_eq!(prompt, "<|im_start|>assistant\n");
 
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Phi, None);
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Phi, None).unwrap();
         assert_eq!(prompt, "<|assistant|>\n");
 
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Generic, None);
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Generic, None).unwrap();
         assert_eq!(prompt, "assistant: ");
     }
 
@@ -316,7 +310,7 @@ mod tests {
             images: None,
         }];
 
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, None);
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, None).unwrap();
         assert!(prompt.contains("Describe this image"));
         assert!(!prompt.contains("example.com"));
     }
@@ -342,7 +336,7 @@ mod tests {
             },
         ];
 
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, None);
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, None).unwrap();
         assert!(prompt.contains("weather?"));
         assert!(prompt.contains("72F sunny"));
     }
@@ -359,7 +353,7 @@ mod tests {
         }];
 
         // Name field doesn't affect template formatting, just content
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Phi, None);
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::Phi, None).unwrap();
         assert!(prompt.contains("hello"));
     }
 
@@ -372,7 +366,7 @@ mod tests {
         let template = "{% for message in messages %}<|im_start|>{{ message.role }}\n{{ message.content }}<|im_end|>\n{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}";
         let msgs = sample_messages();
         let result = render_jinja(template, &msgs, true);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         let rendered = result.unwrap();
         assert!(rendered.contains("<|im_start|>system\nYou are helpful.<|im_end|>"));
         assert!(rendered.contains("<|im_start|>user\nHello<|im_end|>"));
@@ -384,7 +378,7 @@ mod tests {
         let template = "{% for message in messages %}<|{{ message.role }}|>\n{{ message.content }}<|end|>\n{% endfor %}{% if add_generation_prompt %}<|assistant|>\n{% endif %}";
         let msgs = sample_messages();
         let result = render_jinja(template, &msgs, true);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         let rendered = result.unwrap();
         assert!(rendered.contains("<|system|>\nYou are helpful.<|end|>"));
         assert!(rendered.contains("<|user|>\nHello<|end|>"));
@@ -396,7 +390,7 @@ mod tests {
         let template = "{{ bos_token }}{% for message in messages %}{{ message.role }}: {{ message.content }}\n{% endfor %}{{ eos_token }}";
         let msgs = sample_messages();
         let result = render_jinja(template, &msgs, false);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         let rendered = result.unwrap();
         assert!(rendered.starts_with("<s>"));
         assert!(rendered.ends_with("</s>"));
@@ -407,16 +401,16 @@ mod tests {
         let template = "{% for message in messages %}{{ message.role }}: {{ message.content }}\n{% endfor %}{% if add_generation_prompt %}assistant: {% endif %}";
         let msgs: Vec<ChatMessage> = vec![];
         let result = render_jinja(template, &msgs, true);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(result.unwrap(), "assistant: ");
     }
 
     #[test]
-    fn test_render_jinja_invalid_template_returns_none() {
+    fn test_render_jinja_invalid_template_returns_error() {
         let template = "{% invalid syntax %}";
         let msgs = sample_messages();
         let result = render_jinja(template, &msgs, true);
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -425,7 +419,7 @@ mod tests {
             "{% for message in messages %}[{{ message.role }}] {{ message.content }}\n{% endfor %}";
         let msgs = sample_messages();
         // Even though kind is ChatMl, the raw template should be used
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, Some(template));
+        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, Some(template)).unwrap();
         assert!(prompt.contains("[system] You are helpful."));
         assert!(prompt.contains("[user] Hello"));
         // Should NOT contain ChatML markers
@@ -433,12 +427,12 @@ mod tests {
     }
 
     #[test]
-    fn test_format_chat_prompt_falls_back_on_bad_jinja() {
+    fn test_format_chat_prompt_rejects_bad_raw_jinja() {
         let bad_template = "{% invalid %}";
         let msgs = sample_messages();
-        // Should fall back to ChatMl hardcoded format
-        let prompt = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, Some(bad_template));
-        assert!(prompt.contains("<|im_start|>"));
+        let err = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, Some(bad_template))
+            .expect_err("raw Jinja template errors must fail closed");
+        assert!(err.contains("Jinja2 chat template rendering failed"));
     }
 
     #[test]
@@ -447,7 +441,7 @@ mod tests {
         let template = "{% for message in messages %}{% if message.role == 'system' %}<|start_header_id|>system<|end_header_id|>\n\n{{ message.content }}<|eot_id|>{% elif message.role == 'user' %}<|start_header_id|>user<|end_header_id|>\n\n{{ message.content }}<|eot_id|>{% elif message.role == 'assistant' %}<|start_header_id|>assistant<|end_header_id|>\n\n{{ message.content }}<|eot_id|>{% endif %}{% endfor %}{% if add_generation_prompt %}<|start_header_id|>assistant<|end_header_id|>\n\n{% endif %}";
         let msgs = sample_messages();
         let result = render_jinja(template, &msgs, true);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         let rendered = result.unwrap();
         assert!(rendered.contains("<|start_header_id|>system<|end_header_id|>"));
         assert!(rendered.contains("You are helpful."));
@@ -461,7 +455,7 @@ mod tests {
         let template = "{% for message in messages %}<start_of_turn>{{ message.role }}\n{{ message.content }}<end_of_turn>\n{% endfor %}{% if add_generation_prompt %}<start_of_turn>model\n{% endif %}";
         let msgs = sample_messages();
         let result = render_jinja(template, &msgs, true);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         let rendered = result.unwrap();
         assert!(rendered.contains("<start_of_turn>system\nYou are helpful.<end_of_turn>"));
         assert!(rendered.contains("<start_of_turn>user\nHello<end_of_turn>"));
@@ -473,7 +467,7 @@ mod tests {
         let template = "{% for message in messages %}{{ message.role }}: {{ message.content }}\n{% endfor %}{% if add_generation_prompt %}assistant: {% endif %}";
         let msgs = sample_messages();
         let result = render_jinja(template, &msgs, false);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         let rendered = result.unwrap();
         assert!(!rendered.ends_with("assistant: "));
     }
@@ -504,7 +498,7 @@ mod tests {
             images: None,
         }];
         let result = render_jinja(template, &msgs, false);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert!(result.unwrap().contains("Describe this"));
     }
 
@@ -513,7 +507,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_render_jinja_raise_exception_returns_none() {
+    fn test_render_jinja_raise_exception_returns_error() {
         // Llama 3.x templates use raise_exception for unsupported roles
         let template = "{% if messages[0].role == 'bad' %}{{ raise_exception('Unsupported role') }}{% endif %}OK";
         let msgs = vec![ChatMessage {
@@ -526,7 +520,7 @@ mod tests {
         }];
         // raise_exception should cause render to fail gracefully
         let result = render_jinja(template, &msgs, false);
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -536,7 +530,7 @@ mod tests {
         let msgs = sample_messages();
         // raise_exception not triggered, should render fine
         let result = render_jinja(template, &msgs, false);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(result.unwrap(), "OK");
     }
 
@@ -546,7 +540,7 @@ mod tests {
         let template = "Today is {{ strftime_now('%Y') }}.";
         let msgs: Vec<ChatMessage> = vec![];
         let result = render_jinja(template, &msgs, false);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         let rendered = result.unwrap();
         // Should contain a 4-digit year
         assert!(rendered.starts_with("Today is 20"));
@@ -575,7 +569,7 @@ mod tests {
         );
         let msgs = sample_messages();
         let result = render_jinja(template, &msgs, true);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         let rendered = result.unwrap();
         assert!(rendered.starts_with("<s>"));
         assert!(rendered.contains("Cutting Knowledge Date: December 2023"));
@@ -591,7 +585,7 @@ mod tests {
         let template = "{% for i in range(999999) %}x{% endfor %}";
         let msgs: Vec<ChatMessage> = vec![];
         let result = render_jinja(template, &msgs, false);
-        // Should return None because fuel is exhausted, not hang
-        assert!(result.is_none());
+        // Should return an error because fuel is exhausted, not hang.
+        assert!(result.is_err());
     }
 }

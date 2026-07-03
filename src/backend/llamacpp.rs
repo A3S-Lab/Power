@@ -555,7 +555,8 @@ impl Backend for LlamaCppBackend {
         .await
         .map_err(|e| {
             PowerError::InferenceFailed(format!("Chat template rendering task failed: {e}"))
-        })?;
+        })?
+        .map_err(|e| PowerError::InferenceFailed(e))?;
 
         let has_images = request.has_image_inputs();
         ensure_llamacpp_images_supported(model_name, has_images, projector_path.is_some())?;
@@ -700,7 +701,8 @@ impl Backend for LlamaCppBackend {
         .await
         .map_err(|e| {
             PowerError::InferenceFailed(format!("Chat template rendering task failed: {e}"))
-        })?;
+        })?
+        .map_err(|e| PowerError::InferenceFailed(e))?;
 
         Ok(Some(EffectivePromptDigest::chat_rendered_prompt(
             "llama.cpp",

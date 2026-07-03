@@ -128,7 +128,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
 - **JSON Schema Structured Output**: Constrain model output via JSON Schema → GBNF grammar conversion
 - **Thinking & Reasoning**: Streaming `<think>` block parser for DeepSeek-R1, QwQ reasoning models
-- **Chat Template Engine**: Jinja2-compatible rendering via `minijinja` (Llama 3, ChatML, Phi, Gemma, custom)
+- **Chat Template Engine**: Jinja2-compatible rendering via `minijinja` (Llama 3, ChatML, Phi, Gemma, custom); model-provided raw templates fail closed on render errors instead of silently switching prompt formats
 - **KV Cache Reuse**: Prefix matching across multi-turn requests for conversation speedup
 - **Remote Model Hub Pull**: `POST /v1/models/pull` with SSE progress, Range resume, concurrent dedup, source-specific token auth for ModelScope or HuggingFace Hub
 

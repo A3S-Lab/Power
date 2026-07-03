@@ -416,6 +416,9 @@ Landed in the current working tree:
 - Made picolm `spec_mode` configuration fail closed for unknown HCL or
   `A3S_POWER_SPEC_MODE` values instead of silently falling back to
   `prompt-lookup`.
+- Made local raw Jinja chat-template rendering fail closed for llama.cpp and
+  picolm when a model-provided template cannot be parsed or rendered, instead
+  of silently replacing it with a hardcoded prompt format.
 
 Still open:
 
