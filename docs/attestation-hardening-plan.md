@@ -468,6 +468,10 @@ Landed in the current working tree:
   validation: invalid verifier values, invalid GPU evidence source values, zero
   timeouts, and missing `corelib` GPU architecture now error before provider
   startup.
+- Made direct `nras-rest` GPU attestation configuration fail closed during
+  config validation: missing evidence, configured external verdicts, missing or
+  invalid GPU architecture, invalid claims versions, and zero timeouts now
+  error before provider startup.
 
 Still open:
 

@@ -884,29 +884,48 @@ impl PowerConfig {
 
         if self.gpu_attestation.source == GpuAttestationSource::NrasRest {
             if !self.gpu_attestation.evidence_configured() {
-                tracing::warn!(
-                    "gpu_attestation.source = \"nras-rest\" requires evidence_hex or evidence_path."
-                );
+                return Err(PowerError::Config(
+                    "gpu_attestation.source = \"nras-rest\" requires evidence_hex or evidence_path"
+                        .to_string(),
+                ));
             }
-            if self.gpu_attestation.nras_gpu_architecture.is_none() {
-                tracing::warn!(
-                    "gpu_attestation.source = \"nras-rest\" requires nras_gpu_architecture."
-                );
+            if self.gpu_attestation.verdict_configured() {
+                return Err(PowerError::Config(
+                    "gpu_attestation.source = \"nras-rest\" obtains the verdict from NRAS; verdict_hex/verdict_path must not be configured".to_string(),
+                ));
+            }
+            let architecture = self
+                .gpu_attestation
+                .nras_gpu_architecture
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    PowerError::Config(
+                        "gpu_attestation.nras_gpu_architecture is required when source = \"nras-rest\""
+                            .to_string(),
+                    )
+                })?
+                .to_ascii_uppercase();
+            if !matches!(architecture.as_str(), "HOPPER" | "BLACKWELL") {
+                return Err(PowerError::Config(format!(
+                    "gpu_attestation.nras_gpu_architecture must be \"HOPPER\" or \"BLACKWELL\", got {:?}",
+                    self.gpu_attestation.nras_gpu_architecture
+                )));
             }
             if !matches!(
                 self.gpu_attestation.nras_claims_version.trim(),
                 "2.0" | "3.0"
             ) {
-                tracing::warn!(
-                    claims_version = %self.gpu_attestation.nras_claims_version,
-                    "gpu_attestation.nras_claims_version should be \"2.0\" or \"3.0\"."
-                );
+                return Err(PowerError::Config(format!(
+                    "gpu_attestation.nras_claims_version must be \"2.0\" or \"3.0\", got {:?}",
+                    self.gpu_attestation.nras_claims_version
+                )));
             }
             if self.gpu_attestation.nras_timeout_secs == 0 {
-                tracing::warn!(
-                    "gpu_attestation.nras_timeout_secs = 0 is invalid; NRAS REST provider \
-                     requires a positive timeout."
-                );
+                return Err(PowerError::Config(
+                    "gpu_attestation.nras_timeout_secs must be greater than zero".to_string(),
+                ));
             }
         }
 
@@ -2875,6 +2894,85 @@ expected_measurements = {
             },
             ..Default::default()
         };
+
+        config.validate().unwrap();
+    }
+
+    fn nras_rest_config() -> PowerConfig {
+        PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                source: GpuAttestationSource::NrasRest,
+                evidence_hex: Some(hex::encode(br#"{"evidence":"ZXZpZGVuY2U"}"#)),
+                nras_gpu_architecture: Some("HOPPER".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_nras_rest_without_evidence() {
+        let config = PowerConfig {
+            gpu_attestation: GpuAttestationConfig {
+                source: GpuAttestationSource::NrasRest,
+                nras_gpu_architecture: Some("HOPPER".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("evidence"));
+    }
+
+    #[test]
+    fn test_validate_rejects_nras_rest_with_configured_verdict() {
+        let mut config = nras_rest_config();
+        config.gpu_attestation.verdict_hex = Some("00".to_string());
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("verdict"));
+    }
+
+    #[test]
+    fn test_validate_rejects_nras_rest_without_architecture() {
+        let mut config = nras_rest_config();
+        config.gpu_attestation.nras_gpu_architecture = None;
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("nras_gpu_architecture"));
+    }
+
+    #[test]
+    fn test_validate_rejects_nras_rest_invalid_architecture() {
+        let mut config = nras_rest_config();
+        config.gpu_attestation.nras_gpu_architecture = Some("ADA".to_string());
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("nras_gpu_architecture"));
+    }
+
+    #[test]
+    fn test_validate_rejects_nras_rest_invalid_claims_version() {
+        let mut config = nras_rest_config();
+        config.gpu_attestation.nras_claims_version = "4.0".to_string();
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("nras_claims_version"));
+    }
+
+    #[test]
+    fn test_validate_rejects_nras_rest_zero_timeout() {
+        let mut config = nras_rest_config();
+        config.gpu_attestation.nras_timeout_secs = 0;
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("nras_timeout_secs"));
+    }
+
+    #[test]
+    fn test_validate_accepts_valid_nras_rest_config() {
+        let config = nras_rest_config();
 
         config.validate().unwrap();
     }
