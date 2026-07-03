@@ -650,6 +650,16 @@ fn parse_bool_env_override(name: &str, value: &str) -> Option<bool> {
     }
 }
 
+fn parse_required_bool_env_override(name: &str, value: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(PowerError::Config(format!(
+            "invalid boolean environment override {name}={value:?}; expected true/false, 1/0, yes/no, or on/off"
+        ))),
+    }
+}
+
 fn default_host() -> String {
     "127.0.0.1".to_string()
 }
@@ -1048,9 +1058,7 @@ impl PowerConfig {
         }
 
         if let Ok(tee_str) = std::env::var("A3S_POWER_TEE_MODE") {
-            if let Some(tee_mode) = parse_bool_env_override("A3S_POWER_TEE_MODE", &tee_str) {
-                self.tee_mode = tee_mode;
-            }
+            self.tee_mode = parse_required_bool_env_override("A3S_POWER_TEE_MODE", &tee_str)?;
         }
 
         if let Ok(policy_mode) = std::env::var("A3S_POWER_TEE_POLICY_MODE") {
@@ -1061,10 +1069,8 @@ impl PowerConfig {
         }
 
         if let Ok(redact_str) = std::env::var("A3S_POWER_REDACT_LOGS") {
-            if let Some(redact_logs) = parse_bool_env_override("A3S_POWER_REDACT_LOGS", &redact_str)
-            {
-                self.redact_logs = redact_logs;
-            }
+            self.redact_logs =
+                parse_required_bool_env_override("A3S_POWER_REDACT_LOGS", &redact_str)?;
         }
 
         // When TEE mode is enabled, default redact_logs to true unless explicitly disabled
@@ -1117,20 +1123,17 @@ impl PowerConfig {
         }
 
         if let Ok(enabled) = std::env::var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST") {
-            if let Some(enabled) =
-                parse_bool_env_override("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST", &enabled)
-            {
-                self.proxy_effective_prompt_digest = enabled;
-            }
+            self.proxy_effective_prompt_digest = parse_required_bool_env_override(
+                "A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST",
+                &enabled,
+            )?;
         }
 
         if let Ok(required) = std::env::var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED") {
-            if let Some(required) = parse_bool_env_override(
+            self.proxy_effective_prompt_digest_required = parse_required_bool_env_override(
                 "A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED",
                 &required,
-            ) {
-                self.proxy_effective_prompt_digest_required = required;
-            }
+            )?;
         }
 
         if let Ok(path) = std::env::var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_PATH") {
@@ -2128,17 +2131,13 @@ mod tests {
     #[test]
     #[serial]
     fn test_env_invalid_bool_values_ignored() {
-        std::env::set_var("A3S_POWER_TEE_MODE", "definitely");
         std::env::set_var("A3S_POWER_RA_TLS", "maybe");
         let mut config = PowerConfig {
-            tee_mode: true,
             ra_tls: true,
             ..Default::default()
         };
         config.apply_env_overrides().unwrap();
-        assert!(config.tee_mode);
         assert!(config.ra_tls);
-        std::env::remove_var("A3S_POWER_TEE_MODE");
         std::env::remove_var("A3S_POWER_RA_TLS");
     }
 
@@ -2838,5 +2837,68 @@ expected_measurements = {
         std::env::remove_var("A3S_POWER_GPU_ATTESTATION_SOURCE");
 
         assert!(err.to_string().contains("A3S_POWER_GPU_ATTESTATION_SOURCE"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_invalid_env_tee_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, "").unwrap();
+        std::env::set_var("A3S_POWER_TEE_MODE", "definitely");
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        std::env::remove_var("A3S_POWER_TEE_MODE");
+
+        assert!(err.to_string().contains("A3S_POWER_TEE_MODE"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_invalid_env_redact_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, "").unwrap();
+        std::env::set_var("A3S_POWER_REDACT_LOGS", "sometimes");
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        std::env::remove_var("A3S_POWER_REDACT_LOGS");
+
+        assert!(err.to_string().contains("A3S_POWER_REDACT_LOGS"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_invalid_env_proxy_effective_prompt_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, "").unwrap();
+        std::env::set_var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST", "enabled-ish");
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        std::env::remove_var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST");
+
+        assert!(err
+            .to_string()
+            .contains("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_invalid_env_proxy_effective_prompt_digest_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, "").unwrap();
+        std::env::set_var(
+            "A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED",
+            "required-ish",
+        );
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        std::env::remove_var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED");
+
+        assert!(err
+            .to_string()
+            .contains("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED"));
     }
 }

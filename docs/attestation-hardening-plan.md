@@ -435,6 +435,10 @@ Landed in the current working tree:
   `A3S_POWER_TEE_POLICY_MODE` and `A3S_POWER_GPU_ATTESTATION_SOURCE` now reject
   unknown values during configuration loading instead of silently keeping the
   previous/default policy.
+- Made policy-bearing boolean environment overrides fail closed:
+  `A3S_POWER_TEE_MODE`, `A3S_POWER_REDACT_LOGS`, and proxy effective-prompt
+  digest booleans now reject malformed values instead of silently keeping the
+  previous/default policy.
 
 Still open:
 

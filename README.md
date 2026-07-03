@@ -646,13 +646,13 @@ gpu_attestation {
 | `A3S_POWER_GPU_ATTESTATION_OCSP_URL` | Optional OCSP URL |
 | `A3S_POWER_GPU_ATTESTATION_RELYING_PARTY_POLICY_PATH` | Optional relying-party policy file |
 | `A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS` | Timeout for each `nvattest` command |
-| `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST` | Enable proxy upstream rendered prompt digest requests |
-| `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED` | Require proxy upstream rendered prompt digest support and fail closed when missing |
+| `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST` | Enable proxy upstream rendered prompt digest requests; invalid values fail closed |
+| `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED` | Require proxy upstream rendered prompt digest support and fail closed when missing; invalid values fail closed |
 | `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_PATH` | Upstream endpoint path for rendered prompt digest requests |
-| `A3S_POWER_TEE_MODE` | Enable TEE mode (`"1"` or `"true"`) |
+| `A3S_POWER_TEE_MODE` | Enable TEE mode (`"1"` or `"true"`); invalid values fail closed |
 | `A3S_POWER_TEE_POLICY_MODE` | Set TEE policy mode (`"strict"`, `"development"`, or `"gpu-confidential"`); invalid values fail closed |
 | `A3S_POWER_TEE_STRICT` | Legacy shortcut: `"1"` selects strict policy and removes simulated TEE from the allowlist |
-| `A3S_POWER_REDACT_LOGS` | Enable log redaction (`"1"` or `"true"`) |
+| `A3S_POWER_REDACT_LOGS` | Enable log redaction (`"1"` or `"true"`); invalid values fail closed |
 | `A3S_POWER_TLS_PORT` | TLS server port (`tls` feature required) |
 | `A3S_POWER_RA_TLS` | Enable RA-TLS attestation embedding (`"1"` or `"true"`) |
 | `A3S_POWER_VSOCK_PORT` | Vsock port (`vsock` feature, Linux only) |
