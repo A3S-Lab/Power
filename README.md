@@ -625,12 +625,12 @@ gpu_attestation {
 | `A3S_POWER_HOST` | Server bind address |
 | `A3S_POWER_PORT` | Server port; invalid values fail closed |
 | `A3S_POWER_DATA_DIR` | Model storage directory |
-| `A3S_POWER_MAX_MODELS` | Max concurrent loaded models |
+| `A3S_POWER_MAX_MODELS` | Max concurrent loaded models; invalid values fail closed |
 | `A3S_POWER_KEEP_ALIVE` | Default keep-alive duration |
 | `A3S_POWER_SPEC_MODE` | picolm speculative-decoding mode (`"off"`, `"prompt-lookup"`, or `"ngram-context"`); invalid values fail closed |
 | `A3S_POWER_MODEL_SOURCE` | Remote model hub source for pull (`"modelscope"`, `"hf"`, or `"huggingface"`); invalid configured values fail closed |
 | `A3S_POWER_HUB_TOKEN` | Generic bearer token fallback for remote model hub pulls |
-| `A3S_POWER_GPU_LAYERS` | GPU layer offloading |
+| `A3S_POWER_GPU_LAYERS` | GPU layer offloading; invalid values fail closed |
 | `A3S_POWER_GPU_ATTESTATION_SOURCE` | GPU CC evidence source (`"configured"`, `"nvattest-cli"`, or `"nras-rest"`); invalid values fail closed |
 | `A3S_POWER_GPU_ATTESTATION_PROVIDER` | Provider label for NVIDIA GPU CC evidence claims |
 | `A3S_POWER_GPU_ATTESTATION_EVIDENCE_PATH` | Path to raw NVIDIA GPU CC evidence bytes |
@@ -645,11 +645,11 @@ gpu_attestation {
 | `A3S_POWER_GPU_ATTESTATION_NRAS_GPU_ARCHITECTURE` | GPU architecture for direct NRAS REST (`"HOPPER"` or `"BLACKWELL"`) |
 | `A3S_POWER_GPU_ATTESTATION_NRAS_CLAIMS_VERSION` | Claims version for direct NRAS REST (`"2.0"` or `"3.0"`) |
 | `A3S_POWER_GPU_ATTESTATION_NRAS_BEARER_TOKEN_ENV` | Environment variable containing an optional NRAS REST bearer token |
-| `A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS` | Timeout for each direct NRAS REST request |
+| `A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS` | Timeout for each direct NRAS REST request; invalid values fail closed |
 | `A3S_POWER_GPU_ATTESTATION_RIM_URL` | Optional RIM URL |
 | `A3S_POWER_GPU_ATTESTATION_OCSP_URL` | Optional OCSP URL |
 | `A3S_POWER_GPU_ATTESTATION_RELYING_PARTY_POLICY_PATH` | Optional relying-party policy file |
-| `A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS` | Timeout for each `nvattest` command |
+| `A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS` | Timeout for each `nvattest` command; invalid values fail closed |
 | `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST` | Enable proxy upstream rendered prompt digest requests; invalid values fail closed |
 | `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED` | Require proxy upstream rendered prompt digest support and fail closed when missing; invalid values fail closed |
 | `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_PATH` | Upstream endpoint path for rendered prompt digest requests |

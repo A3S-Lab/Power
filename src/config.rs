@@ -604,25 +604,6 @@ fn parse_keep_alive_duration(s: &str) -> Option<std::time::Duration> {
     None
 }
 
-fn parse_env_override<T>(name: &str, value: &str) -> Option<T>
-where
-    T: FromStr,
-    T::Err: Display,
-{
-    match value.trim().parse::<T>() {
-        Ok(parsed) => Some(parsed),
-        Err(e) => {
-            tracing::warn!(
-                env = name,
-                value,
-                error = %e,
-                "Invalid environment override; keeping configured value"
-            );
-            None
-        }
-    }
-}
-
 fn parse_required_env_override<T>(name: &str, value: &str) -> Result<T>
 where
     T: FromStr,
@@ -947,9 +928,8 @@ impl PowerConfig {
         }
 
         if let Ok(max_str) = std::env::var("A3S_POWER_MAX_MODELS") {
-            if let Some(max) = parse_env_override::<usize>("A3S_POWER_MAX_MODELS", &max_str) {
-                self.max_loaded_models = max;
-            }
+            self.max_loaded_models =
+                parse_required_env_override::<usize>("A3S_POWER_MAX_MODELS", &max_str)?;
         }
 
         if let Ok(keep_alive) = std::env::var("A3S_POWER_KEEP_ALIVE") {
@@ -961,9 +941,8 @@ impl PowerConfig {
         }
 
         if let Ok(gpu_str) = std::env::var("A3S_POWER_GPU_LAYERS") {
-            if let Some(gpu) = parse_env_override::<i32>("A3S_POWER_GPU_LAYERS", &gpu_str) {
-                self.gpu.gpu_layers = gpu;
-            }
+            self.gpu.gpu_layers =
+                parse_required_env_override::<i32>("A3S_POWER_GPU_LAYERS", &gpu_str)?;
         }
 
         if let Ok(provider) = std::env::var("A3S_POWER_GPU_ATTESTATION_PROVIDER") {
@@ -1033,11 +1012,10 @@ impl PowerConfig {
         }
 
         if let Ok(timeout) = std::env::var("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS") {
-            if let Some(timeout) =
-                parse_env_override::<u64>("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS", &timeout)
-            {
-                self.gpu_attestation.nras_timeout_secs = timeout;
-            }
+            self.gpu_attestation.nras_timeout_secs = parse_required_env_override::<u64>(
+                "A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS",
+                &timeout,
+            )?;
         }
 
         if let Ok(url) = std::env::var("A3S_POWER_GPU_ATTESTATION_RIM_URL") {
@@ -1053,12 +1031,10 @@ impl PowerConfig {
         }
 
         if let Ok(timeout) = std::env::var("A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS") {
-            if let Some(timeout) = parse_env_override::<u64>(
+            self.gpu_attestation.nvattest_timeout_secs = parse_required_env_override::<u64>(
                 "A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS",
                 &timeout,
-            ) {
-                self.gpu_attestation.nvattest_timeout_secs = timeout;
-            }
+            )?;
         }
 
         if let Ok(tee_str) = std::env::var("A3S_POWER_TEE_MODE") {
@@ -1915,6 +1891,17 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_env_a3s_power_max_models_invalid_rejected() {
+        std::env::set_var("A3S_POWER_MAX_MODELS", "not-a-number");
+        let mut config = PowerConfig::default();
+        let err = config.apply_env_overrides().unwrap_err();
+        std::env::remove_var("A3S_POWER_MAX_MODELS");
+
+        assert!(err.to_string().contains("A3S_POWER_MAX_MODELS"));
+    }
+
+    #[test]
+    #[serial]
     fn test_env_a3s_power_keep_alive() {
         std::env::set_var("A3S_POWER_KEEP_ALIVE", "10m");
         let mut config = PowerConfig::default();
@@ -1931,6 +1918,17 @@ mod tests {
         config.apply_env_overrides().unwrap();
         assert_eq!(config.gpu.gpu_layers, -1);
         std::env::remove_var("A3S_POWER_GPU_LAYERS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_gpu_layers_invalid_rejected() {
+        std::env::set_var("A3S_POWER_GPU_LAYERS", "abc");
+        let mut config = PowerConfig::default();
+        let err = config.apply_env_overrides().unwrap_err();
+        std::env::remove_var("A3S_POWER_GPU_LAYERS");
+
+        assert!(err.to_string().contains("A3S_POWER_GPU_LAYERS"));
     }
 
     #[test]
@@ -2008,6 +2006,19 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_env_a3s_power_gpu_attestation_nvattest_timeout_invalid_rejected() {
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS", "soon");
+        let mut config = PowerConfig::default();
+        let err = config.apply_env_overrides().unwrap_err();
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS");
+
+        assert!(err
+            .to_string()
+            .contains("A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS"));
+    }
+
+    #[test]
+    #[serial]
     fn test_env_a3s_power_gpu_attestation_nras_rest() {
         std::env::set_var("A3S_POWER_GPU_ATTESTATION_SOURCE", "nras-rest");
         std::env::set_var(
@@ -2059,6 +2070,19 @@ mod tests {
         std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NRAS_CLAIMS_VERSION");
         std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NRAS_BEARER_TOKEN_ENV");
         std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_a3s_power_gpu_attestation_nras_timeout_invalid_rejected() {
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS", "eventually");
+        let mut config = PowerConfig::default();
+        let err = config.apply_env_overrides().unwrap_err();
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS");
+
+        assert!(err
+            .to_string()
+            .contains("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS"));
     }
 
     #[test]
@@ -2128,19 +2152,6 @@ mod tests {
         config.apply_env_overrides().unwrap();
         assert!(!config.redact_logs);
         std::env::remove_var("A3S_POWER_REDACT_LOGS");
-    }
-
-    #[test]
-    #[serial]
-    fn test_env_invalid_values_ignored() {
-        std::env::set_var("A3S_POWER_MAX_MODELS", "not-a-number");
-        std::env::set_var("A3S_POWER_GPU_LAYERS", "abc");
-        let mut config = PowerConfig::default();
-        config.apply_env_overrides().unwrap();
-        assert_eq!(config.max_loaded_models, 1); // unchanged
-        assert_eq!(config.gpu.gpu_layers, 0); // unchanged
-        std::env::remove_var("A3S_POWER_MAX_MODELS");
-        std::env::remove_var("A3S_POWER_GPU_LAYERS");
     }
 
     #[test]

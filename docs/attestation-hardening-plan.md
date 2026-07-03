@@ -459,6 +459,11 @@ Landed in the current working tree:
   malformed `A3S_POWER_PORT`, `A3S_POWER_TLS_PORT`, and
   `A3S_POWER_VSOCK_PORT` values now abort configuration loading instead of
   silently leaving listeners disabled or bound to an unintended fallback port.
+- Made remaining numeric environment overrides fail closed:
+  malformed `A3S_POWER_MAX_MODELS`, `A3S_POWER_GPU_LAYERS`,
+  `A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS`, and
+  `A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS` values now abort
+  configuration loading instead of silently keeping previous values.
 
 Still open:
 
