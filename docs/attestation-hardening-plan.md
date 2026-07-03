@@ -445,6 +445,9 @@ Landed in the current working tree:
 - Made encrypted audit logging configuration fail closed:
   `audit_log_encrypt = true` now requires `audit_key_source` during config
   validation instead of warning and deferring the failure.
+- Made audit log startup fail closed: when `audit_log = true`, plain and
+  encrypted audit logger open failures now abort startup instead of disabling
+  audit logging.
 
 Still open:
 

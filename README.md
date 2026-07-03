@@ -575,7 +575,7 @@ gpu_attestation {
 | `expected_measurements` | `{}` | Expected 48-byte launch measurements per detected hardware TEE type; required by strict and GPU-confidential policy (`"sev-snp"` measurement or `"tdx"` MRTD) |
 | `redact_logs` | `false` | Redact inference content from logs |
 | `audit_log` | `false` | Enable structured audit logging |
-| `audit_log_path` | `null` | Audit log path; defaults to `$A3S_POWER_HOME/audit.jsonl` |
+| `audit_log_path` | `null` | Audit log path; defaults to `$A3S_POWER_HOME/audit.jsonl`; startup fails closed if the path cannot be opened while `audit_log = true` |
 | `audit_log_encrypt` | `false` | Encrypt audit log entries at rest; requires `audit_key_source` and fails configuration validation when missing |
 | `audit_key_source` | `null` | AES-256-GCM key source for encrypted audit logs: `{ file = "/path/to/key.hex" }` or `{ env = "AUDIT_KEY_VAR" }` |
 | `model_hashes` | `{}` | Expected SHA-256 hashes for model verification |

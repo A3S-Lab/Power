@@ -191,41 +191,7 @@ pub async fn start_with_log_buffer(
         );
     }
 
-    if config.audit_log {
-        let log_path = config
-            .audit_log_path
-            .clone()
-            .unwrap_or_else(|| dirs::power_home().join("audit.jsonl"));
-
-        if config.audit_log_encrypt {
-            // Encrypted audit logging: AES-256-GCM per-line encryption
-            let key_source = config.audit_key_source.as_ref().ok_or_else(|| {
-                PowerError::Config(
-                    "audit_log_encrypt = true but audit_key_source is not configured".to_string(),
-                )
-            })?;
-            let key = crate::tee::encrypted_model::load_key(key_source)?;
-            match audit::EncryptedAuditLogger::open(log_path.clone(), key) {
-                Ok(logger) => {
-                    app_state = app_state.with_audit(Arc::new(logger));
-                    tracing::info!(path = %log_path.display(), "Audit logging enabled (encrypted)");
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to open encrypted audit log, audit logging disabled");
-                }
-            }
-        } else {
-            match audit::AsyncJsonLinesAuditLogger::open(log_path.clone()) {
-                Ok(logger) => {
-                    app_state = app_state.with_audit(Arc::new(logger));
-                    tracing::info!(path = %log_path.display(), "Audit logging enabled (async)");
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to open audit log, audit logging disabled");
-                }
-            }
-        }
-    }
+    app_state = configure_audit_logger(app_state, &config)?;
 
     // Attach key provider for encrypted model loading
     if let Some(provider) = model_key_provider {
@@ -285,6 +251,49 @@ pub async fn start_with_log_buffer(
         .map_err(|e| PowerError::Server(format!("Server error: {e}")))?;
 
     Ok(())
+}
+
+fn configure_audit_logger(
+    mut app_state: state::AppState,
+    config: &PowerConfig,
+) -> Result<state::AppState> {
+    if !config.audit_log {
+        return Ok(app_state);
+    }
+
+    let log_path = config
+        .audit_log_path
+        .clone()
+        .unwrap_or_else(|| dirs::power_home().join("audit.jsonl"));
+
+    if config.audit_log_encrypt {
+        // Encrypted audit logging: AES-256-GCM per-line encryption.
+        let key_source = config.audit_key_source.as_ref().ok_or_else(|| {
+            PowerError::Config(
+                "audit_log_encrypt = true but audit_key_source is not configured".to_string(),
+            )
+        })?;
+        let key = crate::tee::encrypted_model::load_key(key_source)?;
+        let logger = audit::EncryptedAuditLogger::open(log_path.clone(), key).map_err(|e| {
+            PowerError::Config(format!(
+                "failed to open encrypted audit log at {}: {e}",
+                log_path.display()
+            ))
+        })?;
+        app_state = app_state.with_audit(Arc::new(logger));
+        tracing::info!(path = %log_path.display(), "Audit logging enabled (encrypted)");
+    } else {
+        let logger = audit::AsyncJsonLinesAuditLogger::open(log_path.clone()).map_err(|e| {
+            PowerError::Config(format!(
+                "failed to open audit log at {}: {e}",
+                log_path.display()
+            ))
+        })?;
+        app_state = app_state.with_audit(Arc::new(logger));
+        tracing::info!(path = %log_path.display(), "Audit logging enabled (async)");
+    }
+
+    Ok(app_state)
 }
 
 /// Spawn a TLS (RA-TLS) server in a background task.
@@ -1079,6 +1088,60 @@ mod tests {
     fn test_config_bind_address_default() {
         let config = PowerConfig::default();
         assert_eq!(config.bind_address(), "127.0.0.1:11434");
+    }
+
+    #[test]
+    fn test_configure_audit_logger_rejects_unopenable_plain_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state::AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        let config = PowerConfig {
+            audit_log: true,
+            audit_log_path: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let err = match configure_audit_logger(state, &config) {
+            Ok(_) => panic!("expected unopenable audit log path to fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("failed to open audit log"));
+        assert!(err.to_string().contains(&dir.path().display().to_string()));
+    }
+
+    #[test]
+    fn test_configure_audit_logger_rejects_unopenable_encrypted_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(key_file.path(), "00".repeat(32)).unwrap();
+        let state = state::AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        let config = PowerConfig {
+            audit_log: true,
+            audit_log_encrypt: true,
+            audit_log_path: Some(dir.path().to_path_buf()),
+            audit_key_source: Some(crate::tee::encrypted_model::KeySource::File(
+                key_file.path().to_path_buf(),
+            )),
+            ..Default::default()
+        };
+
+        let err = match configure_audit_logger(state, &config) {
+            Ok(_) => panic!("expected unopenable encrypted audit log path to fail"),
+            Err(err) => err,
+        };
+
+        assert!(err
+            .to_string()
+            .contains("failed to open encrypted audit log"));
+        assert!(err.to_string().contains(&dir.path().display().to_string()));
     }
 
     #[test]
