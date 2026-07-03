@@ -627,7 +627,7 @@ gpu_attestation {
 | `A3S_POWER_MODEL_SOURCE` | Remote model hub source for pull (`"modelscope"`, `"hf"`, or `"huggingface"`); invalid configured values fail closed |
 | `A3S_POWER_HUB_TOKEN` | Generic bearer token fallback for remote model hub pulls |
 | `A3S_POWER_GPU_LAYERS` | GPU layer offloading |
-| `A3S_POWER_GPU_ATTESTATION_SOURCE` | GPU CC evidence source (`"configured"`, `"nvattest-cli"`, or `"nras-rest"`) |
+| `A3S_POWER_GPU_ATTESTATION_SOURCE` | GPU CC evidence source (`"configured"`, `"nvattest-cli"`, or `"nras-rest"`); invalid values fail closed |
 | `A3S_POWER_GPU_ATTESTATION_PROVIDER` | Provider label for NVIDIA GPU CC evidence claims |
 | `A3S_POWER_GPU_ATTESTATION_EVIDENCE_PATH` | Path to raw NVIDIA GPU CC evidence bytes |
 | `A3S_POWER_GPU_ATTESTATION_EVIDENCE_HEX` | Hex-encoded raw NVIDIA GPU CC evidence bytes |
@@ -650,7 +650,7 @@ gpu_attestation {
 | `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_REQUIRED` | Require proxy upstream rendered prompt digest support and fail closed when missing |
 | `A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_PATH` | Upstream endpoint path for rendered prompt digest requests |
 | `A3S_POWER_TEE_MODE` | Enable TEE mode (`"1"` or `"true"`) |
-| `A3S_POWER_TEE_POLICY_MODE` | Set TEE policy mode (`"strict"`, `"development"`, or `"gpu-confidential"`) |
+| `A3S_POWER_TEE_POLICY_MODE` | Set TEE policy mode (`"strict"`, `"development"`, or `"gpu-confidential"`); invalid values fail closed |
 | `A3S_POWER_TEE_STRICT` | Legacy shortcut: `"1"` selects strict policy and removes simulated TEE from the allowlist |
 | `A3S_POWER_REDACT_LOGS` | Enable log redaction (`"1"` or `"true"`) |
 | `A3S_POWER_TLS_PORT` | TLS server port (`tls` feature required) |

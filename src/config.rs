@@ -623,6 +623,18 @@ where
     }
 }
 
+fn parse_required_env_override<T>(name: &str, value: &str) -> Result<T>
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    value.trim().parse::<T>().map_err(|e| {
+        PowerError::Config(format!(
+            "invalid environment override {name}={value:?}: {e}"
+        ))
+    })
+}
+
 fn parse_bool_env_override(name: &str, value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
@@ -718,7 +730,7 @@ impl PowerConfig {
                 e
             ))
         })?;
-        config.apply_env_overrides();
+        config.apply_env_overrides()?;
         config.validate()?;
         Ok(config)
     }
@@ -748,7 +760,7 @@ impl PowerConfig {
             Self::default()
         };
 
-        config.apply_env_overrides();
+        config.apply_env_overrides()?;
         config.validate()?;
         Ok(config)
     }
@@ -905,7 +917,7 @@ impl PowerConfig {
     }
 
     /// Apply `A3S_POWER_*` environment variable overrides.
-    fn apply_env_overrides(&mut self) {
+    fn apply_env_overrides(&mut self) -> Result<()> {
         if let Ok(host) = std::env::var("A3S_POWER_HOST") {
             self.host = host;
         }
@@ -945,12 +957,10 @@ impl PowerConfig {
         }
 
         if let Ok(source) = std::env::var("A3S_POWER_GPU_ATTESTATION_SOURCE") {
-            if let Some(source) = parse_env_override::<GpuAttestationSource>(
+            self.gpu_attestation.source = parse_required_env_override::<GpuAttestationSource>(
                 "A3S_POWER_GPU_ATTESTATION_SOURCE",
                 &source,
-            ) {
-                self.gpu_attestation.source = source;
-            }
+            )?;
         }
 
         if let Ok(evidence_hex) = std::env::var("A3S_POWER_GPU_ATTESTATION_EVIDENCE_HEX") {
@@ -1044,11 +1054,10 @@ impl PowerConfig {
         }
 
         if let Ok(policy_mode) = std::env::var("A3S_POWER_TEE_POLICY_MODE") {
-            if let Some(mode) =
-                parse_env_override::<TeePolicyMode>("A3S_POWER_TEE_POLICY_MODE", &policy_mode)
-            {
-                self.tee_policy_mode = mode;
-            }
+            self.tee_policy_mode = parse_required_env_override::<TeePolicyMode>(
+                "A3S_POWER_TEE_POLICY_MODE",
+                &policy_mode,
+            )?;
         }
 
         if let Ok(redact_str) = std::env::var("A3S_POWER_REDACT_LOGS") {
@@ -1127,6 +1136,8 @@ impl PowerConfig {
         if let Ok(path) = std::env::var("A3S_POWER_PROXY_EFFECTIVE_PROMPT_DIGEST_PATH") {
             self.proxy_effective_prompt_digest_path = path;
         }
+
+        Ok(())
     }
 
     /// Save the current configuration to the default config file path (HCL format).
@@ -1849,7 +1860,7 @@ mod tests {
     fn test_env_a3s_power_host() {
         std::env::set_var("A3S_POWER_HOST", "0.0.0.0");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.host, "0.0.0.0");
         std::env::remove_var("A3S_POWER_HOST");
     }
@@ -1859,7 +1870,7 @@ mod tests {
     fn test_env_a3s_power_port() {
         std::env::set_var("A3S_POWER_PORT", "8080");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.port, 8080);
         std::env::remove_var("A3S_POWER_PORT");
     }
@@ -1869,7 +1880,7 @@ mod tests {
     fn test_env_a3s_power_data_dir() {
         std::env::set_var("A3S_POWER_DATA_DIR", "/tmp/my-models");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.data_dir, PathBuf::from("/tmp/my-models"));
         std::env::remove_var("A3S_POWER_DATA_DIR");
     }
@@ -1879,7 +1890,7 @@ mod tests {
     fn test_env_a3s_power_max_models() {
         std::env::set_var("A3S_POWER_MAX_MODELS", "4");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.max_loaded_models, 4);
         std::env::remove_var("A3S_POWER_MAX_MODELS");
     }
@@ -1889,7 +1900,7 @@ mod tests {
     fn test_env_a3s_power_keep_alive() {
         std::env::set_var("A3S_POWER_KEEP_ALIVE", "10m");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.keep_alive, "10m");
         std::env::remove_var("A3S_POWER_KEEP_ALIVE");
     }
@@ -1899,7 +1910,7 @@ mod tests {
     fn test_env_a3s_power_gpu_layers() {
         std::env::set_var("A3S_POWER_GPU_LAYERS", "-1");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.gpu.gpu_layers, -1);
         std::env::remove_var("A3S_POWER_GPU_LAYERS");
     }
@@ -1918,7 +1929,7 @@ mod tests {
             "/tmp/nras.verdict",
         );
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(
             config.gpu_attestation.source,
             GpuAttestationSource::Configured
@@ -1954,7 +1965,7 @@ mod tests {
         );
         std::env::set_var("A3S_POWER_GPU_ATTESTATION_NVATTEST_TIMEOUT_SECS", "45");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(
             config.gpu_attestation.source,
             GpuAttestationSource::NvattestCli
@@ -2000,7 +2011,7 @@ mod tests {
         );
         std::env::set_var("A3S_POWER_GPU_ATTESTATION_NRAS_TIMEOUT_SECS", "45");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(
             config.gpu_attestation.source,
             GpuAttestationSource::NrasRest
@@ -2042,7 +2053,7 @@ mod tests {
             "/v1/rendered-prompt-digest",
         );
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(config.proxy_effective_prompt_digest);
         assert!(config.proxy_effective_prompt_digest_required);
         assert_eq!(
@@ -2059,7 +2070,7 @@ mod tests {
     fn test_env_a3s_power_tee_mode() {
         std::env::set_var("A3S_POWER_TEE_MODE", "true");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(config.tee_mode);
         assert!(config.redact_logs); // auto-enabled when tee_mode
         std::env::remove_var("A3S_POWER_TEE_MODE");
@@ -2073,7 +2084,7 @@ mod tests {
             tee_mode: true,
             ..Default::default()
         };
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(!config.tee_mode);
         std::env::remove_var("A3S_POWER_TEE_MODE");
     }
@@ -2083,7 +2094,7 @@ mod tests {
     fn test_env_a3s_power_redact_logs() {
         std::env::set_var("A3S_POWER_REDACT_LOGS", "1");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(config.redact_logs);
         std::env::remove_var("A3S_POWER_REDACT_LOGS");
     }
@@ -2096,7 +2107,7 @@ mod tests {
             redact_logs: true,
             ..Default::default()
         };
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(!config.redact_logs);
         std::env::remove_var("A3S_POWER_REDACT_LOGS");
     }
@@ -2107,7 +2118,7 @@ mod tests {
         std::env::set_var("A3S_POWER_MAX_MODELS", "not-a-number");
         std::env::set_var("A3S_POWER_GPU_LAYERS", "abc");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.max_loaded_models, 1); // unchanged
         assert_eq!(config.gpu.gpu_layers, 0); // unchanged
         std::env::remove_var("A3S_POWER_MAX_MODELS");
@@ -2124,7 +2135,7 @@ mod tests {
             ra_tls: true,
             ..Default::default()
         };
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(config.tee_mode);
         assert!(config.ra_tls);
         std::env::remove_var("A3S_POWER_TEE_MODE");
@@ -2260,7 +2271,7 @@ mod tests {
     fn test_env_a3s_power_tls_port() {
         std::env::set_var("A3S_POWER_TLS_PORT", "8443");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.tls_port, Some(8443));
         std::env::remove_var("A3S_POWER_TLS_PORT");
     }
@@ -2270,7 +2281,7 @@ mod tests {
     fn test_env_a3s_power_ra_tls() {
         std::env::set_var("A3S_POWER_RA_TLS", "true");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(config.ra_tls);
         std::env::remove_var("A3S_POWER_RA_TLS");
     }
@@ -2283,7 +2294,7 @@ mod tests {
             ra_tls: true,
             ..Default::default()
         };
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(!config.ra_tls);
         std::env::remove_var("A3S_POWER_RA_TLS");
     }
@@ -2293,7 +2304,7 @@ mod tests {
     fn test_env_a3s_power_tls_port_invalid_ignored() {
         std::env::set_var("A3S_POWER_TLS_PORT", "not-a-port");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(config.tls_port.is_none());
         std::env::remove_var("A3S_POWER_TLS_PORT");
     }
@@ -2333,7 +2344,7 @@ mod tests {
     fn test_env_a3s_power_vsock_port() {
         std::env::set_var("A3S_POWER_VSOCK_PORT", "11434");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.vsock_port, Some(11434));
         std::env::remove_var("A3S_POWER_VSOCK_PORT");
     }
@@ -2343,7 +2354,7 @@ mod tests {
     fn test_env_a3s_power_vsock_port_invalid_ignored() {
         std::env::set_var("A3S_POWER_VSOCK_PORT", "not-a-port");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(config.vsock_port.is_none());
         std::env::remove_var("A3S_POWER_VSOCK_PORT");
     }
@@ -2410,7 +2421,7 @@ mod tests {
     fn test_env_a3s_power_api_keys() {
         std::env::set_var("A3S_POWER_API_KEYS", "key_a,key_b,key_c");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.api_keys, vec!["key_a", "key_b", "key_c"]);
         std::env::remove_var("A3S_POWER_API_KEYS");
     }
@@ -2420,7 +2431,7 @@ mod tests {
     fn test_env_a3s_power_api_keys_trims_whitespace() {
         std::env::set_var("A3S_POWER_API_KEYS", " key_a , key_b ");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.api_keys, vec!["key_a", "key_b"]);
         std::env::remove_var("A3S_POWER_API_KEYS");
     }
@@ -2430,7 +2441,7 @@ mod tests {
     fn test_env_a3s_power_api_keys_empty_ignored() {
         std::env::set_var("A3S_POWER_API_KEYS", "");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(config.api_keys.is_empty());
         std::env::remove_var("A3S_POWER_API_KEYS");
     }
@@ -2509,7 +2520,7 @@ expected_measurements = {
     fn test_env_a3s_power_tee_policy_mode() {
         std::env::set_var("A3S_POWER_TEE_POLICY_MODE", "gpu-confidential");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert_eq!(config.tee_policy_mode, TeePolicyMode::GpuConfidential);
         std::env::remove_var("A3S_POWER_TEE_POLICY_MODE");
     }
@@ -2526,7 +2537,7 @@ expected_measurements = {
             ],
             ..Default::default()
         };
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(!config.allowed_tee_types.contains(&"simulated".to_string()));
         assert!(config.allowed_tee_types.contains(&"sev-snp".to_string()));
         std::env::remove_var("A3S_POWER_TEE_STRICT");
@@ -2537,7 +2548,7 @@ expected_measurements = {
     fn test_tee_strict_env_sets_hardware_defaults_when_empty() {
         std::env::set_var("A3S_POWER_TEE_STRICT", "1");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(config.allowed_tee_types.contains(&"sev-snp".to_string()));
         assert!(config.allowed_tee_types.contains(&"tdx".to_string()));
         assert!(!config.allowed_tee_types.contains(&"simulated".to_string()));
@@ -2555,7 +2566,7 @@ expected_measurements = {
     fn test_audit_log_env_override() {
         std::env::set_var("A3S_POWER_AUDIT_LOG", "1");
         let mut config = PowerConfig::default();
-        config.apply_env_overrides();
+        config.apply_env_overrides().unwrap();
         assert!(config.audit_log);
         std::env::remove_var("A3S_POWER_AUDIT_LOG");
     }
@@ -2799,5 +2810,33 @@ expected_measurements = {
         let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
 
         assert!(err.to_string().contains("model_signing_key"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_invalid_env_tee_policy_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, "").unwrap();
+        std::env::set_var("A3S_POWER_TEE_POLICY_MODE", "gpu-conf");
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        std::env::remove_var("A3S_POWER_TEE_POLICY_MODE");
+
+        assert!(err.to_string().contains("A3S_POWER_TEE_POLICY_MODE"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_invalid_env_gpu_attestation_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, "").unwrap();
+        std::env::set_var("A3S_POWER_GPU_ATTESTATION_SOURCE", "sdk-maybe");
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        std::env::remove_var("A3S_POWER_GPU_ATTESTATION_SOURCE");
+
+        assert!(err.to_string().contains("A3S_POWER_GPU_ATTESTATION_SOURCE"));
     }
 }
