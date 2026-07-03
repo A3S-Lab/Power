@@ -794,12 +794,11 @@ impl PowerConfig {
             );
         }
 
-        // Warn if audit_log_encrypt is set but audit_key_source is missing.
         if self.audit_log_encrypt && self.audit_key_source.is_none() {
-            tracing::warn!(
-                "audit_log_encrypt = true but audit_key_source is not configured. \
-                 Encrypted audit logging requires a key source."
-            );
+            return Err(PowerError::Config(
+                "audit_log_encrypt = true requires audit_key_source to encrypt audit entries"
+                    .to_string(),
+            ));
         }
 
         if self.in_memory_decrypt {
@@ -2704,13 +2703,15 @@ expected_measurements = {
     }
 
     #[test]
-    fn test_validate_audit_encrypt_without_key_source() {
+    fn test_validate_rejects_audit_encrypt_without_key_source() {
         let config = PowerConfig {
             audit_log_encrypt: true,
             audit_key_source: None,
             ..Default::default()
         };
-        config.validate().unwrap(); // must not panic; warning is emitted via tracing
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("audit_key_source"));
     }
 
     #[test]

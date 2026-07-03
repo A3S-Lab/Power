@@ -442,6 +442,9 @@ Landed in the current working tree:
 - Extended that fail-closed boolean parsing to `A3S_POWER_RA_TLS` and
   `A3S_POWER_AUDIT_LOG`, so malformed RA-TLS or audit logging overrides cannot
   silently leave those controls disabled.
+- Made encrypted audit logging configuration fail closed:
+  `audit_log_encrypt = true` now requires `audit_key_source` during config
+  validation instead of warning and deferring the failure.
 
 Still open:
 
