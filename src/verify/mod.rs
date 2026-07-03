@@ -991,6 +991,14 @@ fn verify_gpu_evidence_claim_well_formed(field_prefix: &str, gpu: &GpuEvidenceCl
             "{field_prefix}.provider must not be empty"
         )));
     }
+    require_optional_nonempty_string(
+        &format!("{field_prefix}.evidence_format"),
+        gpu.evidence_format.as_deref(),
+    )?;
+    require_optional_nonempty_string(
+        &format!("{field_prefix}.verdict_format"),
+        gpu.verdict_format.as_deref(),
+    )?;
     require_sha256_digest_bytes(
         &format!("{field_prefix}.evidence_digest"),
         &gpu.evidence_digest,
@@ -999,6 +1007,14 @@ fn verify_gpu_evidence_claim_well_formed(field_prefix: &str, gpu: &GpuEvidenceCl
         &format!("{field_prefix}.verdict_digest"),
         gpu.verdict_digest.as_deref(),
     )?;
+    if gpu
+        .evidence_count
+        .is_some_and(|evidence_count| evidence_count == 0)
+    {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "{field_prefix}.evidence_count must be greater than zero when present"
+        )));
+    }
     if let Some(nonce) = gpu.nonce.as_deref() {
         require_32_byte_nonce(&format!("{field_prefix}.nonce"), nonce)?;
     }
@@ -1169,6 +1185,15 @@ pub fn verify_claims_expected_gpu_evidence(
 
 fn nonempty_expected_string(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn require_optional_nonempty_string(field: &str, value: Option<&str>) -> Result<()> {
+    if value.map(str::trim).is_some_and(str::is_empty) {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "{field} must not be empty when present"
+        )));
+    }
+    Ok(())
 }
 
 fn verify_optional_gpu_string_claim(
@@ -1902,7 +1927,21 @@ fn verify_runtime_policy_well_formed(
     field_prefix: &str,
     runtime_policy: &RuntimePolicyClaim,
 ) -> Result<()> {
+    let mut has_policy_digest = false;
+
     if let Some(prompt) = runtime_policy.prompt.as_ref() {
+        if let Some(source) = prompt.chat_template_source.as_deref() {
+            if source.trim().is_empty() {
+                return Err(PowerError::AttestationVerificationFailed(format!(
+                    "{field_prefix}.prompt.chat_template_source must not be empty when present"
+                )));
+            }
+            if prompt.chat_template_sha256.is_none() {
+                return Err(PowerError::AttestationVerificationFailed(format!(
+                    "{field_prefix}.prompt.chat_template_source requires {field_prefix}.prompt.chat_template_sha256"
+                )));
+            }
+        }
         require_optional_sha256_digest_bytes(
             &format!("{field_prefix}.prompt.chat_template_sha256"),
             prompt.chat_template_sha256.as_deref(),
@@ -1915,6 +1954,12 @@ fn verify_runtime_policy_well_formed(
             &format!("{field_prefix}.prompt.messages_sha256"),
             prompt.messages_sha256.as_deref(),
         )?;
+        if prompt.is_empty() {
+            return Err(PowerError::AttestationVerificationFailed(format!(
+                "{field_prefix}.prompt must include at least one prompt digest"
+            )));
+        }
+        has_policy_digest = true;
     }
 
     if let Some(decoding) = runtime_policy.decoding.as_ref() {
@@ -1922,6 +1967,7 @@ fn verify_runtime_policy_well_formed(
             &format!("{field_prefix}.decoding.parameters_sha256"),
             &decoding.parameters_sha256,
         )?;
+        has_policy_digest = true;
     }
 
     if let Some(execution) = runtime_policy.execution.as_ref() {
@@ -1929,6 +1975,13 @@ fn verify_runtime_policy_well_formed(
             &format!("{field_prefix}.execution.gpu_sha256"),
             &execution.gpu_sha256,
         )?;
+        has_policy_digest = true;
+    }
+
+    if !has_policy_digest {
+        return Err(PowerError::AttestationVerificationFailed(format!(
+            "{field_prefix} must include at least one policy digest"
+        )));
     }
 
     Ok(())
@@ -3110,6 +3163,33 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_receipt_well_formed_rejects_empty_runtime_policy() {
+        let receipt = make_receipt_with_runtime_policy(RuntimePolicyClaim::new());
+
+        let err = verify_receipt_well_formed(&receipt).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("receipt.runtime_policy must include at least one policy digest"));
+    }
+
+    #[test]
+    fn test_verify_receipt_well_formed_rejects_runtime_prompt_source_without_digest() {
+        let receipt = make_receipt_with_runtime_policy(RuntimePolicyClaim::new().with_prompt(
+            PromptPolicyClaim {
+                chat_template_source: Some("manifest.template_override".to_string()),
+                chat_template_sha256: None,
+                system_prompt_sha256: None,
+                messages_sha256: None,
+            },
+        ));
+
+        let err = verify_receipt_well_formed(&receipt).unwrap_err();
+
+        assert!(err.to_string().contains("chat_template_source requires"));
+    }
+
+    #[test]
     fn test_verify_receipt_policy_passes_for_pinned_fields() {
         let mut receipt = make_receipt_with_effective_prompt();
         receipt.decoding.stream_options_sha256 = Some("55".repeat(32));
@@ -4012,7 +4092,11 @@ mod tests {
     #[test]
     fn test_verify_receipt_against_attestation_fails_when_report_runtime_missing() {
         let (report, _) = make_claims_report(Some(b"nonce"), vec![0x02; 32]);
-        let receipt = make_receipt_with_runtime_policy(RuntimePolicyClaim::new());
+        let receipt = make_receipt_with_runtime_policy(RuntimePolicyClaim::new().with_decoding(
+            DecodingPolicyClaim {
+                parameters_sha256: vec![0x44; 32],
+            },
+        ));
 
         let err = verify_receipt_against_attestation(&report, &receipt, None, None).unwrap_err();
 
@@ -4663,6 +4747,34 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_claims_binding_rejects_empty_gpu_evidence_format() {
+        let (mut report, mut claims) = make_gpu_claims_report(vec![0x11; 32], Some(vec![0x22; 32]));
+        claims.gpu.as_mut().unwrap().evidence_format = Some("   ".to_string());
+        report.report_data = build_claims_report_data(&claims).unwrap();
+        report.claims = Some(claims);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.gpu.evidence_format must not be empty"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_zero_gpu_evidence_count() {
+        let (mut report, mut claims) = make_gpu_claims_report(vec![0x11; 32], Some(vec![0x22; 32]));
+        claims.gpu.as_mut().unwrap().evidence_count = Some(0);
+        report.report_data = build_claims_report_data(&claims).unwrap();
+        report.claims = Some(claims);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.gpu.evidence_count must be greater than zero"));
+    }
+
+    #[test]
     fn test_verify_claims_binding_rejects_short_runtime_decoding_digest() {
         let (report, _) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 31]);
 
@@ -4671,6 +4783,41 @@ mod tests {
         assert!(err
             .to_string()
             .contains("claims.runtime.decoding.parameters_sha256"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_empty_runtime_policy() {
+        let runtime = RuntimePolicyClaim::new();
+        let claims = AttestationClaimsV2::new(TeeType::SevSnp).with_runtime(runtime);
+        let report_data = build_claims_report_data(&claims).unwrap();
+        let mut report = make_report(report_data, vec![0x03; 48]);
+        report.tee_type = TeeType::SevSnp;
+        report.claims = Some(claims);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("claims.runtime must include at least one policy digest"));
+    }
+
+    #[test]
+    fn test_verify_claims_binding_rejects_runtime_prompt_source_without_digest() {
+        let runtime = RuntimePolicyClaim::new().with_prompt(PromptPolicyClaim {
+            chat_template_source: Some("manifest.template_override".to_string()),
+            chat_template_sha256: None,
+            system_prompt_sha256: None,
+            messages_sha256: None,
+        });
+        let claims = AttestationClaimsV2::new(TeeType::SevSnp).with_runtime(runtime);
+        let report_data = build_claims_report_data(&claims).unwrap();
+        let mut report = make_report(report_data, vec![0x03; 48]);
+        report.tee_type = TeeType::SevSnp;
+        report.claims = Some(claims);
+
+        let err = verify_claims_binding(&report).unwrap_err();
+
+        assert!(err.to_string().contains("chat_template_source requires"));
     }
 
     #[test]

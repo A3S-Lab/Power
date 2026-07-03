@@ -333,6 +333,10 @@ Landed in the current working tree:
 - Tightened v2 claims binding verification so self-consistent but malformed
   claim sets are rejected for wrong schema or non-32-byte model/GPU/runtime
   digests before report-data comparison.
+- Tightened v2 claims and receipt runtime-policy well-formed checks so empty
+  runtime policies, prompt template sources without matching digests, empty GPU
+  evidence format labels, and zero GPU evidence counts are rejected before
+  report-data or receipt-policy comparison.
 - Made attestation JSON hex-byte deserialization reject malformed odd-length
   hex as a serde error instead of panicking while loading external reports.
 - Made attestation nonce query decoding reject malformed non-ASCII hex as a
