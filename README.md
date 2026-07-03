@@ -614,6 +614,7 @@ gpu_attestation {
 | `proxy_effective_prompt_digest_required` | `false` | Fail closed when a proxy upstream does not support or cannot return the rendered prompt digest |
 | `proxy_effective_prompt_digest_path` | `"/v1/chat/effective-prompt-digest"` | Upstream endpoint path for proxy rendered prompt digest requests |
 | `tls_port` | `null` | TLS server port; when set, a TLS server starts in parallel; configuration validation fails unless the binary was built with the `tls` feature |
+| `tls_sans` | `[]` | Additional DNS names or IP addresses for the TLS certificate; invalid entries fail closed instead of being skipped |
 | `ra_tls` | `false` | Embed TEE attestation in TLS cert (RA-TLS); fails configuration validation unless `tls_port` and `tee_mode = true` are set, and startup fails closed if no attestation report can be embedded |
 | `vsock_port` | `null` | Vsock port for guest-host communication (`vsock` feature, Linux only) |
 

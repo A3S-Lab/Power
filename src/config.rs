@@ -780,6 +780,11 @@ impl PowerConfig {
             ));
         }
 
+        #[cfg(feature = "tls")]
+        for san in &self.tls_sans {
+            crate::tee::cert::validate_tls_san(san)?;
+        }
+
         match self.key_provider.as_str() {
             "static" => {}
             "rotating" => {
@@ -2661,6 +2666,34 @@ expected_measurements = {
         let hcl_str = r#"tls_sans = ["myserver.internal", "10.0.0.1"]"#;
         let config: PowerConfig = hcl::from_str(hcl_str).unwrap();
         assert_eq!(config.tls_sans, vec!["myserver.internal", "10.0.0.1"]);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn test_validate_accepts_valid_tls_sans() {
+        let config = PowerConfig {
+            tls_sans: vec![
+                "myserver.internal".to_string(),
+                "*.example.com".to_string(),
+                "10.0.0.1".to_string(),
+                "::1".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        config.validate().unwrap();
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn test_validate_rejects_invalid_tls_san() {
+        let config = PowerConfig {
+            tls_sans: vec!["not a valid san !!!".to_string()],
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("tls_sans"));
     }
 
     // --- validate() tests ---

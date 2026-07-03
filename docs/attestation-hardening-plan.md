@@ -455,6 +455,9 @@ Landed in the current working tree:
   or attestation report generation failures now abort startup before the TLS
   listener binds instead of serving a certificate without the attestation
   extension.
+- Made TLS certificate SAN configuration fail closed: invalid `tls_sans`
+  entries now fail configuration validation and certificate generation instead
+  of being silently skipped.
 - Made model key-provider selection fail closed: unknown `key_provider` values
   are rejected, `key_provider = "rotating"` requires at least one
   `key_rotation_sources` entry, and provider construction now follows the

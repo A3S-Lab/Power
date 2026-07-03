@@ -10,6 +10,7 @@
 use rcgen::{
     CertificateParams, CustomExtension, DistinguishedName, DnType, Ia5String, KeyPair, SanType,
 };
+use std::net::IpAddr;
 use time::OffsetDateTime;
 
 use crate::error::{PowerError, Result};
@@ -22,6 +23,56 @@ use crate::tee::attestation::AttestationReport;
 /// - 56560       = A3S Lab PEN (development; replace with IANA-assigned PEN for production)
 /// - 1.1         = Power / attestation extension
 const ATTESTATION_EXT_OID: &[u64] = &[1, 3, 6, 1, 4, 1, 56560, 1, 1];
+
+pub(crate) fn validate_tls_san(san: &str) -> Result<()> {
+    parse_tls_san(san).map(|_| ())
+}
+
+fn parse_tls_san(san: &str) -> Result<SanType> {
+    if let Ok(ip) = san.parse::<IpAddr>() {
+        return Ok(SanType::IpAddress(ip));
+    }
+
+    validate_dns_san(san)?;
+    let dns = Ia5String::try_from(san.to_string()).map_err(|e| {
+        PowerError::Config(format!(
+            "invalid tls_sans entry {san:?}; expected an IP address or DNS name: {e}"
+        ))
+    })?;
+    Ok(SanType::DnsName(dns))
+}
+
+fn validate_dns_san(san: &str) -> Result<()> {
+    let dns = san.strip_prefix("*.").unwrap_or(san);
+    if dns.is_empty() || dns.len() > 253 || dns.ends_with('.') {
+        return Err(PowerError::Config(format!(
+            "invalid tls_sans entry {san:?}; expected an IP address or DNS name"
+        )));
+    }
+
+    for label in dns.split('.') {
+        let valid_label = !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(|b| b.is_ascii_alphanumeric())
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(|b| b.is_ascii_alphanumeric());
+        if !valid_label {
+            return Err(PowerError::Config(format!(
+                "invalid tls_sans entry {san:?}; expected an IP address or DNS name"
+            )));
+        }
+    }
+
+    Ok(())
+}
 
 /// Manages the TLS certificate and private key for a single Power server instance.
 ///
@@ -67,13 +118,7 @@ impl CertManager {
             SanType::IpAddress(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
         ];
         for san in extra_sans {
-            if let Ok(ip) = san.parse::<std::net::IpAddr>() {
-                sans.push(SanType::IpAddress(ip));
-            } else if let Ok(dns) = Ia5String::try_from(san.clone()) {
-                sans.push(SanType::DnsName(dns));
-            } else {
-                tracing::warn!(san = %san, "Skipping invalid TLS SAN entry");
-            }
+            sans.push(parse_tls_san(san)?);
         }
         params.subject_alt_names = sans;
 
@@ -193,9 +238,18 @@ mod tests {
     }
 
     #[test]
-    fn test_cert_with_invalid_san_is_skipped() {
-        // Invalid SAN entries should not cause generation to fail
+    fn test_cert_with_invalid_san_is_rejected() {
         let sans = vec!["not a valid san !!!".to_string()];
+        let err = match CertManager::generate(None, &sans) {
+            Ok(_) => panic!("invalid TLS SAN should fail certificate generation"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("tls_sans"));
+    }
+
+    #[test]
+    fn test_cert_with_wildcard_dns_san() {
+        let sans = vec!["*.example.com".to_string()];
         let mgr = CertManager::generate(None, &sans).unwrap();
         assert!(mgr.cert_pem().starts_with("-----BEGIN CERTIFICATE-----"));
     }
