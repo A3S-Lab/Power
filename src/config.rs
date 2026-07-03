@@ -6,7 +6,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::dirs;
-use crate::error::Result;
+use crate::error::{PowerError, Result};
 
 /// Attestation policy mode for TEE deployments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,6 +511,23 @@ fn default_spec_mode() -> String {
     "prompt-lookup".to_string()
 }
 
+fn is_valid_spec_mode(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "off"
+            | "none"
+            | "false"
+            | "prompt-lookup"
+            | "prompt_lookup"
+            | "lookup"
+            | "true"
+            | "ngram-context"
+            | "ngram_context"
+            | "context"
+            | "dspark"
+    )
+}
+
 fn default_num_parallel() -> usize {
     1
 }
@@ -675,7 +692,7 @@ impl PowerConfig {
             ))
         })?;
         config.apply_env_overrides();
-        config.validate();
+        config.validate()?;
         Ok(config)
     }
 
@@ -705,15 +722,22 @@ impl PowerConfig {
         };
 
         config.apply_env_overrides();
-        config.validate();
+        config.validate()?;
         Ok(config)
     }
 
-    /// Emit warnings for known misconfiguration patterns.
+    /// Validate fatal policy settings and emit warnings for soft misconfiguration patterns.
     ///
-    /// None of these are fatal — the server will still start — but they indicate
-    /// settings that will have no effect or produce unexpected behavior.
-    pub fn validate(&self) {
+    /// Some legacy operational warnings remain non-fatal, but policy-bearing
+    /// settings that would otherwise be silently ignored return an error.
+    pub fn validate(&self) -> Result<()> {
+        if !is_valid_spec_mode(&self.spec_mode) {
+            return Err(PowerError::Config(format!(
+                "unsupported spec_mode '{}'; expected one of: off, prompt-lookup, ngram-context",
+                self.spec_mode
+            )));
+        }
+
         // Warn if keep_alive is set to something unparseable (will fall back to 5m).
         let ka = self.keep_alive.trim();
         let parseable = parse_keep_alive_duration(ka).is_some();
@@ -865,6 +889,8 @@ impl PowerConfig {
                 );
             }
         }
+
+        Ok(())
     }
 
     /// Apply `A3S_POWER_*` environment variable overrides.
@@ -2561,7 +2587,7 @@ expected_measurements = {
     fn test_validate_default_config_no_warnings() {
         // Default config is valid — validate() should not panic
         let config = PowerConfig::default();
-        config.validate(); // must not panic
+        config.validate().unwrap(); // must not panic
     }
 
     #[test]
@@ -2572,7 +2598,7 @@ expected_measurements = {
                 keep_alive: ka.to_string(),
                 ..Default::default()
             };
-            config.validate(); // must not panic
+            config.validate().unwrap(); // must not panic
         }
     }
 
@@ -2583,7 +2609,7 @@ expected_measurements = {
             ..Default::default()
         };
 
-        config.validate();
+        config.validate().unwrap();
     }
 
     #[test]
@@ -2592,7 +2618,7 @@ expected_measurements = {
             model_signing_key: Some("a".repeat(64)),
             ..Default::default()
         };
-        config.validate(); // must not panic
+        config.validate().unwrap(); // must not panic
     }
 
     #[test]
@@ -2602,7 +2628,7 @@ expected_measurements = {
             model_signing_key: Some("deadbeef".repeat(4)),
             ..Default::default()
         };
-        config.validate(); // must not panic
+        config.validate().unwrap(); // must not panic
     }
 
     #[test]
@@ -2612,7 +2638,7 @@ expected_measurements = {
             tls_port: None,
             ..Default::default()
         };
-        config.validate(); // must not panic; warning is emitted via tracing
+        config.validate().unwrap(); // must not panic; warning is emitted via tracing
     }
 
     #[test]
@@ -2622,7 +2648,7 @@ expected_measurements = {
             tls_port: Some(11435),
             ..Default::default()
         };
-        config.validate(); // must not panic, no warning
+        config.validate().unwrap(); // must not panic, no warning
     }
 
     #[test]
@@ -2632,7 +2658,7 @@ expected_measurements = {
             key_rotation_sources: vec![],
             ..Default::default()
         };
-        config.validate(); // must not panic; warning is emitted via tracing
+        config.validate().unwrap(); // must not panic; warning is emitted via tracing
     }
 
     #[test]
@@ -2642,7 +2668,7 @@ expected_measurements = {
             audit_key_source: None,
             ..Default::default()
         };
-        config.validate(); // must not panic; warning is emitted via tracing
+        config.validate().unwrap(); // must not panic; warning is emitted via tracing
     }
 
     #[test]
@@ -2654,7 +2680,7 @@ expected_measurements = {
             )),
             ..Default::default()
         };
-        config.validate(); // must not panic, no warning
+        config.validate().unwrap(); // must not panic, no warning
     }
 
     #[test]
@@ -2663,6 +2689,29 @@ expected_measurements = {
             streaming_decrypt: true,
             ..Default::default()
         };
-        config.validate(); // must not panic; warning may be emitted if picolm not enabled
+        config.validate().unwrap(); // must not panic; warning may be emitted if picolm not enabled
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_spec_mode() {
+        let config = PowerConfig {
+            spec_mode: "warp-speed".to_string(),
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("unsupported spec_mode"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_from_rejects_unknown_spec_mode() {
+        std::env::remove_var("A3S_POWER_SPEC_MODE");
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("config.hcl");
+        std::fs::write(&hcl_path, r#"spec_mode = "warp-speed""#).unwrap();
+
+        let err = PowerConfig::load_from(hcl_path.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("unsupported spec_mode"));
     }
 }

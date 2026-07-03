@@ -413,6 +413,9 @@ Landed in the current working tree:
   version-like strings elsewhere in the response are ignored.
 - Capped direct `nras-rest` detached EAT token collection before JWT decoding so
   explicit token arrays cannot force unbounded verdict parsing work.
+- Made picolm `spec_mode` configuration fail closed for unknown HCL or
+  `A3S_POWER_SPEC_MODE` values instead of silently falling back to
+  `prompt-lookup`.
 
 Still open:
 

@@ -1361,21 +1361,14 @@ pub struct PicolmBackend {
     #[cfg(feature = "picolm")]
     max_seq_len: usize,
     #[cfg(feature = "picolm")]
-    spec_mode: super::picolm_ops::speculative::SpecMode,
+    spec_mode: Option<super::picolm_ops::speculative::SpecMode>,
 }
 
 impl PicolmBackend {
     pub fn new(config: Arc<PowerConfig>) -> Self {
         tracing::info!("picolm backend initialized — pure Rust layer-streaming inference");
         #[cfg(feature = "picolm")]
-        let spec_mode = super::picolm_ops::speculative::SpecMode::parse(&config.spec_mode)
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    spec_mode = %config.spec_mode,
-                    "unknown spec_mode, falling back to default (prompt-lookup)"
-                );
-                super::picolm_ops::speculative::SpecMode::default()
-            });
+        let spec_mode = super::picolm_ops::speculative::SpecMode::parse(&config.spec_mode);
         #[cfg(not(feature = "picolm"))]
         let _ = &config;
         Self {
@@ -1739,7 +1732,12 @@ impl Backend for PicolmBackend {
             let presence_penalty = request.presence_penalty.unwrap_or(0.0);
             let has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
             let response_format = request.response_format.clone();
-            let spec_mode = self.spec_mode;
+            let spec_mode = self.spec_mode.ok_or_else(|| {
+                PowerError::Config(
+                    "unsupported spec_mode; expected one of: off, prompt-lookup, ngram-context"
+                        .to_string(),
+                )
+            })?;
 
             let (tx, rx) = mpsc::channel::<Result<ChatResponseChunk>>(128);
 
@@ -2106,6 +2104,17 @@ mod tests {
         assert!(!b.supports(&ModelFormat::SafeTensors));
         assert!(!b.supports(&ModelFormat::HuggingFace));
         assert!(!b.supports(&ModelFormat::Vision));
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_unknown_spec_mode_does_not_fallback_to_default() {
+        let backend = PicolmBackend::new(Arc::new(PowerConfig {
+            spec_mode: "warp-speed".to_string(),
+            ..Default::default()
+        }));
+
+        assert_eq!(backend.spec_mode, None);
     }
 
     #[cfg(feature = "picolm")]

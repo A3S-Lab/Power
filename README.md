@@ -565,6 +565,7 @@ gpu_attestation {
 | `data_dir` | `~/.a3s/power` | Base directory for model storage |
 | `max_loaded_models` | `1` | Maximum models loaded concurrently |
 | `keep_alive` | `"5m"` | Auto-unload idle models (`"0"` = immediate, `"-1"` = never) |
+| `spec_mode` | `"prompt-lookup"` | picolm speculative-decoding mode: `"off"`, `"prompt-lookup"`, or `"ngram-context"`; unknown values fail configuration validation |
 | `use_mlock` | `false` | Lock model weights in memory (prevent swapping) |
 | `num_thread` | auto | Thread count for inference |
 | `flash_attention` | `false` | Enable flash attention |
@@ -622,6 +623,7 @@ gpu_attestation {
 | `A3S_POWER_DATA_DIR` | Model storage directory |
 | `A3S_POWER_MAX_MODELS` | Max concurrent loaded models |
 | `A3S_POWER_KEEP_ALIVE` | Default keep-alive duration |
+| `A3S_POWER_SPEC_MODE` | picolm speculative-decoding mode (`"off"`, `"prompt-lookup"`, or `"ngram-context"`); invalid values fail closed |
 | `A3S_POWER_MODEL_SOURCE` | Remote model hub source for pull (`"modelscope"`, `"hf"`, or `"huggingface"`); invalid configured values fail closed |
 | `A3S_POWER_HUB_TOKEN` | Generic bearer token fallback for remote model hub pulls |
 | `A3S_POWER_GPU_LAYERS` | GPU layer offloading |

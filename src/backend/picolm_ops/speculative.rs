@@ -54,8 +54,10 @@ pub enum SpecMode {
 }
 
 impl SpecMode {
-    /// Parse a config string (case-insensitive). Unknown values fall back to
-    /// the default and are reported by the caller.
+    /// Parse a config string (case-insensitive).
+    ///
+    /// Unknown values return `None` so configuration validation can fail closed
+    /// instead of silently selecting a different decoding policy.
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "off" | "none" | "false" => Some(Self::Off),

@@ -46,6 +46,8 @@ pub async fn start_with_log_buffer(
     mut config: PowerConfig,
     log_buffer: Option<LogBuffer>,
 ) -> Result<()> {
+    config.validate()?;
+
     // Ensure storage directories exist
     dirs::ensure_dirs()?;
 
