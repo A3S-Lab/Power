@@ -489,12 +489,11 @@ fn validate_strict_tee_config(
                 }
             }
             GpuAttestationSource::NvattestCli => {
-                if config
+                if !config
                     .gpu_attestation
                     .nvattest_verifier
                     .trim()
-                    .to_ascii_lowercase()
-                    != "remote"
+                    .eq_ignore_ascii_case("remote")
                 {
                     return Err(PowerError::Config(
                         "tee_policy_mode = \"gpu-confidential\" with gpu_attestation.source = \"nvattest-cli\" requires gpu_attestation.nvattest_verifier = \"remote\" so NVIDIA NRAS verifies GPU evidence".to_string(),

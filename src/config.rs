@@ -9,41 +9,31 @@ use crate::dirs;
 use crate::error::{PowerError, Result};
 
 /// Attestation policy mode for TEE deployments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TeePolicyMode {
     /// Development mode permits simulated TEE evidence and skipped production checks.
     Development,
     /// Strict mode requires hardware TEE evidence, launch measurement pins, and
     /// pinned local model integrity policy.
+    #[default]
     Strict,
     /// Strict mode plus NVIDIA GPU confidential-computing evidence binding.
     GpuConfidential,
 }
 
-impl Default for TeePolicyMode {
-    fn default() -> Self {
-        Self::Strict
-    }
-}
-
 /// Source used to produce NVIDIA GPU confidential-computing evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GpuAttestationSource {
     /// Consume configured raw evidence/verdict bytes from file or hex fields.
+    #[default]
     Configured,
     /// Invoke NVIDIA's `nvattest` CLI to collect evidence and request an NRAS
     /// verdict for each attestation request.
     NvattestCli,
     /// Send configured GPU evidence directly to the NVIDIA NRAS REST API.
     NrasRest,
-}
-
-impl Default for GpuAttestationSource {
-    fn default() -> Self {
-        Self::Configured
-    }
 }
 
 impl Display for GpuAttestationSource {

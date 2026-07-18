@@ -859,8 +859,10 @@ mod sev_snp_ioctl {
         #[test]
         fn test_report_field_offsets_within_resp() {
             // Verify the offsets we use are within the 4000-byte response buffer
-            assert!(REPORT_DATA_OFFSET + 64 <= 4000);
-            assert!(MEASUREMENT_OFFSET + 48 <= 4000);
+            const {
+                assert!(REPORT_DATA_OFFSET + 64 <= 4000);
+                assert!(MEASUREMENT_OFFSET + 48 <= 4000);
+            }
         }
 
         #[test]
@@ -974,8 +976,10 @@ mod tdx_ioctl {
 
         #[test]
         fn test_tdreport_field_offsets_within_bounds() {
-            assert!(REPORTDATA_OFFSET + 64 <= 1024);
-            assert!(MRTD_OFFSET + 48 <= 1024);
+            const {
+                assert!(REPORTDATA_OFFSET + 64 <= 1024);
+                assert!(MRTD_OFFSET + 48 <= 1024);
+            }
         }
 
         #[test]

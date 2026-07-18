@@ -556,7 +556,7 @@ impl Backend for LlamaCppBackend {
         .map_err(|e| {
             PowerError::InferenceFailed(format!("Chat template rendering task failed: {e}"))
         })?
-        .map_err(|e| PowerError::InferenceFailed(e))?;
+        .map_err(PowerError::InferenceFailed)?;
 
         let has_images = request.has_image_inputs();
         ensure_llamacpp_images_supported(model_name, has_images, projector_path.is_some())?;
@@ -702,7 +702,7 @@ impl Backend for LlamaCppBackend {
         .map_err(|e| {
             PowerError::InferenceFailed(format!("Chat template rendering task failed: {e}"))
         })?
-        .map_err(|e| PowerError::InferenceFailed(e))?;
+        .map_err(PowerError::InferenceFailed)?;
 
         Ok(Some(EffectivePromptDigest::chat_rendered_prompt(
             "llama.cpp",
@@ -965,10 +965,9 @@ impl Backend for LlamaCppBackend {
                 let mut sampler = llama_cpp_2::sampling::LlamaSampler::chain(samplers, false);
 
                 let eos_token = model_arc.token_eos();
-                let mut n_cur = n_past;
                 let mut generated_text = String::new();
 
-                for _i in 0..max_tokens {
+                for generated_count in 0..max_tokens {
                     let new_token = sampler.sample(&ctx, -1);
                     if new_token == eos_token {
                         send_completion_result(
@@ -1023,6 +1022,7 @@ impl Backend for LlamaCppBackend {
                     }
 
                     let mut batch = LlamaBatch::new(1, 1);
+                    let n_cur = n_past + generated_count as i32;
                     if batch.add(new_token, n_cur, &[0], true).is_err() {
                         send_completion_result(
                             &tx,
@@ -1032,7 +1032,6 @@ impl Backend for LlamaCppBackend {
                         );
                         return;
                     }
-                    n_cur += 1;
                     if let Err(e) = ctx.decode(&mut batch) {
                         send_completion_result(
                             &tx,
@@ -1304,13 +1303,12 @@ impl Backend for LlamaCppBackend {
 
             let mut sampler = LlamaSampler::chain_simple(samplers);
 
-            let mut n_cur = tokens.len();
             let eos_token = model_arc.token_eos();
             let mut generated_text = String::new();
             let mut all_tokens = tokens.clone(); // Track all tokens for cache
 
             // Generate tokens
-            for _i in 0..max_tokens {
+            for generated_count in 0..max_tokens {
                 let new_token = sampler.sample(&ctx, -1);
 
                 if new_token == eos_token {
@@ -1420,6 +1418,7 @@ impl Backend for LlamaCppBackend {
 
                 // Prepare next batch
                 let mut batch = LlamaBatch::new(1, 1);
+                let n_cur = tokens.len() + generated_count;
                 if batch.add(new_token, n_cur as i32, &[0], true).is_err() {
                     send_completion_result(
                         &tx,
@@ -1429,7 +1428,6 @@ impl Backend for LlamaCppBackend {
                     );
                     return;
                 }
-                n_cur += 1;
 
                 if let Err(e) = ctx.decode(&mut batch) {
                     send_completion_result(

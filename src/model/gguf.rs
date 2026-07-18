@@ -548,7 +548,7 @@ pub fn estimate_memory(path: &Path, ctx_size: u32) -> Result<MemoryEstimate> {
         .unwrap_or(32);
 
     // KV cache size estimate: 2 (K+V) * n_layers * ctx_size * head_dim * n_head_kv * sizeof(f16)
-    let head_dim = if n_head > 0 { n_embd / n_head } else { 128 };
+    let head_dim = n_embd.checked_div(n_head).unwrap_or(128);
     let kv_cache_bytes = checked_product(
         &[2, n_layers, ctx_size as u64, head_dim, n_head_kv, 2],
         "GGUF KV cache memory estimate",

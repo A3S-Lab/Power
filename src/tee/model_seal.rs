@@ -431,7 +431,7 @@ mod tests {
         signing_key: &ed25519_dalek::SigningKey,
     ) {
         use ed25519_dalek::Signer;
-        let hash_bytes = hex::decode(&hash_hex).unwrap();
+        let hash_bytes = hex::decode(hash_hex).unwrap();
         let signature = signing_key.sign(&hash_bytes);
         let sig_path = signature_path(signature_anchor_path);
         std::fs::write(&sig_path, signature.to_bytes()).unwrap();
