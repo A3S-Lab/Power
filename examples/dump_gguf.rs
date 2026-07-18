@@ -53,7 +53,7 @@ fn main() {
     let bos = meta.bos_token_id as usize;
     for i in bos.saturating_sub(2)..=(bos + 2).min(meta.vocab_tokens.len() - 1) {
         let ttype = meta.vocab_types.get(i).copied().unwrap_or(0);
-        eprintln!("  [{i:6}] type={ttype} {:?}", &meta.vocab_tokens[i]);
+        eprintln!("  [{i:6}] type={ttype} {:?}", meta.vocab_tokens[i]);
     }
 
     // Test: what tokens would "What is 2+2?" map to with simple lookup?
@@ -86,7 +86,7 @@ fn main() {
     }
     eprintln!("  Token IDs: {:?}", token_ids);
     for &id in &token_ids {
-        eprintln!("  [{id:6}] {:?}", &meta.vocab_tokens[id]);
+        eprintln!("  [{id:6}] {:?}", meta.vocab_tokens[id]);
     }
 }
 
