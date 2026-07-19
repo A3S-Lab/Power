@@ -202,16 +202,17 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         "--receipt-tool-choice-digest",
         opts.receipt_tool_choice_digest.as_deref(),
     )?;
-    let mut expected_receipt = opts.expected_receipt(
-        expected_receipt_input_digest,
-        expected_receipt_decoding_parameters_digest,
-        expected_receipt_stream_options_digest,
-        expected_receipt_stop_tokens_digest,
-        expected_receipt_response_format_digest,
-        expected_receipt_tools_digest,
-        expected_receipt_tool_choice_digest,
-        expected_effective_prompt_digest.clone(),
-    );
+    let mut expected_receipt = opts.expected_receipt(ExpectedReceipt {
+        input_digest: expected_receipt_input_digest,
+        decoding_parameters_digest: expected_receipt_decoding_parameters_digest,
+        stream_options_digest: expected_receipt_stream_options_digest,
+        stop_tokens_digest: expected_receipt_stop_tokens_digest,
+        response_format_digest: expected_receipt_response_format_digest,
+        tools_digest: expected_receipt_tools_digest,
+        tool_choice_digest: expected_receipt_tool_choice_digest,
+        effective_prompt_digest: expected_effective_prompt_digest.clone(),
+        ..ExpectedReceipt::default()
+    });
     apply_image_receipt_prompt_absence_default(&mut expected_receipt, receipt_request.as_ref());
 
     let hardware_verifier = if opts.allow_offline {
@@ -479,8 +480,8 @@ struct CliOpts {
 }
 
 enum ReceiptRequest {
-    Chat(ChatCompletionRequest),
-    Completion(CompletionRequest),
+    Chat(Box<ChatCompletionRequest>),
+    Completion(Box<CompletionRequest>),
 }
 
 impl CliOpts {
@@ -648,28 +649,10 @@ impl CliOpts {
         self.receipt_chat_request_file.is_some() || self.receipt_completion_request_file.is_some()
     }
 
-    fn expected_receipt(
-        &self,
-        input_digest: Option<Vec<u8>>,
-        decoding_parameters_digest: Option<Vec<u8>>,
-        stream_options_digest: Option<Vec<u8>>,
-        stop_tokens_digest: Option<Vec<u8>>,
-        response_format_digest: Option<Vec<u8>>,
-        tools_digest: Option<Vec<u8>>,
-        tool_choice_digest: Option<Vec<u8>>,
-        effective_prompt_digest: Option<Vec<u8>>,
-    ) -> ExpectedReceipt {
+    fn expected_receipt(&self, digests: ExpectedReceipt) -> ExpectedReceipt {
         ExpectedReceipt {
             model: self.receipt_model.clone(),
             request_type: self.receipt_request_type,
-            input_digest,
-            decoding_parameters_digest,
-            stream_options_digest,
-            stop_tokens_digest,
-            response_format_digest,
-            tools_digest,
-            tool_choice_digest,
-            effective_prompt_digest,
             effective_prompt_absent: self.effective_prompt_absent,
             effective_prompt_backend: normalized_optional_string_arg(
                 self.effective_prompt_backend.as_deref(),
@@ -677,6 +660,7 @@ impl CliOpts {
             effective_prompt_kind: normalized_optional_string_arg(
                 self.effective_prompt_kind.as_deref(),
             ),
+            ..digests
         }
     }
 }
@@ -1351,12 +1335,12 @@ fn load_receipt(opts: &CliOpts) -> anyhow::Result<Option<AttestationReceipt>> {
 fn load_receipt_request(opts: &CliOpts) -> anyhow::Result<Option<ReceiptRequest>> {
     if let Some(path) = opts.receipt_chat_request_file.as_deref() {
         let request = load_json_file::<ChatCompletionRequest>(path, "chat request")?;
-        return Ok(Some(ReceiptRequest::Chat(request)));
+        return Ok(Some(ReceiptRequest::Chat(Box::new(request))));
     }
 
     if let Some(path) = opts.receipt_completion_request_file.as_deref() {
         let request = load_json_file::<CompletionRequest>(path, "completion request")?;
-        return Ok(Some(ReceiptRequest::Completion(request)));
+        return Ok(Some(ReceiptRequest::Completion(Box::new(request))));
     }
 
     Ok(None)
@@ -2552,16 +2536,10 @@ mod tests {
             Some("chat.rendered-prompt")
         );
 
-        let expected = opts.expected_receipt(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(vec![0xdd; 32]),
-        );
+        let expected = opts.expected_receipt(ExpectedReceipt {
+            effective_prompt_digest: Some(vec![0xdd; 32]),
+            ..ExpectedReceipt::default()
+        });
         assert_eq!(expected.effective_prompt_digest, Some(vec![0xdd; 32]));
     }
 
@@ -2579,7 +2557,7 @@ mod tests {
 
         assert!(opts.effective_prompt_absent);
         assert!(opts.has_receipt_policy_pins());
-        let expected = opts.expected_receipt(None, None, None, None, None, None, None, None);
+        let expected = opts.expected_receipt(ExpectedReceipt::default());
         assert!(expected.effective_prompt_absent);
     }
 
@@ -2597,7 +2575,7 @@ mod tests {
         ];
 
         let opts = parse_args(&args).unwrap();
-        let expected = opts.expected_receipt(None, None, None, None, None, None, None, None);
+        let expected = opts.expected_receipt(ExpectedReceipt::default());
 
         assert_eq!(
             expected.effective_prompt_backend.as_deref(),
@@ -2621,7 +2599,7 @@ mod tests {
         ];
 
         let opts = parse_args(&args).unwrap();
-        let expected = opts.expected_receipt(None, None, None, None, None, None, None, None);
+        let expected = opts.expected_receipt(ExpectedReceipt::default());
 
         assert!(!opts.has_receipt_policy_pins());
         assert!(expected.is_empty());

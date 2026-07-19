@@ -106,12 +106,12 @@ mod picolm_routing {
 
 // ── EPC threshold logic ───────────────────────────────────────────────────────
 
+#[cfg(not(target_os = "linux"))]
 #[test]
 fn test_epc_model_fits_when_info_unavailable() {
     use a3s_power::tee::epc::model_exceeds_epc;
     // On macOS / non-Linux, EPC info is unavailable → model always "fits"
     // This preserves existing behavior on dev machines
-    #[cfg(not(target_os = "linux"))]
     assert!(!model_exceeds_epc(u64::MAX));
 }
 

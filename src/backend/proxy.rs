@@ -131,8 +131,8 @@ impl Backend for ProxyBackend {
                                 return;
                             }
                         }
-                        if has_text_delta {
-                            if tx
+                        if has_text_delta
+                            && tx
                                 .send(Ok(ChatResponseChunk {
                                     content: parsed.content.unwrap_or_default(),
                                     thinking_content: parsed.thinking_content,
@@ -144,9 +144,8 @@ impl Backend for ProxyBackend {
                                 }))
                                 .await
                                 .is_err()
-                            {
-                                return;
-                            }
+                        {
+                            return;
                         }
                         if let Some(reason) = parsed.done_reason {
                             done_reason = Some(reason);
