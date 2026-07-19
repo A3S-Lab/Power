@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-19
+
 ### Added
 
 - **Proxy backend — front any OpenAI-compatible upstream (vLLM / TGI / SGLang / OpenAI).** Configure `proxy_upstreams` (model name → base URL) and Power registers each as a `ModelFormat::Remote` model, forwarding chat (streamed), completions and embeddings to the upstream while applying its own routing, auth, rate-limiting and log-redaction. This lets Power *replace vLLM in the stack* without reimplementing CUDA kernels — it absorbs the accelerated engine as a swappable backend. Trust boundary: proxied inference runs on the upstream, outside any TEE (non-confidential fast path; no hardware attestation over proxied content).
