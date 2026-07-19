@@ -320,7 +320,7 @@ fn split_special_tokens(text: &str, piece_to_id: &HashMap<String, u32>) -> Vec<S
         .map(|(k, &v)| (k.as_str(), v))
         .collect();
     // Sort by length descending for greedy matching
-    specials.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    specials.sort_by_key(|(token, _)| std::cmp::Reverse(token.len()));
 
     let mut segments = Vec::new();
     let mut remaining = text;

@@ -113,11 +113,10 @@ async fn run_models_command(cmd: ModelsCommand) -> anyhow::Result<()> {
                                         v.get("completed").and_then(|c| c.as_u64()).unwrap_or(0);
                                     let total =
                                         v.get("total").and_then(|t| t.as_u64()).unwrap_or(1);
-                                    let pct = if total > 0 {
-                                        completed * 100 / total
-                                    } else {
-                                        0
-                                    };
+                                    let pct = completed
+                                        .saturating_mul(100)
+                                        .checked_div(total)
+                                        .unwrap_or(0);
                                     print!(
                                         "\rDownloading... {pct}% ({}/{})",
                                         format_bytes(completed),

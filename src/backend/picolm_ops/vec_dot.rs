@@ -835,7 +835,10 @@ mod avx2 {
             }
         }
 
-        hsum_avx2(total)
+        // Each scalar contribution is broadcast to every lane, so all eight
+        // lanes contain the complete dot product. Read one lane instead of
+        // horizontally summing eight identical copies.
+        _mm_cvtss_f32(_mm256_castps256_ps128(total))
     }
 }
 
@@ -1023,8 +1026,8 @@ mod tests {
         block[5] = 3;
         block[6] = 1;
         block[7] = 4;
-        for i in 16..144 {
-            block[i] = 0x53; // lo=3, hi=5
+        for item in block.iter_mut().skip(16) {
+            *item = 0x53; // lo=3, hi=5
         }
         let mut x = [0.0f32; 256];
         for (i, v) in x.iter_mut().enumerate() {
@@ -1047,11 +1050,11 @@ mod tests {
         let mut block = [0u8; 210];
         let d = f16::from_f32(0.5);
         block[208..210].copy_from_slice(&d.to_le_bytes());
-        for i in 192..208 {
-            block[i] = 2u8;
+        for item in block.iter_mut().take(208).skip(192) {
+            *item = 2u8;
         }
-        for i in 0..128 {
-            block[i] = 0x21;
+        for item in block.iter_mut().take(128) {
+            *item = 0x21;
         }
         let mut x = [0.0f32; 256];
         for (i, v) in x.iter_mut().enumerate() {
