@@ -29,9 +29,9 @@ pub fn pulls_dir() -> PathBuf {
     power_home().join("pulls")
 }
 
-/// Returns the path to the user configuration file (HCL format).
+/// Returns the path to the user configuration file (A3S ACL format).
 pub fn config_path() -> PathBuf {
-    power_home().join("config.hcl")
+    power_home().join("config.acl")
 }
 
 /// Ensure all required directories exist.
@@ -87,7 +87,7 @@ mod tests {
     #[serial]
     fn test_config_path() {
         std::env::set_var("A3S_POWER_HOME", "/tmp/test-power");
-        assert_eq!(config_path(), PathBuf::from("/tmp/test-power/config.hcl"));
+        assert_eq!(config_path(), PathBuf::from("/tmp/test-power/config.acl"));
         std::env::remove_var("A3S_POWER_HOME");
     }
 

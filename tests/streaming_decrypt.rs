@@ -215,20 +215,20 @@ fn test_streaming_decrypt_config_field_serializes() {
         streaming_decrypt: true,
         ..Default::default()
     };
-    let hcl = config.to_hcl();
+    let acl = config.to_acl().unwrap();
     assert!(
-        hcl.contains("streaming_decrypt = true"),
-        "streaming_decrypt = true should appear in HCL output"
+        acl.contains("streaming_decrypt = true"),
+        "streaming_decrypt = true should appear in A3S ACL output"
     );
 }
 
 #[test]
 fn test_streaming_decrypt_config_false_not_serialized() {
     let config = a3s_power::config::PowerConfig::default();
-    let hcl = config.to_hcl();
+    let acl = config.to_acl().unwrap();
     // When false, streaming_decrypt should not appear (same pattern as other bool fields)
     assert!(
-        !hcl.contains("streaming_decrypt"),
-        "streaming_decrypt should not appear in HCL when false"
+        !acl.contains("streaming_decrypt"),
+        "streaming_decrypt should not appear in A3S ACL when false"
     );
 }

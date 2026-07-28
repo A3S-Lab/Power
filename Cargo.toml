@@ -48,7 +48,8 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-hcl-rs = "0.18"
+a3s-acl = "=0.3.0"
+a3s-runtime = { version = "=0.2.0", git = "https://github.com/A3S-Lab/Runtime.git", rev = "b0aa0c34e2c8121effbcbfbe6246a860e78ca509" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

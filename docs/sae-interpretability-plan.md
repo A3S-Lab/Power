@@ -24,7 +24,7 @@ internal concepts), confidential (TEE — only features leave), explainable (lin
 
 ### 2. Config + build (which layer, which SAE, opt-in)
 - New config block, **default OFF** (opt-in like the privacy gates), e.g.:
-  ```hcl
+  ```acl
   interp { sae = "models/minimax.L18.sae"  layer = 18  top_k = 32  enabled = true }
   ```
 - At model load, build an `Option<InterpTap>` (encoder + layer) and thread it into `GenerateParams`

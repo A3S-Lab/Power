@@ -5,6 +5,7 @@ pub mod config;
 pub mod dirs;
 pub mod error;
 pub mod model;
+pub mod runtime_service;
 pub mod sae;
 pub mod server;
 pub mod tee;

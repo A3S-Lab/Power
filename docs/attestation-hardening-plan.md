@@ -420,7 +420,7 @@ Landed in the current working tree:
   version-like strings elsewhere in the response are ignored.
 - Capped direct `nras-rest` detached EAT token collection before JWT decoding so
   explicit token arrays cannot force unbounded verdict parsing work.
-- Made picolm `spec_mode` configuration fail closed for unknown HCL or
+- Made picolm `spec_mode` configuration fail closed for unknown A3S ACL or
   `A3S_POWER_SPEC_MODE` values instead of silently falling back to
   `prompt-lookup`.
 - Made local raw Jinja chat-template rendering fail closed for llama.cpp and
