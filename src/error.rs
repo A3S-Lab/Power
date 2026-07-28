@@ -27,8 +27,8 @@ pub enum PowerError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    #[error("HCL deserialization error: {0}")]
-    HclDe(String),
+    #[error("ACL configuration error: {0}")]
+    Acl(String),
 
     #[error("Integrity check failed for model {model}: expected {expected}, got {actual}")]
     IntegrityCheckFailed {

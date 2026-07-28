@@ -22,7 +22,7 @@ const NONCE_SIZE: usize = 12;
 
 /// Source of the model decryption key.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", content = "value")]
+#[serde(tag = "type", content = "value", deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
 pub enum KeySource {
     /// Read key from a file (hex-encoded, 64 chars = 32 bytes).
