@@ -1,6 +1,6 @@
 //! Embedded, library-level model execution.
 //!
-//! This module is deliberately independent from [`crate::server`] and the
+//! This module is deliberately independent from `crate::server` and the
 //! OpenAI-compatible backend trait. Constructing an embedded session never
 //! binds a socket, starts a listener, downloads a model, or invokes another
 //! process.
@@ -43,8 +43,9 @@ pub use receipt::{
 };
 pub use residency::{
     CacheEvictionPolicy, PlacementPreference, PlannedResidencyGroup, PrefetchReport, PrefetchTask,
-    ResidencyApplyReport, ResidencyCandidate, ResidencyPlan, ResidencyPolicy, ResidentWeight,
-    WeightHierarchy, WeightKey, WeightRequest, WeightTier,
+    ResidencyAdaptation, ResidencyAdaptationPolicy, ResidencyApplyReport, ResidencyCandidate,
+    ResidencyPlan, ResidencyPolicy, ResidencyReplacement, ResidentWeight, WeightHierarchy,
+    WeightKey, WeightRequest, WeightTier,
 };
 pub use routing::{ExpertAssignment, ExpertKey, RoutedExpert, RoutedExpertBatch};
 pub use runtime::{EmbeddedRuntime, ExecutionPermit};

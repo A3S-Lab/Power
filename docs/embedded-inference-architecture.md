@@ -41,7 +41,7 @@ model crate
             ├─ device cache ───── bounded, typed device, exact dtype
             ├─ host cache ─────── per-layer LFRU/LRU + provenance-aware pins
             ├─ prefetch pool ───── bounded tasks and blocking workers
-            ├─ residency plan ──── replaceable atomic heat-ranked groups
+            ├─ residency plan ──── replaceable and stably adapted atomic groups
             └─ SafeTensors ─────── verified mmap/positional weighted sources
 ```
 
@@ -95,6 +95,15 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   and per-layer entry limits, never splits a group, and binds the plan to the
   weight digest, runtime device, and policy. Applying a plan reconciles the
   active plan transactionally while leaving manual pins intact.
+- `plan_residency_adaptation` follows Colibri's lossless live re-pin principle
+  at an explicit model-owned safe boundary. The default policy requires a
+  challenger to exceed the incumbent by more than 25% plus four heat units and
+  permits at most four replacements per pass. Power swaps only atomic groups
+  with identical byte and per-layer entry footprints, so host/device ledgers
+  remain exact even for model families whose groups are not uniform. Each
+  ephemeral adaptation is bound to its active base plan; stale application
+  fails before any cache mutation. Application reuses the transactional plan
+  and pin path rather than creating another cache or residency mechanism.
 - `EmbeddedRuntime::plan_residency_budget` discovers host memory through bounded
   native Linux, macOS, or Windows APIs and device memory through the selected
   CUDA or Metal handle. The caller supplies explicit fractions, reserves, caps,
@@ -256,6 +265,31 @@ them into execution receipts automatically. A TEE guest therefore plans only
 from the memory visible inside that guest, while policy still controls whether
 the result may leave the trust boundary.
 
+### Lossless Live Residency Adaptation
+
+The model owner decides when no model work is in flight and supplies opaque
+session heat for exactly the groups in the active plan. Power neither derives
+model topology from IDs nor persists this heat:
+
+```rust
+use a3s_power::inference::ResidencyAdaptationPolicy;
+
+let policy = ResidencyAdaptationPolicy::default();
+let adaptation = hierarchy.plan_residency_adaptation(&live_candidates, &policy)?;
+if !adaptation.is_noop() {
+    hierarchy.apply_residency_adaptation(&adaptation, &permit, &cancellation)?;
+}
+# Ok::<(), a3s_power::error::PowerError>(())
+```
+
+The default policy mirrors Colibri's 25% plus four-unit hysteresis and four-swap
+limit, but Power generalizes the mechanism around atomic `ResidencyCandidate`
+groups. A replacement changes tier only. It cannot change the exact weights in
+a group, router output, gate mass, dtype, precision, or execution receipt. The
+adaptation and replacement identities are intentionally not serializable; a
+TEE caller that wants history across sessions must keep that state in its own
+authorized sealed store and submit a fresh heat snapshot.
+
 ### Value-Preserving Cross-Layer Prefetch Hints
 
 The model crate supplies exact router output and keeps topology-to-weight
@@ -319,6 +353,10 @@ caller-owned sealed store if cross-session learning is authorized.
   are still sensitive metadata and are opt-in.
 - Residency candidates and plans can reveal the learned hot set. Power returns
   them to the caller but never logs or persists them automatically.
+- Live residency adaptations are ephemeral, non-serializable, bound to the
+  active base plan, and applied through the same transactional cache path.
+  Caller-supplied heat and replacement identities are not placed in telemetry,
+  logs, receipts, or attestation claims.
 - Hardware memory snapshots can reveal deployment capacity. Automatic budgeting
   is explicit, snapshots are never logged or placed in execution receipts, and
   callers must apply their own TEE export policy.
@@ -329,6 +367,7 @@ caller-owned sealed store if cross-session learning is authorized.
 | --- | --- |
 | VRAM/RAM/storage as one hierarchy | Implemented generically with exact dtype and shape checks |
 | Layer-local LFRU/LRU and learned hot pins | Implemented with decaying frequency, bounded recency, separate manual/plan pins, and transactional hot-set replacement |
+| Lossless live tier adaptation | Implemented at explicit safe boundaries with caller-owned heat, default 25% + 4 hysteresis, a four-replacement cap, exact-footprint swaps, stale-plan rejection, and the existing transactional pin/cache path |
 | Batched expert union | Implemented without changing router order, top-k, or gate weights |
 | One-layer-ahead I/O overlap | Implemented with bounded, cancellable Tokio blocking workers and useful/unused prefetch measurement |
 | Cross-layer coupling hints | Implemented as bounded, digest/geometry-bound, detailed-telemetry-only co-occurrence learning with deterministic per-position scores, batch union, and measured recall; hints never alter router output |
@@ -339,6 +378,26 @@ caller-owned sealed store if cross-session learning is authorized.
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
 | Speculative decoding and KV policy | Model control flow remains in the model crate; Power supplies shared state bounds and receipts |
 | Web dashboard | Not part of embedded inference; an explicit external consumer may receive policy-approved aggregate telemetry |
+
+## Deep Colibri Adoption Sequence
+
+Power adopts Colibri mechanisms only when they can remain model-neutral,
+value-preserving, bounded, and compatible with the existing TEE trust path.
+The next sequence is:
+
+| Priority | Colibri lesson | Power-level treatment | Required evidence |
+| --- | --- | --- | --- |
+| 1 | Deferred current-layer cold I/O while resident experts compute | Extend the existing prefetch admission and cache path with an ordered staged-batch API; model crates retain canonical accumulation order | Exact-output parity plus foreground wait, service time, and useful-byte measurements |
+| 2 | Hardware/model-specific measured tuning | Add an ephemeral, digest-bound comparison profile for lossless execution knobs only; model crates own teacher-forced calibration and any sealed persistence | Repeated baseline/winner reversal, minimum throughput gain, hit-rate parity, and bounded p99 regression |
+| 3 | Lossless compressed expert tiers | Add representations behind the existing verified `WeightStore` index and receipts; never quantize or reinterpret tensors during placement | Whole-artifact digest validation, decoded byte parity, bounded scratch, zeroization, and end-to-end wins |
+| 4 | Accelerator-wide residency declarations and fused batches | Extend typed CUDA/Metal devices without bypassing Candle safety, admission, cancellation, or confidential-GPU claims | Kernel parity, explicit fallback identity, memory-pressure tests, and named-hardware results |
+| 5 | Warm model state across sessions | Keep KV/recurrent topology in the model crate; Power supplies bounds, digest binding, zeroization, and a sealed-state envelope rather than plaintext sidecars | Interrupted-write recovery, wrong-model rejection, rollback policy, and TEE export authorization |
+
+Cache-aware expert substitution remains outside the default path because it
+changes model semantics. Grammar drafts, MTP/speculative control flow,
+tokenizers, and model-specific KV layouts remain with the owning model crate.
+Power will not add a Web dashboard or embed model assets to imitate Colibri's
+product surface.
 
 ## Validation Gates
 

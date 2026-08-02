@@ -1,6 +1,7 @@
 //! Colibri-inspired weight placement across storage, host RAM, and device
 //! memory without changing model precision or routing semantics.
 
+mod adaptation;
 mod cache;
 mod planner;
 #[cfg(test)]
@@ -24,6 +25,7 @@ use super::coupling::{
 use super::routing::{ExpertKey, RoutedExpertBatch};
 use super::telemetry::{PlacementTelemetry, RoutingHistory, Telemetry};
 use super::{EmbeddedRuntime, ExecutionPermit, RuntimeDeviceKind, TensorDescriptor, WeightStore};
+pub use adaptation::{ResidencyAdaptation, ResidencyAdaptationPolicy, ResidencyReplacement};
 use cache::{CacheAccess, CacheInsert, CacheState, PinReason};
 pub use planner::{PlannedResidencyGroup, ResidencyApplyReport, ResidencyCandidate, ResidencyPlan};
 pub use types::{
