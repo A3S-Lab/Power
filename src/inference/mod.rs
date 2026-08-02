@@ -14,6 +14,7 @@ mod receipt;
 mod residency;
 mod routing;
 mod runtime;
+mod storage_benchmark;
 mod telemetry;
 mod tensor;
 mod weights;
@@ -39,14 +40,20 @@ pub use residency::{
 };
 pub use routing::{ExpertAssignment, ExpertKey, RoutedExpert, RoutedExpertBatch};
 pub use runtime::{EmbeddedRuntime, ExecutionPermit};
+pub use storage_benchmark::{
+    compare_storage_benchmarks, run_storage_benchmark, StorageBenchmarkComparison,
+    StorageBenchmarkConfig, StorageBenchmarkGroup, StorageBenchmarkReport, StorageBenchmarkSample,
+    StorageBenchmarkSource, StorageBenchmarkSourceSummary, StorageBenchmarkSystem,
+    StorageCachePreparation, StorageCacheState, StorageDistributionSummary,
+};
 pub use telemetry::{
     PlacementTelemetry, RouteHeat, RoutingHistory, StorageSourceTelemetry, TelemetryMode,
 };
 pub use tensor::{TensorInput, TensorOutput};
 pub use weights::{
-    TensorDescriptor, WeightFileDescriptor, WeightSourceConfig, WeightSourceCoverage,
-    WeightSourceDescriptor, WeightSourceRole, WeightSourceWeighting, WeightStore,
-    WeightStoreConfig,
+    TensorDescriptor, TensorRead, TensorStorageDescriptor, WeightFileDescriptor,
+    WeightReadStrategy, WeightSourceConfig, WeightSourceCoverage, WeightSourceDescriptor,
+    WeightSourceRole, WeightSourceWeighting, WeightStore, WeightStoreConfig,
 };
 
 pub(crate) const RUNTIME_NAME: &str = "a3s-power-native";

@@ -1,19 +1,27 @@
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use candle_core::safetensors::Load;
 use candle_core::safetensors::MmapedSafetensors;
 use candle_core::{Device, Tensor};
+use safetensors::tensor::TensorView;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
+use zeroize::Zeroizing;
 
 use crate::error::{PowerError, Result};
 
 use super::{InferenceLimits, RuntimeDevice};
 
-const HASH_BUFFER_BYTES: usize = 1024 * 1024;
+mod files;
+mod index;
+mod range_io;
+
+use files::{discover_safetensors, hash_files};
+use index::TensorLocation;
+use range_io::WeightFileReader;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -22,6 +30,21 @@ pub struct TensorDescriptor {
     pub dtype: String,
     pub shape: Vec<usize>,
     pub bytes: u64,
+}
+
+/// Exact, verified location of one tensor inside one source file.
+///
+/// `file_index` addresses [`WeightStore::files`] without exposing an absolute
+/// host path. Callers must request this descriptor explicitly; Power never
+/// logs or persists tensor names or byte ranges automatically.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TensorStorageDescriptor {
+    pub file_index: usize,
+    pub absolute_offset: u64,
+    pub bytes: u64,
+    pub dtype: String,
+    pub shape: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,7 +56,9 @@ pub struct WeightFileDescriptor {
 }
 
 /// How much of the primary weight collection a read-only source must cover.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum WeightSourceCoverage {
     /// The source must be a byte-identical copy of the complete collection.
@@ -56,6 +81,23 @@ pub enum WeightSourceWeighting {
     ValidationThroughput,
 }
 
+/// How an already verified tensor range is materialized from storage.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeightReadStrategy {
+    /// Candle's validated SafeTensors mmap path. This remains the default.
+    #[default]
+    Mmap,
+    /// Bounded positional reads through the operating-system page cache.
+    PositionalBuffered,
+    /// Explicit OS direct/unbuffered reads with aligned scratch buffers.
+    /// Unsupported filesystems and platforms fail explicitly without falling
+    /// back to buffered reads under the same source.
+    PositionalDirect,
+}
+
 /// One verified copy of all or part of a weight collection and its relative
 /// read-bandwidth weight. The weight affects source selection only; every
 /// available file is checked byte-for-byte against the primary and therefore
@@ -67,6 +109,8 @@ pub struct WeightSourceConfig {
     pub read_weight: u32,
     #[serde(default)]
     pub coverage: WeightSourceCoverage,
+    #[serde(default)]
+    pub read_strategy: WeightReadStrategy,
 }
 
 impl WeightSourceConfig {
@@ -75,6 +119,7 @@ impl WeightSourceConfig {
             root: root.into(),
             read_weight: 1,
             coverage: WeightSourceCoverage::Complete,
+            read_strategy: WeightReadStrategy::Mmap,
         }
     }
 
@@ -86,6 +131,11 @@ impl WeightSourceConfig {
     /// Marks this source as an explicitly partial read-only replica.
     pub fn with_coverage(mut self, coverage: WeightSourceCoverage) -> Self {
         self.coverage = coverage;
+        self
+    }
+
+    pub fn with_read_strategy(mut self, read_strategy: WeightReadStrategy) -> Self {
+        self.read_strategy = read_strategy;
         self
     }
 }
@@ -111,6 +161,11 @@ impl WeightStoreConfig {
 
     pub fn with_primary_read_weight(mut self, read_weight: u32) -> Self {
         self.primary.read_weight = read_weight;
+        self
+    }
+
+    pub fn with_primary_read_strategy(mut self, read_strategy: WeightReadStrategy) -> Self {
+        self.primary.read_strategy = read_strategy;
         self
     }
 
@@ -154,12 +209,16 @@ pub struct WeightSourceDescriptor {
     /// through this explicit descriptor API and is never logged automatically.
     pub validation_bytes_per_second: u64,
     pub coverage: WeightSourceCoverage,
+    pub read_strategy: WeightReadStrategy,
+    /// Platform-derived storage transfer alignment used for direct I/O.
+    pub io_block_size: u64,
     pub verified_files: usize,
     pub verified_tensors: usize,
     pub verified_bytes: u64,
 }
 
-/// Validated, mmap-backed SafeTensors collection.
+/// Validated SafeTensors collection with mmap-default and opt-in positional
+/// materialization.
 ///
 /// Duplicate tensor names are refused instead of relying on last-file-wins
 /// behavior. The aggregate digest includes each relative file name, length,
@@ -167,8 +226,11 @@ pub struct WeightSourceDescriptor {
 pub struct WeightStore {
     root: PathBuf,
     paths: Vec<PathBuf>,
-    tensors: MmapedSafetensors,
+    tensors: Option<MmapedSafetensors>,
     inventory: BTreeMap<String, TensorDescriptor>,
+    locations: BTreeMap<String, TensorLocation>,
+    readers: Vec<WeightFileReader>,
+    io_block_size: u64,
     files: Vec<WeightFileDescriptor>,
     sha256: String,
     bytes: u64,
@@ -177,6 +239,7 @@ pub struct WeightStore {
     source_weighting: WeightSourceWeighting,
     validation_bytes_per_second: u64,
     coverage: WeightSourceCoverage,
+    read_strategy: WeightReadStrategy,
     replicas: Vec<WeightStore>,
 }
 
@@ -184,6 +247,59 @@ pub(crate) struct LoadedWeight {
     pub(crate) tensor: Tensor,
     pub(crate) source_index: usize,
     pub(crate) fell_back: bool,
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct VerifiedWeightCacheRange {
+    pub(crate) path: PathBuf,
+    pub(crate) absolute_offset: u64,
+    pub(crate) bytes: u64,
+}
+
+/// Zeroizing raw bytes returned by an explicit storage read.
+///
+/// This type deliberately has no serialization implementation and its debug
+/// representation never exposes tensor bytes, names, paths, or ranges.
+pub struct TensorRead {
+    bytes: Zeroizing<Vec<u8>>,
+    storage: TensorStorageDescriptor,
+    strategy: WeightReadStrategy,
+    source_index: usize,
+    fell_back: bool,
+}
+
+impl TensorRead {
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+
+    pub fn storage(&self) -> &TensorStorageDescriptor {
+        &self.storage
+    }
+
+    pub fn strategy(&self) -> WeightReadStrategy {
+        self.strategy
+    }
+
+    pub fn source_index(&self) -> usize {
+        self.source_index
+    }
+
+    pub fn fell_back(&self) -> bool {
+        self.fell_back
+    }
+}
+
+impl std::fmt::Debug for TensorRead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TensorRead")
+            .field("bytes", &self.bytes.len())
+            .field("strategy", &self.strategy)
+            .field("source_index", &self.source_index)
+            .field("fell_back", &self.fell_back)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WeightStore {
@@ -273,28 +389,46 @@ impl WeightStore {
         let (sha256, bytes, files) = hash_files(&root, &paths, limits.max_model_bytes)?;
         let validation_bytes_per_second = bytes_per_second(bytes, validation_started.elapsed());
 
-        // SAFETY: every path was canonicalized, checked as a regular file
-        // beneath `root`, opened and read completely while hashing, and remains
-        // owned by this store for at least as long as the memory maps.
-        let tensors = unsafe { MmapedSafetensors::multi(&paths) }.map_err(|error| {
-            PowerError::InvalidFormat(format!("failed to map SafeTensors weights: {error}"))
-        })?;
-        let mut inventory = BTreeMap::new();
-        for (name, view) in tensors.tensors() {
-            let descriptor = TensorDescriptor {
-                name: name.clone(),
-                dtype: format!("{:?}", view.dtype()).to_ascii_lowercase(),
-                shape: view.shape().to_vec(),
-                bytes: u64::try_from(view.data().len()).map_err(|_| {
-                    PowerError::InvalidFormat(format!(
-                        "tensor '{name}' byte length exceeds the supported range"
-                    ))
+        let tensors = if config.read_strategy == WeightReadStrategy::Mmap {
+            // SAFETY: every path was canonicalized, checked as a regular file
+            // beneath `root`, and read completely while hashing. The store
+            // retains the path collection for at least as long as the maps.
+            Some(
+                unsafe { MmapedSafetensors::multi(&paths) }.map_err(|error| {
+                    PowerError::InvalidFormat(format!("failed to map SafeTensors weights: {error}"))
                 })?,
-            };
-            if inventory.insert(name.clone(), descriptor).is_some() {
-                return Err(PowerError::InvalidFormat(format!(
-                    "duplicate tensor name '{name}' appears in the model container"
-                )));
+            )
+        } else {
+            None
+        };
+        let mut inventory = BTreeMap::new();
+        let mut locations = BTreeMap::new();
+        let mut readers = Vec::with_capacity(if config.read_strategy == WeightReadStrategy::Mmap {
+            0
+        } else {
+            paths.len()
+        });
+        let mut io_block_size = 0_u64;
+        for (file_index, (path, file)) in paths.iter().zip(files.iter()).enumerate() {
+            let reader = WeightFileReader::open(path, file.bytes, config.read_strategy)?;
+            io_block_size = io_block_size.max(reader.io_block_size());
+            for (name, location) in index::index_file(&reader, file_index, file.bytes)? {
+                let descriptor = TensorDescriptor {
+                    name: name.clone(),
+                    dtype: format!("{:?}", location.dtype).to_ascii_lowercase(),
+                    shape: location.shape.clone(),
+                    bytes: location.bytes,
+                };
+                if inventory.insert(name.clone(), descriptor).is_some()
+                    || locations.insert(name.clone(), location).is_some()
+                {
+                    return Err(PowerError::InvalidFormat(format!(
+                        "duplicate tensor name '{name}' appears in the model container"
+                    )));
+                }
+            }
+            if config.read_strategy != WeightReadStrategy::Mmap {
+                readers.push(reader);
             }
         }
         Ok(Self {
@@ -302,6 +436,9 @@ impl WeightStore {
             paths,
             tensors,
             inventory,
+            locations,
+            readers,
+            io_block_size,
             files,
             sha256,
             bytes,
@@ -310,6 +447,7 @@ impl WeightStore {
             source_weighting: WeightSourceWeighting::Configured,
             validation_bytes_per_second,
             coverage: config.coverage,
+            read_strategy: config.read_strategy,
             replicas: Vec::new(),
         })
     }
@@ -341,6 +479,8 @@ impl WeightStore {
             source_weighting: self.source_weighting,
             validation_bytes_per_second: self.validation_bytes_per_second,
             coverage: WeightSourceCoverage::Complete,
+            read_strategy: self.read_strategy,
+            io_block_size: self.io_block_size(),
             verified_files: self.files.len(),
             verified_tensors: self.inventory.len(),
             verified_bytes: self.bytes,
@@ -355,6 +495,8 @@ impl WeightStore {
                 source_weighting: replica.source_weighting,
                 validation_bytes_per_second: replica.validation_bytes_per_second,
                 coverage: replica.coverage,
+                read_strategy: replica.read_strategy,
+                io_block_size: replica.io_block_size(),
                 verified_files: replica.files.len(),
                 verified_tensors: replica.inventory.len(),
                 verified_bytes: replica.bytes,
@@ -371,12 +513,52 @@ impl WeightStore {
         self.inventory.get(name)
     }
 
+    pub fn storage_descriptor(&self, name: &str) -> Option<TensorStorageDescriptor> {
+        self.locations.get(name).map(storage_descriptor)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn verified_cache_ranges(
+        &self,
+        names: &[String],
+    ) -> Result<Vec<VerifiedWeightCacheRange>> {
+        let sources = std::iter::once(self).chain(self.replicas.iter());
+        let mut ranges = Vec::new();
+        for source in sources {
+            for name in names {
+                let Some(location) = source.locations.get(name) else {
+                    continue;
+                };
+                let path = source.paths.get(location.file_index).ok_or_else(|| {
+                    PowerError::InvalidFormat(
+                        "verified tensor range references an unknown source file".to_string(),
+                    )
+                })?;
+                ranges.push(VerifiedWeightCacheRange {
+                    path: path.clone(),
+                    absolute_offset: location.absolute_offset,
+                    bytes: location.bytes,
+                });
+            }
+        }
+        if ranges.is_empty() {
+            return Err(PowerError::InvalidFormat(
+                "cache preparation selected no verified tensor ranges".to_string(),
+            ));
+        }
+        Ok(ranges)
+    }
+
     pub fn files(&self) -> &[WeightFileDescriptor] {
         &self.files
     }
 
     pub fn contains(&self, name: &str) -> bool {
         self.inventory.contains_key(name)
+    }
+
+    fn io_block_size(&self) -> u64 {
+        self.io_block_size
     }
 
     /// Verifies the canonical SafeTensors collection digest already computed
@@ -413,29 +595,107 @@ impl WeightStore {
         self.load(name, device.tensor_device())
     }
 
-    pub(crate) fn load(&self, name: &str, device: &Device) -> Result<Tensor> {
-        Ok(self.load_tracked(name, device)?.tensor)
+    /// Materializes one validated tensor while honoring cooperative
+    /// cancellation between bounded positional-read chunks.
+    pub fn load_tensor_with_cancellation(
+        &self,
+        name: &str,
+        device: &RuntimeDevice,
+        cancellation: &CancellationToken,
+    ) -> Result<Tensor> {
+        Ok(self
+            .load_tracked_with_cancellation(name, device.tensor_device(), cancellation)?
+            .tensor)
     }
 
+    /// Explicitly reads the exact verified bytes for one tensor through the
+    /// configured deterministic source route. The returned buffer zeroizes on
+    /// drop and is never emitted through telemetry or execution receipts.
+    pub fn read_tensor_bytes(&self, name: &str) -> Result<TensorRead> {
+        self.read_tensor_bytes_with_cancellation(name, &CancellationToken::new())
+    }
+
+    pub fn read_tensor_bytes_with_cancellation(
+        &self,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<TensorRead> {
+        let source_index = self.select_source(name);
+        if source_index == 0 {
+            return self
+                .read_local_bytes(name, cancellation)
+                .map(|(bytes, storage)| TensorRead {
+                    bytes,
+                    storage,
+                    strategy: self.read_strategy,
+                    source_index,
+                    fell_back: false,
+                });
+        }
+
+        let replica = &self.replicas[source_index - 1];
+        match replica.read_local_bytes(name, cancellation) {
+            Ok((bytes, storage)) => Ok(TensorRead {
+                bytes,
+                storage,
+                strategy: replica.read_strategy,
+                source_index,
+                fell_back: false,
+            }),
+            Err(replica_error) if cancellation.is_cancelled() => Err(replica_error),
+            Err(replica_error) => self
+                .read_local_bytes(name, cancellation)
+                .map(|(bytes, storage)| TensorRead {
+                    bytes,
+                    storage,
+                    strategy: self.read_strategy,
+                    source_index: 0,
+                    fell_back: true,
+                })
+                .map_err(|primary_error| {
+                    PowerError::InvalidFormat(format!(
+                        "failed to read a verified tensor range from replica {source_index} ({replica_error}) and primary ({primary_error})"
+                    ))
+                }),
+        }
+    }
+
+    pub(crate) fn load(&self, name: &str, device: &Device) -> Result<Tensor> {
+        Ok(self
+            .load_tracked_with_cancellation(name, device, &CancellationToken::new())?
+            .tensor)
+    }
+
+    #[cfg(test)]
     pub(crate) fn load_tracked(&self, name: &str, device: &Device) -> Result<LoadedWeight> {
+        self.load_tracked_with_cancellation(name, device, &CancellationToken::new())
+    }
+
+    pub(crate) fn load_tracked_with_cancellation(
+        &self,
+        name: &str,
+        device: &Device,
+        cancellation: &CancellationToken,
+    ) -> Result<LoadedWeight> {
         let source_index = self.select_source(name);
         if source_index == 0 {
             return Ok(LoadedWeight {
-                tensor: self.load_primary(name, device)?,
+                tensor: self.load_local(name, device, cancellation)?,
                 source_index,
                 fell_back: false,
             });
         }
 
         let replica = &self.replicas[source_index - 1];
-        match replica.tensors.load(name, device) {
+        match replica.load_local(name, device, cancellation) {
             Ok(tensor) => Ok(LoadedWeight {
                 tensor,
                 source_index,
                 fell_back: false,
             }),
+            Err(replica_error) if cancellation.is_cancelled() => Err(replica_error),
             Err(replica_error) => self
-                .load_primary(name, device)
+                .load_local(name, device, cancellation)
                 .map(|tensor| LoadedWeight {
                     tensor,
                     source_index: 0,
@@ -449,10 +709,96 @@ impl WeightStore {
         }
     }
 
-    fn load_primary(&self, name: &str, device: &Device) -> Result<Tensor> {
-        self.tensors.load(name, device).map_err(|error| {
-            PowerError::InvalidFormat(format!("failed to load model tensor '{name}': {error}"))
-        })
+    fn load_local(
+        &self,
+        name: &str,
+        device: &Device,
+        cancellation: &CancellationToken,
+    ) -> Result<Tensor> {
+        check_read_cancelled(cancellation)?;
+        let tensor = if self.read_strategy == WeightReadStrategy::Mmap {
+            self.tensors
+                .as_ref()
+                .ok_or_else(|| {
+                    PowerError::InvalidFormat(
+                        "mmap weight source is missing its validated mapping".to_string(),
+                    )
+                })?
+                .load(name, device)
+                .map_err(|error| {
+                    PowerError::InvalidFormat(format!(
+                        "failed to load model tensor '{name}' through mmap: {error}"
+                    ))
+                })?
+        } else {
+            let (bytes, _) = self.read_local_bytes(name, cancellation)?;
+            let location = self.locations.get(name).ok_or_else(|| {
+                PowerError::InvalidFormat(format!("weight store does not contain tensor '{name}'"))
+            })?;
+            let view = TensorView::new(location.dtype, location.shape.clone(), bytes.as_slice())
+                .map_err(|error| {
+                    PowerError::InvalidFormat(format!(
+                        "failed to reconstruct verified tensor '{name}': {error}"
+                    ))
+                })?;
+            view.load(device).map_err(|error| {
+                PowerError::InvalidFormat(format!(
+                    "failed to materialize verified tensor '{name}': {error}"
+                ))
+            })?
+        };
+        check_read_cancelled(cancellation)?;
+        Ok(tensor)
+    }
+
+    fn read_local_bytes(
+        &self,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(Zeroizing<Vec<u8>>, TensorStorageDescriptor)> {
+        check_read_cancelled(cancellation)?;
+        let location = self.locations.get(name).ok_or_else(|| {
+            PowerError::InvalidFormat(format!("weight store does not contain tensor '{name}'"))
+        })?;
+        let bytes = if self.read_strategy == WeightReadStrategy::Mmap {
+            let view = self
+                .tensors
+                .as_ref()
+                .ok_or_else(|| {
+                    PowerError::InvalidFormat(
+                        "mmap weight source is missing its validated mapping".to_string(),
+                    )
+                })?
+                .get(name)
+                .map_err(|error| {
+                    PowerError::InvalidFormat(format!(
+                        "failed to read model tensor '{name}' through mmap: {error}"
+                    ))
+                })?;
+            if view.dtype() != location.dtype
+                || view.shape() != location.shape
+                || u64::try_from(view.data().len()).ok() != Some(location.bytes)
+            {
+                return Err(PowerError::InvalidFormat(format!(
+                    "mmap tensor '{name}' does not match its verified range index"
+                )));
+            }
+            Zeroizing::new(view.data().to_vec())
+        } else {
+            let reader = self.readers.get(location.file_index).ok_or_else(|| {
+                PowerError::InvalidFormat(
+                    "tensor range references an unknown verified source file".to_string(),
+                )
+            })?;
+            reader.read_range(
+                self.read_strategy,
+                location.absolute_offset,
+                location.bytes,
+                cancellation,
+            )?
+        };
+        check_read_cancelled(cancellation)?;
+        Ok((bytes, storage_descriptor(location)))
     }
 
     fn select_source(&self, name: &str) -> usize {
@@ -510,6 +856,26 @@ impl WeightStore {
         for (replica, weight) in self.replicas.iter_mut().zip(weights.into_iter().skip(1)) {
             replica.read_weight = weight;
         }
+    }
+}
+
+fn storage_descriptor(location: &TensorLocation) -> TensorStorageDescriptor {
+    TensorStorageDescriptor {
+        file_index: location.file_index,
+        absolute_offset: location.absolute_offset,
+        bytes: location.bytes,
+        dtype: format!("{:?}", location.dtype).to_ascii_lowercase(),
+        shape: location.shape.clone(),
+    }
+}
+
+fn check_read_cancelled(cancellation: &CancellationToken) -> Result<()> {
+    if cancellation.is_cancelled() {
+        Err(PowerError::InferenceFailed(
+            "weight read was cancelled".to_string(),
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -581,113 +947,16 @@ fn validate_partial_replica(primary: &WeightStore, replica: &WeightStore) -> Res
     Ok(())
 }
 
-fn discover_safetensors(root: &Path, max_files: usize) -> Result<Vec<PathBuf>> {
-    let mut pending = vec![root.to_path_buf()];
-    let mut paths = Vec::new();
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
-                return Err(PowerError::InvalidFormat(format!(
-                    "model path '{}' is a symbolic link",
-                    entry.path().display()
-                )));
-            }
-            if file_type.is_dir() {
-                pending.push(entry.path());
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-            if entry.path().extension().and_then(|value| value.to_str()) == Some("safetensors") {
-                let canonical = std::fs::canonicalize(entry.path())?;
-                if !canonical.starts_with(root) {
-                    return Err(PowerError::InvalidFormat(format!(
-                        "model file '{}' escapes its model root",
-                        canonical.display()
-                    )));
-                }
-                paths.push(canonical);
-                if paths.len() > max_files {
-                    return Err(PowerError::InvalidFormat(format!(
-                        "model contains more than {max_files} SafeTensors files"
-                    )));
-                }
-            }
-        }
-    }
-    Ok(paths)
-}
-
-fn hash_files(
-    root: &Path,
-    paths: &[PathBuf],
-    max_bytes: u64,
-) -> Result<(String, u64, Vec<WeightFileDescriptor>)> {
-    let mut hasher = Sha256::new();
-    let mut total = 0_u64;
-    let mut descriptors = Vec::with_capacity(paths.len());
-    let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
-    for path in paths {
-        let relative = path.strip_prefix(root).map_err(|_| {
-            PowerError::InvalidFormat(format!(
-                "model file '{}' is outside its root",
-                path.display()
-            ))
-        })?;
-        let relative = relative.to_str().ok_or_else(|| {
-            PowerError::InvalidFormat("model file names must be valid UTF-8".to_string())
-        })?;
-        let metadata = std::fs::metadata(path)?;
-        if !metadata.is_file() || metadata.len() == 0 {
-            return Err(PowerError::InvalidFormat(format!(
-                "model file '{}' must be a non-empty regular file",
-                path.display()
-            )));
-        }
-        total = total
-            .checked_add(metadata.len())
-            .ok_or_else(|| PowerError::InvalidFormat("model byte length overflowed".to_string()))?;
-        if total > max_bytes {
-            return Err(PowerError::InvalidFormat(format!(
-                "model contains {total} bytes, exceeding the {max_bytes} byte limit"
-            )));
-        }
-        hasher.update((relative.len() as u64).to_le_bytes());
-        hasher.update(relative.as_bytes());
-        hasher.update(metadata.len().to_le_bytes());
-        let mut file_hasher = Sha256::new();
-        let mut file = File::open(path)?;
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-            file_hasher.update(&buffer[..read]);
-        }
-        descriptors.push(WeightFileDescriptor {
-            relative_path: relative.to_string(),
-            bytes: metadata.len(),
-            sha256: format!("{:x}", file_hasher.finalize()),
-        });
-    }
-    Ok((format!("{:x}", hasher.finalize()), total, descriptors))
-}
-
 impl std::fmt::Debug for WeightStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("WeightStore")
-            .field("root", &self.root)
-            .field("paths", &self.paths)
             .field("tensor_count", &self.inventory.len())
-            .field("files", &self.files)
+            .field("file_count", &self.files.len())
             .field("sha256", &self.sha256)
             .field("bytes", &self.bytes)
-            .field("sources", &self.sources())
+            .field("read_strategy", &self.read_strategy)
+            .field("source_count", &self.replicas.len().saturating_add(1))
             .finish_non_exhaustive()
     }
 }

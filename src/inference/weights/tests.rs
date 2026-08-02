@@ -2,6 +2,7 @@ use std::path::Path;
 
 use candle_core::Device;
 use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
+use tokio_util::sync::CancellationToken;
 
 use super::*;
 
@@ -27,6 +28,182 @@ fn write_weight_file(
         })
         .collect::<Vec<_>>();
     serialize_to_file(tensors, None, &root.join(file_name)).unwrap();
+}
+
+fn write_large_weight(root: &Path, file_name: &str, tensor_name: &str, bytes: usize) {
+    assert_eq!(bytes % 4, 0);
+    let values = (0..bytes)
+        .map(|index| u8::try_from(index % 251).unwrap())
+        .collect::<Vec<_>>();
+    let tensor = TensorView::new(Dtype::F32, vec![bytes / 4], values.as_slice()).unwrap();
+    serialize_to_file([(tensor_name, tensor)], None, &root.join(file_name)).unwrap();
+}
+
+#[test]
+fn positional_index_and_exact_bytes_match_the_mmap_default() {
+    let root = tempfile::tempdir().unwrap();
+    write_weight_file(root.path(), "model.safetensors", "layer.weight", 0, 8, 7);
+    let mmap = WeightStore::open(root.path(), &InferenceLimits::default()).unwrap();
+    let positional = WeightStore::open_config(
+        &WeightStoreConfig::new(root.path())
+            .with_primary_read_strategy(WeightReadStrategy::PositionalBuffered),
+        &InferenceLimits::default(),
+    )
+    .unwrap();
+    let name = "layer.weight.3";
+
+    assert!(mmap.tensors.is_some());
+    assert!(mmap.readers.is_empty());
+    assert!(positional.tensors.is_none());
+    assert_eq!(positional.readers.len(), 1);
+
+    let storage = positional.storage_descriptor(name).unwrap();
+    assert_eq!(storage.file_index, 0);
+    assert!(storage.absolute_offset >= 8);
+    assert_eq!(storage.bytes, 4);
+    assert_eq!(storage.dtype, "f32");
+    assert_eq!(storage.shape, [1]);
+
+    let mmap_read = mmap.read_tensor_bytes(name).unwrap();
+    let positional_read = positional.read_tensor_bytes(name).unwrap();
+    assert_eq!(mmap_read.strategy(), WeightReadStrategy::Mmap);
+    assert_eq!(
+        positional_read.strategy(),
+        WeightReadStrategy::PositionalBuffered
+    );
+    assert_eq!(positional_read.storage(), &storage);
+    assert_eq!(mmap_read.bytes(), positional_read.bytes());
+
+    let mmap_tensor = mmap.load(name, &Device::Cpu).unwrap();
+    let positional_tensor = positional.load(name, &Device::Cpu).unwrap();
+    assert_eq!(
+        mmap_tensor.flatten_all().unwrap().to_vec1::<f32>().unwrap(),
+        positional_tensor
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap()
+    );
+}
+
+#[test]
+fn positional_reads_are_chunked_cancellable_and_fail_on_truncation() {
+    let root = tempfile::tempdir().unwrap();
+    let tensor_bytes = range_io::RANGE_READ_CHUNK_BYTES * 2 + 4096;
+    write_large_weight(
+        root.path(),
+        "large.safetensors",
+        "large.weight",
+        tensor_bytes,
+    );
+    let store = WeightStore::open_config(
+        &WeightStoreConfig::new(root.path())
+            .with_primary_read_strategy(WeightReadStrategy::PositionalBuffered),
+        &InferenceLimits::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        store
+            .read_tensor_bytes("large.weight")
+            .unwrap()
+            .bytes()
+            .len(),
+        tensor_bytes
+    );
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        store.read_tensor_bytes_with_cancellation("large.weight", &cancelled),
+        Err(PowerError::InferenceFailed(_))
+    ));
+
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(root.path().join("large.safetensors"))
+        .unwrap();
+    file.set_len(store.files()[0].bytes - 1).unwrap();
+    assert!(matches!(
+        store.read_tensor_bytes("large.weight"),
+        Err(PowerError::InvalidFormat(_))
+    ));
+}
+
+#[test]
+fn positional_replica_failure_uses_the_existing_primary_fallback() {
+    let primary = tempfile::tempdir().unwrap();
+    let replica = tempfile::tempdir().unwrap();
+    write_weights(primary.path(), 9);
+    std::fs::copy(
+        primary.path().join("model.safetensors"),
+        replica.path().join("model.safetensors"),
+    )
+    .unwrap();
+    let source = |root: &Path| {
+        WeightSourceConfig::new(root)
+            .with_read_weight(127)
+            .with_read_strategy(WeightReadStrategy::PositionalBuffered)
+    };
+    let config = WeightStoreConfig::new(primary.path())
+        .with_primary_read_strategy(WeightReadStrategy::PositionalBuffered)
+        .with_primary_read_weight(1)
+        .with_replica(source(replica.path()));
+    let store = WeightStore::open_config(&config, &InferenceLimits::default()).unwrap();
+    let selected = store
+        .inventory()
+        .map(|descriptor| descriptor.name.as_str())
+        .find(|name| store.select_source(name) == 1)
+        .unwrap()
+        .to_string();
+
+    let replica_file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(replica.path().join("model.safetensors"))
+        .unwrap();
+    replica_file.set_len(8).unwrap();
+    let read = store.read_tensor_bytes(&selected).unwrap();
+    assert_eq!(read.source_index(), 0);
+    assert!(read.fell_back());
+    assert_eq!(read.strategy(), WeightReadStrategy::PositionalBuffered);
+    assert_eq!(read.bytes(), [9_u8; 4]);
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        store.read_tensor_bytes_with_cancellation(&selected, &cancelled),
+        Err(PowerError::InferenceFailed(_))
+    ));
+}
+
+#[test]
+fn direct_reads_are_exact_or_explicitly_unsupported() {
+    let root = tempfile::tempdir().unwrap();
+    write_large_weight(root.path(), "model.safetensors", "direct.weight", 16 * 1024);
+    let expected = WeightStore::open(root.path(), &InferenceLimits::default())
+        .unwrap()
+        .read_tensor_bytes("direct.weight")
+        .unwrap()
+        .bytes()
+        .to_vec();
+    let direct = WeightStore::open_config(
+        &WeightStoreConfig::new(root.path())
+            .with_primary_read_strategy(WeightReadStrategy::PositionalDirect),
+        &InferenceLimits::default(),
+    );
+    match direct {
+        Ok(store) => match store.read_tensor_bytes("direct.weight") {
+            Ok(read) => {
+                assert_eq!(read.strategy(), WeightReadStrategy::PositionalDirect);
+                assert_eq!(read.bytes(), expected);
+            }
+            Err(PowerError::BackendNotAvailable(_)) => {}
+            Err(error) => {
+                panic!("direct read failed without an explicit unsupported result: {error}")
+            }
+        },
+        Err(PowerError::BackendNotAvailable(_)) => {}
+        Err(error) => panic!("direct open failed without an explicit unsupported result: {error}"),
+    }
 }
 
 #[test]
@@ -103,12 +280,21 @@ fn partial_replica_serves_only_its_verified_tensor_subset() {
     )
     .unwrap();
     let config = WeightStoreConfig::new(primary.path())
+        .with_primary_read_strategy(WeightReadStrategy::PositionalBuffered)
         .with_primary_read_weight(1)
-        .with_partial_replica(WeightSourceConfig::new(replica.path()).with_read_weight(31));
+        .with_partial_replica(
+            WeightSourceConfig::new(replica.path())
+                .with_read_weight(31)
+                .with_read_strategy(WeightReadStrategy::PositionalBuffered),
+        );
 
     let store = WeightStore::open_config(&config, &InferenceLimits::default()).unwrap();
     let descriptor = &store.sources()[1];
     assert_eq!(descriptor.coverage, WeightSourceCoverage::Partial);
+    assert_eq!(
+        descriptor.read_strategy,
+        WeightReadStrategy::PositionalBuffered
+    );
     assert_eq!(descriptor.verified_files, 1);
     assert_eq!(descriptor.verified_tensors, 128);
     assert!(descriptor.verified_bytes > 0);
@@ -211,7 +397,9 @@ fn new_source_options_have_backward_compatible_serde_defaults() {
 
     assert_eq!(config.source_weighting, WeightSourceWeighting::Configured);
     assert_eq!(config.primary.coverage, WeightSourceCoverage::Complete);
+    assert_eq!(config.primary.read_strategy, WeightReadStrategy::Mmap);
     assert_eq!(config.replicas[0].coverage, WeightSourceCoverage::Complete);
+    assert_eq!(config.replicas[0].read_strategy, WeightReadStrategy::Mmap);
 }
 
 #[test]
