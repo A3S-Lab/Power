@@ -41,7 +41,7 @@ model crate
             ├─ host cache ─────── per-layer LFRU/LRU + provenance-aware pins
             ├─ prefetch pool ───── bounded tasks and blocking workers
             ├─ residency plan ──── replaceable atomic heat-ranked groups
-            └─ SafeTensors ─────── verified weighted storage replicas
+            └─ SafeTensors ─────── verified mmap/positional weighted sources
 ```
 
 A logical request holds one permit across every component graph. A multimodal
@@ -97,6 +97,16 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   tensor, and recoverable replica errors fall back to primary. This extends the
   existing `WeightStore` rather than creating a second model cache or integrity
   path.
+- Every verified tensor has one exact source-file index, absolute byte range,
+  dtype, shape, and byte count. `Mmap` remains the default. The opt-in buffered
+  positional path does not retain a collection-wide mmap and uses a 1 MiB
+  full-read loop with interruption, cancellation, overflow, truncation, and
+  honest short-read handling. Its plaintext buffers zeroize on drop.
+- Direct positional reads reuse that index, source router, primary fallback,
+  demand path, and prefetch path. Linux uses aligned `O_DIRECT`; Windows queries
+  the storage transfer alignment and uses `FILE_FLAG_NO_BUFFERING`. Unsupported
+  platforms or filesystems fail explicitly. Power never reports direct I/O
+  after a buffered fallback.
 - Storage weights remain explicitly configured by default. The opt-in
   `ValidationThroughput` policy derives bounded relative weights from throughput
   observed during the mandatory integrity hash pass, so automatic weighting
@@ -145,6 +155,23 @@ covered by that source deterministically stay on another eligible source.
 Source indices, reads, bytes, and fallback counts appear only when aggregate or
 detailed telemetry is explicitly enabled; filesystem paths and measured
 validation throughput are not included in placement telemetry.
+
+### Positional Reads and Storage Evidence
+
+`TensorStorageDescriptor` exposes an explicitly requested, path-free tensor
+range descriptor. `TensorRead` owns a zeroizing buffer and reports only its
+strategy, selected source index, and whether primary fallback occurred. Demand
+loads and prefetches call the same cancellable materialization path, so a new
+strategy cannot bypass coverage-aware routing or create a second cache.
+
+`a3s-power-storage-bench` exercises this path without constructing a graph,
+model architecture, tokenizer, listener, subprocess, or inference backend. It
+records integrity-open time separately, performs output-digest validation
+outside the measured read interval, and emits no model paths or tensor names.
+Linux cold runs apply `POSIX_FADV_DONTNEED` after integrity-open and use
+`mincore` to prove that every requested page across primary and replica sources
+is non-resident. Other platforms currently refuse the verified cold label.
+See [Storage Benchmark Protocol](storage-benchmark.md).
 
 ### Usage-Ranked Partial Mirror Staging
 
@@ -217,9 +244,9 @@ the result may leave the trust boundary.
 ## Integrity and TEE Invariants
 
 - `WeightStore` hashes every SafeTensors file and a deterministic aggregate
-  manifest before mapping it. Model crates pin the aggregate digest with
-  `verify_integrity` and may reuse Power's Ed25519 model seal verification with
-  `verify_signature`.
+  manifest before serving it through mmap or positional reads. Model crates pin
+  the aggregate digest with `verify_integrity` and may reuse Power's Ed25519
+  model seal verification with `verify_signature`.
 - Replica selection never changes dtype, shape, bytes, routing, or precision.
   Complete sources require the exact aggregate digest; partial sources require
   exact per-file digests and tensor descriptors. Source count is bounded by
@@ -233,6 +260,9 @@ the result may leave the trust boundary.
 - Existing encrypted model loading, remote attestation, privacy redaction,
   request receipts, and zeroizing sensitive request buffers remain independent
   security controls; the embedded runtime does not replace them.
+- Positional plaintext buffers and aligned direct-I/O scratch allocations are
+  zeroized on drop. Read strategies, storage benchmark data, source paths, and
+  tensor ranges are not added to attestation claims or execution receipts.
 - Routing history is bound to the exact weight digest. Power only returns a
   serializable value; persistence must use a model-owned encrypted or sealed
   store. Plaintext sidecar files are not created.
@@ -253,7 +283,8 @@ the result may leave the trust boundary.
 | Batched expert union | Implemented without changing router order, top-k, or gate weights |
 | One-layer-ahead I/O overlap | Implemented with bounded, cancellable Tokio blocking workers and useful/unused prefetch measurement |
 | Hardware-aware placement | Native Linux/macOS/Windows host discovery, selected CUDA/Metal device discovery, unified-memory accounting, deterministic capped budget planning, and integrity-read storage weighting are implemented without subprocesses |
-| Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, source telemetry, and primary fallback are implemented under `WeightStore`; direct range I/O remains follow-up work |
+| Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, primary fallback, bounded positional reads, and aligned Linux/Windows direct reads share one `WeightStore`; mmap remains default pending end-to-end wins |
+| Cold-storage microbenchmark | Standalone path-free reports separate integrity-open, output validation, and measured demand reads; Linux cold labels require `FADV_DONTNEED` plus `mincore`, while unsupported platforms refuse the claim |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
 | Speculative decoding and KV policy | Model control flow remains in the model crate; Power supplies shared state bounds and receipts |
@@ -278,7 +309,8 @@ hardware and cache state.
 
 ## Deliberate Follow-up Work
 
-The current foundation does not yet implement direct range I/O, provide an
-independent cold-storage benchmark, persist encrypted model state, or run
-cross-model benchmarks. These should extend the same runtime and integrity
+The current foundation still needs named-hardware Linux and Windows cold/direct
+results, end-to-end model workload evidence before direct I/O can become a
+default, encrypted persistence for model-owned routing state, and broader
+cross-model benchmarks. These must extend the same runtime and integrity
 primitives rather than introduce parallel model-specific systems.

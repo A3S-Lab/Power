@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-03
+
+### Added
+
+- Added exact verified SafeTensors range indexes and opt-in buffered positional
+  reads without retaining a collection-wide mmap. Demand and prefetch reuse the
+  existing coverage-aware weighted source route and primary fallback.
+- Added aligned direct reads through Linux `O_DIRECT` and Windows
+  `FILE_FLAG_NO_BUFFERING`, with explicit unsupported results instead of a
+  buffered fallback.
+- Added `a3s-power-storage-bench`, a standalone path-redacted benchmark that
+  separates integrity-open, output validation, and demand-read timing; compares
+  cold/warm and single/multi-source reports; and verifies output digest parity.
+
+### Changed
+
+- Kept mmap as the default after official PP-OCRv6 warm-storage measurements on
+  Apple M2 Pro showed positional buffered p50 latency regressions of 9.6% for
+  detection weights and 10.6% for recognition weights. macOS direct reads and
+  verified cold-cache labels remain explicitly unsupported.
+
+### Security
+
+- Zeroized positional tensor buffers and aligned direct-I/O scratch memory,
+  preserved cancellation and TEE behavior, and kept paths, tensor names,
+  ranges, source choices, benchmark reports, and hardware labels out of
+  automatic logs, telemetry, persistence, attestation claims, and execution
+  receipts.
+
 ## [0.6.0] - 2026-08-02
 
 ### Added
