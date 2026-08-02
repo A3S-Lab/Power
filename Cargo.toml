@@ -1,6 +1,6 @@
 [package]
 name = "a3s-power"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 authors = ["A3S Lab"]
 license = "MIT"
@@ -199,7 +199,7 @@ time = { version = "0.3", optional = true }
 tokio-vsock = { version = "0.7", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_SystemInformation"], optional = true }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation"], optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -103,6 +103,15 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   does not scan a multi-gigabyte model twice. The observations are available
   only from the explicit source descriptor API and are never logged or exported
   as placement telemetry automatically.
+- Model crates may pass opaque positive file-benefit scores to
+  `plan_partial_mirror`. Power ranks complete verified SafeTensors files by
+  benefit density, selects a deterministic whole-file subset under an explicit
+  byte budget, and checks native free space against a caller-owned reserve.
+  `stage_partial_mirror_blocking` reuses exact completed files and copies each
+  missing file through a same-directory temporary, re-hashes it against the
+  admitted primary descriptor, syncs it, and publishes it atomically without
+  replacement. This extends `WeightStore`; it is not another cache, router, or
+  integrity implementation.
 - CPU, CUDA, and Metal are explicit device choices. An unavailable explicit
   device fails instead of silently moving execution elsewhere.
 - Runtime limits bound graph plans, tensor elements, resident weights, model
@@ -136,6 +145,47 @@ covered by that source deterministically stay on another eligible source.
 Source indices, reads, bytes, and fallback counts appear only when aggregate or
 detailed telemetry is explicitly enabled; filesystem paths and measured
 validation throughput are not included in placement telemetry.
+
+### Usage-Ranked Partial Mirror Staging
+
+Routing heat remains model-owned. A model crate can reduce it to bounded opaque
+file benefits and explicitly authorize a caller-managed plaintext destination:
+
+```rust
+use a3s_power::inference::{
+    InferenceLimits, WeightMirrorCandidate, WeightMirrorConfidentiality,
+    WeightMirrorPolicy, WeightStore,
+};
+use tokio_util::sync::CancellationToken;
+
+let store = WeightStore::open("/models/primary", &InferenceLimits::default())?;
+let candidates = [
+    WeightMirrorCandidate::new("model-00003-of-00008.safetensors", 8_400),
+    WeightMirrorCandidate::new("model-00005-of-00008.safetensors", 5_100),
+];
+let policy = WeightMirrorPolicy::new(32 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024)?
+    .with_confidentiality(WeightMirrorConfidentiality::CallerManagedPlaintext);
+let plan = store.plan_partial_mirror("/fast-storage/model", &candidates, &policy)?;
+if plan.admitted {
+    store.stage_partial_mirror_blocking(
+        "/fast-storage/model",
+        &candidates,
+        &policy,
+        &CancellationToken::new(),
+    )?;
+}
+# Ok::<(), a3s_power::error::PowerError>(())
+```
+
+Both calls perform blocking filesystem work and belong on a blocking worker in
+async applications. The destination must be a dedicated directory separate
+from the primary collection. Existing exact selected files are resumable;
+conflicts, unselected SafeTensors files, symlinks, changed sources, and
+insufficient reserves fail closed and are never overwritten or deleted.
+Completed copies can be admitted through the existing partial-replica
+`WeightStoreConfig` path. No usage history, plan, path, capacity snapshot,
+telemetry, or receipt is logged or persisted automatically. TEE deployments
+must keep `DenyPlaintext` unless their policy protects the destination.
 
 ### Hardware-Aware Residency Budget
 
@@ -203,7 +253,7 @@ the result may leave the trust boundary.
 | Batched expert union | Implemented without changing router order, top-k, or gate weights |
 | One-layer-ahead I/O overlap | Implemented with bounded, cancellable Tokio blocking workers and useful/unused prefetch measurement |
 | Hardware-aware placement | Native Linux/macOS/Windows host discovery, selected CUDA/Metal device discovery, unified-memory accounting, deterministic capped budget planning, and integrity-read storage weighting are implemented without subprocesses |
-| Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, coverage-aware weighted routing, source telemetry, and primary fallback are implemented under `WeightStore`; direct range I/O remains follow-up work |
+| Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, source telemetry, and primary fallback are implemented under `WeightStore`; direct range I/O remains follow-up work |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
 | Speculative decoding and KV policy | Model control flow remains in the model crate; Power supplies shared state bounds and receipts |
@@ -228,7 +278,7 @@ hardware and cache state.
 
 ## Deliberate Follow-up Work
 
-The current foundation does not yet stage partial mirror files, implement direct
-range I/O, provide an independent cold-storage benchmark, persist encrypted
-model state, or run cross-model benchmarks. These should extend the same runtime
-and integrity primitives rather than introduce parallel model-specific systems.
+The current foundation does not yet implement direct range I/O, provide an
+independent cold-storage benchmark, persist encrypted model state, or run
+cross-model benchmarks. These should extend the same runtime and integrity
+primitives rather than introduce parallel model-specific systems.

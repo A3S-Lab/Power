@@ -9,6 +9,7 @@ mod device;
 pub mod graph;
 mod hardware;
 mod limits;
+mod mirror;
 mod receipt;
 mod residency;
 mod routing;
@@ -23,6 +24,11 @@ pub use hardware::{
     ResidencyBudgetPlan, ResidencyBudgetPolicy,
 };
 pub use limits::InferenceLimits;
+pub use mirror::{
+    WeightMirrorCandidate, WeightMirrorConfidentiality, WeightMirrorPlan,
+    WeightMirrorPlanRejection, WeightMirrorPlannedFile, WeightMirrorPolicy,
+    WeightMirrorStageReport,
+};
 pub use receipt::{
     ExecutionDigest, ExecutionReceipt, ExecutionRepresentation, ModelIdentity, RuntimeIdentity,
 };
