@@ -5,6 +5,8 @@ use tokio::task::JoinHandle;
 use crate::error::{PowerError, Result};
 use crate::inference::TelemetryMode;
 
+use super::super::coupling::RouteCouplingPolicy;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WeightKey {
@@ -84,6 +86,8 @@ pub struct ResidencyPolicy {
     pub max_prefetch_workers: usize,
     pub max_prefetch_items: usize,
     pub max_prefetch_bytes: u64,
+    #[serde(default)]
+    pub route_coupling: RouteCouplingPolicy,
     pub telemetry: TelemetryMode,
 }
 
@@ -101,6 +105,7 @@ impl Default for ResidencyPolicy {
             max_prefetch_workers: 4,
             max_prefetch_items: 128,
             max_prefetch_bytes: 1024 * 1024 * 1024,
+            route_coupling: RouteCouplingPolicy::default(),
             telemetry: TelemetryMode::Disabled,
         }
     }
@@ -123,6 +128,7 @@ impl ResidencyPolicy {
                 "weight residency cache and prefetch bounds must be greater than zero".to_string(),
             ));
         }
+        self.route_coupling.validate()?;
         Ok(())
     }
 }

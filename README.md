@@ -124,7 +124,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
 - **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional), proxy (forwards to an upstream OpenAI-compatible server — vLLM/TGI/SGLang/OpenAI — so Power can front an existing accelerated engine)
 - **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
-- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, mmap-default or bounded positional tensor reads, complete or partial weighted read-only replicas, usage-ranked verified partial-mirror staging, validation-throughput source weighting, typed devices, opt-in hardware-aware host/CUDA/Metal cache budgets, LFRU/LRU residency, measurable prefetch, cancellation, and execution receipts. Model architectures live in their owning crates; embedded sessions never bind a Web port
+- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, mmap-default or bounded positional tensor reads, complete or partial weighted read-only replicas, usage-ranked verified partial-mirror staging, validation-throughput source weighting, typed devices, opt-in hardware-aware host/CUDA/Metal cache budgets, LFRU/LRU residency, privacy-gated cross-layer route hints, measurable prefetch, cancellation, and execution receipts. Model architectures live in their owning crates; embedded sessions never bind a Web port
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
 - **JSON Schema Structured Output**: Constrain local llama.cpp output via JSON Schema → GBNF grammar conversion; unsupported local backend/schema combinations fail closed instead of silently ignoring output policy
@@ -158,6 +158,17 @@ only digest-verified files without replacement. Power never persists the
 benefits, plan, destination, or a mirror receipt automatically. It never
 downloads a model, starts another process, or opens a listener.
 
+For routed models, aligned exact route batches can explicitly teach a bounded
+cross-layer coupling table. Power sums learned co-occurrence counts over each
+position's current routed set, returns deterministic target-expert hints and a
+deduplicated batch union, and measures recall against the later actual router
+output. These are prefetch hints only: Power never substitutes an expert,
+changes a gate, or maps an expert ID to model-owned tensor names. Expert-level
+history requires detailed telemetry, is bound to the admitted weight digest
+and layer geometry, and is never logged or persisted automatically. A model
+owner may place the serialized history in its existing encrypted or sealed
+store.
+
 The same `WeightStore` now offers three explicit materialization strategies.
 `Mmap` remains the default. `PositionalBuffered` avoids mapping the complete
 collection and reads each indexed tensor through bounded, cancellable
@@ -184,9 +195,9 @@ just check-embedded
 ```
 
 See [Embedded Inference Architecture](docs/embedded-inference-architecture.md)
-for the ownership boundary, Colibri-inspired weight hierarchy, routing,
-hot-store planning and prefetch semantics, TEE invariants, and model parity
-gates. See [Storage Benchmark Protocol](docs/storage-benchmark.md) for the
+for the ownership boundary, Colibri-inspired weight hierarchy, exact routing,
+cross-layer hint learning, hot-store planning and prefetch semantics, TEE
+invariants, and model parity gates. See [Storage Benchmark Protocol](docs/storage-benchmark.md) for the
 standalone mmap/positional comparison tool, cache-state proof rules, platform
 limitations, and measured PP-OCRv6 results.
 
@@ -1653,7 +1664,7 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 ### Completed
 
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
-- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native hardware-aware cache budgets with unified-memory accounting, LFRU hot sets, atomic plans, batched expert unions, bounded prefetch, complete/partial weighted replicas, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
+- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native hardware-aware cache budgets with unified-memory accounting, LFRU hot sets, atomic plans, batched expert unions, privacy-gated cross-layer route hints, bounded prefetch, complete/partial weighted replicas, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
 - [x] Pure Rust inference backend — `mistralrs` feature (default): GGUF inference via candle, no C++ dependency; ideal for TEE supply-chain auditing
 - [x] OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`)
 - [x] Content-addressed model storage with SHA-256

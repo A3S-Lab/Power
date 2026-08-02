@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added privacy-gated, Colibri-inspired cross-layer route coupling for
+  value-preserving prefetch hints. Exact aligned route batches produce bounded
+  co-occurrence history, deterministic per-position predictions and a batch
+  union for the existing prefetch path, plus exact recall evaluation against
+  actual router output.
+
+### Security
+
+- Bound route coupling by lookahead, position, entry, and hint limits; require
+  detailed telemetry; bind restored history to exact weight SHA-256 and layer
+  geometry; and keep histories, predictions, expert IDs, and evaluations out
+  of automatic logs, persistence, attestation claims, and receipts.
+
 ## [0.7.0] - 2026-08-03
 
 ### Added

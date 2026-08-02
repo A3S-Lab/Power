@@ -5,6 +5,10 @@
 //! binds a socket, starts a listener, downloads a model, or invokes another
 //! process.
 
+mod coupling;
+#[cfg(test)]
+mod coupling_tests;
+mod coupling_types;
 mod device;
 pub mod graph;
 mod hardware;
@@ -19,6 +23,10 @@ mod telemetry;
 mod tensor;
 mod weights;
 
+pub use coupling::{
+    RouteCouplingEntry, RouteCouplingHistory, RouteCouplingPolicy, RouteHintEvaluation,
+    RouteHintTelemetry, RouteLayerGeometry, RoutePrefetchHint, RoutePrefetchHints,
+};
 pub use device::{DevicePreference, RuntimeDevice, RuntimeDeviceKind};
 pub use hardware::{
     HardwareMemorySnapshot, MemoryDiscoverySource, MemoryPoolSnapshot, ResidencyAllocationOrder,

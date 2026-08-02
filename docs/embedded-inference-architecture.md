@@ -37,6 +37,7 @@ model crate
        ├─ GraphExecutor ───────── validated dense/static graphs
        ├─ RoutedExpertBatch ───── exact batch union, no route changes
        └─ WeightHierarchy
+            ├─ route coupling ─── private bounded hints, measured against truth
             ├─ device cache ───── bounded, typed device, exact dtype
             ├─ host cache ─────── per-layer LFRU/LRU + provenance-aware pins
             ├─ prefetch pool ───── bounded tasks and blocking workers
@@ -64,6 +65,19 @@ systems for its vision encoder, projector, dense layers, and routed experts.
 - `RoutedExpertBatch` unions repeated expert IDs across batch positions so each
   unique expert can be staged once. Original expert order, gate weight, and
   top-k selection remain intact.
+- Explicitly paired, position-aligned route batches can teach a bounded
+  cross-layer coupling table. For each position, Power sums raw learned
+  co-occurrence counts over the current exact routed set, ranks target experts
+  by score with expert ID as the deterministic tie-breaker, and returns a
+  deduplicated batch union. The model crate alone maps those IDs to its tensor
+  names and may pass the resulting requests to the existing prefetch pool.
+  Predictions contain no gate values and cannot be used by Power as router
+  selections.
+- Route hints must be evaluated against the later actual target batch. Power
+  reports exact predicted, actual, and matched selection counts rather than
+  assuming speculative I/O helped. Learned relationships can overfit a
+  workload and a low-recall hint can waste bandwidth, so recording and use are
+  explicit instead of an automatic default.
 - `start_prefetch` starts bounded blocking I/O immediately. The hierarchy caps
   active tasks and workers, unions duplicate requests, and propagates
   cancellation when the task is aborted or dropped. A model can prefetch layer
@@ -242,6 +256,36 @@ them into execution receipts automatically. A TEE guest therefore plans only
 from the memory visible inside that guest, while policy still controls whether
 the result may leave the trust boundary.
 
+### Value-Preserving Cross-Layer Prefetch Hints
+
+The model crate supplies exact router output and keeps topology-to-weight
+mapping ownership. Power learns and scores only opaque expert IDs:
+
+```rust
+// ResidencyPolicy::telemetry must be explicitly set to Detailed.
+hierarchy.record_route_transition(&current_routes, &actual_next_routes)?;
+let hints = hierarchy.route_prefetch_hints(
+    &current_routes,
+    actual_next_routes.layer(),
+    6,
+)?;
+
+// The model owner maps hints.experts() to its own WeightKey values and passes
+// those requests through WeightHierarchy::start_prefetch.
+let evidence = hierarchy.evaluate_route_prefetch_hints(
+    &hints,
+    &actual_next_routes,
+)?;
+assert!(evidence.recall() <= 1.0);
+# Ok::<(), a3s_power::error::PowerError>(())
+```
+
+`route_coupling_history` returns a versioned snapshot bound to the admitted
+weight SHA-256 and recorded layer geometry. Restoring a malformed, oversized,
+cross-model, or geometrically inconsistent history fails atomically. Power
+does not write a route trace or sidecar; a TEE deployment must use a
+caller-owned sealed store if cross-session learning is authorized.
+
 ## Integrity and TEE Invariants
 
 - `WeightStore` hashes every SafeTensors file and a deterministic aggregate
@@ -267,6 +311,10 @@ the result may leave the trust boundary.
 - Routing history is bound to the exact weight digest. Power only returns a
   serializable value; persistence must use a model-owned encrypted or sealed
   store. Plaintext sidecar files are not created.
+- Cross-layer coupling history additionally binds expert geometry, requires
+  detailed telemetry, restores atomically under explicit bounds, and is never
+  logged or persisted automatically. Ephemeral predictions are not
+  serializable by the Power API.
 - Placement telemetry contains no tensor values. Detailed routing identifiers
   are still sensitive metadata and are opt-in.
 - Residency candidates and plans can reveal the learned hot set. Power returns
@@ -283,6 +331,7 @@ the result may leave the trust boundary.
 | Layer-local LFRU/LRU and learned hot pins | Implemented with decaying frequency, bounded recency, separate manual/plan pins, and transactional hot-set replacement |
 | Batched expert union | Implemented without changing router order, top-k, or gate weights |
 | One-layer-ahead I/O overlap | Implemented with bounded, cancellable Tokio blocking workers and useful/unused prefetch measurement |
+| Cross-layer coupling hints | Implemented as bounded, digest/geometry-bound, detailed-telemetry-only co-occurrence learning with deterministic per-position scores, batch union, and measured recall; hints never alter router output |
 | Hardware-aware placement | Native Linux/macOS/Windows host discovery, selected CUDA/Metal device discovery, unified-memory accounting, deterministic capped budget planning, and integrity-read storage weighting are implemented without subprocesses |
 | Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, primary fallback, bounded positional reads, and aligned Linux/Windows direct reads share one `WeightStore`; mmap remains default pending end-to-end wins |
 | Cold-storage microbenchmark | Standalone path-free reports separate integrity-open, output validation, and measured demand reads; Linux cold labels require `FADV_DONTNEED` plus `mincore`, while unsupported platforms refuse the claim |
