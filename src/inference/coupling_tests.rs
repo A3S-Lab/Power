@@ -1,4 +1,8 @@
-use super::coupling::{RouteCouplingPolicy, RouteCouplingTracker, RoutePrefetchHint};
+use super::coupling::{
+    RouteCouplingEntry, RouteCouplingHistory, RouteCouplingPolicy, RouteCouplingTracker,
+    RouteHintEvaluation, RouteHintTelemetry, RouteLayerGeometry, RoutePrefetchHint,
+    RoutePrefetchHints,
+};
 use super::{RoutedExpert, RoutedExpertBatch, TelemetryMode};
 use crate::error::PowerError;
 
@@ -53,6 +57,11 @@ fn learns_per_position_scores_and_preserves_a_deterministic_union() {
     );
     assert_eq!(hints.selections()[1][0].expert, 3);
 
+    let tied = tracker.hints(&batch(3, &[&[2]], 8), 4, 2).unwrap();
+    assert_eq!(tied.selections()[0][0].expert, 3);
+    assert_eq!(tied.selections()[0][1].expert, 4);
+    assert_eq!(tied.selections()[0][0].score, tied.selections()[0][1].score);
+
     let evaluation = tracker.evaluate(&hints, &target).unwrap();
     assert_eq!(evaluation.actual_selections, 3);
     assert_eq!(evaluation.matched_selections, 3);
@@ -60,6 +69,20 @@ fn learns_per_position_scores_and_preserves_a_deterministic_union() {
     let telemetry = tracker.telemetry().unwrap();
     assert_eq!(telemetry.evaluations, 1);
     assert_eq!(telemetry.recall(), 1.0);
+}
+
+#[test]
+fn public_coupling_types_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<RouteCouplingPolicy>();
+    assert_send_sync::<RouteLayerGeometry>();
+    assert_send_sync::<RouteCouplingEntry>();
+    assert_send_sync::<RouteCouplingHistory>();
+    assert_send_sync::<RoutePrefetchHint>();
+    assert_send_sync::<RoutePrefetchHints>();
+    assert_send_sync::<RouteHintEvaluation>();
+    assert_send_sync::<RouteHintTelemetry>();
 }
 
 #[test]

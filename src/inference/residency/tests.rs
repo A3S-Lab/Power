@@ -245,6 +245,17 @@ fn residency_policy_rejects_unbounded_prefetch_controls() {
 }
 
 #[test]
+fn route_coupling_policy_has_a_backward_compatible_serde_default() {
+    let mut serialized = serde_json::to_value(ResidencyPolicy::default()).unwrap();
+    serialized.as_object_mut().unwrap().remove("routeCoupling");
+    let restored: ResidencyPolicy = serde_json::from_value(serialized).unwrap();
+    assert_eq!(
+        restored.route_coupling,
+        super::super::coupling::RouteCouplingPolicy::default()
+    );
+}
+
+#[test]
 fn hierarchy_exposes_digest_bound_value_preserving_route_hints() {
     let (_directory, store) = weight_store(Dtype::F32, vec![1], &[0; 4]);
     let hierarchy = WeightHierarchy::new(
