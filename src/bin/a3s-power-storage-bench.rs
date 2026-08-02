@@ -4,7 +4,7 @@ use a3s_power::error::{PowerError, Result};
 use a3s_power::inference::{
     compare_storage_benchmarks, run_storage_benchmark, InferenceLimits, StorageBenchmarkConfig,
     StorageBenchmarkReport, StorageCachePreparation, StorageCacheState, WeightReadStrategy,
-    WeightSourceConfig, WeightSourceWeighting, WeightStoreConfig,
+    WeightSourceConfig, WeightSourceRepresentation, WeightSourceWeighting, WeightStoreConfig,
 };
 
 const MAX_REPORT_BYTES: u64 = 64 * 1024 * 1024;
@@ -16,6 +16,8 @@ Usage:
     --primary <directory> \
     [--replica <directory>]... \
     [--partial-replica <directory>]... \
+    [--lossless-replica <directory>::<artifact-sha256>]... \
+    [--partial-lossless-replica <directory>::<artifact-sha256>]... \
     --strategy <mmap|positional-buffered|positional-direct> \
     --power-commit <lowercase-git-revision> \
     --filesystem-class <label> \
@@ -72,6 +74,24 @@ fn run() -> Result<()> {
     for replica in parser.paths("--partial-replica")? {
         weights = weights
             .with_partial_replica(WeightSourceConfig::new(replica).with_read_strategy(strategy));
+    }
+    for (replica, artifact_sha256) in parser.lossless_sources("--lossless-replica")? {
+        weights = weights.with_replica(
+            WeightSourceConfig::new(replica)
+                .with_read_strategy(strategy)
+                .with_representation(WeightSourceRepresentation::LosslessRansNibble256V1 {
+                    artifact_sha256,
+                }),
+        );
+    }
+    for (replica, artifact_sha256) in parser.lossless_sources("--partial-lossless-replica")? {
+        weights = weights.with_partial_replica(
+            WeightSourceConfig::new(replica)
+                .with_read_strategy(strategy)
+                .with_representation(WeightSourceRepresentation::LosslessRansNibble256V1 {
+                    artifact_sha256,
+                }),
+        );
     }
     let config = StorageBenchmarkConfig {
         weights,
@@ -234,6 +254,29 @@ impl Arguments {
         Ok(paths)
     }
 
+    fn lossless_sources(&mut self, name: &str) -> Result<Vec<(PathBuf, String)>> {
+        let mut sources = Vec::new();
+        while let Some(value) = self.optional(name)? {
+            let (path, artifact_sha256) = value.rsplit_once("::").ok_or_else(|| {
+                PowerError::InvalidRequest(format!(
+                    "argument {name} must use <directory>::<artifact-sha256>"
+                ))
+            })?;
+            if path.is_empty()
+                || artifact_sha256.len() != 64
+                || !artifact_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(PowerError::InvalidRequest(format!(
+                    "argument {name} requires a directory and a lowercase SHA-256 digest"
+                )));
+            }
+            sources.push((PathBuf::from(path), artifact_sha256.to_string()));
+        }
+        Ok(sources)
+    }
+
     fn take_flag(&mut self, name: &str) -> bool {
         if let Some(index) = self.values.iter().position(|value| value == name) {
             self.values.remove(index);
@@ -293,5 +336,26 @@ mod tests {
         assert!(Arguments::new(vec!["--primary".to_string()])
             .optional("--primary")
             .is_err());
+    }
+
+    #[test]
+    fn lossless_sources_require_explicit_lowercase_artifact_pins() {
+        let digest = "a".repeat(64);
+        let mut arguments = Arguments::new(vec![
+            "--lossless-replica".to_string(),
+            format!("/compressed::{digest}"),
+        ]);
+        assert_eq!(
+            arguments.lossless_sources("--lossless-replica").unwrap(),
+            [(PathBuf::from("/compressed"), digest)]
+        );
+        arguments.finish().unwrap();
+
+        assert!(Arguments::new(vec![
+            "--lossless-replica".to_string(),
+            "/compressed::BAD".to_string(),
+        ])
+        .lossless_sources("--lossless-replica")
+        .is_err());
     }
 }

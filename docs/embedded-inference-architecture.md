@@ -43,7 +43,7 @@ model crate
             ├─ prefetch pool ───── bounded tasks and blocking workers
             ├─ staged batches ──── current-layer readiness + canonical order
             ├─ residency plan ──── replaceable and stably adapted atomic groups
-            └─ SafeTensors ─────── verified mmap/positional weighted sources
+            └─ SafeTensors ─────── canonical primary + verified weighted representations
 ```
 
 A logical request holds one permit across every component graph. A multimodal
@@ -130,6 +130,20 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   tensor, and recoverable replica errors fall back to primary. This extends the
   existing `WeightStore` rather than creating a second model cache or integrity
   path.
+- The primary is always canonical SafeTensors. A typed lossless replica may
+  store opaque U8 records under the original tensor names, using Power's
+  pure-Rust `rans-nibble-256-v1` codec: one shard-local 16-symbol static table,
+  256 round-robin streams, exact derived framing, and mandatory zero padding.
+  The representation stamp is required because compressed length is
+  data-dependent; Power never guesses a codec from dtype or record size. The
+  complete physical collection SHA-256 is verified before metadata parsing or
+  decoded allocation. Every admitted record must be smaller than its canonical
+  tensor, decode within the existing state-memory bound, pass framing,
+  amplification, stream-state, cancellation, and consumption checks, and
+  byte-match the canonical primary before routing. Complete coverage or a
+  proper non-empty tensor subset is accepted. Runtime decode reuses the same
+  mmap/positional reader, source router, primary fallback, prefetch/staging,
+  residency cache, telemetry, and benchmark path.
 - Every verified tensor has one exact source-file index, absolute byte range,
   dtype, shape, and byte count. `Mmap` remains the default. The opt-in buffered
   positional path does not retain a collection-wide mmap and uses a 1 MiB
@@ -142,10 +156,12 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   after a buffered fallback.
 - Storage weights remain explicitly configured by default. The opt-in
   `ValidationThroughput` policy derives bounded relative weights from throughput
-  observed during the mandatory integrity hash pass, so automatic weighting
-  does not scan a multi-gigabyte model twice. The observations are available
-  only from the explicit source descriptor API and are never logged or exported
-  as placement telemetry automatically.
+  observed during the mandatory source-validation pass. For canonical sources
+  this is the integrity hash; for lossless sources it also includes required
+  decode admission and canonical comparison. Automatic weighting performs no
+  extra probe. The observations are available only from the explicit source
+  descriptor API and are never logged or exported as placement telemetry
+  automatically.
 - Model crates may pass opaque positive file-benefit scores to
   `plan_partial_mirror`. Power ranks complete verified SafeTensors files by
   benefit density, selects a deterministic whole-file subset under an explicit
@@ -413,9 +429,11 @@ must use its existing encrypted or sealed state mechanism.
   the aggregate digest with `verify_integrity` and may reuse Power's Ed25519
   model seal verification with `verify_signature`.
 - Replica selection never changes dtype, shape, bytes, routing, or precision.
-  Complete sources require the exact aggregate digest; partial sources require
-  exact per-file digests and tensor descriptors. Source count is bounded by
-  `InferenceLimits::max_weight_sources`.
+  Complete canonical sources require the primary aggregate digest; partial
+  canonical sources require exact per-file digests and tensor descriptors.
+  Lossless sources require their own physical artifact pin plus an exact
+  decoded comparison for every covered canonical tensor. Source count is
+  bounded by `InferenceLimits::max_weight_sources`.
 - Embedded inference does not bind a socket, start a Web server, download a
   model, invoke Python, or spawn an inference service.
 - The server, API, CLI, model registry, remote clients, and Web dependencies are
@@ -444,6 +462,12 @@ must use its existing encrypted or sealed state mechanism.
 - Lossless tuning evidence and decisions contain opaque digests and aggregate
   counters only. Power never receives candidate values or workload content,
   never applies the selected digest, and never creates a tuning sidecar.
+- Lossless representation admission and reads zeroize encoded, decoded,
+  canonical-comparison, and integrity-hash heap buffers. Artifact and table
+  metadata stays inside the pinned collection; typed representation and
+  artifact identities may appear in explicitly requested descriptors and
+  benchmark evidence. Tensor bytes, names, and paths do not appear in normal
+  debug output, placement telemetry, receipts, or automatic persistence.
 - Residency candidates and plans can reveal the learned hot set. Power returns
   them to the caller but never logs or persists them automatically.
 - Live residency adaptations are ephemeral, non-serializable, bound to the
@@ -469,6 +493,7 @@ must use its existing encrypted or sealed state mechanism.
 | Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, primary fallback, bounded positional reads, and aligned Linux/Windows direct reads share one `WeightStore`; mmap remains default pending end-to-end wins |
 | Cold-storage microbenchmark | Standalone path-free reports separate integrity-open, output validation, and measured demand reads; Linux cold labels require `FADV_DONTNEED` plus `mincore`, while unsupported platforms refuse the claim |
 | Measured machine/model tuning | Implemented as bounded digest-only AB/BA evidence evaluation for model-owned lossless knobs; Power keeps defaults on insufficient gain, parity regression, or a winner tie and never applies or persists a profile |
+| Lossless entropy-coded weight tier | Implemented as optional digest-pinned read-only replicas behind the existing `WeightStore`: mandatory stamps, shard-local 256-stream nibble rANS tables, exact framing/state checks, bounded zeroizing decode, full canonical byte admission, complete/proper-partial coverage, and primary fallback; canonical SafeTensors remains mandatory |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
 | Speculative decoding and KV policy | Model control flow remains in the model crate; Power supplies shared state bounds and receipts |
@@ -484,7 +509,7 @@ The current sequence is:
 | --- | --- | --- | --- |
 | 1 | Deferred current-layer cold I/O while resident experts compute | **Power substrate complete:** ordered atomic staged batches reuse existing admission, cache, source routing, key locks, cancellation, and privacy-gated telemetry; model crates retain canonical computation | Power tests cover tensor/order parity, immediate readiness, cancellation, shared materialization, and separated timing; each model integration must still publish end-to-end output parity and workload gains |
 | 2 | Hardware/model-specific measured tuning | **Power substrate complete:** bounded digest-only evidence requires repeated baseline→candidate and candidate→baseline rounds, typed output parity, dual-order median gain, cache-hit parity, and bounded p99; model crates retain calibration, candidate application, and sealed persistence | Power tests cover binding, reversal, thresholds, malformed/duplicate/overflow evidence, deterministic selection, tie rejection, privacy-safe serialization, and `Send + Sync`; each model integration must still publish named-hardware end-to-end evidence |
-| 3 | Lossless compressed expert tiers | Add representations behind the existing verified `WeightStore` index and receipts; never quantize or reinterpret tensors during placement | Whole-artifact digest validation, decoded byte parity, bounded scratch, zeroization, and end-to-end wins |
+| 3 | Lossless compressed expert tiers | **Power substrate complete:** optional `rans-nibble-256-v1` replicas remain behind the existing verified `WeightStore`; canonical SafeTensors is mandatory, every physical artifact is pinned before parsing, and every record is admitted only after exact canonical decode parity | Power tests cover deterministic multi-symbol round trips, stamps/tables, artifact pins, malformed framing/state/amplification, complete/proper-partial coverage, mmap/positional reads, scratch, cancellation, fallback, benchmark identity/parity, privacy-safe debug, and `Send + Sync`; model integrations must still publish named-hardware end-to-end wins before use by default |
 | 4 | Accelerator-wide residency declarations and fused batches | Extend typed CUDA/Metal devices without bypassing Candle safety, admission, cancellation, or confidential-GPU claims | Kernel parity, explicit fallback identity, memory-pressure tests, and named-hardware results |
 | 5 | Warm model state across sessions | Keep KV/recurrent topology in the model crate; Power supplies bounds, digest binding, zeroization, and a sealed-state envelope rather than plaintext sidecars | Interrupted-write recovery, wrong-model rejection, rollback policy, and TEE export authorization |
 

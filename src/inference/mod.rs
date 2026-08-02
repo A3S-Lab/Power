@@ -71,9 +71,12 @@ pub use tuning_types::{
     TuningRoundEvidence, TuningRunEvidence,
 };
 pub use weights::{
-    TensorDescriptor, TensorRead, TensorStorageDescriptor, WeightFileDescriptor,
-    WeightReadStrategy, WeightSourceConfig, WeightSourceCoverage, WeightSourceDescriptor,
-    WeightSourceRole, WeightSourceWeighting, WeightStore, WeightStoreConfig,
+    weight_collection_sha256, LosslessEncodedRecord, LosslessRansNibbleHistogram,
+    LosslessRansNibbleTable, TensorDescriptor, TensorRead, TensorStorageDescriptor,
+    WeightFileDescriptor, WeightReadStrategy, WeightSourceConfig, WeightSourceCoverage,
+    WeightSourceDescriptor, WeightSourceRepresentation, WeightSourceRole, WeightSourceWeighting,
+    WeightStore, WeightStoreConfig, LOSSLESS_RANS_FORMAT_METADATA_KEY,
+    LOSSLESS_RANS_TABLE_METADATA_KEY,
 };
 
 pub(crate) const RUNTIME_NAME: &str = "a3s-power-native";

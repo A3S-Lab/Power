@@ -3,6 +3,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::error::{PowerError, Result};
 
@@ -58,7 +59,7 @@ pub(super) fn hash_files(
     let mut hasher = Sha256::new();
     let mut total = 0_u64;
     let mut descriptors = Vec::with_capacity(paths.len());
-    let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
+    let mut buffer = Zeroizing::new(vec![0_u8; HASH_BUFFER_BYTES]);
     for path in paths {
         let relative = path.strip_prefix(root).map_err(|_| {
             PowerError::InvalidFormat(format!(
