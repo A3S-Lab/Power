@@ -60,7 +60,7 @@ jobs:
           test "$(wc -c < "${archive}" | tr -d ' ')" = "${BUNDLE_BYTES}"
           echo "${BUNDLE_SHA256}  ${archive}" | sha256sum --check --strict
           tar -xf "${archive}" -C "${models}"
-          model_root="${models}/PP-OCRv6_small"
+          model_root="${models}"
           test -s "${model_root}/det/model.safetensors"
           test -s "${model_root}/rec/model.safetensors"
           echo "MODEL_ROOT=${model_root}" >> "${GITHUB_ENV}"
@@ -160,7 +160,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to extract the PP-OCRv6 evidence bundle"
           }
-          $modelRoot = Join-Path $models "PP-OCRv6_small"
+          $modelRoot = $models
           if (!(Test-Path (Join-Path $modelRoot "det/model.safetensors") -PathType Leaf) -or
               !(Test-Path (Join-Path $modelRoot "rec/model.safetensors") -PathType Leaf)) {
             throw "The PP-OCRv6 evidence bundle is incomplete"
