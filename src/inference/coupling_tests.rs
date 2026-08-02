@@ -116,10 +116,13 @@ fn policy_bounds_distance_positions_entries_and_hints() {
         max_entries: 1,
         max_hints_per_position: 1,
     };
-    let tracker = RouteCouplingTracker::new(TelemetryMode::Detailed, "weights-a", policy);
+    let tracker = RouteCouplingTracker::new(TelemetryMode::Detailed, "weights-a", policy.clone());
     let source = batch(0, &[&[0]], 2);
     let target = batch(1, &[&[1]], 2);
     tracker.record_transition(&source, &target).unwrap();
+    let restored = RouteCouplingTracker::new(TelemetryMode::Detailed, "weights-a", policy);
+    restored.restore(&tracker.history().unwrap()).unwrap();
+    assert_eq!(restored.history().unwrap().entries.len(), 1);
     assert!(tracker.hints(&source, 1, 2).is_err());
     assert!(tracker.hints(&source, 2, 1).is_err());
     assert!(tracker

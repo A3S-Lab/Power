@@ -307,8 +307,8 @@ impl RouteCouplingTracker {
                     .to_string(),
             ));
         }
-        if history.layers.len() > self.policy.max_entries
-            || history.entries.len() > self.policy.max_entries
+        if history.entries.len() > self.policy.max_entries
+            || history.layers.len() > self.policy.max_entries.saturating_mul(2)
         {
             return Err(PowerError::InvalidFormat(
                 "route coupling history exceeds the configured bounds".to_string(),
@@ -329,6 +329,7 @@ impl RouteCouplingTracker {
             }
         }
         let mut restored_entries = BTreeMap::new();
+        let mut referenced_layers = BTreeSet::new();
         for entry in &history.entries {
             self.validate_distance(entry.source.layer, entry.target.layer)
                 .map_err(|error| PowerError::InvalidFormat(error.to_string()))?;
@@ -359,6 +360,16 @@ impl RouteCouplingTracker {
                     "route coupling history contains a duplicate expert entry".to_string(),
                 ));
             }
+            referenced_layers.insert(entry.source.layer);
+            referenced_layers.insert(entry.target.layer);
+        }
+        if restored_layers
+            .keys()
+            .any(|layer| !referenced_layers.contains(layer))
+        {
+            return Err(PowerError::InvalidFormat(
+                "route coupling history contains unreferenced layer geometry".to_string(),
+            ));
         }
 
         let mut state = lock(&self.state);
