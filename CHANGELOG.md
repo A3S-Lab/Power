@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-08-02
+
 ### Added
 
 - Deepened the shared Colibri-inspired weight hierarchy with frequency-first LFRU eviction and decay, transactional hot-plan replacement with separate manual/plan pin ownership, useful-versus-unused prefetch accounting, and exact bandwidth-weighted SafeTensors replicas with deterministic source selection, per-source aggregate telemetry, and primary fallback.
