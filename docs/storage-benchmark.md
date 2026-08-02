@@ -47,7 +47,7 @@ A warm run performs one complete unmeasured sequence immediately before the
 measured samples:
 
 ```bash
-cargo run --release --locked \
+cargo run --release \
   --no-default-features --features embedded-inference \
   --bin a3s-power-storage-bench -- \
   --primary /models/collection \
