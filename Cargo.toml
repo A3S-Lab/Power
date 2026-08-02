@@ -26,6 +26,9 @@ path = "src/bin/a3s-power-verify.rs"
 default = ["mistralrs"]
 llamacpp = ["dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2?/mtmd"]
 mistralrs = ["dep:mistralrs"]
+embedded-inference = ["dep:candle-core", "dep:candle-nn", "dep:safetensors"]
+ppocr-v6 = ["embedded-inference"]
+embedded-metal = ["embedded-inference", "candle-core/metal", "candle-nn/metal"]
 tls = ["dep:axum-server", "dep:rcgen", "dep:time"]
 # vsock = Linux-only; requires AF_VSOCK kernel support (a3s-box MicroVMs)
 vsock = ["dep:tokio-vsock", "dep:hyper-util"]
@@ -74,7 +77,7 @@ tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Async channels for streaming
-tokio-util = { version = "0.7", features = ["io"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
 
 # UUID for request IDs
 uuid = { version = "1", features = ["v4"] }
@@ -142,6 +145,12 @@ encoding_rs = { version = "0.8", optional = true }
 
 # mistral.rs backend — pure Rust LLM inference (optional, default)
 mistralrs = { version = "0.7", optional = true }
+
+# Embedded model execution. Model implementations live in this crate; Candle
+# supplies only tensor storage, kernels, and typed device access.
+candle-core = { version = "0.10.2", default-features = false, optional = true }
+candle-nn = { version = "0.10.2", default-features = false, optional = true }
+safetensors = { version = "0.7", optional = true }
 
 # picolm backend — pure Rust layer-streaming GGUF inference (optional, picolm feature)
 # Memory-mapped file access for layer-streaming (zero-copy GGUF reads)

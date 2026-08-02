@@ -124,6 +124,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
 - **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional), proxy (forwards to an upstream OpenAI-compatible server — vLLM/TGI/SGLang/OpenAI — so Power can front an existing accelerated engine)
 - **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
+- **Embedded PP-OCRv6**: The `ppocr-v6` feature runs the reviewed PP-OCRv6-small detection and recognition graphs entirely inside the Rust library. SafeTensors supply weights only; Power never loads ONNX at runtime, starts an OCR service, or binds a Web port for an embedded session
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
 - **JSON Schema Structured Output**: Constrain local llama.cpp output via JSON Schema → GBNF grammar conversion; unsupported local backend/schema combinations fail closed instead of silently ignoring output policy
@@ -131,6 +132,50 @@ Full-featured LLM inference, competitive with any standalone server:
 - **Chat Template Engine**: Jinja2-compatible rendering via `minijinja` (Llama 3, ChatML, Phi, Gemma, custom); model-provided raw templates fail closed on render errors instead of silently switching prompt formats
 - **KV Cache Reuse**: Prefix matching across multi-turn requests for conversation speedup
 - **Remote Model Hub Pull**: `POST /v1/models/pull` with SSE progress, Range resume, concurrent dedup, source-specific token auth for ModelScope or HuggingFace Hub
+
+### Embedded PP-OCRv6
+
+The embedded OCR API is separate from Power's HTTP server and backend registry.
+`PpOcrV6Session::load` only opens local SafeTensors, validates the reviewed
+graph identity and exact tensor inventory, resolves a typed CPU or Metal
+device, and materializes the native Rust graph. It does not download files,
+spawn a process, or open a listener.
+
+Build the library path with:
+
+```bash
+cargo build --no-default-features --features ppocr-v6
+```
+
+Official pinned ONNX archives are accepted only by the offline
+`tools/pack_ppocr_v6.py` conversion tool. Runtime assets use this layout:
+
+```text
+PP-OCRv6_small/
+├── det/model.safetensors
+└── rec/model.safetensors
+```
+
+```rust,no_run
+use a3s_power::inference::ppocr_v6::{PpOcrV6Model, PpOcrV6Session};
+use a3s_power::inference::{DevicePreference, InferenceLimits, TensorInput};
+use tokio_util::sync::CancellationToken;
+
+let limits = InferenceLimits::default();
+let session = PpOcrV6Session::load(
+    PpOcrV6Model::from_directory("PP-OCRv6_small"),
+    DevicePreference::Cpu,
+    limits.clone(),
+)?;
+let input = TensorInput::new(vec![1, 3, 64, 64], vec![0.0; 12_288], &limits)?;
+let result = session.detect(input, &CancellationToken::new())?;
+assert_eq!(result.output.shape, [1, 1, 64, 64]);
+# Ok::<(), a3s_power::error::PowerError>(())
+```
+
+Each execution returns an `ExecutionReceipt` binding the reviewed model
+revision, exact weight digest, native runtime/device identity, and canonical
+input/output tensor digests.
 
 ### Operations
 

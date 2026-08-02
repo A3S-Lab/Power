@@ -4,6 +4,8 @@ pub mod cli;
 pub mod config;
 pub mod dirs;
 pub mod error;
+#[cfg(feature = "embedded-inference")]
+pub mod inference;
 pub mod model;
 pub mod runtime_service;
 pub mod sae;
