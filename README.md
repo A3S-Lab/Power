@@ -124,7 +124,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
 - **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional), proxy (forwards to an upstream OpenAI-compatible server — vLLM/TGI/SGLang/OpenAI — so Power can front an existing accelerated engine)
 - **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
-- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, mmap-default or bounded positional tensor reads, complete or partial weighted read-only replicas, usage-ranked verified partial-mirror staging, validation-throughput source weighting, typed devices, opt-in hardware-aware host/CUDA/Metal cache budgets, LFRU/LRU residency, hysteresis-bounded live hot-tier adaptation, privacy-gated cross-layer route hints, ordered current-layer staged batches, measurable prefetch, cancellation, and execution receipts. Model architectures live in their owning crates; embedded sessions never bind a Web port
+- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, mmap-default or bounded positional tensor reads, complete or partial weighted read-only replicas, usage-ranked verified partial-mirror staging, validation-throughput source weighting, typed devices, opt-in hardware-aware host/CUDA/Metal cache budgets, LFRU/LRU residency, hysteresis-bounded live hot-tier adaptation, privacy-gated cross-layer route hints, ordered current-layer staged batches, digest-bound lossless tuning evidence, measurable prefetch, cancellation, and execution receipts. Model architectures live in their owning crates; embedded sessions never bind a Web port
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
 - **JSON Schema Structured Output**: Constrain local llama.cpp output via JSON Schema → GBNF grammar conversion; unsupported local backend/schema combinations fail closed instead of silently ignoring output policy
@@ -175,6 +175,19 @@ and layer geometry, and is never logged or persisted automatically. A model
 owner may place the serialized history in its existing encrypted or sealed
 store.
 
+Hardware-specific tuning is also evidence-only. A model crate generates one
+teacher-forced calibration workload, applies its own lossless candidate knobs,
+and submits aggregate `TuningProfileEvidence`. Every run carries exact weight,
+graph/source, workload, runtime, device, environment, configuration, and output
+digests. Power requires at least two complete baseline→candidate and
+candidate→baseline rounds, then checks both order-specific median throughput
+gains, per-run cache-hit parity, and per-run p99 bounds. It retains the baseline
+when no candidate passes or the best conservative gain is tied. The resulting
+`TuningProfileDecision` contains only digests, policy thresholds, and aggregate
+measurements. Power neither applies a candidate nor persists a profile; a model
+crate may map the selected digest to reviewed settings and use its existing
+authorized sealed-state path.
+
 The same `WeightStore` now offers three explicit materialization strategies.
 `Mmap` remains the default. `PositionalBuffered` avoids mapping the complete
 collection and reads each indexed tensor through bounded, cancellable
@@ -202,8 +215,9 @@ just check-embedded
 
 See [Embedded Inference Architecture](docs/embedded-inference-architecture.md)
 for the ownership boundary, Colibri-inspired weight hierarchy, exact routing,
-ordered current-layer staging, cross-layer hint learning, stable live hot-store
-adaptation, prefetch semantics, TEE invariants, and model parity gates. See
+ordered current-layer staging, digest-bound lossless tuning, cross-layer hint
+learning, stable live hot-store adaptation, prefetch semantics, TEE invariants,
+and model parity gates. See
 [Storage Benchmark Protocol](docs/storage-benchmark.md) for the
 standalone mmap/positional comparison tool, cache-state proof rules, platform
 limitations, and measured PP-OCRv6 results.
@@ -1671,7 +1685,7 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 ### Completed
 
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
-- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native hardware-aware cache budgets with unified-memory accounting, LFRU hot sets, atomic plans, hysteresis-bounded live hot-tier adaptation, batched expert unions, privacy-gated cross-layer route hints, bounded prefetch, ordered current-layer staged batches, complete/partial weighted replicas, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
+- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native hardware-aware cache budgets with unified-memory accounting, LFRU hot sets, atomic plans, hysteresis-bounded live hot-tier adaptation, batched expert unions, privacy-gated cross-layer route hints, bounded prefetch, ordered current-layer staged batches, digest-bound AB/BA lossless tuning evidence, complete/partial weighted replicas, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
 - [x] Pure Rust inference backend — `mistralrs` feature (default): GGUF inference via candle, no C++ dependency; ideal for TEE supply-chain auditing
 - [x] OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`)
 - [x] Content-addressed model storage with SHA-256

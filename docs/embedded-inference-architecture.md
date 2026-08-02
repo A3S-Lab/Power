@@ -366,6 +366,46 @@ cross-model, or geometrically inconsistent history fails atomically. Power
 does not write a route trace or sidecar; a TEE deployment must use a
 caller-owned sealed store if cross-session learning is authorized.
 
+### Digest-Bound Lossless Tuning Evidence
+
+Colibri demonstrates why machine-specific execution settings must be measured
+instead of guessed: an unsafe thread, NUMA, I/O, or accelerator setting can
+regress badly on unfamiliar hardware. Power therefore keeps its defaults and
+evaluates only model-owned aggregate evidence through
+`evaluate_tuning_profile`.
+
+The model crate creates one teacher-forced calibration sequence and gives every
+execution the same hidden-state inputs. It owns the candidate sweep, the
+mapping from opaque configuration digest to reviewed lossless settings, and
+the application of those settings. Power requires every submitted run to bind
+to the same:
+
+1. weight collection SHA-256;
+2. reviewed graph/source SHA-256;
+3. typed calibration-workload digest;
+4. runtime, device, and environment SHA-256 identities;
+5. baseline or candidate configuration SHA-256; and
+6. typed output digest.
+
+Each candidate contains at least two complete rounds. Every round records both
+baseline→candidate and candidate→baseline order, and each adjacent pair must
+report the same completed work, latency-sample count, and logical cache-request
+count. A candidate is eligible only when both order-specific lower medians meet
+the configured throughput gain, every cache-hit delta stays within tolerance,
+every p99 stays within the regression cap, and every output digest is identical
+across the complete submission. Selection uses the lower of the two
+order-specific medians. Exact winner ties retain the baseline instead of using
+a digest tie-breaker.
+
+Evidence is bounded to 32 candidates and 64 rounds per candidate. Digests must
+be canonical lowercase SHA-256 values; mixed bindings, duplicate candidate or
+round IDs, malformed measurements, insufficient samples, wrong order, output
+mismatch, and arithmetic overflow fail closed. The serializable decision
+contains only digests, thresholds, and aggregate statistics. It contains no
+workload text, tensor, path, topology, or configuration value, and Power does
+not log, apply, or persist it. If persistence is authorized, the model crate
+must use its existing encrypted or sealed state mechanism.
+
 ## Integrity and TEE Invariants
 
 - `WeightStore` hashes every SafeTensors file and a deterministic aggregate
@@ -401,6 +441,9 @@ caller-owned sealed store if cross-session learning is authorized.
   indices, layer IDs, tensor names, tensors, and model-owned outputs are never
   logged, persisted, added to receipts, or added to attestation claims by
   Power. Timing remains zero when telemetry is disabled.
+- Lossless tuning evidence and decisions contain opaque digests and aggregate
+  counters only. Power never receives candidate values or workload content,
+  never applies the selected digest, and never creates a tuning sidecar.
 - Residency candidates and plans can reveal the learned hot set. Power returns
   them to the caller but never logs or persists them automatically.
 - Live residency adaptations are ephemeral, non-serializable, bound to the
@@ -425,6 +468,7 @@ caller-owned sealed store if cross-session learning is authorized.
 | Hardware-aware placement | Native Linux/macOS/Windows host discovery, selected CUDA/Metal device discovery, unified-memory accounting, deterministic capped budget planning, and integrity-read storage weighting are implemented without subprocesses |
 | Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, primary fallback, bounded positional reads, and aligned Linux/Windows direct reads share one `WeightStore`; mmap remains default pending end-to-end wins |
 | Cold-storage microbenchmark | Standalone path-free reports separate integrity-open, output validation, and measured demand reads; Linux cold labels require `FADV_DONTNEED` plus `mincore`, while unsupported platforms refuse the claim |
+| Measured machine/model tuning | Implemented as bounded digest-only AB/BA evidence evaluation for model-owned lossless knobs; Power keeps defaults on insufficient gain, parity regression, or a winner tie and never applies or persists a profile |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
 | Speculative decoding and KV policy | Model control flow remains in the model crate; Power supplies shared state bounds and receipts |
@@ -439,7 +483,7 @@ The current sequence is:
 | Priority | Colibri lesson | Power-level treatment | Required evidence |
 | --- | --- | --- | --- |
 | 1 | Deferred current-layer cold I/O while resident experts compute | **Power substrate complete:** ordered atomic staged batches reuse existing admission, cache, source routing, key locks, cancellation, and privacy-gated telemetry; model crates retain canonical computation | Power tests cover tensor/order parity, immediate readiness, cancellation, shared materialization, and separated timing; each model integration must still publish end-to-end output parity and workload gains |
-| 2 | Hardware/model-specific measured tuning | Add an ephemeral, digest-bound comparison profile for lossless execution knobs only; model crates own teacher-forced calibration and any sealed persistence | Repeated baseline/winner reversal, minimum throughput gain, hit-rate parity, and bounded p99 regression |
+| 2 | Hardware/model-specific measured tuning | **Power substrate complete:** bounded digest-only evidence requires repeated baseline→candidate and candidate→baseline rounds, typed output parity, dual-order median gain, cache-hit parity, and bounded p99; model crates retain calibration, candidate application, and sealed persistence | Power tests cover binding, reversal, thresholds, malformed/duplicate/overflow evidence, deterministic selection, tie rejection, privacy-safe serialization, and `Send + Sync`; each model integration must still publish named-hardware end-to-end evidence |
 | 3 | Lossless compressed expert tiers | Add representations behind the existing verified `WeightStore` index and receipts; never quantize or reinterpret tensors during placement | Whole-artifact digest validation, decoded byte parity, bounded scratch, zeroization, and end-to-end wins |
 | 4 | Accelerator-wide residency declarations and fused batches | Extend typed CUDA/Metal devices without bypassing Candle safety, admission, cancellation, or confidential-GPU claims | Kernel parity, explicit fallback identity, memory-pressure tests, and named-hardware results |
 | 5 | Warm model state across sessions | Keep KV/recurrent topology in the model crate; Power supplies bounds, digest binding, zeroization, and a sealed-state envelope rather than plaintext sidecars | Interrupted-write recovery, wrong-model rejection, rollback policy, and TEE export authorization |
