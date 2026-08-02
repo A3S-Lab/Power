@@ -1653,7 +1653,7 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 ### Completed
 
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
-- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native hardware-aware cache budgets with unified-memory accounting, LFRU hot sets, atomic plans, batched expert unions, bounded prefetch, complete/partial weighted replicas, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, and a standalone storage benchmark without an embedded Web listener
+- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native hardware-aware cache budgets with unified-memory accounting, LFRU hot sets, atomic plans, batched expert unions, bounded prefetch, complete/partial weighted replicas, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
 - [x] Pure Rust inference backend — `mistralrs` feature (default): GGUF inference via candle, no C++ dependency; ideal for TEE supply-chain auditing
 - [x] OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`)
 - [x] Content-addressed model storage with SHA-256

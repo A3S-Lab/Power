@@ -139,3 +139,26 @@ for recognition on this host. Direct mode returned an explicit unsupported
 error, and no cold result was recorded because macOS lacks the required proof.
 These negative results keep mmap as the default. Direct I/O must remain opt-in
 until a named-hardware end-to-end model workload demonstrates a repeatable win.
+
+## Hosted-Runner Evidence Workflow
+
+The manual [`Storage Evidence`](../.github/workflows/storage-evidence.yml)
+workflow downloads the public PP-OCRv6 SafeTensors bundle only after checking
+its pinned byte length and SHA-256. It benchmarks the detection and recognition
+collections independently on `ubuntu-24.04` and `windows-latest`:
+
+- Linux records warm and separately verified-cold processes for mmap,
+  positional buffered, and positional direct reads;
+- Windows records warm mmap, positional buffered, and unbuffered direct reads,
+  while continuing to refuse an unverified cold label; and
+- each job compares all reports for one collection and fails if output bytes
+  differ across read strategies.
+
+The uploaded artifacts contain only the path-free benchmark reports and their
+canonical comparisons. A report captures the actual CPU, RAM, filesystem,
+GitHub runner image, Power commit, and workload digest. GitHub-hosted hardware
+and storage may change between runs, so results must be reviewed per report and
+must not be generalized into a stable hardware claim. The workflow has only
+one ephemeral OS disk and therefore does not claim an independent-controller
+multi-source result. Neither its workload nor its reports are embedded in the
+Power crate or exported automatically.

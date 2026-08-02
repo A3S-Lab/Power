@@ -1,0 +1,250 @@
+name: Storage Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      warm_samples:
+        description: Warm samples per model collection and read strategy
+        required: true
+        default: "10"
+        type: choice
+        options:
+          - "10"
+          - "30"
+      linux_cold_processes:
+        description: Separate verified-cold Linux processes per collection and strategy
+        required: true
+        default: "3"
+        type: choice
+        options:
+          - "1"
+          - "3"
+          - "5"
+
+permissions:
+  contents: read
+
+env:
+  BUNDLE_URL: https://github.com/A3S-Lab/OCR/releases/download/ppocr-v6-paddlex-paddle3.0.0-native-v1/ppocr-v6-small-native-v1.tar
+  BUNDLE_BYTES: "31074816"
+  BUNDLE_SHA256: c5b040d7abe67ef8c144c493bcb6b38e79f902d1841224146fc5d0d3800921de
+
+jobs:
+  linux:
+    name: Linux hosted-runner evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: storage-evidence-linux
+      - name: Download the hash-pinned public SafeTensors workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/ppocr-v6-small-native-v1.tar"
+          models="${RUNNER_TEMP}/a3s-power-storage-models"
+          mkdir -p "${models}"
+          curl \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --max-filesize 67108864 \
+            --output "${archive}" \
+            "${BUNDLE_URL}"
+          test "$(wc -c < "${archive}" | tr -d ' ')" = "${BUNDLE_BYTES}"
+          echo "${BUNDLE_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xf "${archive}" -C "${models}"
+          model_root="${models}/PP-OCRv6_small"
+          test -s "${model_root}/det/model.safetensors"
+          test -s "${model_root}/rec/model.safetensors"
+          echo "MODEL_ROOT=${model_root}" >> "${GITHUB_ENV}"
+      - name: Build the storage evidence runner
+        run: >-
+          cargo build --release --locked --no-default-features
+          --features embedded-inference --bin a3s-power-storage-bench
+      - name: Record warm, verified-cold, and direct-I/O evidence
+        shell: bash
+        env:
+          WARM_SAMPLES: ${{ inputs.warm_samples }}
+          COLD_PROCESSES: ${{ inputs.linux_cold_processes }}
+        run: |
+          set -euo pipefail
+          evidence="${RUNNER_TEMP}/a3s-power-storage-evidence-linux"
+          raw="${evidence}/raw"
+          bench="${GITHUB_WORKSPACE}/target/release/a3s-power-storage-bench"
+          mkdir -p "${raw}/det" "${raw}/rec"
+
+          cpu_model="$(lscpu | awk -F: '/^Model name:/ {sub(/^[[:space:]]+/, "", $2); print $2; exit}')"
+          test -n "${cpu_model}"
+          ram_bytes="$(awk '/^MemTotal:/ {printf "%.0f\n", $2 * 1024; exit}' /proc/meminfo)"
+          test -n "${ram_bytes}"
+          filesystem_class="$(findmnt -n -o FSTYPE --target "${MODEL_ROOT}")"
+          test -n "${filesystem_class}"
+          device_class="github-hosted-${ImageOS:-unknown}-${ImageVersion:-unknown}-ephemeral-os-disk"
+
+          run_report() {
+            local collection="$1"
+            local strategy="$2"
+            local cache_state="$3"
+            local cache_preparation="$4"
+            local samples="$5"
+            local output="$6"
+            "${bench}" \
+              --primary "${MODEL_ROOT}/${collection}" \
+              --strategy "${strategy}" \
+              --power-commit "${GITHUB_SHA}" \
+              --filesystem-class "${filesystem_class}" \
+              --device-class "${device_class}" \
+              --cpu-model "${cpu_model}" \
+              --ram-bytes "${ram_bytes}" \
+              --cache-state "${cache_state}" \
+              --cache-preparation "${cache_preparation}" \
+              --concurrency 1 \
+              --samples "${samples}" > "${output}"
+          }
+
+          for collection in det rec; do
+            for strategy in mmap positional-buffered positional-direct; do
+              run_report \
+                "${collection}" "${strategy}" warm warm-sequence "${WARM_SAMPLES}" \
+                "${raw}/${collection}/warm-${strategy}.json"
+              for attempt in $(seq 1 "${COLD_PROCESSES}"); do
+                run_report \
+                  "${collection}" "${strategy}" cold linux-fadvise-dontneed 1 \
+                  "${raw}/${collection}/cold-${strategy}-${attempt}.json"
+              done
+            done
+            "${bench}" compare "${raw}/${collection}"/*.json \
+              > "${evidence}/${collection}-comparison.json"
+          done
+      - name: Upload path-free Linux evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: power-storage-evidence-linux-${{ github.run_id }}
+          path: ${{ runner.temp }}/a3s-power-storage-evidence-linux
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    name: Windows hosted-runner evidence
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: storage-evidence-windows
+      - name: Download the hash-pinned public SafeTensors workload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP "ppocr-v6-small-native-v1.tar"
+          $models = Join-Path $env:RUNNER_TEMP "a3s-power-storage-models"
+          New-Item -ItemType Directory -Force -Path $models | Out-Null
+          Invoke-WebRequest -Uri $env:BUNDLE_URL -OutFile $archive
+          if ((Get-Item $archive).Length -ne [uint64]$env:BUNDLE_BYTES) {
+            throw "PP-OCRv6 evidence bundle byte length does not match the pinned value"
+          }
+          $digest = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($digest -ne $env:BUNDLE_SHA256) {
+            throw "PP-OCRv6 evidence bundle SHA-256 does not match the pinned value"
+          }
+          tar -xf $archive -C $models
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract the PP-OCRv6 evidence bundle"
+          }
+          $modelRoot = Join-Path $models "PP-OCRv6_small"
+          if (!(Test-Path (Join-Path $modelRoot "det/model.safetensors") -PathType Leaf) -or
+              !(Test-Path (Join-Path $modelRoot "rec/model.safetensors") -PathType Leaf)) {
+            throw "The PP-OCRv6 evidence bundle is incomplete"
+          }
+          "MODEL_ROOT=$modelRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build the storage evidence runner
+        run: >-
+          cargo build --release --locked --no-default-features
+          --features embedded-inference --bin a3s-power-storage-bench
+      - name: Record warm buffered and direct-I/O evidence
+        shell: pwsh
+        env:
+          WARM_SAMPLES: ${{ inputs.warm_samples }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidence = Join-Path $env:RUNNER_TEMP "a3s-power-storage-evidence-windows"
+          $raw = Join-Path $evidence "raw"
+          $bench = Join-Path $env:GITHUB_WORKSPACE "target/release/a3s-power-storage-bench.exe"
+          New-Item -ItemType Directory -Force -Path (Join-Path $raw "det") | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $raw "rec") | Out-Null
+
+          $cpuModel = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name.Trim()
+          $ramBytes = [uint64](Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+          $driveLetter = (Get-Item $env:MODEL_ROOT).PSDrive.Name
+          $filesystemClass = (Get-Volume -DriveLetter $driveLetter).FileSystem
+          $imageOs = if ($env:ImageOS) { $env:ImageOS } else { "unknown" }
+          $imageVersion = if ($env:ImageVersion) { $env:ImageVersion } else { "unknown" }
+          $deviceClass = "github-hosted-$imageOs-$imageVersion-ephemeral-os-disk"
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
+          function Invoke-Report {
+            param(
+              [string]$Collection,
+              [string]$Strategy,
+              [string]$Output
+            )
+            $primary = Join-Path $env:MODEL_ROOT $Collection
+            $lines = & $bench `
+              --primary $primary `
+              --strategy $Strategy `
+              --power-commit $env:GITHUB_SHA `
+              --filesystem-class $filesystemClass `
+              --device-class $deviceClass `
+              --cpu-model $cpuModel `
+              --ram-bytes $ramBytes `
+              --cache-state warm `
+              --cache-preparation warm-sequence `
+              --concurrency 1 `
+              --samples $env:WARM_SAMPLES
+            if ($LASTEXITCODE -ne 0) {
+              throw "Storage evidence runner failed for $Collection/$Strategy"
+            }
+            [System.IO.File]::WriteAllText(
+              $Output,
+              (($lines -join [Environment]::NewLine) + [Environment]::NewLine),
+              $utf8NoBom
+            )
+          }
+
+          foreach ($collection in @("det", "rec")) {
+            $collectionRoot = Join-Path $raw $collection
+            foreach ($strategy in @("mmap", "positional-buffered", "positional-direct")) {
+              Invoke-Report `
+                -Collection $collection `
+                -Strategy $strategy `
+                -Output (Join-Path $collectionRoot "warm-$strategy.json")
+            }
+            $reports = Get-ChildItem -Path $collectionRoot -Filter "*.json" |
+              Sort-Object Name |
+              ForEach-Object FullName
+            $comparisonLines = & $bench compare @reports
+            if ($LASTEXITCODE -ne 0) {
+              throw "Storage evidence comparison failed for $collection"
+            }
+            [System.IO.File]::WriteAllText(
+              (Join-Path $evidence "$collection-comparison.json"),
+              (($comparisonLines -join [Environment]::NewLine) + [Environment]::NewLine),
+              $utf8NoBom
+            )
+          }
+      - name: Upload path-free Windows evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: power-storage-evidence-windows-${{ github.run_id }}
+          path: ${{ runner.temp }}/a3s-power-storage-evidence-windows
+          if-no-files-found: error
+          retention-days: 30
