@@ -17,6 +17,10 @@ use tokio_util::sync::CancellationToken;
 use crate::admission::AdmissionController;
 use crate::error::{PowerError, Result};
 
+use super::coupling::{
+    RouteCouplingHistory, RouteCouplingTracker, RouteHintEvaluation, RouteHintTelemetry,
+    RoutePrefetchHints,
+};
 use super::routing::{ExpertKey, RoutedExpertBatch};
 use super::telemetry::{PlacementTelemetry, RoutingHistory, Telemetry};
 use super::{EmbeddedRuntime, ExecutionPermit, RuntimeDeviceKind, TensorDescriptor, WeightStore};
@@ -43,6 +47,7 @@ struct HierarchyInner {
     key_locks: Mutex<HashMap<WeightKey, Arc<Mutex<()>>>>,
     prefetch_admission: AdmissionController,
     telemetry: Telemetry,
+    route_coupling: RouteCouplingTracker,
 }
 
 impl WeightHierarchy {
@@ -65,11 +70,17 @@ impl WeightHierarchy {
             )));
         }
         let prefetch_admission = AdmissionController::new(Some(policy.max_prefetch_tasks));
+        let route_coupling = RouteCouplingTracker::new(
+            policy.telemetry,
+            store.sha256(),
+            policy.route_coupling.clone(),
+        );
         Ok(Self {
             inner: Arc::new(HierarchyInner {
                 store,
                 runtime,
                 telemetry: Telemetry::new(policy.telemetry),
+                route_coupling,
                 policy,
                 operations: RwLock::new(()),
                 cache: Mutex::new(CacheState::new()),
@@ -167,6 +178,58 @@ impl WeightHierarchy {
         self.inner
             .telemetry
             .restore_history(history, self.inner.store.sha256())
+    }
+
+    /// Learns exact source-to-target expert co-occurrences for later prefetch
+    /// hints. Both batches must describe aligned positions from one forward
+    /// pass. This never changes either batch or any router decision.
+    pub fn record_route_transition(
+        &self,
+        source: &RoutedExpertBatch,
+        target: &RoutedExpertBatch,
+    ) -> Result<()> {
+        self.inner.route_coupling.record_transition(source, target)
+    }
+
+    /// Predicts target experts from learned cross-layer co-occurrences.
+    ///
+    /// The returned union is intended to be mapped by the model crate to its
+    /// own tensor names and passed through [`WeightHierarchy::start_prefetch`].
+    /// Power never treats a hint as a router selection.
+    pub fn route_prefetch_hints(
+        &self,
+        source: &RoutedExpertBatch,
+        target_layer: u32,
+        hints_per_position: usize,
+    ) -> Result<RoutePrefetchHints> {
+        self.inner
+            .route_coupling
+            .hints(source, target_layer, hints_per_position)
+    }
+
+    /// Compares speculative hints with the actual target router output.
+    pub fn evaluate_route_prefetch_hints(
+        &self,
+        hints: &RoutePrefetchHints,
+        actual: &RoutedExpertBatch,
+    ) -> Result<RouteHintEvaluation> {
+        self.inner.route_coupling.evaluate(hints, actual)
+    }
+
+    /// Returns aggregate hint recall counters without route identities.
+    pub fn route_hint_telemetry(&self) -> Result<RouteHintTelemetry> {
+        self.inner.route_coupling.telemetry()
+    }
+
+    /// Returns digest-bound route coupling data for an explicitly managed
+    /// encrypted or sealed store. Power never persists this history itself.
+    pub fn route_coupling_history(&self) -> Result<RouteCouplingHistory> {
+        self.inner.route_coupling.history()
+    }
+
+    /// Atomically merges validated, digest-bound route coupling history.
+    pub fn restore_route_coupling_history(&self, history: &RouteCouplingHistory) -> Result<()> {
+        self.inner.route_coupling.restore(history)
     }
 
     pub fn hottest_experts(&self, layer: u32, limit: usize) -> Result<Vec<ExpertKey>> {

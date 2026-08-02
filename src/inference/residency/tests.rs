@@ -4,7 +4,8 @@ use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
 
 use super::*;
 use crate::inference::{
-    DevicePreference, InferenceLimits, TelemetryMode, WeightReadStrategy, WeightStoreConfig,
+    DevicePreference, InferenceLimits, RoutedExpert, TelemetryMode, WeightReadStrategy,
+    WeightStoreConfig,
 };
 
 fn weight_store(
@@ -232,6 +233,63 @@ fn residency_policy_rejects_unbounded_prefetch_controls() {
     }
     .validate()
     .is_err());
+    assert!(ResidencyPolicy {
+        route_coupling: super::super::coupling::RouteCouplingPolicy {
+            max_entries: 0,
+            ..super::super::coupling::RouteCouplingPolicy::default()
+        },
+        ..ResidencyPolicy::default()
+    }
+    .validate()
+    .is_err());
+}
+
+#[test]
+fn hierarchy_exposes_digest_bound_value_preserving_route_hints() {
+    let (_directory, store) = weight_store(Dtype::F32, vec![1], &[0; 4]);
+    let hierarchy = WeightHierarchy::new(
+        store,
+        new_runtime(),
+        ResidencyPolicy {
+            telemetry: TelemetryMode::Detailed,
+            ..ResidencyPolicy::default()
+        },
+    )
+    .unwrap();
+    let source = RoutedExpertBatch::new(
+        0,
+        vec![vec![RoutedExpert {
+            expert: 1,
+            weight: 1.0,
+        }]],
+        4,
+        1,
+    )
+    .unwrap();
+    let target = RoutedExpertBatch::new(
+        1,
+        vec![vec![RoutedExpert {
+            expert: 3,
+            weight: 1.0,
+        }]],
+        4,
+        1,
+    )
+    .unwrap();
+
+    hierarchy.record_route_transition(&source, &target).unwrap();
+    let hints = hierarchy.route_prefetch_hints(&source, 1, 1).unwrap();
+    assert_eq!(hints.experts(), &[3]);
+    assert_eq!(target.selections()[0][0].expert, 3);
+    let evaluation = hierarchy
+        .evaluate_route_prefetch_hints(&hints, &target)
+        .unwrap();
+    assert_eq!(evaluation.recall(), 1.0);
+
+    let history = hierarchy.route_coupling_history().unwrap();
+    assert_eq!(history.weights_sha256, hierarchy.store().sha256());
+    assert_eq!(history.entries.len(), 1);
+    assert_eq!(hierarchy.route_hint_telemetry().unwrap().evaluations, 1);
 }
 
 #[test]
