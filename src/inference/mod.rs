@@ -22,14 +22,19 @@ pub use receipt::{
     ExecutionDigest, ExecutionReceipt, ExecutionRepresentation, ModelIdentity, RuntimeIdentity,
 };
 pub use residency::{
-    PlacementPreference, PlannedResidencyGroup, PrefetchReport, PrefetchTask, ResidencyApplyReport,
-    ResidencyCandidate, ResidencyPlan, ResidencyPolicy, ResidentWeight, WeightHierarchy, WeightKey,
-    WeightRequest, WeightTier,
+    CacheEvictionPolicy, PlacementPreference, PlannedResidencyGroup, PrefetchReport, PrefetchTask,
+    ResidencyApplyReport, ResidencyCandidate, ResidencyPlan, ResidencyPolicy, ResidentWeight,
+    WeightHierarchy, WeightKey, WeightRequest, WeightTier,
 };
 pub use routing::{ExpertAssignment, ExpertKey, RoutedExpert, RoutedExpertBatch};
 pub use runtime::{EmbeddedRuntime, ExecutionPermit};
-pub use telemetry::{PlacementTelemetry, RouteHeat, RoutingHistory, TelemetryMode};
+pub use telemetry::{
+    PlacementTelemetry, RouteHeat, RoutingHistory, StorageSourceTelemetry, TelemetryMode,
+};
 pub use tensor::{TensorInput, TensorOutput};
-pub use weights::{TensorDescriptor, WeightFileDescriptor, WeightStore};
+pub use weights::{
+    TensorDescriptor, WeightFileDescriptor, WeightSourceConfig, WeightSourceDescriptor,
+    WeightSourceRole, WeightStore, WeightStoreConfig,
+};
 
 pub(crate) const RUNTIME_NAME: &str = "a3s-power-native";

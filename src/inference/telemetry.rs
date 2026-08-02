@@ -41,6 +41,14 @@ pub struct RoutingHistory {
     pub entries: Vec<RouteHeat>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StorageSourceTelemetry {
+    pub source_index: usize,
+    pub reads: u64,
+    pub bytes_read: u64,
+}
+
 impl RoutingHistory {
     pub const SCHEMA: &'static str = "a3s.power.routing-history.v1";
 }
@@ -54,14 +62,26 @@ pub struct PlacementTelemetry {
     pub device_cache_hits: u64,
     pub storage_reads: u64,
     pub storage_bytes_read: u64,
+    #[serde(default)]
+    pub storage_fallbacks: u64,
     pub device_bytes_promoted: u64,
     pub host_evictions: u64,
     pub device_evictions: u64,
     pub prefetched_weights: u64,
     pub prefetch_cache_hits: u64,
+    #[serde(default)]
+    pub prefetch_useful_weights: u64,
+    #[serde(default)]
+    pub prefetch_useful_bytes: u64,
+    #[serde(default)]
+    pub prefetch_unused_weights: u64,
+    #[serde(default)]
+    pub prefetch_unused_bytes: u64,
     pub routed_selections: u64,
     pub host_resident_bytes: u64,
     pub device_resident_bytes: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storage_sources: Vec<StorageSourceTelemetry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routing_heat: Vec<RouteHeat>,
 }
@@ -76,12 +96,18 @@ pub(crate) struct Telemetry {
     device_cache_hits: AtomicU64,
     storage_reads: AtomicU64,
     storage_bytes_read: AtomicU64,
+    storage_fallbacks: AtomicU64,
     device_bytes_promoted: AtomicU64,
     host_evictions: AtomicU64,
     device_evictions: AtomicU64,
     prefetched_weights: AtomicU64,
     prefetch_cache_hits: AtomicU64,
+    prefetch_useful_weights: AtomicU64,
+    prefetch_useful_bytes: AtomicU64,
+    prefetch_unused_weights: AtomicU64,
+    prefetch_unused_bytes: AtomicU64,
     routed_selections: AtomicU64,
+    storage_sources: Mutex<BTreeMap<usize, (u64, u64)>>,
     routing_heat: Mutex<BTreeMap<ExpertKey, u64>>,
 }
 
@@ -93,12 +119,18 @@ impl Telemetry {
             device_cache_hits: AtomicU64::new(0),
             storage_reads: AtomicU64::new(0),
             storage_bytes_read: AtomicU64::new(0),
+            storage_fallbacks: AtomicU64::new(0),
             device_bytes_promoted: AtomicU64::new(0),
             host_evictions: AtomicU64::new(0),
             device_evictions: AtomicU64::new(0),
             prefetched_weights: AtomicU64::new(0),
             prefetch_cache_hits: AtomicU64::new(0),
+            prefetch_useful_weights: AtomicU64::new(0),
+            prefetch_useful_bytes: AtomicU64::new(0),
+            prefetch_unused_weights: AtomicU64::new(0),
+            prefetch_unused_bytes: AtomicU64::new(0),
             routed_selections: AtomicU64::new(0),
+            storage_sources: Mutex::new(BTreeMap::new()),
             routing_heat: Mutex::new(BTreeMap::new()),
         }
     }
@@ -111,9 +143,18 @@ impl Telemetry {
         self.increment(&self.device_cache_hits, 1);
     }
 
-    pub(crate) fn storage_read(&self, bytes: u64) {
+    pub(crate) fn storage_read(&self, bytes: u64, source_index: usize, fell_back: bool) {
         self.increment(&self.storage_reads, 1);
         self.increment(&self.storage_bytes_read, bytes);
+        if fell_back {
+            self.increment(&self.storage_fallbacks, 1);
+        }
+        if self.mode != TelemetryMode::Disabled {
+            let mut sources = lock(&self.storage_sources);
+            let entry = sources.entry(source_index).or_default();
+            entry.0 = entry.0.saturating_add(1);
+            entry.1 = entry.1.saturating_add(bytes);
+        }
     }
 
     pub(crate) fn device_promotion(&self, bytes: u64) {
@@ -133,6 +174,16 @@ impl Telemetry {
         if cache_hit {
             self.increment(&self.prefetch_cache_hits, 1);
         }
+    }
+
+    pub(crate) fn prefetch_useful(&self, bytes: u64) {
+        self.increment(&self.prefetch_useful_weights, 1);
+        self.increment(&self.prefetch_useful_bytes, bytes);
+    }
+
+    pub(crate) fn prefetch_unused(&self, bytes: u64) {
+        self.increment(&self.prefetch_unused_weights, 1);
+        self.increment(&self.prefetch_unused_bytes, bytes);
     }
 
     pub(crate) fn routes(&self, batch: &RoutedExpertBatch) {
@@ -168,14 +219,20 @@ impl Telemetry {
             device_cache_hits: self.load(&self.device_cache_hits),
             storage_reads: self.load(&self.storage_reads),
             storage_bytes_read: self.load(&self.storage_bytes_read),
+            storage_fallbacks: self.load(&self.storage_fallbacks),
             device_bytes_promoted: self.load(&self.device_bytes_promoted),
             host_evictions: self.load(&self.host_evictions),
             device_evictions: self.load(&self.device_evictions),
             prefetched_weights: self.load(&self.prefetched_weights),
             prefetch_cache_hits: self.load(&self.prefetch_cache_hits),
+            prefetch_useful_weights: self.load(&self.prefetch_useful_weights),
+            prefetch_useful_bytes: self.load(&self.prefetch_useful_bytes),
+            prefetch_unused_weights: self.load(&self.prefetch_unused_weights),
+            prefetch_unused_bytes: self.load(&self.prefetch_unused_bytes),
             routed_selections: self.load(&self.routed_selections),
             host_resident_bytes,
             device_resident_bytes,
+            storage_sources: self.storage_source_snapshot(),
             routing_heat: self.route_heat(),
         }
     }
@@ -231,6 +288,22 @@ impl Telemetry {
             .collect()
     }
 
+    fn storage_source_snapshot(&self) -> Vec<StorageSourceTelemetry> {
+        if self.mode == TelemetryMode::Disabled {
+            return Vec::new();
+        }
+        lock(&self.storage_sources)
+            .iter()
+            .map(
+                |(source_index, (reads, bytes_read))| StorageSourceTelemetry {
+                    source_index: *source_index,
+                    reads: *reads,
+                    bytes_read: *bytes_read,
+                },
+            )
+            .collect()
+    }
+
     fn increment(&self, counter: &AtomicU64, value: u64) {
         if self.mode == TelemetryMode::Disabled {
             return;
@@ -274,11 +347,12 @@ mod tests {
         )
         .unwrap();
         telemetry.routes(&batch);
-        telemetry.storage_read(128);
+        telemetry.storage_read(128, 0, false);
 
         let snapshot = telemetry.snapshot(0, 0);
         assert_eq!(snapshot.routed_selections, 0);
         assert_eq!(snapshot.storage_bytes_read, 0);
+        assert!(snapshot.storage_sources.is_empty());
         assert!(snapshot.routing_heat.is_empty());
         assert!(telemetry.history("hash").is_err());
     }
@@ -307,5 +381,19 @@ mod tests {
             restored.history("weights-a").unwrap().entries[0].selections,
             1
         );
+    }
+
+    #[test]
+    fn aggregate_storage_sources_do_not_include_paths_or_routes() {
+        let telemetry = Telemetry::new(TelemetryMode::Aggregate);
+        telemetry.storage_read(64, 1, false);
+        telemetry.storage_read(32, 0, true);
+
+        let snapshot = telemetry.snapshot(0, 0);
+        assert_eq!(snapshot.storage_fallbacks, 1);
+        assert_eq!(snapshot.storage_sources.len(), 2);
+        assert_eq!(snapshot.storage_sources[0].source_index, 0);
+        assert_eq!(snapshot.storage_sources[1].source_index, 1);
+        assert!(snapshot.routing_heat.is_empty());
     }
 }

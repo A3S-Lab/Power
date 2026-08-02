@@ -20,11 +20,11 @@ use crate::error::{PowerError, Result};
 use super::routing::{ExpertKey, RoutedExpertBatch};
 use super::telemetry::{PlacementTelemetry, RoutingHistory, Telemetry};
 use super::{EmbeddedRuntime, ExecutionPermit, RuntimeDeviceKind, TensorDescriptor, WeightStore};
-use cache::{CacheInsert, CacheState};
+use cache::{CacheAccess, CacheInsert, CacheState, PinReason};
 pub use planner::{PlannedResidencyGroup, ResidencyApplyReport, ResidencyCandidate, ResidencyPlan};
 pub use types::{
-    PlacementPreference, PrefetchReport, PrefetchTask, ResidencyPolicy, ResidentWeight, WeightKey,
-    WeightRequest, WeightTier,
+    CacheEvictionPolicy, PlacementPreference, PrefetchReport, PrefetchTask, ResidencyPolicy,
+    ResidentWeight, WeightKey, WeightRequest, WeightTier,
 };
 
 /// Shared, bounded weight hierarchy for one model session.
@@ -39,6 +39,7 @@ struct HierarchyInner {
     policy: ResidencyPolicy,
     operations: RwLock<()>,
     cache: Mutex<CacheState>,
+    active_plan: Mutex<Option<ResidencyPlan>>,
     key_locks: Mutex<HashMap<WeightKey, Arc<Mutex<()>>>>,
     prefetch_admission: AdmissionController,
     telemetry: Telemetry,
@@ -72,6 +73,7 @@ impl WeightHierarchy {
                 policy,
                 operations: RwLock::new(()),
                 cache: Mutex::new(CacheState::new()),
+                active_plan: Mutex::new(None),
                 key_locks: Mutex::new(HashMap::new()),
                 prefetch_admission,
             }),
@@ -101,7 +103,17 @@ impl WeightHierarchy {
         cancellation: &CancellationToken,
     ) -> Result<ResidentWeight> {
         let _operation = read(&self.inner.operations);
-        self.load_internal(request, permit, cancellation, false)
+        self.load_internal(request, permit, cancellation, None, CacheAccess::Demand)
+    }
+
+    fn load_prefetch(
+        &self,
+        request: &WeightRequest,
+        permit: &ExecutionPermit,
+        cancellation: &CancellationToken,
+    ) -> Result<ResidentWeight> {
+        let _operation = read(&self.inner.operations);
+        self.load_internal(request, permit, cancellation, None, CacheAccess::Prefetch)
     }
 
     pub fn pin(
@@ -116,12 +128,20 @@ impl WeightHierarchy {
             ));
         }
         let _operation = read(&self.inner.operations);
-        self.load_internal(request, permit, cancellation, true)
+        self.load_internal(
+            request,
+            permit,
+            cancellation,
+            Some(PinReason::Manual),
+            CacheAccess::Demand,
+        )
     }
 
+    /// Releases an explicit caller pin without disturbing an active residency
+    /// plan's pin on the same weight.
     pub fn unpin(&self, key: &WeightKey, tier: WeightTier) -> bool {
         let _operation = read(&self.inner.operations);
-        lock(&self.inner.cache).set_pinned(tier, key, false)
+        lock(&self.inner.cache).set_pin(tier, key, PinReason::Manual, false)
     }
 
     pub fn clear_unpinned(&self) {
@@ -174,13 +194,14 @@ impl WeightHierarchy {
         request: &WeightRequest,
         permit: &ExecutionPermit,
         cancellation: &CancellationToken,
-        require_resident: bool,
+        pin: Option<PinReason>,
+        access: CacheAccess,
     ) -> Result<ResidentWeight> {
         self.validate_permit(permit)?;
         self.check_cancelled(cancellation)?;
         let descriptor = self.validate_request(request)?.clone();
         let placement = self.resolve_placement(request.placement);
-        if let Some(weight) = self.cached(&request.key, placement, require_resident) {
+        if let Some(weight) = self.cached(&request.key, placement, pin, access) {
             return Ok(weight);
         }
 
@@ -194,20 +215,24 @@ impl WeightHierarchy {
         };
         let _loading = lock(&key_lock);
         self.check_cancelled(cancellation)?;
-        if let Some(weight) = self.cached(&request.key, placement, require_resident) {
+        if let Some(weight) = self.cached(&request.key, placement, pin, access) {
             return Ok(weight);
         }
 
         match placement {
             PlacementPreference::Streaming => {
-                let tensor = self
-                    .inner
-                    .store
-                    .load_tensor(&request.key.name, self.inner.runtime.device())?;
-                self.verify_tensor(&descriptor, &tensor)?;
-                self.inner.telemetry.storage_read(descriptor.bytes);
+                let loaded = self.inner.store.load_tracked(
+                    &request.key.name,
+                    self.inner.runtime.device().tensor_device(),
+                )?;
+                self.verify_tensor(&descriptor, &loaded.tensor)?;
+                self.inner.telemetry.storage_read(
+                    descriptor.bytes,
+                    loaded.source_index,
+                    loaded.fell_back,
+                );
                 Ok(ResidentWeight {
-                    tensor,
+                    tensor: loaded.tensor,
                     tier: WeightTier::Storage,
                     bytes: descriptor.bytes,
                     cache_hit: false,
@@ -220,15 +245,20 @@ impl WeightHierarchy {
                     tensor,
                     WeightTier::Host,
                     descriptor.bytes,
-                    require_resident,
-                    false,
+                    pin,
+                    access,
                 )
             }
             PlacementPreference::Device => {
-                let (host, host_hit) = match self.cached_tensor(&request.key, WeightTier::Host) {
+                let host_access = if access == CacheAccess::Demand {
+                    CacheAccess::Demand
+                } else {
+                    CacheAccess::Staging
+                };
+                let host = match self.cached_tensor(&request.key, WeightTier::Host, host_access) {
                     Some(tensor) => {
                         self.inner.telemetry.host_hit();
-                        (tensor, true)
+                        tensor
                     }
                     None => {
                         let tensor = self.load_host(&descriptor)?;
@@ -238,12 +268,13 @@ impl WeightHierarchy {
                                 key: request.key.clone(),
                                 tensor: tensor.clone(),
                                 bytes: descriptor.bytes,
-                                pinned: false,
+                                pin: None,
+                                access: CacheAccess::Staging,
                             },
                             &self.inner.policy,
                             &self.inner.telemetry,
                         );
-                        (tensor, false)
+                        tensor
                     }
                 };
                 let tensor = host
@@ -260,8 +291,8 @@ impl WeightHierarchy {
                     tensor,
                     WeightTier::Device,
                     descriptor.bytes,
-                    require_resident,
-                    host_hit,
+                    pin,
+                    access,
                 )
             }
             PlacementPreference::Fastest => Err(PowerError::InferenceFailed(
@@ -271,10 +302,15 @@ impl WeightHierarchy {
     }
 
     fn load_host(&self, descriptor: &TensorDescriptor) -> Result<Tensor> {
-        let tensor = self.inner.store.load(&descriptor.name, &Device::Cpu)?;
-        self.verify_tensor(descriptor, &tensor)?;
-        self.inner.telemetry.storage_read(descriptor.bytes);
-        Ok(tensor)
+        let loaded = self
+            .inner
+            .store
+            .load_tracked(&descriptor.name, &Device::Cpu)?;
+        self.verify_tensor(descriptor, &loaded.tensor)?;
+        self.inner
+            .telemetry
+            .storage_read(descriptor.bytes, loaded.source_index, loaded.fell_back);
+        Ok(loaded.tensor)
     }
 
     fn finish_residency(
@@ -283,8 +319,8 @@ impl WeightHierarchy {
         tensor: Tensor,
         tier: WeightTier,
         bytes: u64,
-        require_resident: bool,
-        cache_hit: bool,
+        pin: Option<PinReason>,
+        access: CacheAccess,
     ) -> Result<ResidentWeight> {
         let cached = lock(&self.inner.cache).insert(
             tier,
@@ -292,12 +328,13 @@ impl WeightHierarchy {
                 key: request.key.clone(),
                 tensor: tensor.clone(),
                 bytes,
-                pinned: require_resident,
+                pin,
+                access,
             },
             &self.inner.policy,
             &self.inner.telemetry,
         );
-        if require_resident && !cached {
+        if pin.is_some() && !cached {
             return Err(PowerError::InferenceFailed(format!(
                 "weight '{}' cannot be pinned within the configured {:?} residency bounds",
                 request.key.name, tier
@@ -307,7 +344,7 @@ impl WeightHierarchy {
             tensor,
             tier: if cached { tier } else { WeightTier::Storage },
             bytes,
-            cache_hit,
+            cache_hit: false,
         })
     }
 
@@ -315,7 +352,8 @@ impl WeightHierarchy {
         &self,
         key: &WeightKey,
         placement: PlacementPreference,
-        pin: bool,
+        pin: Option<PinReason>,
+        access: CacheAccess,
     ) -> Option<ResidentWeight> {
         let tier = match placement {
             PlacementPreference::Host => WeightTier::Host,
@@ -323,14 +361,17 @@ impl WeightHierarchy {
             PlacementPreference::Fastest | PlacementPreference::Streaming => return None,
         };
         let mut cache = lock(&self.inner.cache);
-        let lookup = cache.get(tier, key)?;
-        if pin {
-            cache.set_pinned(tier, key, true);
+        let lookup = cache.get(tier, key, access, &self.inner.policy)?;
+        if let Some(reason) = pin {
+            cache.set_pin(tier, key, reason, true);
         }
         match tier {
             WeightTier::Host => self.inner.telemetry.host_hit(),
             WeightTier::Device => self.inner.telemetry.device_hit(),
             WeightTier::Storage => {}
+        }
+        if lookup.prefetch_useful {
+            self.inner.telemetry.prefetch_useful(lookup.bytes);
         }
         Some(ResidentWeight {
             tensor: lookup.tensor,
@@ -340,10 +381,17 @@ impl WeightHierarchy {
         })
     }
 
-    fn cached_tensor(&self, key: &WeightKey, tier: WeightTier) -> Option<Tensor> {
-        lock(&self.inner.cache)
-            .get(tier, key)
-            .map(|value| value.tensor)
+    fn cached_tensor(
+        &self,
+        key: &WeightKey,
+        tier: WeightTier,
+        access: CacheAccess,
+    ) -> Option<Tensor> {
+        let lookup = lock(&self.inner.cache).get(tier, key, access, &self.inner.policy)?;
+        if lookup.prefetch_useful {
+            self.inner.telemetry.prefetch_useful(lookup.bytes);
+        }
+        Some(lookup.tensor)
     }
 
     fn validate_request(&self, request: &WeightRequest) -> Result<&TensorDescriptor> {

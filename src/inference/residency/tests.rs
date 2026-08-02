@@ -56,6 +56,9 @@ fn hierarchy_preserves_dtype_and_uses_layer_cache() {
     assert!(second.cache_hit());
     let telemetry = hierarchy.telemetry();
     assert_eq!(telemetry.storage_reads, 1);
+    assert_eq!(telemetry.storage_sources.len(), 1);
+    assert_eq!(telemetry.storage_sources[0].source_index, 0);
+    assert_eq!(telemetry.storage_sources[0].bytes_read, 4);
     assert_eq!(telemetry.host_cache_hits, 1);
     assert_eq!(telemetry.host_resident_bytes, 4);
 }
@@ -94,6 +97,12 @@ async fn prefetch_unions_duplicate_requests_and_reuses_residency() {
     assert_eq!(first.requested, 2);
     assert_eq!(first.unique, 1);
     assert_eq!(first.materialized, 1);
+
+    let demand = hierarchy.load(&request, &permit, &cancellation).unwrap();
+    assert!(demand.cache_hit());
+    let telemetry = hierarchy.telemetry();
+    assert_eq!(telemetry.prefetch_useful_weights, 1);
+    assert_eq!(telemetry.prefetch_useful_bytes, 8);
 
     let second = hierarchy
         .start_prefetch(vec![request], &permit, cancellation)

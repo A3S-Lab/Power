@@ -124,7 +124,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
 - **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional), proxy (forwards to an upstream OpenAI-compatible server — vLLM/TGI/SGLang/OpenAI — so Power can front an existing accelerated engine)
 - **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
-- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, typed devices, cancellation, and execution receipts. Model architectures live in their owning crates; embedded sessions never bind a Web port
+- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, weighted read-only replicas, typed devices, LFRU/LRU residency, measurable prefetch, cancellation, and execution receipts. Model architectures live in their owning crates; embedded sessions never bind a Web port
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
 - **JSON Schema Structured Output**: Constrain local llama.cpp output via JSON Schema → GBNF grammar conversion; unsupported local backend/schema combinations fail closed instead of silently ignoring output policy
@@ -138,9 +138,11 @@ Full-featured LLM inference, competitive with any standalone server:
 The `embedded-inference` feature is a library path, separate from Power's HTTP
 server and backend registry. It provides a shared runtime, reviewed static-graph
 execution, exact SafeTensors inventories, typed devices, hard resource bounds,
-cancellation, canonical execution receipts, bounded parallel prefetch, and
-deterministic heat-driven weight placement. It never downloads a model, starts
-another process, or opens a listener.
+cancellation, canonical execution receipts, bounded parallel prefetch with
+useful/unused accounting, deterministic heat-driven weight placement, and
+digest-verified bandwidth-weighted storage replicas. Hot plans can be replaced
+transactionally without releasing explicit caller pins. It never downloads a
+model, starts another process, or opens a listener.
 
 Model-owning crates provide graph identities and plans, network control flow,
 tokenizers, preprocessing, postprocessing, and revision policy. Consequently,
