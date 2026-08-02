@@ -163,11 +163,7 @@ fn execute(
         GraphOp::AveragePool => pool(node, &inputs, false)?,
         GraphOp::Resize => resize(node, &inputs)?,
         GraphOp::BatchNormalization => batch_norm(node, &inputs)?,
-        GraphOp::MatMul => GraphValue::Tensor(
-            required_tensor(node, &inputs, 0)?
-                .broadcast_matmul(required_tensor(node, &inputs, 1)?)
-                .map_err(|error| execution_error(node, error))?,
-        ),
+        GraphOp::MatMul => matmul(node, &inputs)?,
         GraphOp::Reshape => reshape(node, &inputs)?,
         GraphOp::Shape => GraphValue::Ints {
             values: required(node, &inputs, 0)?
@@ -216,6 +212,21 @@ fn binary(
     let left = required_tensor(node, inputs, 0)?;
     let right = required_tensor(node, inputs, 1)?;
     operation(left, right)
+        .map(GraphValue::Tensor)
+        .map_err(|error| execution_error(node, error))
+}
+
+fn matmul(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
+    // ONNX Transpose and Slice legitimately produce strided views. Candle's
+    // matmul kernels require contiguous operands, so materialize only this
+    // operator boundary instead of rejecting a valid reviewed graph.
+    let left = required_tensor(node, inputs, 0)?
+        .contiguous()
+        .map_err(|error| execution_error(node, error))?;
+    let right = required_tensor(node, inputs, 1)?
+        .contiguous()
+        .map_err(|error| execution_error(node, error))?;
+    left.broadcast_matmul(&right)
         .map(GraphValue::Tensor)
         .map_err(|error| execution_error(node, error))
 }
@@ -900,5 +911,24 @@ mod tests {
     fn same_upper_padding_puts_odd_pixel_at_end() {
         assert_eq!(same_upper_padding(48, 2, 1, 1), (0, 1));
         assert_eq!(same_upper_padding(48, 3, 2, 1), (0, 1));
+    }
+
+    #[test]
+    fn matmul_materializes_a_transposed_rhs_view() {
+        let mut node = node();
+        node.op = GraphOp::MatMul;
+        let left = GraphValue::Tensor(
+            Tensor::zeros((3, 8, 41, 15), candle_core::DType::F32, &Device::Cpu).unwrap(),
+        );
+        let right = Tensor::zeros((3, 8, 41, 15), candle_core::DType::F32, &Device::Cpu)
+            .unwrap()
+            .transpose(2, 3)
+            .unwrap();
+        assert!(!right.is_contiguous());
+        let right = GraphValue::Tensor(right);
+
+        let output = matmul(&node, &[&left, &right]).unwrap();
+
+        assert_eq!(output.shape(), [3, 8, 41, 41]);
     }
 }
