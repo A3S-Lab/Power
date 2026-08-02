@@ -167,3 +167,55 @@ reviewed per report and must not be generalized into a stable hardware claim.
 The workflow has only one ephemeral OS disk and therefore does not claim an
 independent-controller multi-source result. Neither its workload nor its
 reports are embedded in the Power crate or exported automatically.
+
+## Reviewed Hosted-Runner Result
+
+[Workflow run 30764609062](https://github.com/A3S-Lab/Power/actions/runs/30764609062)
+completed against Power commit
+`aae85338781746ddee2f06094ca5bc3e512e93e6`. Each warm group contains ten
+samples. Each admitted Linux cold group contains three separately verified
+one-sample processes.
+
+| OS | Host and storage evidence |
+| --- | --- |
+| Linux | AMD EPYC 7763, 4 logical CPUs, 16,766,423,040 bytes RAM, ext4, `ubuntu24-20260720.247.2` ephemeral OS disk |
+| Windows | AMD EPYC 9V74, 4 logical CPUs, 17,174,360,064 bytes RAM, NTFS, `win25-vs2026-20260714.173.1` ephemeral OS disk |
+
+Warm storage-only results:
+
+| OS | Collection | Strategy | p50 latency | p95 latency | p50 throughput |
+| --- | --- | --- | ---: | ---: | ---: |
+| Linux | Detection | mmap | 7.07 ms | 8.53 ms | 1,357.4 MB/s |
+| Linux | Detection | positional buffered | 7.95 ms | 9.02 ms | 1,234.0 MB/s |
+| Linux | Detection | positional direct | 273.43 ms | 275.23 ms | 35.9 MB/s |
+| Linux | Recognition | mmap | 15.66 ms | 16.74 ms | 1,328.9 MB/s |
+| Linux | Recognition | positional buffered | 16.89 ms | 17.72 ms | 1,231.7 MB/s |
+| Linux | Recognition | positional direct | 397.65 ms | 408.72 ms | 52.9 MB/s |
+| Windows | Detection | mmap | 6.90 ms | 7.92 ms | 1,410.5 MB/s |
+| Windows | Detection | positional buffered | 8.55 ms | 10.99 ms | 1,117.5 MB/s |
+| Windows | Detection | positional direct | 154.40 ms | 182.58 ms | 63.3 MB/s |
+| Windows | Recognition | mmap | 16.24 ms | 21.58 ms | 1,293.5 MB/s |
+| Windows | Recognition | positional buffered | 18.42 ms | 18.65 ms | 1,143.3 MB/s |
+| Windows | Recognition | positional direct | 230.71 ms | 241.13 ms | 90.8 MB/s |
+
+Verified Linux cold storage-only results:
+
+| Collection | Strategy | Verified processes | p50 latency | p95 latency | p50 throughput |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Detection | positional buffered | 3/3 | 12.76 ms | 13.12 ms | 768.8 MB/s |
+| Detection | positional direct | 3/3 | 271.85 ms | 274.12 ms | 36.1 MB/s |
+| Recognition | positional buffered | 3/3 | 26.68 ms | 27.52 ms | 789.8 MB/s |
+| Recognition | positional direct | 3/3 | 403.74 ms | 410.60 ms | 52.2 MB/s |
+
+Linux mmap cold preparation was rejected for both collections: zero of three
+requested processes were admitted because mapped pages remained resident after
+`FADV_DONTNEED`. No mmap result was mislabeled cold. All admitted reports had
+exact output-byte parity. Direct reports used the direct strategy with zero
+primary fallbacks; they did not silently become buffered reads.
+
+On these ephemeral hosts, warm positional buffered p50 latency was 7.8% to
+23.9% slower than mmap. Direct p50 latency was 14.2 to 38.7 times mmap, and
+verified-cold direct reads were also substantially slower than verified-cold
+buffered reads. These are negative storage-path results, not end-to-end OCR
+measurements. They keep mmap as the default and do not satisfy the stable
+named-hardware or independent-controller evidence requirements.
