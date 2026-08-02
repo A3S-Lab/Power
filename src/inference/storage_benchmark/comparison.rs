@@ -57,6 +57,7 @@ pub struct StorageBenchmarkGroup {
     pub total_requested_bytes: u64,
     pub total_read_bytes: u64,
     pub integrity_open_nanos: StorageDistributionSummary,
+    pub output_validation_nanos: StorageDistributionSummary,
     pub latency_nanos: StorageDistributionSummary,
     pub bytes_per_second: StorageDistributionSummary,
     pub output_sha256s: Vec<String>,
@@ -131,6 +132,7 @@ pub fn compare_storage_benchmarks(
             total_requested_bytes: 0,
             total_read_bytes: 0,
             integrity_open_nanos: Vec::new(),
+            output_validation_nanos: Vec::new(),
             latency_nanos: Vec::new(),
             bytes_per_second: Vec::new(),
             output_sha256s: BTreeSet::new(),
@@ -167,6 +169,9 @@ pub fn compare_storage_benchmarks(
             })?;
         group.integrity_open_nanos.push(report.integrity_open_nanos);
         group
+            .output_validation_nanos
+            .push(report.output_validation_nanos);
+        group
             .latency_nanos
             .extend(report.samples.iter().map(|sample| sample.latency_nanos));
         group
@@ -193,6 +198,7 @@ pub fn compare_storage_benchmarks(
                 total_requested_bytes: group.total_requested_bytes,
                 total_read_bytes: group.total_read_bytes,
                 integrity_open_nanos: distribution(&group.integrity_open_nanos)?,
+                output_validation_nanos: distribution(&group.output_validation_nanos)?,
                 latency_nanos: distribution(&group.latency_nanos)?,
                 bytes_per_second: distribution(&group.bytes_per_second)?,
                 output_sha256s: group.output_sha256s.into_iter().collect(),
@@ -234,6 +240,7 @@ struct GroupAccumulator {
     total_requested_bytes: u64,
     total_read_bytes: u64,
     integrity_open_nanos: Vec<u64>,
+    output_validation_nanos: Vec<u64>,
     latency_nanos: Vec<u64>,
     bytes_per_second: Vec<u64>,
     output_sha256s: BTreeSet<String>,
@@ -244,6 +251,7 @@ fn validate_report(report: &StorageBenchmarkReport) -> Result<()> {
         || report.sources.is_empty()
         || report.samples.is_empty()
         || report.total_requested_bytes != report.total_read_bytes
+        || report.output_validation_nanos == 0
         || report.output_sha256.len() != 64
         || !report
             .output_sha256
@@ -423,6 +431,7 @@ mod tests {
             total_requested_bytes: 4,
             total_read_bytes: 4,
             integrity_open_nanos: 10,
+            output_validation_nanos: 15,
             samples: vec![StorageBenchmarkSample {
                 latency_nanos: 20,
                 bytes_read: 4,

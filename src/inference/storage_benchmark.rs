@@ -226,6 +226,7 @@ pub struct StorageBenchmarkReport {
     pub total_requested_bytes: u64,
     pub total_read_bytes: u64,
     pub integrity_open_nanos: u64,
+    pub output_validation_nanos: u64,
     pub samples: Vec<StorageBenchmarkSample>,
     pub output_sha256: String,
 }
@@ -267,24 +268,15 @@ pub fn run_storage_benchmark(
         })
     })?;
     let sequence_sha256 = sequence_digest(&store, &names)?;
+    let validation_started = Instant::now();
+    let output_sha256 = run_output_parity(Arc::clone(&store), &names, config.concurrency)?;
+    let mut output_validation_nanos = duration_nanos(validation_started.elapsed());
     let cache_state_procedure = prepare_cache_state(config, &store, &names)?;
 
     let mut samples = Vec::with_capacity(config.samples);
-    let mut output_sha256 = None;
     let mut total_read_bytes = 0_u64;
     for _ in 0..config.samples {
         let sample = run_sample(Arc::clone(&store), &names, config.concurrency)?;
-        if output_sha256
-            .as_ref()
-            .is_some_and(|expected| expected != &sample.output_sha256)
-        {
-            return Err(PowerError::IntegrityCheckFailed {
-                model: "storage benchmark output".to_string(),
-                expected: output_sha256.unwrap_or_default(),
-                actual: sample.output_sha256,
-            });
-        }
-        output_sha256 = Some(sample.output_sha256);
         total_read_bytes = total_read_bytes
             .checked_add(sample.bytes_read)
             .ok_or_else(|| {
@@ -312,6 +304,22 @@ pub fn run_storage_benchmark(
         return Err(PowerError::InvalidFormat(format!(
             "storage benchmark read {total_read_bytes} bytes but requested {total_requested_bytes}"
         )));
+    }
+    let validation_started = Instant::now();
+    let final_output_sha256 = run_output_parity(Arc::clone(&store), &names, config.concurrency)?;
+    output_validation_nanos = output_validation_nanos
+        .checked_add(duration_nanos(validation_started.elapsed()))
+        .ok_or_else(|| {
+            PowerError::InvalidFormat(
+                "storage benchmark output-validation duration overflowed".to_string(),
+            )
+        })?;
+    if final_output_sha256 != output_sha256 {
+        return Err(PowerError::IntegrityCheckFailed {
+            model: "storage benchmark output".to_string(),
+            expected: output_sha256,
+            actual: final_output_sha256,
+        });
     }
 
     Ok(StorageBenchmarkReport {
@@ -360,8 +368,9 @@ pub fn run_storage_benchmark(
         total_requested_bytes,
         total_read_bytes,
         integrity_open_nanos,
+        output_validation_nanos,
         samples,
-        output_sha256: output_sha256.unwrap_or_default(),
+        output_sha256: final_output_sha256,
     })
 }
 
@@ -370,14 +379,18 @@ struct CompletedSample {
     bytes_read: u64,
     bytes_per_second: u64,
     source_fallbacks: u64,
-    output_sha256: String,
 }
 
 struct CompletedRead {
     index: usize,
     bytes: u64,
-    digest: [u8; 32],
     fell_back: bool,
+}
+
+struct ParityRead {
+    index: usize,
+    bytes: u64,
+    digest: [u8; 32],
 }
 
 fn run_sample(
@@ -402,7 +415,6 @@ fn run_sample(
                                 "benchmark tensor byte length overflowed".to_string(),
                             )
                         })?,
-                        digest: Sha256::digest(read.bytes()).into(),
                         fell_back: read.fell_back(),
                     });
                 }
@@ -431,13 +443,9 @@ fn run_sample(
             "storage benchmark did not complete its deterministic tensor sequence".to_string(),
         ));
     }
-    let mut output = Sha256::new();
     let mut bytes_read = 0_u64;
     let mut source_fallbacks = 0_u64;
     for read in completed {
-        output.update(u64::try_from(read.index).unwrap_or(u64::MAX).to_le_bytes());
-        output.update(read.bytes.to_le_bytes());
-        output.update(read.digest);
         bytes_read = bytes_read.checked_add(read.bytes).ok_or_else(|| {
             PowerError::InvalidFormat("storage benchmark read byte count overflowed".to_string())
         })?;
@@ -448,8 +456,64 @@ fn run_sample(
         bytes_read,
         bytes_per_second: throughput(bytes_read, elapsed),
         source_fallbacks,
-        output_sha256: format!("{:x}", output.finalize()),
     })
+}
+
+fn run_output_parity(
+    store: Arc<WeightStore>,
+    names: &[String],
+    concurrency: usize,
+) -> Result<String> {
+    let worker_count = concurrency.min(names.len());
+    let completed = std::thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(worker_count);
+        for worker in 0..worker_count {
+            let store = Arc::clone(&store);
+            workers.push(scope.spawn(move || -> Result<Vec<ParityRead>> {
+                let mut reads = Vec::new();
+                for index in (worker..names.len()).step_by(worker_count) {
+                    let read = store.read_tensor_bytes(&names[index])?;
+                    reads.push(ParityRead {
+                        index,
+                        bytes: u64::try_from(read.bytes().len()).map_err(|_| {
+                            PowerError::InvalidFormat(
+                                "benchmark tensor byte length overflowed".to_string(),
+                            )
+                        })?,
+                        digest: Sha256::digest(read.bytes()).into(),
+                    });
+                }
+                Ok(reads)
+            }));
+        }
+        let mut reads = Vec::with_capacity(names.len());
+        for worker in workers {
+            let mut worker_reads = worker.join().map_err(|_| {
+                PowerError::InferenceFailed("storage benchmark parity worker panicked".to_string())
+            })??;
+            reads.append(&mut worker_reads);
+        }
+        Ok::<_, PowerError>(reads)
+    })?;
+    let mut completed = completed;
+    completed.sort_by_key(|read| read.index);
+    if completed.len() != names.len()
+        || completed
+            .iter()
+            .enumerate()
+            .any(|(index, read)| index != read.index)
+    {
+        return Err(PowerError::InferenceFailed(
+            "storage benchmark parity did not cover its deterministic tensor sequence".to_string(),
+        ));
+    }
+    let mut output = Sha256::new();
+    for read in completed {
+        output.update(u64::try_from(read.index).unwrap_or(u64::MAX).to_le_bytes());
+        output.update(read.bytes.to_le_bytes());
+        output.update(read.digest);
+    }
+    Ok(format!("{:x}", output.finalize()))
 }
 
 fn sequence_digest(store: &WeightStore, names: &[String]) -> Result<String> {
