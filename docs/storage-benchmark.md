@@ -72,9 +72,10 @@ run; all sources in one run must use the same strategy.
 
 Integrity hashing necessarily reads every configured source. A cache procedure
 applied only before process start would therefore produce a false cold label.
-On Linux, Power applies `POSIX_FADV_DONTNEED` after integrity-open and then uses
-`mincore` to verify every page backing every requested tensor range across the
-primary and all eligible replicas:
+On Linux, Power synchronizes each involved file, applies
+`POSIX_FADV_DONTNEED` after integrity-open, and then uses `mincore` to verify
+every page backing every requested tensor range across the primary and all
+eligible replicas:
 
 ```bash
 target/release/a3s-power-storage-bench \

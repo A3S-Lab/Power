@@ -168,9 +168,10 @@ strategy cannot bypass coverage-aware routing or create a second cache.
 model architecture, tokenizer, listener, subprocess, or inference backend. It
 records integrity-open time separately, performs output-digest validation
 outside the measured read interval, and emits no model paths or tensor names.
-Linux cold runs apply `POSIX_FADV_DONTNEED` after integrity-open and use
-`mincore` to prove that every requested page across primary and replica sources
-is non-resident. Other platforms currently refuse the verified cold label.
+Linux cold runs synchronize each involved file, apply `POSIX_FADV_DONTNEED`
+after integrity-open, and use `mincore` to prove that every requested page
+across primary and replica sources is non-resident. Other platforms currently
+refuse the verified cold label.
 See [Storage Benchmark Protocol](storage-benchmark.md).
 
 ### Usage-Ranked Partial Mirror Staging

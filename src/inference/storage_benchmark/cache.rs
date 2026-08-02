@@ -40,8 +40,10 @@ fn prepare_linux_cold_cache(store: &WeightStore, names: &[String]) -> Result<()>
     let mut files = Vec::with_capacity(ranges_by_path.len());
     for (path, ranges) in ranges_by_path {
         let file = File::open(path)?;
+        file.sync_all()?;
         // SAFETY: `file` owns a valid read-only descriptor for the duration of
-        // this call. `posix_fadvise` does not access Rust-managed memory.
+        // this call. The preceding sync makes all file-backed pages eligible
+        // for discard; `posix_fadvise` does not access Rust-managed memory.
         let result =
             unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
         if result != 0 {

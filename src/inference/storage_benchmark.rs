@@ -28,7 +28,7 @@ const MAX_LABEL_BYTES: usize = 512;
 const WARM_SEQUENCE_PROCEDURE: &str =
     "one complete unmeasured tensor sequence immediately before measurement";
 const LINUX_COLD_PROCEDURE: &str =
-    "POSIX_FADV_DONTNEED after integrity-open, followed by mincore verification of every requested file-backed page";
+    "fsync and POSIX_FADV_DONTNEED after integrity-open, followed by mincore verification of every requested file-backed page";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
