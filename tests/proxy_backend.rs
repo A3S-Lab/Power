@@ -1,3 +1,5 @@
+#![cfg(feature = "server")]
+
 //! Integration test: ProxyBackend forwards to an upstream OpenAI-compatible
 //! server. Spins an in-process mock upstream and drives the proxy against it.
 

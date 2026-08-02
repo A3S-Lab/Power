@@ -52,6 +52,7 @@ pub enum PowerError {
 
 pub type Result<T> = std::result::Result<T, PowerError>;
 
+#[cfg(feature = "server")]
 impl From<PowerError> for axum::response::Response {
     fn from(err: PowerError) -> Self {
         use axum::http::StatusCode;
@@ -134,6 +135,7 @@ mod tests {
         assert!(err.to_string().contains("Serialization error"));
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn test_error_to_response_model_not_found() {
         use axum::http::StatusCode;
@@ -144,6 +146,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn test_error_to_response_backend_unavailable() {
         use axum::http::StatusCode;
@@ -154,6 +157,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn test_error_to_response_invalid_format() {
         use axum::http::StatusCode;
@@ -164,6 +168,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn test_error_to_response_invalid_request() {
         use axum::http::StatusCode;
@@ -174,6 +179,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn test_error_to_response_internal() {
         use axum::http::StatusCode;
@@ -196,6 +202,7 @@ mod tests {
         assert!(err.to_string().contains("sha256:bbb"));
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn test_error_to_response_integrity_check_failed() {
         use axum::http::StatusCode;
@@ -216,6 +223,7 @@ mod tests {
         assert_eq!(err.to_string(), "Unauthorized: invalid token");
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn test_error_to_response_unauthorized() {
         use axum::http::StatusCode;
@@ -235,6 +243,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn test_error_to_response_policy_violation() {
         use axum::http::StatusCode;
@@ -255,6 +264,7 @@ mod tests {
         assert!(err.to_string().contains("invalid signature"));
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn test_error_to_response_signature_failed() {
         use axum::http::StatusCode;

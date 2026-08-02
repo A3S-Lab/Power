@@ -1,3 +1,5 @@
+#![cfg(feature = "server")]
+
 //! Integration tests for EPC-aware backend routing.
 //!
 //! Verifies that `BackendRegistry::find_for_tee()` correctly routes to the

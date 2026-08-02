@@ -150,6 +150,15 @@ Power does not embed PP-OCR, Unlimited-OCR, or any other product model.
 cargo build --no-default-features --features embedded-inference
 ```
 
+That feature does not enable Power's `server` feature. Its normal dependency
+closure excludes Axum, Hyper, Tower, HTTP clients, ONNX Runtime, and browser
+automation. Tokio networking, process, and signal features also remain behind
+`server`. Verify the boundary with:
+
+```bash
+just check-embedded
+```
+
 See [Embedded Inference Architecture](docs/embedded-inference-architecture.md)
 for the ownership boundary, Colibri-inspired weight hierarchy, routing,
 hot-store planning and prefetch semantics, TEE invariants, and model parity

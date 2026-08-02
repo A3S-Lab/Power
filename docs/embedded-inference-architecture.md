@@ -89,6 +89,10 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   `verify_signature`.
 - Embedded inference does not bind a socket, start a Web server, download a
   model, invoke Python, or spawn an inference service.
+- The server, API, CLI, model registry, remote clients, and Web dependencies are
+  behind the default `server` feature. An embedded-only build disables default
+  features, so its dependency closure contains no HTTP server/client stack and
+  does not enable Tokio networking, process, or signal support.
 - Existing encrypted model loading, remote attestation, privacy redaction,
   request receipts, and zeroizing sensitive request buffers remain independent
   security controls; the embedded runtime does not replace them.

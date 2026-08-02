@@ -14,8 +14,12 @@ pub mod attestation;
 pub mod cert;
 pub mod encrypted_model;
 pub mod epc;
+#[cfg(feature = "server")]
 pub mod gpu;
+#[cfg(feature = "server")]
 pub mod key_provider;
+#[cfg(feature = "server")]
 pub mod model_seal;
+pub mod model_signature;
 pub mod policy;
 pub mod privacy;

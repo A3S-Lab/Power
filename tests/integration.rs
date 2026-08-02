@@ -1,3 +1,5 @@
+#![cfg(feature = "server")]
+
 //! Integration tests for a3s-power core workflows.
 //!
 //! These tests exercise the HTTP API surface using axum's `oneshot` test

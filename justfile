@@ -119,6 +119,13 @@ test:
 test-raw:
     cargo test --lib
 
+# Validate the model-neutral embedded library without the HTTP/service stack.
+check-embedded:
+    cargo check --no-default-features --features embedded-inference --lib
+    cargo test --no-default-features --features embedded-inference --lib
+    cargo clippy --no-default-features --features embedded-inference --lib -- -D warnings
+    tools/check-embedded-deps.sh
+
 # Run tests with verbose output
 test-v:
     cargo test --lib -- --nocapture

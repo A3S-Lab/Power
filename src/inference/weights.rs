@@ -159,7 +159,7 @@ impl WeightStore {
         signature_anchor_path: &Path,
         public_key_hex: &str,
     ) -> Result<()> {
-        crate::tee::model_seal::verify_model_signature_hash(
+        crate::tee::model_signature::verify_model_signature_hash(
             model_name,
             &self.sha256,
             signature_anchor_path,
