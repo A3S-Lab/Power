@@ -268,6 +268,17 @@ impl WeightHierarchy {
         let _operation = write(&self.inner.operations);
         self.check_cancelled(cancellation)?;
 
+        self.apply_residency_plan_locked(plan, permit, cancellation)
+    }
+
+    pub(super) fn apply_residency_plan_locked(
+        &self,
+        plan: &ResidencyPlan,
+        permit: &ExecutionPermit,
+        cancellation: &CancellationToken,
+    ) -> Result<ResidencyApplyReport> {
+        self.check_cancelled(cancellation)?;
+
         let prior_cache = lock(&self.inner.cache).clone();
         let prior_plan = lock(&self.inner.active_plan).clone();
         lock(&self.inner.cache).clear_plan_pins();
@@ -345,7 +356,7 @@ impl WeightHierarchy {
         previous
     }
 
-    fn validate_plan(&self, plan: &ResidencyPlan) -> Result<()> {
+    pub(super) fn validate_plan(&self, plan: &ResidencyPlan) -> Result<()> {
         let policy = self.policy();
         let device_budget = if self.runtime().device().kind() == RuntimeDeviceKind::Cpu {
             0
@@ -455,7 +466,7 @@ fn resident_group_signatures(plan: &ResidencyPlan) -> BTreeSet<ResidentGroupSign
         .collect()
 }
 
-fn validate_candidate_id(id: &str) -> Result<()> {
+pub(super) fn validate_candidate_id(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > 1024 || id.chars().any(char::is_control) {
         return Err(PowerError::InvalidRequest(
             "residency candidate contains an invalid ID".to_string(),
