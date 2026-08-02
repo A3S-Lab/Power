@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256};
 use crate::error::{PowerError, Result};
 
 use super::{
-    InferenceLimits, WeightReadStrategy, WeightSourceCoverage, WeightSourceRole,
-    WeightSourceWeighting, WeightStore, WeightStoreConfig,
+    InferenceLimits, WeightReadStrategy, WeightSourceCoverage, WeightSourceRepresentation,
+    WeightSourceRole, WeightSourceWeighting, WeightStore, WeightStoreConfig,
 };
 
 mod cache;
@@ -174,6 +174,8 @@ pub struct StorageBenchmarkSource {
     pub role: WeightSourceRole,
     pub coverage: WeightSourceCoverage,
     pub read_strategy: WeightReadStrategy,
+    #[serde(default)]
+    pub representation: WeightSourceRepresentation,
     pub configured_read_weight: u32,
     pub effective_read_weight: u32,
     pub source_weighting: WeightSourceWeighting,
@@ -335,6 +337,7 @@ pub fn run_storage_benchmark(
                 role: source.role,
                 coverage: source.coverage,
                 read_strategy: source.read_strategy,
+                representation: source.representation,
                 configured_read_weight: source.configured_read_weight,
                 effective_read_weight: source.read_weight,
                 source_weighting: source.source_weighting,

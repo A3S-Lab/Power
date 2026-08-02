@@ -17,10 +17,16 @@ use super::{InferenceLimits, RuntimeDevice};
 
 mod files;
 mod index;
+mod lossless;
 mod range_io;
 
 use files::{discover_safetensors, hash_files};
 use index::TensorLocation;
+pub use lossless::{
+    weight_collection_sha256, LosslessEncodedRecord, LosslessRansNibbleHistogram,
+    LosslessRansNibbleTable, WeightSourceRepresentation, LOSSLESS_RANS_FORMAT_METADATA_KEY,
+    LOSSLESS_RANS_TABLE_METADATA_KEY,
+};
 use range_io::WeightFileReader;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +117,8 @@ pub struct WeightSourceConfig {
     pub coverage: WeightSourceCoverage,
     #[serde(default)]
     pub read_strategy: WeightReadStrategy,
+    #[serde(default)]
+    pub representation: WeightSourceRepresentation,
 }
 
 impl WeightSourceConfig {
@@ -120,6 +128,7 @@ impl WeightSourceConfig {
             read_weight: 1,
             coverage: WeightSourceCoverage::Complete,
             read_strategy: WeightReadStrategy::Mmap,
+            representation: WeightSourceRepresentation::CanonicalSafeTensors,
         }
     }
 
@@ -136,6 +145,11 @@ impl WeightSourceConfig {
 
     pub fn with_read_strategy(mut self, read_strategy: WeightReadStrategy) -> Self {
         self.read_strategy = read_strategy;
+        self
+    }
+
+    pub fn with_representation(mut self, representation: WeightSourceRepresentation) -> Self {
+        self.representation = representation;
         self
     }
 }
@@ -210,6 +224,8 @@ pub struct WeightSourceDescriptor {
     pub validation_bytes_per_second: u64,
     pub coverage: WeightSourceCoverage,
     pub read_strategy: WeightReadStrategy,
+    #[serde(default)]
+    pub representation: WeightSourceRepresentation,
     /// Platform-derived storage transfer alignment used for direct I/O.
     pub io_block_size: u64,
     pub verified_files: usize,
@@ -240,6 +256,8 @@ pub struct WeightStore {
     validation_bytes_per_second: u64,
     coverage: WeightSourceCoverage,
     read_strategy: WeightReadStrategy,
+    representation: WeightSourceRepresentation,
+    lossless: Option<lossless::LosslessSourceState>,
     replicas: Vec<WeightStore>,
 }
 
@@ -264,6 +282,7 @@ pub struct TensorRead {
     bytes: Zeroizing<Vec<u8>>,
     storage: TensorStorageDescriptor,
     strategy: WeightReadStrategy,
+    representation: WeightSourceRepresentation,
     source_index: usize,
     fell_back: bool,
 }
@@ -281,6 +300,10 @@ impl TensorRead {
         self.strategy
     }
 
+    pub fn representation(&self) -> &WeightSourceRepresentation {
+        &self.representation
+    }
+
     pub fn source_index(&self) -> usize {
         self.source_index
     }
@@ -296,6 +319,7 @@ impl std::fmt::Debug for TensorRead {
             .debug_struct("TensorRead")
             .field("bytes", &self.bytes.len())
             .field("strategy", &self.strategy)
+            .field("representation", &self.representation)
             .field("source_index", &self.source_index)
             .field("fell_back", &self.fell_back)
             .finish_non_exhaustive()
@@ -320,6 +344,12 @@ impl WeightStore {
                 "the primary weight source must have complete coverage".to_string(),
             ));
         }
+        config.primary.representation.validate()?;
+        if !config.primary.representation.is_canonical() {
+            return Err(PowerError::Config(
+                "the primary weight source must use canonical SafeTensors".to_string(),
+            ));
+        }
         let source_count = config.replicas.len().saturating_add(1);
         if source_count > limits.max_weight_sources {
             return Err(PowerError::Config(format!(
@@ -330,25 +360,32 @@ impl WeightStore {
         let mut primary = Self::open_single(&config.primary, limits)?;
         let mut roots = vec![primary.root.clone()];
         for replica_config in &config.replicas {
-            let replica = Self::open_single(replica_config, limits)?;
+            replica_config.representation.validate()?;
+            let replica = if replica_config.representation.is_canonical() {
+                Self::open_single(replica_config, limits)?
+            } else {
+                lossless::open_lossless_source(replica_config, &primary, limits)?
+            };
             if roots.contains(&replica.root) {
                 return Err(PowerError::Config(format!(
                     "weight source '{}' is configured more than once",
                     replica.root.display()
                 )));
             }
-            match replica.coverage {
-                WeightSourceCoverage::Complete if replica.sha256 != primary.sha256 => {
-                    return Err(PowerError::IntegrityCheckFailed {
-                        model: format!("weight replica {}", replica.root.display()),
-                        expected: primary.sha256.clone(),
-                        actual: replica.sha256,
-                    });
+            if replica.representation.is_canonical() {
+                match replica.coverage {
+                    WeightSourceCoverage::Complete if replica.sha256 != primary.sha256 => {
+                        return Err(PowerError::IntegrityCheckFailed {
+                            model: format!("weight replica {}", replica.root.display()),
+                            expected: primary.sha256.clone(),
+                            actual: replica.sha256,
+                        });
+                    }
+                    WeightSourceCoverage::Partial => {
+                        validate_partial_replica(&primary, &replica)?;
+                    }
+                    WeightSourceCoverage::Complete => {}
                 }
-                WeightSourceCoverage::Partial => {
-                    validate_partial_replica(&primary, &replica)?;
-                }
-                WeightSourceCoverage::Complete => {}
             }
             roots.push(replica.root.clone());
             primary.replicas.push(replica);
@@ -359,6 +396,12 @@ impl WeightStore {
 
     fn open_single(config: &WeightSourceConfig, limits: &InferenceLimits) -> Result<Self> {
         limits.validate()?;
+        config.representation.validate()?;
+        if !config.representation.is_canonical() {
+            return Err(PowerError::Config(
+                "canonical source opening received a compressed representation".to_string(),
+            ));
+        }
         if config.read_weight == 0 {
             return Err(PowerError::Config(
                 "weight source read weight must be greater than zero".to_string(),
@@ -412,7 +455,8 @@ impl WeightStore {
         for (file_index, (path, file)) in paths.iter().zip(files.iter()).enumerate() {
             let reader = WeightFileReader::open(path, file.bytes, config.read_strategy)?;
             io_block_size = io_block_size.max(reader.io_block_size());
-            for (name, location) in index::index_file(&reader, file_index, file.bytes)? {
+            let indexed = index::index_file(&reader, file_index, file.bytes)?;
+            for (name, location) in indexed.locations {
                 let descriptor = TensorDescriptor {
                     name: name.clone(),
                     dtype: format!("{:?}", location.dtype).to_ascii_lowercase(),
@@ -448,6 +492,8 @@ impl WeightStore {
             validation_bytes_per_second,
             coverage: config.coverage,
             read_strategy: config.read_strategy,
+            representation: config.representation.clone(),
+            lossless: None,
             replicas: Vec::new(),
         })
     }
@@ -480,6 +526,7 @@ impl WeightStore {
             validation_bytes_per_second: self.validation_bytes_per_second,
             coverage: WeightSourceCoverage::Complete,
             read_strategy: self.read_strategy,
+            representation: self.representation.clone(),
             io_block_size: self.io_block_size(),
             verified_files: self.files.len(),
             verified_tensors: self.inventory.len(),
@@ -496,6 +543,7 @@ impl WeightStore {
                 validation_bytes_per_second: replica.validation_bytes_per_second,
                 coverage: replica.coverage,
                 read_strategy: replica.read_strategy,
+                representation: replica.representation.clone(),
                 io_block_size: replica.io_block_size(),
                 verified_files: replica.files.len(),
                 verified_tensors: replica.inventory.len(),
@@ -526,8 +574,23 @@ impl WeightStore {
         let mut ranges = Vec::new();
         for source in sources {
             for name in names {
-                let Some(location) = source.locations.get(name) else {
+                if !source.contains(name) {
                     continue;
+                }
+                let location = if source.lossless.is_some() {
+                    lossless::physical_location(source, name).ok_or_else(|| {
+                        PowerError::InvalidFormat(
+                            "lossless cache range is missing its verified physical record"
+                                .to_string(),
+                        )
+                    })?
+                } else {
+                    source.locations.get(name).ok_or_else(|| {
+                        PowerError::InvalidFormat(
+                            "canonical cache range is missing its verified tensor location"
+                                .to_string(),
+                        )
+                    })?
                 };
                 let path = source.paths.get(location.file_index).ok_or_else(|| {
                     PowerError::InvalidFormat(
@@ -628,6 +691,7 @@ impl WeightStore {
                     bytes,
                     storage,
                     strategy: self.read_strategy,
+                    representation: self.representation.clone(),
                     source_index,
                     fell_back: false,
                 });
@@ -639,6 +703,7 @@ impl WeightStore {
                 bytes,
                 storage,
                 strategy: replica.read_strategy,
+                representation: replica.representation.clone(),
                 source_index,
                 fell_back: false,
             }),
@@ -649,6 +714,7 @@ impl WeightStore {
                     bytes,
                     storage,
                     strategy: self.read_strategy,
+                    representation: self.representation.clone(),
                     source_index: 0,
                     fell_back: true,
                 })
@@ -716,7 +782,7 @@ impl WeightStore {
         cancellation: &CancellationToken,
     ) -> Result<Tensor> {
         check_read_cancelled(cancellation)?;
-        let tensor = if self.read_strategy == WeightReadStrategy::Mmap {
+        let tensor = if self.lossless.is_none() && self.read_strategy == WeightReadStrategy::Mmap {
             self.tensors
                 .as_ref()
                 .ok_or_else(|| {
@@ -757,9 +823,24 @@ impl WeightStore {
         cancellation: &CancellationToken,
     ) -> Result<(Zeroizing<Vec<u8>>, TensorStorageDescriptor)> {
         check_read_cancelled(cancellation)?;
+        if self.lossless.is_some() {
+            return lossless::read_lossless_bytes(self, name, cancellation);
+        }
         let location = self.locations.get(name).ok_or_else(|| {
             PowerError::InvalidFormat(format!("weight store does not contain tensor '{name}'"))
         })?;
+        let bytes = self.read_physical_bytes(name, location, cancellation)?;
+        check_read_cancelled(cancellation)?;
+        Ok((bytes, storage_descriptor(location)))
+    }
+
+    fn read_physical_bytes(
+        &self,
+        name: &str,
+        location: &TensorLocation,
+        cancellation: &CancellationToken,
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        check_read_cancelled(cancellation)?;
         let bytes = if self.read_strategy == WeightReadStrategy::Mmap {
             let view = self
                 .tensors
@@ -798,7 +879,7 @@ impl WeightStore {
             )?
         };
         check_read_cancelled(cancellation)?;
-        Ok((bytes, storage_descriptor(location)))
+        Ok(bytes)
     }
 
     fn select_source(&self, name: &str) -> usize {
@@ -956,10 +1037,13 @@ impl std::fmt::Debug for WeightStore {
             .field("sha256", &self.sha256)
             .field("bytes", &self.bytes)
             .field("read_strategy", &self.read_strategy)
+            .field("representation", &self.representation)
             .field("source_count", &self.replicas.len().saturating_add(1))
             .finish_non_exhaustive()
     }
 }
 
+#[cfg(test)]
+mod lossless_tests;
 #[cfg(test)]
 mod tests;

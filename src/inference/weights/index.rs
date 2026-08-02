@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use safetensors::tensor::{Dtype, Metadata};
 use tokio_util::sync::CancellationToken;
@@ -19,11 +19,16 @@ pub(super) struct TensorLocation {
     pub(super) shape: Vec<usize>,
 }
 
+pub(super) struct IndexedFile {
+    pub(super) locations: BTreeMap<String, TensorLocation>,
+    pub(super) metadata: HashMap<String, String>,
+}
+
 pub(super) fn index_file(
     reader: &WeightFileReader,
     file_index: usize,
     verified_bytes: u64,
-) -> Result<BTreeMap<String, TensorLocation>> {
+) -> Result<IndexedFile> {
     let cancellation = CancellationToken::new();
     let prefix = reader.read_range(
         super::WeightReadStrategy::PositionalBuffered,
@@ -74,6 +79,7 @@ pub(super) fn index_file(
         )));
     }
 
+    let custom_metadata = metadata.metadata().clone().unwrap_or_default();
     let mut locations = BTreeMap::new();
     for (name, info) in metadata.tensors() {
         let relative_start = u64::try_from(info.data_offsets.0).map_err(|_| {
@@ -110,5 +116,8 @@ pub(super) fn index_file(
             ));
         }
     }
-    Ok(locations)
+    Ok(IndexedFile {
+        locations,
+        metadata: custom_metadata,
+    })
 }

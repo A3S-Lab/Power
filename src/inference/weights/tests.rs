@@ -398,8 +398,16 @@ fn new_source_options_have_backward_compatible_serde_defaults() {
     assert_eq!(config.source_weighting, WeightSourceWeighting::Configured);
     assert_eq!(config.primary.coverage, WeightSourceCoverage::Complete);
     assert_eq!(config.primary.read_strategy, WeightReadStrategy::Mmap);
+    assert_eq!(
+        config.primary.representation,
+        WeightSourceRepresentation::CanonicalSafeTensors
+    );
     assert_eq!(config.replicas[0].coverage, WeightSourceCoverage::Complete);
     assert_eq!(config.replicas[0].read_strategy, WeightReadStrategy::Mmap);
+    assert_eq!(
+        config.replicas[0].representation,
+        WeightSourceRepresentation::CanonicalSafeTensors
+    );
 }
 
 #[test]

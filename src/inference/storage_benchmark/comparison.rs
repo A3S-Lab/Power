@@ -8,7 +8,7 @@ use crate::error::{PowerError, Result};
 use super::{
     StorageBenchmarkReport, StorageBenchmarkSource, StorageBenchmarkSystem,
     StorageCachePreparation, StorageCacheState, WeightReadStrategy, WeightSourceCoverage,
-    WeightSourceRole, WeightSourceWeighting, REPORT_SCHEMA,
+    WeightSourceRepresentation, WeightSourceRole, WeightSourceWeighting, REPORT_SCHEMA,
 };
 
 const COMPARISON_SCHEMA: &str = "a3s.power.storage-benchmark-comparison.v1";
@@ -31,6 +31,8 @@ pub struct StorageBenchmarkSourceSummary {
     pub role: WeightSourceRole,
     pub coverage: WeightSourceCoverage,
     pub read_strategy: WeightReadStrategy,
+    #[serde(default)]
+    pub representation: WeightSourceRepresentation,
     pub configured_read_weight: u32,
     pub effective_read_weight: u32,
     pub source_weighting: WeightSourceWeighting,
@@ -247,8 +249,19 @@ struct GroupAccumulator {
 }
 
 fn validate_report(report: &StorageBenchmarkReport) -> Result<()> {
+    let source_identity_is_valid =
+        report.sources.first().is_some_and(|source| {
+            source.index == 0
+                && source.role == WeightSourceRole::Primary
+                && source.representation == WeightSourceRepresentation::CanonicalSafeTensors
+        }) && report.sources.iter().enumerate().all(|(index, source)| {
+            source.index == index
+                && (index == 0 || source.role == WeightSourceRole::Replica)
+                && source.representation.validate().is_ok()
+        });
     if report.schema != REPORT_SCHEMA
         || report.sources.is_empty()
+        || !source_identity_is_valid
         || report.samples.is_empty()
         || report.total_requested_bytes != report.total_read_bytes
         || report.output_validation_nanos == 0
@@ -335,6 +348,7 @@ fn summarize_sources(
                 role: source.role,
                 coverage: source.coverage,
                 read_strategy: source.read_strategy,
+                representation: source.representation.clone(),
                 configured_read_weight: source.configured_read_weight,
                 effective_read_weight: source.effective_read_weight,
                 source_weighting: source.source_weighting,
@@ -379,7 +393,8 @@ fn percentile(sorted: &[u64], percent: usize) -> u64 {
 mod tests {
     use super::*;
     use crate::inference::{
-        StorageBenchmarkSample, WeightSourceCoverage, WeightSourceRole, WeightSourceWeighting,
+        StorageBenchmarkSample, WeightSourceCoverage, WeightSourceRepresentation, WeightSourceRole,
+        WeightSourceWeighting,
     };
 
     fn report(strategy: WeightReadStrategy, state: StorageCacheState) -> StorageBenchmarkReport {
@@ -393,6 +408,7 @@ mod tests {
                 role: WeightSourceRole::Primary,
                 coverage: WeightSourceCoverage::Complete,
                 read_strategy: strategy,
+                representation: WeightSourceRepresentation::CanonicalSafeTensors,
                 configured_read_weight: 1,
                 effective_read_weight: 1,
                 source_weighting: WeightSourceWeighting::Configured,
@@ -485,5 +501,42 @@ mod tests {
                 .count,
             2
         );
+    }
+
+    #[test]
+    fn comparison_binds_lossless_representation_identity_into_source_profiles() {
+        let mut first = report(WeightReadStrategy::Mmap, StorageCacheState::Warm);
+        let mut second = first.clone();
+        let mut first_replica = first.sources[0].clone();
+        first_replica.index = 1;
+        first_replica.role = WeightSourceRole::Replica;
+        first_replica.representation = WeightSourceRepresentation::LosslessRansNibble256V1 {
+            artifact_sha256: "4".repeat(64),
+        };
+        first_replica.verified_bytes = 3;
+        let mut second_replica = first_replica.clone();
+        second_replica.representation = WeightSourceRepresentation::LosslessRansNibble256V1 {
+            artifact_sha256: "5".repeat(64),
+        };
+        first.sources.push(first_replica);
+        second.sources.push(second_replica);
+
+        let comparison = compare_storage_benchmarks(&[first, second]).unwrap();
+        assert_eq!(comparison.groups.len(), 2);
+        assert_ne!(
+            comparison.groups[0].source_profile_sha256,
+            comparison.groups[1].source_profile_sha256
+        );
+    }
+
+    #[test]
+    fn comparison_rejects_malformed_representation_identity() {
+        let first = report(WeightReadStrategy::Mmap, StorageCacheState::Warm);
+        let mut malformed = first.clone();
+        malformed.sources[0].representation = WeightSourceRepresentation::LosslessRansNibble256V1 {
+            artifact_sha256: "not-a-digest".to_string(),
+        };
+
+        assert!(compare_storage_benchmarks(&[first, malformed]).is_err());
     }
 }

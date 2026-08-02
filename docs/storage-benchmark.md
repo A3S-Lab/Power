@@ -6,6 +6,10 @@ subprocess, network client, or listener. It extends the same `WeightStore`
 integrity, replica routing, cancellation, and fallback path used by embedded
 inference; it is not a second storage engine.
 
+The same runner also measures optional lossless representations. Canonical
+SafeTensors remains the primary; each compressed replica carries an explicit
+physical artifact pin and must pass full decoded-byte admission before timing.
+
 The protocol adapts the measured positional-I/O ideas in
 [A3S-Lab/colibri](https://github.com/A3S-Lab/colibri/tree/b085b48888a88d9a1c00b151a9979774b72cdbfd),
 especially `st.h` and `iobench.c`, while adding Power's integrity, privacy,
@@ -19,16 +23,19 @@ cross-platform, and reproducibility requirements.
 | `positional-buffered` | Exact indexed ranges through bounded page-cache-backed positional reads; no collection-wide mmap is retained | No |
 | `positional-direct` | Aligned `O_DIRECT` on Linux or `FILE_FLAG_NO_BUFFERING` on Windows | No |
 
-Every strategy returns the same tensor dtype, shape, and bytes. Direct mode
-never silently falls back to buffered I/O. macOS reports direct mode as
-unsupported because `F_NOCACHE` is not equivalent evidence for this contract.
+Every strategy and representation returns the same canonical tensor dtype,
+shape, and bytes. Direct mode never silently falls back to buffered I/O. macOS
+reports direct mode as unsupported because `F_NOCACHE` is not equivalent
+evidence for this contract.
 
 ## Timing and Evidence
 
 Each report records:
 
 - exact Power version and commit;
-- primary collection digest and path-free source descriptors;
+- primary collection digest and path-free source descriptors, including typed
+  canonical or lossless representation identity and the compressed artifact
+  digest where applicable;
 - OS, architecture, named CPU, RAM, filesystem class, device class, transfer
   alignment, concurrency, strategy, and cache procedure;
 - deterministic sequence digest, tensor count, requested bytes, read bytes,
@@ -37,6 +44,12 @@ Each report records:
 - two output-validation passes outside the measured interval, one before cache
   preparation and one after all samples;
 - one canonical output digest used for cross-strategy byte parity.
+
+`verifiedBytes` in each source descriptor is the physical admitted collection
+size. Sample `bytesRead`, requested-byte totals, and throughput use decoded
+canonical bytes, so a lossless run measures effective model-byte delivery plus
+decode cost. Representation identity participates in the stable source-profile
+digest; reports from different compressed artifacts are never merged silently.
 
 Reports are written only to stdout. They contain no filesystem path or tensor
 name. Power does not persist or export a report automatically.
@@ -67,6 +80,29 @@ Repeat with `--strategy positional-buffered`. Use
 `--strategy positional-direct` only when the platform and source support it.
 Add `--replica` or `--partial-replica` for a separately captured multi-source
 run; all sources in one run must use the same strategy.
+
+For an already minted lossless collection, pass the independently reviewed
+physical collection pin with the source. The `::` separator is part of the CLI
+syntax:
+
+```bash
+target/release/a3s-power-storage-bench \
+  --primary /models/canonical \
+  --lossless-replica /models/compressed::0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --strategy mmap \
+  --power-commit 0123456789abcdef0123456789abcdef01234567 \
+  --filesystem-class ext4 \
+  --device-class local-nvme \
+  --cpu-model "Named CPU" \
+  --ram-bytes 68719476736 \
+  --cache-state warm \
+  --cache-preparation warm-sequence \
+  --samples 30
+```
+
+Use `--partial-lossless-replica` for a proper non-empty tensor subset. The
+runner does not mint a digest from the same untrusted artifact on the caller's
+behalf; an explicit lowercase SHA-256 pin is mandatory.
 
 ## Verified Cold Runs
 
