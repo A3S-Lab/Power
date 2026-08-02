@@ -29,6 +29,19 @@ pub enum WeightTier {
     Device,
 }
 
+/// Bounded cache replacement policy for host and device weight tiers.
+///
+/// `Lfru` follows Colibri's frequency-first, recency-second policy. One heat
+/// observation outweighs the entire recency window, so a single recent access
+/// cannot displace a consistently hot weight.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CacheEvictionPolicy {
+    Lru,
+    #[default]
+    Lfru,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PlacementPreference {
@@ -60,6 +73,11 @@ pub struct ResidencyPolicy {
     pub host_cache_bytes: u64,
     pub device_cache_bytes: u64,
     pub max_entries_per_layer: usize,
+    #[serde(default)]
+    pub cache_eviction: CacheEvictionPolicy,
+    /// Demand accesses between frequency decay passes for the LFRU policy.
+    #[serde(default = "default_cache_heat_decay_interval")]
+    pub cache_heat_decay_interval: u64,
     /// Maximum number of layer-ahead prefetch operations in flight.
     pub max_prefetch_tasks: usize,
     /// Maximum blocking weight loads within one prefetch operation.
@@ -77,6 +95,8 @@ impl Default for ResidencyPolicy {
             host_cache_bytes: 0,
             device_cache_bytes: 0,
             max_entries_per_layer: 64,
+            cache_eviction: CacheEvictionPolicy::Lfru,
+            cache_heat_decay_interval: default_cache_heat_decay_interval(),
             max_prefetch_tasks: 1,
             max_prefetch_workers: 4,
             max_prefetch_items: 128,
@@ -86,6 +106,10 @@ impl Default for ResidencyPolicy {
     }
 }
 
+const fn default_cache_heat_decay_interval() -> u64 {
+    4_096
+}
+
 impl ResidencyPolicy {
     pub fn validate(&self) -> Result<()> {
         if self.max_entries_per_layer == 0
@@ -93,9 +117,10 @@ impl ResidencyPolicy {
             || self.max_prefetch_workers == 0
             || self.max_prefetch_items == 0
             || self.max_prefetch_bytes == 0
+            || self.cache_heat_decay_interval == 0
         {
             return Err(PowerError::Config(
-                "weight residency entry and prefetch bounds must be greater than zero".to_string(),
+                "weight residency cache and prefetch bounds must be greater than zero".to_string(),
             ));
         }
         Ok(())

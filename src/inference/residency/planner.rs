@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    lock, write, ExecutionPermit, PlacementPreference, WeightHierarchy, WeightKey, WeightRequest,
-    WeightTier,
+    lock, write, CacheAccess, ExecutionPermit, PinReason, PlacementPreference, WeightHierarchy,
+    WeightKey, WeightRequest, WeightTier,
 };
 use crate::error::{PowerError, Result};
 use crate::inference::RuntimeDeviceKind;
@@ -90,6 +90,10 @@ impl ResidencyPlan {
 pub struct ResidencyApplyReport {
     pub groups_pinned: usize,
     pub weights_pinned: usize,
+    #[serde(default)]
+    pub groups_released: usize,
+    #[serde(default)]
+    pub weights_released: usize,
     pub host_bytes: u64,
     pub device_bytes: u64,
 }
@@ -245,10 +249,13 @@ impl WeightHierarchy {
         })
     }
 
-    /// Pins every resident group in a validated plan.
+    /// Reconciles the active hot set with a validated plan at a request-safe
+    /// boundary.
     ///
-    /// On failure, cache entries and pin flags touched by this operation are
-    /// restored to their prior state. Storage groups are intentionally skipped.
+    /// Plan-owned pins from the previous plan are released before the new hot
+    /// set is admitted. Explicit pins created with [`WeightHierarchy::pin`]
+    /// remain intact. On failure, the complete cache and prior active plan are
+    /// restored. Storage groups are intentionally not materialized.
     pub fn apply_residency_plan(
         &self,
         plan: &ResidencyPlan,
@@ -261,24 +268,25 @@ impl WeightHierarchy {
         let _operation = write(&self.inner.operations);
         self.check_cancelled(cancellation)?;
 
-        let mut prior = BTreeMap::<(WeightTier, WeightKey), Option<bool>>::new();
-        for group in &plan.groups {
-            for key in &group.weights {
-                match group.tier {
-                    WeightTier::Storage => {}
-                    WeightTier::Host => self.capture_pin_state(&mut prior, WeightTier::Host, key),
-                    WeightTier::Device => {
-                        // Device promotion can populate both tiers.
-                        self.capture_pin_state(&mut prior, WeightTier::Host, key);
-                        self.capture_pin_state(&mut prior, WeightTier::Device, key);
-                    }
-                }
-            }
-        }
+        let prior_cache = lock(&self.inner.cache).clone();
+        let prior_plan = lock(&self.inner.active_plan).clone();
+        lock(&self.inner.cache).clear_plan_pins();
+
+        let prior_groups = prior_plan
+            .as_ref()
+            .map(resident_group_signatures)
+            .unwrap_or_default();
+        let next_groups = resident_group_signatures(plan);
+        let released = prior_groups
+            .difference(&next_groups)
+            .cloned()
+            .collect::<Vec<_>>();
 
         let mut report = ResidencyApplyReport {
             groups_pinned: 0,
             weights_pinned: 0,
+            groups_released: released.len(),
+            weights_released: released.iter().map(|(_, _, weights)| weights.len()).sum(),
             host_bytes: 0,
             device_bytes: 0,
         };
@@ -294,7 +302,8 @@ impl WeightHierarchy {
                         &WeightRequest::new(key.clone(), placement),
                         permit,
                         cancellation,
-                        true,
+                        Some(PinReason::Plan),
+                        CacheAccess::Staging,
                     )?;
                     report.weights_pinned = report.weights_pinned.saturating_add(1);
                 }
@@ -312,25 +321,28 @@ impl WeightHierarchy {
             Ok(())
         })();
         if let Err(error) = applied {
-            let mut cache = lock(&self.inner.cache);
-            for ((tier, key), state) in prior.into_iter().rev() {
-                cache.restore_pin_state(tier, &key, state, &self.inner.telemetry);
-            }
+            *lock(&self.inner.cache) = prior_cache;
+            *lock(&self.inner.active_plan) = prior_plan;
             return Err(error);
         }
+        *lock(&self.inner.active_plan) = Some(plan.clone());
         Ok(report)
     }
 
-    fn capture_pin_state(
-        &self,
-        states: &mut BTreeMap<(WeightTier, WeightKey), Option<bool>>,
-        tier: WeightTier,
-        key: &WeightKey,
-    ) {
-        states.entry((tier, key.clone())).or_insert_with(|| {
-            let cache = lock(&self.inner.cache);
-            cache.pin_state(tier, key)
-        });
+    /// Returns the active model- and policy-bound plan without logging or
+    /// persisting its potentially sensitive hot set.
+    pub fn active_residency_plan(&self) -> Option<ResidencyPlan> {
+        let _operation = super::read(&self.inner.operations);
+        lock(&self.inner.active_plan).clone()
+    }
+
+    /// Releases only plan-owned pins. Resident tensors become ordinary cache
+    /// entries and explicit caller pins are preserved.
+    pub fn clear_residency_plan(&self) -> Option<ResidencyPlan> {
+        let _operation = write(&self.inner.operations);
+        let previous = lock(&self.inner.active_plan).take();
+        lock(&self.inner.cache).clear_plan_pins();
+        previous
     }
 
     fn validate_plan(&self, plan: &ResidencyPlan) -> Result<()> {
@@ -431,6 +443,16 @@ impl WeightHierarchy {
         }
         Ok(())
     }
+}
+
+type ResidentGroupSignature = (String, WeightTier, Vec<WeightKey>);
+
+fn resident_group_signatures(plan: &ResidencyPlan) -> BTreeSet<ResidentGroupSignature> {
+    plan.groups
+        .iter()
+        .filter(|group| group.tier != WeightTier::Storage)
+        .map(|group| (group.id.clone(), group.tier, group.weights.clone()))
+        .collect()
 }
 
 fn validate_candidate_id(id: &str) -> Result<()> {

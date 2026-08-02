@@ -172,7 +172,7 @@ impl WeightHierarchy {
         let permit = permit.clone();
         let cancellation = cancellation.clone();
         workers.spawn_blocking(move || {
-            let weight = hierarchy.load(&request, &permit, &cancellation)?;
+            let weight = hierarchy.load_prefetch(&request, &permit, &cancellation)?;
             Ok((weight.bytes(), weight.cache_hit()))
         });
     }

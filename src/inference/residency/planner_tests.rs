@@ -108,6 +108,7 @@ fn plan_application_pins_the_selected_hot_set() {
 
     assert_eq!(report.groups_pinned, 2);
     assert_eq!(report.weights_pinned, 2);
+    assert_eq!(report.groups_released, 0);
     assert_eq!(report.host_bytes, 8);
     let hot = hierarchy
         .load(
@@ -117,6 +118,89 @@ fn plan_application_pins_the_selected_hot_set() {
         )
         .unwrap();
     assert!(hot.cache_hit());
+}
+
+#[test]
+fn plan_application_replaces_only_plan_owned_hot_set() {
+    let (_directory, hierarchy, runtime) = hierarchy(8, 2);
+    let first = hierarchy
+        .plan_residency(&[
+            candidate("hot", 100, &["hot"]),
+            candidate("warm", 10, &["warm"]),
+            candidate("cold", 1, &["cold"]),
+            candidate("paired", 0, &["paired"]),
+        ])
+        .unwrap();
+    let second = hierarchy
+        .plan_residency(&[
+            candidate("hot", 1, &["hot"]),
+            candidate("warm", 0, &["warm"]),
+            candidate("cold", 100, &["cold"]),
+            candidate("paired", 10, &["paired"]),
+        ])
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+
+    hierarchy
+        .apply_residency_plan(&first, &permit, &cancellation)
+        .unwrap();
+    let report = hierarchy
+        .apply_residency_plan(&second, &permit, &cancellation)
+        .unwrap();
+
+    assert_eq!(report.groups_released, 2);
+    assert_eq!(report.weights_released, 2);
+    assert_eq!(hierarchy.active_residency_plan(), Some(second));
+    assert!(hierarchy
+        .load(
+            &WeightRequest::new(WeightKey::new(0, "cold"), PlacementPreference::Host),
+            &permit,
+            &cancellation,
+        )
+        .unwrap()
+        .cache_hit());
+    assert!(!hierarchy
+        .load(
+            &WeightRequest::new(WeightKey::new(0, "hot"), PlacementPreference::Host),
+            &permit,
+            &cancellation,
+        )
+        .unwrap()
+        .cache_hit());
+}
+
+#[test]
+fn clearing_plan_preserves_explicit_pins() {
+    let (_directory, hierarchy, runtime) = hierarchy(8, 2);
+    let plan = hierarchy
+        .plan_residency(&[candidate("hot", 100, &["hot"])])
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+
+    hierarchy
+        .pin(
+            &WeightRequest::new(WeightKey::new(0, "hot"), PlacementPreference::Host),
+            &permit,
+            &cancellation,
+        )
+        .unwrap();
+    hierarchy
+        .apply_residency_plan(&plan, &permit, &cancellation)
+        .unwrap();
+    assert_eq!(hierarchy.clear_residency_plan(), Some(plan));
+    hierarchy.clear_unpinned();
+
+    assert_eq!(hierarchy.telemetry().host_resident_bytes, 4);
+    assert!(hierarchy
+        .load(
+            &WeightRequest::new(WeightKey::new(0, "hot"), PlacementPreference::Host),
+            &permit,
+            &cancellation,
+        )
+        .unwrap()
+        .cache_hit());
 }
 
 #[test]

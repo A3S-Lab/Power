@@ -7,6 +7,8 @@ use crate::error::{PowerError, Result};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InferenceLimits {
     pub max_model_files: usize,
+    #[serde(default = "default_max_weight_sources")]
+    pub max_weight_sources: usize,
     pub max_model_bytes: u64,
     pub max_resident_weight_bytes: u64,
     pub max_state_bytes: u64,
@@ -26,6 +28,7 @@ impl Default for InferenceLimits {
     fn default() -> Self {
         Self {
             max_model_files: 512,
+            max_weight_sources: default_max_weight_sources(),
             max_model_bytes: 16 * 1024 * 1024 * 1024,
             max_resident_weight_bytes: 16 * 1024 * 1024 * 1024,
             max_state_bytes: 4 * 1024 * 1024 * 1024,
@@ -43,10 +46,15 @@ impl Default for InferenceLimits {
     }
 }
 
+const fn default_max_weight_sources() -> usize {
+    8
+}
+
 impl InferenceLimits {
     pub fn validate(&self) -> Result<()> {
         let positive = [
             ("max_model_files", self.max_model_files),
+            ("max_weight_sources", self.max_weight_sources),
             ("max_input_bytes", self.max_input_bytes),
             ("max_tensor_elements", self.max_tensor_elements),
             ("max_graph_plan_bytes", self.max_graph_plan_bytes),
