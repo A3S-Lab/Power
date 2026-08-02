@@ -21,6 +21,10 @@ mod runtime;
 mod storage_benchmark;
 mod telemetry;
 mod tensor;
+mod tuning;
+#[cfg(test)]
+mod tuning_tests;
+mod tuning_types;
 mod weights;
 
 pub use coupling::{
@@ -60,6 +64,12 @@ pub use telemetry::{
     PlacementTelemetry, RouteHeat, RoutingHistory, StorageSourceTelemetry, TelemetryMode,
 };
 pub use tensor::{TensorInput, TensorOutput};
+pub use tuning::evaluate_tuning_profile;
+pub use tuning_types::{
+    TuningCandidateEvidence, TuningCandidateSummary, TuningOrderedEvidence, TuningProfileBinding,
+    TuningProfileDecision, TuningProfileEvidence, TuningProfileOutcome, TuningProfilePolicy,
+    TuningRoundEvidence, TuningRunEvidence,
+};
 pub use weights::{
     TensorDescriptor, TensorRead, TensorStorageDescriptor, WeightFileDescriptor,
     WeightReadStrategy, WeightSourceConfig, WeightSourceCoverage, WeightSourceDescriptor,
