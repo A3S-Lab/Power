@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-02
+
 ### Added
 
 - Added opt-in hardware-aware residency budgets with bounded native
