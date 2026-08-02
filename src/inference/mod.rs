@@ -33,8 +33,9 @@ pub use telemetry::{
 };
 pub use tensor::{TensorInput, TensorOutput};
 pub use weights::{
-    TensorDescriptor, WeightFileDescriptor, WeightSourceConfig, WeightSourceDescriptor,
-    WeightSourceRole, WeightStore, WeightStoreConfig,
+    TensorDescriptor, WeightFileDescriptor, WeightSourceConfig, WeightSourceCoverage,
+    WeightSourceDescriptor, WeightSourceRole, WeightSourceWeighting, WeightStore,
+    WeightStoreConfig,
 };
 
 pub(crate) const RUNTIME_NAME: &str = "a3s-power-native";

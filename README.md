@@ -124,7 +124,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
 - **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional), proxy (forwards to an upstream OpenAI-compatible server — vLLM/TGI/SGLang/OpenAI — so Power can front an existing accelerated engine)
 - **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
-- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, weighted read-only replicas, typed devices, LFRU/LRU residency, measurable prefetch, cancellation, and execution receipts. Model architectures live in their owning crates; embedded sessions never bind a Web port
+- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, complete or partial weighted read-only replicas, validation-throughput source weighting, typed devices, LFRU/LRU residency, measurable prefetch, cancellation, and execution receipts. Model architectures live in their owning crates; embedded sessions never bind a Web port
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
 - **JSON Schema Structured Output**: Constrain local llama.cpp output via JSON Schema → GBNF grammar conversion; unsupported local backend/schema combinations fail closed instead of silently ignoring output policy
@@ -140,9 +140,12 @@ server and backend registry. It provides a shared runtime, reviewed static-graph
 execution, exact SafeTensors inventories, typed devices, hard resource bounds,
 cancellation, canonical execution receipts, bounded parallel prefetch with
 useful/unused accounting, deterministic heat-driven weight placement, and
-digest-verified bandwidth-weighted storage replicas. Hot plans can be replaced
-transactionally without releasing explicit caller pins. It never downloads a
-model, starts another process, or opens a listener.
+digest-verified bandwidth-weighted storage replicas. A replica may explicitly
+cover the complete collection or an exact subset of primary SafeTensors files;
+source weights can reuse throughput observed during the mandatory integrity
+read without scanning the model again. Hot plans can be replaced transactionally
+without releasing explicit caller pins. It never downloads a model, starts
+another process, or opens a listener.
 
 Model-owning crates provide graph identities and plans, network control flow,
 tokenizers, preprocessing, postprocessing, and revision policy. Consequently,
@@ -1629,6 +1632,7 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 ### Completed
 
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
+- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, storage/host/device residency, LFRU hot sets, atomic plans, batched expert unions, bounded prefetch, complete/partial weighted replicas, integrity-read throughput weighting, private telemetry, and canonical receipts without an embedded Web listener
 - [x] Pure Rust inference backend — `mistralrs` feature (default): GGUF inference via candle, no C++ dependency; ideal for TEE supply-chain auditing
 - [x] OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`)
 - [x] Content-addressed model storage with SHA-256

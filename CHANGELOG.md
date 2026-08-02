@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added Colibri-inspired partial SafeTensors replicas with exact per-file and
+  per-tensor validation, coverage-aware deterministic source selection, and
+  primary fallback for tensors outside the mirrored subset.
+- Added opt-in validation-throughput source weighting that reuses the mandatory
+  integrity hash pass instead of reading multi-gigabyte weight sources twice.
+
+### Security
+
+- Kept complete and partial replica admission fail-closed, bounded by the
+  existing source/file/model limits, with measured storage throughput available
+  only through an explicit descriptor and excluded from automatic telemetry.
+
 ## [0.4.5] - 2026-08-02
 
 ### Added
