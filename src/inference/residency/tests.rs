@@ -3,12 +3,23 @@ use std::sync::Arc;
 use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
 
 use super::*;
-use crate::inference::{DevicePreference, InferenceLimits, TelemetryMode};
+use crate::inference::{
+    DevicePreference, InferenceLimits, TelemetryMode, WeightReadStrategy, WeightStoreConfig,
+};
 
 fn weight_store(
     dtype: Dtype,
     shape: Vec<usize>,
     bytes: &[u8],
+) -> (tempfile::TempDir, Arc<WeightStore>) {
+    weight_store_with_strategy(dtype, shape, bytes, WeightReadStrategy::Mmap)
+}
+
+fn weight_store_with_strategy(
+    dtype: Dtype,
+    shape: Vec<usize>,
+    bytes: &[u8],
+    read_strategy: WeightReadStrategy,
 ) -> (tempfile::TempDir, Arc<WeightStore>) {
     let directory = tempfile::tempdir().unwrap();
     let view = TensorView::new(dtype, shape, bytes).unwrap();
@@ -18,7 +29,11 @@ fn weight_store(
         &directory.path().join("model.safetensors"),
     )
     .unwrap();
-    let store = WeightStore::open(directory.path(), &InferenceLimits::default()).unwrap();
+    let store = WeightStore::open_config(
+        &WeightStoreConfig::new(directory.path()).with_primary_read_strategy(read_strategy),
+        &InferenceLimits::default(),
+    )
+    .unwrap();
     (directory, Arc::new(store))
 }
 
@@ -111,6 +126,54 @@ async fn prefetch_unions_duplicate_requests_and_reuses_residency() {
         .await
         .unwrap();
     assert_eq!(second.cache_hits, 1);
+    assert_eq!(hierarchy.telemetry().storage_reads, 1);
+}
+
+#[tokio::test]
+async fn positional_demand_and_prefetch_serialize_one_materialization() {
+    let (_directory, store) = weight_store_with_strategy(
+        Dtype::F32,
+        vec![2],
+        &[0; 8],
+        WeightReadStrategy::PositionalBuffered,
+    );
+    let runtime = new_runtime();
+    let hierarchy = WeightHierarchy::new(
+        store,
+        runtime.clone(),
+        ResidencyPolicy {
+            host_cache_bytes: 8,
+            telemetry: TelemetryMode::Aggregate,
+            ..ResidencyPolicy::default()
+        },
+    )
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+    let request = WeightRequest::new(
+        WeightKey::new(0, "layer.0.expert.0"),
+        PlacementPreference::Host,
+    );
+
+    let key_lock = Arc::new(Mutex::new(()));
+    lock(&hierarchy.inner.key_locks).insert(request.key.clone(), Arc::clone(&key_lock));
+    let held = lock(&key_lock);
+    let prefetch = hierarchy
+        .start_prefetch(vec![request.clone()], &permit, cancellation.clone())
+        .unwrap();
+    let demand_hierarchy = hierarchy.clone();
+    let demand_request = request.clone();
+    let demand_permit = permit.clone();
+    let demand_cancellation = cancellation.clone();
+    let demand = tokio::task::spawn_blocking(move || {
+        demand_hierarchy.load(&demand_request, &demand_permit, &demand_cancellation)
+    });
+    drop(held);
+
+    let (prefetch, demand) = tokio::join!(prefetch.wait(), demand);
+    let prefetch = prefetch.unwrap();
+    let demand = demand.unwrap().unwrap();
+    assert_eq!(prefetch.cache_hits + usize::from(demand.cache_hit()), 1);
     assert_eq!(hierarchy.telemetry().storage_reads, 1);
 }
 

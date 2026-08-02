@@ -1,6 +1,6 @@
 [package]
 name = "a3s-power"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["A3S Lab"]
 license = "MIT"
@@ -23,6 +23,11 @@ required-features = ["server"]
 name = "a3s-power-verify"
 path = "src/bin/a3s-power-verify.rs"
 required-features = ["server"]
+
+[[bin]]
+name = "a3s-power-storage-bench"
+path = "src/bin/a3s-power-storage-bench.rs"
+required-features = ["embedded-inference"]
 
 [features]
 default = ["server", "mistralrs"]
@@ -199,7 +204,7 @@ time = { version = "0.3", optional = true }
 tokio-vsock = { version = "0.7", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation"], optional = true }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"], optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

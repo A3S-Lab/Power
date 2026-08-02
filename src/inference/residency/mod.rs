@@ -221,9 +221,10 @@ impl WeightHierarchy {
 
         match placement {
             PlacementPreference::Streaming => {
-                let loaded = self.inner.store.load_tracked(
+                let loaded = self.inner.store.load_tracked_with_cancellation(
                     &request.key.name,
                     self.inner.runtime.device().tensor_device(),
+                    cancellation,
                 )?;
                 self.verify_tensor(&descriptor, &loaded.tensor)?;
                 self.inner.telemetry.storage_read(
@@ -239,7 +240,7 @@ impl WeightHierarchy {
                 })
             }
             PlacementPreference::Host => {
-                let tensor = self.load_host(&descriptor)?;
+                let tensor = self.load_host(&descriptor, cancellation)?;
                 self.finish_residency(
                     request,
                     tensor,
@@ -261,7 +262,7 @@ impl WeightHierarchy {
                         tensor
                     }
                     None => {
-                        let tensor = self.load_host(&descriptor)?;
+                        let tensor = self.load_host(&descriptor, cancellation)?;
                         lock(&self.inner.cache).insert(
                             WeightTier::Host,
                             CacheInsert {
@@ -301,11 +302,16 @@ impl WeightHierarchy {
         }
     }
 
-    fn load_host(&self, descriptor: &TensorDescriptor) -> Result<Tensor> {
-        let loaded = self
-            .inner
-            .store
-            .load_tracked(&descriptor.name, &Device::Cpu)?;
+    fn load_host(
+        &self,
+        descriptor: &TensorDescriptor,
+        cancellation: &CancellationToken,
+    ) -> Result<Tensor> {
+        let loaded = self.inner.store.load_tracked_with_cancellation(
+            &descriptor.name,
+            &Device::Cpu,
+            cancellation,
+        )?;
         self.verify_tensor(descriptor, &loaded.tensor)?;
         self.inner
             .telemetry
