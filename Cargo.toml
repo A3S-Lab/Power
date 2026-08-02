@@ -50,7 +50,12 @@ server = [
 ]
 llamacpp = ["server", "dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2?/mtmd"]
 mistralrs = ["server", "dep:mistralrs"]
-embedded-inference = ["dep:candle-core", "dep:candle-nn", "dep:safetensors"]
+embedded-inference = [
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:safetensors",
+    "dep:windows-sys",
+]
 embedded-cuda = ["embedded-inference", "candle-core/cuda", "candle-nn/cuda"]
 embedded-metal = ["embedded-inference", "candle-core/metal", "candle-nn/metal"]
 tls = ["server", "dep:axum-server", "dep:rcgen", "dep:time"]
@@ -192,6 +197,9 @@ time = { version = "0.3", optional = true }
 
 # Vsock transport (optional, requires `vsock` feature; Linux only)
 tokio-vsock = { version = "0.7", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_SystemInformation"], optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

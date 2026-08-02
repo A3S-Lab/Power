@@ -81,6 +81,13 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   and per-layer entry limits, never splits a group, and binds the plan to the
   weight digest, runtime device, and policy. Applying a plan reconciles the
   active plan transactionally while leaving manual pins intact.
+- `EmbeddedRuntime::plan_residency_budget` discovers host memory through bounded
+  native Linux, macOS, or Windows APIs and device memory through the selected
+  CUDA or Metal handle. The caller supplies explicit fractions, reserves, caps,
+  and host/device allocation order. The resulting plan is capped by
+  `InferenceLimits::max_resident_weight_bytes`; Metal unified memory is counted
+  once, and a failed or incomplete discovery fails closed instead of guessing.
+  Discovery is opt-in and does not change the zero-cache default.
 - `WeightStoreConfig` accepts a primary collection plus bounded, read-only
   replicas. Complete replicas must match the primary aggregate digest. An
   explicitly partial replica may contain a non-empty subset of primary
@@ -130,6 +137,33 @@ Source indices, reads, bytes, and fallback counts appear only when aggregate or
 detailed telemetry is explicitly enabled; filesystem paths and measured
 validation throughput are not included in placement telemetry.
 
+### Hardware-Aware Residency Budget
+
+Hardware discovery never spawns `nvidia-smi`, `vm_stat`, or another process.
+Power uses bounded native OS and selected-device APIs, then derives a
+reproducible plan from caller-owned policy:
+
+```rust
+use a3s_power::inference::{
+    DevicePreference, EmbeddedRuntime, InferenceLimits, ResidencyBudgetPolicy,
+    ResidencyPolicy,
+};
+
+let runtime = EmbeddedRuntime::new(DevicePreference::Auto, InferenceLimits::default())?;
+let budget = ResidencyBudgetPolicy::new(5_000, 5_000)?
+    .with_host_reserve_bytes(2 * 1024 * 1024 * 1024)
+    .with_device_reserve_bytes(512 * 1024 * 1024);
+let plan = runtime.plan_residency_budget(&budget)?;
+let residency = plan.apply_to(&ResidencyPolicy::default())?;
+# Ok::<(), a3s_power::error::PowerError>(())
+```
+
+The serialized snapshot and plan are available for explicit operator review,
+but Power never logs, persists, exports through placement telemetry, or binds
+them into execution receipts automatically. A TEE guest therefore plans only
+from the memory visible inside that guest, while policy still controls whether
+the result may leave the trust boundary.
+
 ## Integrity and TEE Invariants
 
 - `WeightStore` hashes every SafeTensors file and a deterministic aggregate
@@ -156,6 +190,9 @@ validation throughput are not included in placement telemetry.
   are still sensitive metadata and are opt-in.
 - Residency candidates and plans can reveal the learned hot set. Power returns
   them to the caller but never logs or persists them automatically.
+- Hardware memory snapshots can reveal deployment capacity. Automatic budgeting
+  is explicit, snapshots are never logged or placed in execution receipts, and
+  callers must apply their own TEE export policy.
 
 ## Colibri Adoption Boundaries
 
@@ -165,7 +202,7 @@ validation throughput are not included in placement telemetry.
 | Layer-local LFRU/LRU and learned hot pins | Implemented with decaying frequency, bounded recency, separate manual/plan pins, and transactional hot-set replacement |
 | Batched expert union | Implemented without changing router order, top-k, or gate weights |
 | One-layer-ahead I/O overlap | Implemented with bounded, cancellable Tokio blocking workers and useful/unused prefetch measurement |
-| Hardware-aware placement | Deterministic budget planner and integrity-read storage weighting are implemented; host/device OS discovery remains follow-up work |
+| Hardware-aware placement | Native Linux/macOS/Windows host discovery, selected CUDA/Metal device discovery, unified-memory accounting, deterministic capped budget planning, and integrity-read storage weighting are implemented without subprocesses |
 | Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, coverage-aware weighted routing, source telemetry, and primary fallback are implemented under `WeightStore`; direct range I/O remains follow-up work |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
@@ -192,7 +229,6 @@ hardware and cache state.
 ## Deliberate Follow-up Work
 
 The current foundation does not yet stage partial mirror files, implement direct
-range I/O, discover host/device memory budgets automatically, provide an
-independent cold-storage benchmark, persist encrypted model state, or run
-cross-model benchmarks. These should extend the same runtime and integrity
-primitives rather than introduce parallel model-specific systems.
+range I/O, provide an independent cold-storage benchmark, persist encrypted
+model state, or run cross-model benchmarks. These should extend the same runtime
+and integrity primitives rather than introduce parallel model-specific systems.

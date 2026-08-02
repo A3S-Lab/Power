@@ -64,6 +64,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: tools/check-embedded-deps.sh
 
+  windows-embedded:
+    name: Check (windows-embedded-inference)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-embedded-inference
+      - run: cargo check --no-default-features --features embedded-inference --lib
+
   test:
     name: Test (${{ matrix.label }})
     runs-on: ubuntu-latest

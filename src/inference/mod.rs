@@ -7,6 +7,7 @@
 
 mod device;
 pub mod graph;
+mod hardware;
 mod limits;
 mod receipt;
 mod residency;
@@ -17,6 +18,10 @@ mod tensor;
 mod weights;
 
 pub use device::{DevicePreference, RuntimeDevice, RuntimeDeviceKind};
+pub use hardware::{
+    HardwareMemorySnapshot, MemoryDiscoverySource, MemoryPoolSnapshot, ResidencyAllocationOrder,
+    ResidencyBudgetPlan, ResidencyBudgetPolicy,
+};
 pub use limits::InferenceLimits;
 pub use receipt::{
     ExecutionDigest, ExecutionReceipt, ExecutionRepresentation, ModelIdentity, RuntimeIdentity,
