@@ -121,6 +121,39 @@ impl CacheState {
         true
     }
 
+    pub(super) fn pin_state(&self, tier: WeightTier, key: &WeightKey) -> Option<bool> {
+        self.cache(tier)?.entries.get(key).map(|entry| entry.pinned)
+    }
+
+    pub(super) fn restore_pin_state(
+        &mut self,
+        tier: WeightTier,
+        key: &WeightKey,
+        prior: Option<bool>,
+        telemetry: &Telemetry,
+    ) {
+        let Some(cache) = self.cache_mut(tier) else {
+            return;
+        };
+        match prior {
+            Some(pinned) => {
+                if let Some(entry) = cache.entries.get_mut(key) {
+                    entry.pinned = pinned;
+                }
+            }
+            None => {
+                if let Some(entry) = cache.entries.remove(key) {
+                    cache.bytes = cache.bytes.saturating_sub(entry.bytes);
+                    match tier {
+                        WeightTier::Host => telemetry.host_eviction(),
+                        WeightTier::Device => telemetry.device_eviction(),
+                        WeightTier::Storage => {}
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn clear_unpinned(&mut self, telemetry: &Telemetry) {
         self.host.clear_unpinned(WeightTier::Host, telemetry);
         self.device.clear_unpinned(WeightTier::Device, telemetry);
@@ -135,6 +168,14 @@ impl CacheState {
             WeightTier::Storage => None,
             WeightTier::Host => Some(&mut self.host),
             WeightTier::Device => Some(&mut self.device),
+        }
+    }
+
+    fn cache(&self, tier: WeightTier) -> Option<&TierCache> {
+        match tier {
+            WeightTier::Storage => None,
+            WeightTier::Host => Some(&self.host),
+            WeightTier::Device => Some(&self.device),
         }
     }
 }

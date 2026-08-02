@@ -105,6 +105,63 @@ async fn prefetch_unions_duplicate_requests_and_reuses_residency() {
     assert_eq!(hierarchy.telemetry().storage_reads, 1);
 }
 
+#[tokio::test]
+async fn prefetch_tasks_are_bounded_and_release_capacity() {
+    let (_directory, store) = weight_store(Dtype::F32, vec![2], &[0; 8]);
+    let runtime = new_runtime();
+    let hierarchy = WeightHierarchy::new(
+        store,
+        runtime.clone(),
+        ResidencyPolicy {
+            host_cache_bytes: 8,
+            max_prefetch_tasks: 1,
+            ..ResidencyPolicy::default()
+        },
+    )
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+    let request = WeightRequest::new(
+        WeightKey::new(0, "layer.0.expert.0"),
+        PlacementPreference::Host,
+    );
+
+    let key_lock = Arc::new(Mutex::new(()));
+    lock(&hierarchy.inner.key_locks).insert(request.key.clone(), Arc::clone(&key_lock));
+    let loading = lock(&key_lock);
+    let first = hierarchy
+        .start_prefetch(vec![request.clone()], &permit, cancellation.clone())
+        .unwrap();
+    assert!(hierarchy
+        .start_prefetch(vec![request.clone()], &permit, cancellation.clone())
+        .is_err());
+    drop(loading);
+    first.wait().await.unwrap();
+
+    hierarchy
+        .start_prefetch(vec![request], &permit, cancellation)
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+}
+
+#[test]
+fn residency_policy_rejects_unbounded_prefetch_controls() {
+    assert!(ResidencyPolicy {
+        max_prefetch_tasks: 0,
+        ..ResidencyPolicy::default()
+    }
+    .validate()
+    .is_err());
+    assert!(ResidencyPolicy {
+        max_prefetch_workers: 0,
+        ..ResidencyPolicy::default()
+    }
+    .validate()
+    .is_err());
+}
+
 #[test]
 fn hierarchy_rejects_a_permit_from_another_runtime() {
     let (_directory, store) = weight_store(Dtype::F32, vec![1], &[0; 4]);

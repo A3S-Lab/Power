@@ -2,21 +2,26 @@
 //! memory without changing model precision or routing semantics.
 
 mod cache;
+mod planner;
+#[cfg(test)]
+mod planner_tests;
 mod prefetch;
 mod types;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use candle_core::{Device, Tensor};
 use tokio_util::sync::CancellationToken;
 
+use crate::admission::AdmissionController;
 use crate::error::{PowerError, Result};
 
 use super::routing::{ExpertKey, RoutedExpertBatch};
 use super::telemetry::{PlacementTelemetry, RoutingHistory, Telemetry};
 use super::{EmbeddedRuntime, ExecutionPermit, RuntimeDeviceKind, TensorDescriptor, WeightStore};
 use cache::{CacheInsert, CacheState};
+pub use planner::{PlannedResidencyGroup, ResidencyApplyReport, ResidencyCandidate, ResidencyPlan};
 pub use types::{
     PlacementPreference, PrefetchReport, PrefetchTask, ResidencyPolicy, ResidentWeight, WeightKey,
     WeightRequest, WeightTier,
@@ -32,8 +37,10 @@ struct HierarchyInner {
     store: Arc<WeightStore>,
     runtime: EmbeddedRuntime,
     policy: ResidencyPolicy,
+    operations: RwLock<()>,
     cache: Mutex<CacheState>,
     key_locks: Mutex<HashMap<WeightKey, Arc<Mutex<()>>>>,
+    prefetch_admission: AdmissionController,
     telemetry: Telemetry,
 }
 
@@ -56,14 +63,17 @@ impl WeightHierarchy {
                 runtime.limits().max_resident_weight_bytes
             )));
         }
+        let prefetch_admission = AdmissionController::new(Some(policy.max_prefetch_tasks));
         Ok(Self {
             inner: Arc::new(HierarchyInner {
                 store,
                 runtime,
                 telemetry: Telemetry::new(policy.telemetry),
                 policy,
+                operations: RwLock::new(()),
                 cache: Mutex::new(CacheState::new()),
                 key_locks: Mutex::new(HashMap::new()),
+                prefetch_admission,
             }),
         })
     }
@@ -90,6 +100,7 @@ impl WeightHierarchy {
         permit: &ExecutionPermit,
         cancellation: &CancellationToken,
     ) -> Result<ResidentWeight> {
+        let _operation = read(&self.inner.operations);
         self.load_internal(request, permit, cancellation, false)
     }
 
@@ -104,14 +115,17 @@ impl WeightHierarchy {
                 "a streaming weight request cannot be pinned".to_string(),
             ));
         }
+        let _operation = read(&self.inner.operations);
         self.load_internal(request, permit, cancellation, true)
     }
 
     pub fn unpin(&self, key: &WeightKey, tier: WeightTier) -> bool {
+        let _operation = read(&self.inner.operations);
         lock(&self.inner.cache).set_pinned(tier, key, false)
     }
 
     pub fn clear_unpinned(&self) {
+        let _operation = read(&self.inner.operations);
         lock(&self.inner.cache).clear_unpinned(&self.inner.telemetry);
     }
 
@@ -120,6 +134,7 @@ impl WeightHierarchy {
     }
 
     pub fn telemetry(&self) -> PlacementTelemetry {
+        let _operation = read(&self.inner.operations);
         let (host, device) = lock(&self.inner.cache).resident_bytes();
         self.inner.telemetry.snapshot(host, device)
     }
@@ -418,6 +433,16 @@ impl std::fmt::Debug for WeightHierarchy {
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn read<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn write<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 

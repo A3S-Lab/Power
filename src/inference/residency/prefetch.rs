@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -19,6 +20,7 @@ impl WeightHierarchy {
         cancellation: CancellationToken,
     ) -> Result<PrefetchTask> {
         self.validate_permit(permit)?;
+        self.check_cancelled(&cancellation)?;
         let requested = requests.len();
         let normalized = self.normalize_prefetch(requests)?;
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
@@ -26,12 +28,31 @@ impl WeightHierarchy {
                 "weight prefetch requires an active Tokio runtime".to_string(),
             )
         })?;
+        let admission = self.inner.prefetch_admission.try_acquire().ok_or_else(|| {
+            PowerError::InferenceFailed(format!(
+                "weight hierarchy already has {} active prefetch task(s)",
+                self.inner.policy.max_prefetch_tasks
+            ))
+        })?;
         let hierarchy = self.clone();
         let permit = permit.clone();
-        let handle = runtime.spawn_blocking(move || {
-            hierarchy.prefetch_blocking(requested, normalized, &permit, &cancellation)
+        let task_cancellation = cancellation.child_token();
+        let worker_cancellation = task_cancellation.clone();
+        let handle = runtime.spawn(async move {
+            hierarchy
+                .prefetch(
+                    requested,
+                    normalized,
+                    permit,
+                    worker_cancellation,
+                    admission,
+                )
+                .await
         });
-        Ok(PrefetchTask { handle })
+        Ok(PrefetchTask {
+            handle: Some(handle),
+            cancellation: task_cancellation,
+        })
     }
 
     fn normalize_prefetch(&self, requests: Vec<WeightRequest>) -> Result<Vec<WeightRequest>> {
@@ -74,12 +95,13 @@ impl WeightHierarchy {
             .collect())
     }
 
-    fn prefetch_blocking(
+    async fn prefetch(
         &self,
         requested: usize,
         requests: Vec<WeightRequest>,
-        permit: &ExecutionPermit,
-        cancellation: &CancellationToken,
+        permit: ExecutionPermit,
+        cancellation: CancellationToken,
+        _admission: crate::admission::AdmissionPermit,
     ) -> Result<PrefetchReport> {
         let mut report = PrefetchReport {
             requested,
@@ -88,17 +110,71 @@ impl WeightHierarchy {
             materialized: 0,
             bytes: 0,
         };
-        for request in requests {
-            let weight = self.load(&request, permit, cancellation)?;
-            report.bytes = report.bytes.saturating_add(weight.bytes());
-            if weight.cache_hit() {
+
+        let mut requests = requests.into_iter();
+        let mut workers = JoinSet::new();
+        let worker_limit = self.inner.policy.max_prefetch_workers.min(report.unique);
+        for _ in 0..worker_limit {
+            if let Some(request) = requests.next() {
+                self.spawn_prefetch_load(&mut workers, request, &permit, &cancellation);
+            }
+        }
+
+        while !workers.is_empty() {
+            let joined = tokio::select! {
+                () = cancellation.cancelled() => {
+                    workers.abort_all();
+                    return Err(PowerError::InferenceFailed(
+                        "weight prefetch was cancelled".to_string(),
+                    ));
+                }
+                joined = workers.join_next() => joined,
+            };
+            let (bytes, cache_hit) = match joined {
+                Some(Ok(Ok(result))) => result,
+                Some(Ok(Err(error))) => {
+                    cancellation.cancel();
+                    workers.abort_all();
+                    return Err(error);
+                }
+                Some(Err(error)) => {
+                    cancellation.cancel();
+                    workers.abort_all();
+                    return Err(PowerError::InferenceFailed(format!(
+                        "weight prefetch worker failed: {error}"
+                    )));
+                }
+                None => break,
+            };
+            report.bytes = report.bytes.saturating_add(bytes);
+            if cache_hit {
                 report.cache_hits += 1;
             } else {
                 report.materialized += 1;
             }
-            self.inner.telemetry.prefetch(weight.cache_hit());
+            self.inner.telemetry.prefetch(cache_hit);
+
+            if let Some(request) = requests.next() {
+                self.spawn_prefetch_load(&mut workers, request, &permit, &cancellation);
+            }
         }
         Ok(report)
+    }
+
+    fn spawn_prefetch_load(
+        &self,
+        workers: &mut JoinSet<Result<(u64, bool)>>,
+        request: WeightRequest,
+        permit: &ExecutionPermit,
+        cancellation: &CancellationToken,
+    ) {
+        let hierarchy = self.clone();
+        let permit = permit.clone();
+        let cancellation = cancellation.clone();
+        workers.spawn_blocking(move || {
+            let weight = hierarchy.load(&request, &permit, &cancellation)?;
+            Ok((weight.bytes(), weight.cache_hit()))
+        });
     }
 }
 

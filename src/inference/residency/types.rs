@@ -21,7 +21,7 @@ impl WeightKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WeightTier {
     Storage,
@@ -60,6 +60,10 @@ pub struct ResidencyPolicy {
     pub host_cache_bytes: u64,
     pub device_cache_bytes: u64,
     pub max_entries_per_layer: usize,
+    /// Maximum number of layer-ahead prefetch operations in flight.
+    pub max_prefetch_tasks: usize,
+    /// Maximum blocking weight loads within one prefetch operation.
+    pub max_prefetch_workers: usize,
     pub max_prefetch_items: usize,
     pub max_prefetch_bytes: u64,
     pub telemetry: TelemetryMode,
@@ -73,6 +77,8 @@ impl Default for ResidencyPolicy {
             host_cache_bytes: 0,
             device_cache_bytes: 0,
             max_entries_per_layer: 64,
+            max_prefetch_tasks: 1,
+            max_prefetch_workers: 4,
             max_prefetch_items: 128,
             max_prefetch_bytes: 1024 * 1024 * 1024,
             telemetry: TelemetryMode::Disabled,
@@ -83,6 +89,8 @@ impl Default for ResidencyPolicy {
 impl ResidencyPolicy {
     pub fn validate(&self) -> Result<()> {
         if self.max_entries_per_layer == 0
+            || self.max_prefetch_tasks == 0
+            || self.max_prefetch_workers == 0
             || self.max_prefetch_items == 0
             || self.max_prefetch_bytes == 0
         {
@@ -135,17 +143,33 @@ pub struct PrefetchReport {
 }
 
 pub struct PrefetchTask {
-    pub(super) handle: JoinHandle<Result<PrefetchReport>>,
+    pub(super) handle: Option<JoinHandle<Result<PrefetchReport>>>,
+    pub(super) cancellation: tokio_util::sync::CancellationToken,
 }
 
 impl PrefetchTask {
-    pub async fn wait(self) -> Result<PrefetchReport> {
-        self.handle.await.map_err(|error| {
+    pub async fn wait(mut self) -> Result<PrefetchReport> {
+        let handle = self.handle.take().ok_or_else(|| {
+            PowerError::InferenceFailed("weight prefetch task has no join handle".to_string())
+        })?;
+        handle.await.map_err(|error| {
             PowerError::InferenceFailed(format!("weight prefetch task failed: {error}"))
         })?
     }
 
     pub fn abort(&self) {
-        self.handle.abort();
+        self.cancellation.cancel();
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
+}
+
+impl Drop for PrefetchTask {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
     }
 }

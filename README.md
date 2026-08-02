@@ -138,8 +138,9 @@ Full-featured LLM inference, competitive with any standalone server:
 The `embedded-inference` feature is a library path, separate from Power's HTTP
 server and backend registry. It provides a shared runtime, reviewed static-graph
 execution, exact SafeTensors inventories, typed devices, hard resource bounds,
-cancellation, and canonical execution receipts. It never downloads a model,
-starts another process, or opens a listener.
+cancellation, canonical execution receipts, bounded parallel prefetch, and
+deterministic heat-driven weight placement. It never downloads a model, starts
+another process, or opens a listener.
 
 Model-owning crates provide graph identities and plans, network control flow,
 tokenizers, preprocessing, postprocessing, and revision policy. Consequently,
@@ -150,8 +151,9 @@ cargo build --no-default-features --features embedded-inference
 ```
 
 See [Embedded Inference Architecture](docs/embedded-inference-architecture.md)
-for the ownership boundary, Colibri-inspired weight hierarchy, routing and
-prefetch semantics, TEE invariants, and model parity gates.
+for the ownership boundary, Colibri-inspired weight hierarchy, routing,
+hot-store planning and prefetch semantics, TEE invariants, and model parity
+gates.
 
 ### Operations
 

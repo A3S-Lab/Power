@@ -22,8 +22,9 @@ pub use receipt::{
     ExecutionDigest, ExecutionReceipt, ExecutionRepresentation, ModelIdentity, RuntimeIdentity,
 };
 pub use residency::{
-    PlacementPreference, PrefetchReport, PrefetchTask, ResidencyPolicy, ResidentWeight,
-    WeightHierarchy, WeightKey, WeightRequest, WeightTier,
+    PlacementPreference, PlannedResidencyGroup, PrefetchReport, PrefetchTask, ResidencyApplyReport,
+    ResidencyCandidate, ResidencyPlan, ResidencyPolicy, ResidentWeight, WeightHierarchy, WeightKey,
+    WeightRequest, WeightTier,
 };
 pub use routing::{ExpertAssignment, ExpertKey, RoutedExpert, RoutedExpertBatch};
 pub use runtime::{EmbeddedRuntime, ExecutionPermit};
