@@ -41,6 +41,7 @@ model crate
             ├─ device cache ───── bounded, typed device, exact dtype
             ├─ host cache ─────── per-layer LFRU/LRU + provenance-aware pins
             ├─ prefetch pool ───── bounded tasks and blocking workers
+            ├─ staged batches ──── current-layer readiness + canonical order
             ├─ residency plan ──── replaceable and stably adapted atomic groups
             └─ SafeTensors ─────── verified mmap/positional weighted sources
 ```
@@ -83,6 +84,15 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   cancellation when the task is aborted or dropped. A model can prefetch layer
   N+1, compute layer N, then await the task, providing the one-layer-ahead
   overlap used by routed models.
+- `start_staged_batch` adapts Colibri's current-layer pipeline without moving
+  model execution into Power. It validates every non-empty atomic group,
+  duplicate key, layer, tensor descriptor, item count, and byte total before
+  touching cache heat. Fully resident groups are available synchronously;
+  exact misses use the same prefetch admission, bounded Tokio blocking workers,
+  source router, cache, per-key load serialization, and cancellation path.
+  Early groups carry an implicit canonical input index, and final completion
+  always restores the original order. Model crates compute into indexed output
+  slots and retain their exact gate application and reduction order.
 - Prefetch bookkeeping distinguishes a cache hit at prefetch time, a materialized
   weight later consumed by demand, and a materialized weight evicted unused.
   Aggregate telemetry reports useful and unused counts and bytes, allowing the
@@ -154,6 +164,42 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   by default. Detailed expert heat can reveal input semantics, is never logged
   or persisted automatically, and must remain inside the TEE unless policy
   explicitly authorizes export.
+
+### Ordered Current-Layer Staging
+
+The model crate supplies groups of exact weight requests in its canonical
+compute order. Power neither interprets a group as an expert nor performs the
+model operation:
+
+```rust
+let mut batch = hierarchy.start_staged_batch(groups, &permit, cancellation.clone())?;
+
+// Model-owned compute can start while exact cache misses load in the shared
+// bounded background path. Each output is written by canonical_index.
+for group in batch.ready_groups() {
+    compute_into_slot(group.canonical_index(), group.weights())?;
+}
+
+let completion = batch.wait().await?;
+for group in completion.groups {
+    if output_slot_is_empty(group.canonical_index()) {
+        compute_into_slot(group.canonical_index(), group.weights())?;
+    }
+}
+reduce_slots_in_canonical_order()?;
+# Ok::<(), a3s_power::error::PowerError>(())
+```
+
+A group is exposed only when all of its weights are ready. Different groups may
+become ready out of order, but `StagedWeightBatchCompletion::groups` is strictly
+canonical. Staging is exact current-layer demand, so it does not inflate
+speculative-prefetch usefulness. The report separates cumulative worker service
+time, background wall time, and the time spent inside the caller's final
+`wait`. Timing and aggregate placement counters remain zero under
+`TelemetryMode::Disabled`; enabled staged counters contain no layer, tensor,
+route, expert, or tensor-value identity. Dropping or aborting the batch
+propagates cancellation and releases the same admission capacity used by
+prefetch.
 
 ### Verified Storage Topology
 
@@ -351,6 +397,10 @@ caller-owned sealed store if cross-session learning is authorized.
   serializable by the Power API.
 - Placement telemetry contains no tensor values. Detailed routing identifiers
   are still sensitive metadata and are opt-in.
+- Staged-batch telemetry contains aggregate counts and timing only. Group
+  indices, layer IDs, tensor names, tensors, and model-owned outputs are never
+  logged, persisted, added to receipts, or added to attestation claims by
+  Power. Timing remains zero when telemetry is disabled.
 - Residency candidates and plans can reveal the learned hot set. Power returns
   them to the caller but never logs or persists them automatically.
 - Live residency adaptations are ephemeral, non-serializable, bound to the
@@ -370,6 +420,7 @@ caller-owned sealed store if cross-session learning is authorized.
 | Lossless live tier adaptation | Implemented at explicit safe boundaries with caller-owned heat, default 25% + 4 hysteresis, a four-replacement cap, exact-footprint swaps, stale-plan rejection, and the existing transactional pin/cache path |
 | Batched expert union | Implemented without changing router order, top-k, or gate weights |
 | One-layer-ahead I/O overlap | Implemented with bounded, cancellable Tokio blocking workers and useful/unused prefetch measurement |
+| Current-layer resident/cold overlap | Implemented with atomic staged groups, immediate resident readiness, exact-demand miss loading through shared admission/cache/source routing, and canonical completion |
 | Cross-layer coupling hints | Implemented as bounded, digest/geometry-bound, detailed-telemetry-only co-occurrence learning with deterministic per-position scores, batch union, and measured recall; hints never alter router output |
 | Hardware-aware placement | Native Linux/macOS/Windows host discovery, selected CUDA/Metal device discovery, unified-memory accounting, deterministic capped budget planning, and integrity-read storage weighting are implemented without subprocesses |
 | Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, primary fallback, bounded positional reads, and aligned Linux/Windows direct reads share one `WeightStore`; mmap remains default pending end-to-end wins |
@@ -383,11 +434,11 @@ caller-owned sealed store if cross-session learning is authorized.
 
 Power adopts Colibri mechanisms only when they can remain model-neutral,
 value-preserving, bounded, and compatible with the existing TEE trust path.
-The next sequence is:
+The current sequence is:
 
 | Priority | Colibri lesson | Power-level treatment | Required evidence |
 | --- | --- | --- | --- |
-| 1 | Deferred current-layer cold I/O while resident experts compute | Extend the existing prefetch admission and cache path with an ordered staged-batch API; model crates retain canonical accumulation order | Exact-output parity plus foreground wait, service time, and useful-byte measurements |
+| 1 | Deferred current-layer cold I/O while resident experts compute | **Power substrate complete:** ordered atomic staged batches reuse existing admission, cache, source routing, key locks, cancellation, and privacy-gated telemetry; model crates retain canonical computation | Power tests cover tensor/order parity, immediate readiness, cancellation, shared materialization, and separated timing; each model integration must still publish end-to-end output parity and workload gains |
 | 2 | Hardware/model-specific measured tuning | Add an ephemeral, digest-bound comparison profile for lossless execution knobs only; model crates own teacher-forced calibration and any sealed persistence | Repeated baseline/winner reversal, minimum throughput gain, hit-rate parity, and bounded p99 regression |
 | 3 | Lossless compressed expert tiers | Add representations behind the existing verified `WeightStore` index and receipts; never quantize or reinterpret tensors during placement | Whole-artifact digest validation, decoded byte parity, bounded scratch, zeroization, and end-to-end wins |
 | 4 | Accelerator-wide residency declarations and fused batches | Extend typed CUDA/Metal devices without bypassing Candle safety, admission, cancellation, or confidential-GPU claims | Kernel parity, explicit fallback identity, memory-pressure tests, and named-hardware results |
@@ -407,7 +458,8 @@ Every model integration must publish reproducible evidence for:
 2. exact model revision, graph-plan digest, and weight digest;
 3. cold and warm latency, peak host/device memory, per-source bytes read, cache
    hit rate, and useful/unused prefetch rate on named hardware;
-4. identical outputs with caching and prefetch disabled versus enabled;
+4. identical outputs with caching, prefetch, and current-layer staging disabled
+   versus enabled;
 5. cancellation, resource-limit, malformed-plan, and wrong-digest failures;
 6. TEE regression tests, including telemetry-off behavior and no plaintext
    persistence.

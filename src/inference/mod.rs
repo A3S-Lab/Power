@@ -44,8 +44,9 @@ pub use receipt::{
 pub use residency::{
     CacheEvictionPolicy, PlacementPreference, PlannedResidencyGroup, PrefetchReport, PrefetchTask,
     ResidencyAdaptation, ResidencyAdaptationPolicy, ResidencyApplyReport, ResidencyCandidate,
-    ResidencyPlan, ResidencyPolicy, ResidencyReplacement, ResidentWeight, WeightHierarchy,
-    WeightKey, WeightRequest, WeightTier,
+    ResidencyPlan, ResidencyPolicy, ResidencyReplacement, ResidentWeight, StagedWeightBatch,
+    StagedWeightBatchCompletion, StagedWeightBatchReport, StagedWeightGroup,
+    StagedWeightGroupRequest, WeightHierarchy, WeightKey, WeightRequest, WeightTier,
 };
 pub use routing::{ExpertAssignment, ExpertKey, RoutedExpert, RoutedExpertBatch};
 pub use runtime::{EmbeddedRuntime, ExecutionPermit};
