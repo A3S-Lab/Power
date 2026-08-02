@@ -310,8 +310,12 @@ hardware and cache state.
 
 ## Deliberate Follow-up Work
 
-The current foundation still needs named-hardware Linux and Windows cold/direct
-results, end-to-end model workload evidence before direct I/O can become a
+The manual hosted-runner workflow can now capture Linux verified-cold/direct and
+Windows warm/direct reports against a hash-pinned public SafeTensors workload.
+Those ephemeral runners do not provide independent storage controllers, and
+their hardware may change between runs. The current foundation therefore still
+needs reviewed stable-hardware results, independent-controller multi-source
+evidence, end-to-end model workload wins before direct I/O can become a
 default, encrypted persistence for model-owned routing state, and broader
 cross-model benchmarks. These must extend the same runtime and integrity
 primitives rather than introduce parallel model-specific systems.
