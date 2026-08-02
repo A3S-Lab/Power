@@ -81,12 +81,21 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   and per-layer entry limits, never splits a group, and binds the plan to the
   weight digest, runtime device, and policy. Applying a plan reconciles the
   active plan transactionally while leaving manual pins intact.
-- `WeightStoreConfig` accepts a primary collection plus bounded, read-only,
-  byte-identical replicas. Every replica is fully hashed against the primary
-  before mapping. A stable bandwidth-weighted hash sends the same tensor's
-  demand and prefetch to the same source; recoverable replica errors fall back
-  to the primary. This extends the existing `WeightStore` rather than creating
-  a second model cache or integrity path.
+- `WeightStoreConfig` accepts a primary collection plus bounded, read-only
+  replicas. Complete replicas must match the primary aggregate digest. An
+  explicitly partial replica may contain a non-empty subset of primary
+  SafeTensors files; every present relative file, byte length, SHA-256 digest,
+  tensor name, dtype, shape, and byte count must match before mapping. A stable
+  bandwidth-weighted hash selects only among sources that contain the requested
+  tensor, and recoverable replica errors fall back to primary. This extends the
+  existing `WeightStore` rather than creating a second model cache or integrity
+  path.
+- Storage weights remain explicitly configured by default. The opt-in
+  `ValidationThroughput` policy derives bounded relative weights from throughput
+  observed during the mandatory integrity hash pass, so automatic weighting
+  does not scan a multi-gigabyte model twice. The observations are available
+  only from the explicit source descriptor API and are never logged or exported
+  as placement telemetry automatically.
 - CPU, CUDA, and Metal are explicit device choices. An unavailable explicit
   device fails instead of silently moving execution elsewhere.
 - Runtime limits bound graph plans, tensor elements, resident weights, model
@@ -103,23 +112,23 @@ Replica weights are relative bandwidth hints, not precision or routing knobs:
 
 ```rust
 use a3s_power::inference::{
-    InferenceLimits, WeightSourceConfig, WeightStore, WeightStoreConfig,
+    InferenceLimits, WeightSourceConfig, WeightSourceWeighting, WeightStore,
+    WeightStoreConfig,
 };
 
 let config = WeightStoreConfig::new("/models/primary")
-    .with_primary_read_weight(9)
-    .with_replica(
-        WeightSourceConfig::new("/models/replica")
-            .with_read_weight(3),
-    );
+    .with_partial_replica(WeightSourceConfig::new("/models/replica"))
+    .with_source_weighting(WeightSourceWeighting::ValidationThroughput);
 let store = WeightStore::open_config(&config, &InferenceLimits::default())?;
 # Ok::<(), a3s_power::error::PowerError>(())
 ```
 
-The complete aggregate digest must match before a replica participates. Source
-indices, reads, bytes, and fallback counts appear only when aggregate or
-detailed telemetry is explicitly enabled; filesystem paths are not included in
-placement telemetry.
+A complete source must match the aggregate digest. Every file in a partial
+source must match the corresponding primary file digest, and tensors not
+covered by that source deterministically stay on another eligible source.
+Source indices, reads, bytes, and fallback counts appear only when aggregate or
+detailed telemetry is explicitly enabled; filesystem paths and measured
+validation throughput are not included in placement telemetry.
 
 ## Integrity and TEE Invariants
 
@@ -128,8 +137,9 @@ placement telemetry.
   `verify_integrity` and may reuse Power's Ed25519 model seal verification with
   `verify_signature`.
 - Replica selection never changes dtype, shape, bytes, routing, or precision.
-  Only sources with the exact aggregate digest are admitted, and source count
-  is bounded by `InferenceLimits::max_weight_sources`.
+  Complete sources require the exact aggregate digest; partial sources require
+  exact per-file digests and tensor descriptors. Source count is bounded by
+  `InferenceLimits::max_weight_sources`.
 - Embedded inference does not bind a socket, start a Web server, download a
   model, invoke Python, or spawn an inference service.
 - The server, API, CLI, model registry, remote clients, and Web dependencies are
@@ -155,8 +165,8 @@ placement telemetry.
 | Layer-local LFRU/LRU and learned hot pins | Implemented with decaying frequency, bounded recency, separate manual/plan pins, and transactional hot-set replacement |
 | Batched expert union | Implemented without changing router order, top-k, or gate weights |
 | One-layer-ahead I/O overlap | Implemented with bounded, cancellable Tokio blocking workers and useful/unused prefetch measurement |
-| Hardware-aware placement | Deterministic budget planner implemented; OS discovery and benchmarking remain follow-up work |
-| Multi-drive weighted mirrors and direct I/O | Exact weighted replicas, source telemetry, and primary fallback are implemented under `WeightStore`; partial mirrors and direct range I/O remain follow-up work |
+| Hardware-aware placement | Deterministic budget planner and integrity-read storage weighting are implemented; host/device OS discovery remains follow-up work |
+| Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, coverage-aware weighted routing, source telemetry, and primary fallback are implemented under `WeightStore`; direct range I/O remains follow-up work |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
 | Speculative decoding and KV policy | Model control flow remains in the model crate; Power supplies shared state bounds and receipts |
@@ -181,8 +191,8 @@ hardware and cache state.
 
 ## Deliberate Follow-up Work
 
-The current foundation does not yet implement partial multi-drive mirrors,
-direct range I/O, automatic OS-level hardware discovery and benchmarking,
-encrypted persistent model state, or a cross-model benchmark runner. These
-should extend the same runtime and integrity primitives rather than introduce
-parallel model-specific systems.
+The current foundation does not yet stage partial mirror files, implement direct
+range I/O, discover host/device memory budgets automatically, provide an
+independent cold-storage benchmark, persist encrypted model state, or run
+cross-model benchmarks. These should extend the same runtime and integrity
+primitives rather than introduce parallel model-specific systems.
