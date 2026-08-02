@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{PowerError, Result};
 
+use super::residency::StagedWeightBatchReport;
 use super::routing::{ExpertKey, RoutedExpertBatch};
 
 /// Controls inference telemetry that may reveal workload characteristics.
@@ -77,6 +78,24 @@ pub struct PlacementTelemetry {
     pub prefetch_unused_weights: u64,
     #[serde(default)]
     pub prefetch_unused_bytes: u64,
+    #[serde(default)]
+    pub staged_batches: u64,
+    #[serde(default)]
+    pub staged_groups: u64,
+    #[serde(default)]
+    pub staged_weights: u64,
+    #[serde(default)]
+    pub staged_resident_weights: u64,
+    #[serde(default)]
+    pub staged_loaded_weights: u64,
+    #[serde(default)]
+    pub staged_load_cache_hits: u64,
+    #[serde(default)]
+    pub staged_service_nanos: u64,
+    #[serde(default)]
+    pub staged_background_elapsed_nanos: u64,
+    #[serde(default)]
+    pub staged_foreground_wait_nanos: u64,
     pub routed_selections: u64,
     pub host_resident_bytes: u64,
     pub device_resident_bytes: u64,
@@ -106,6 +125,15 @@ pub(crate) struct Telemetry {
     prefetch_useful_bytes: AtomicU64,
     prefetch_unused_weights: AtomicU64,
     prefetch_unused_bytes: AtomicU64,
+    staged_batches: AtomicU64,
+    staged_groups: AtomicU64,
+    staged_weights: AtomicU64,
+    staged_resident_weights: AtomicU64,
+    staged_loaded_weights: AtomicU64,
+    staged_load_cache_hits: AtomicU64,
+    staged_service_nanos: AtomicU64,
+    staged_background_elapsed_nanos: AtomicU64,
+    staged_foreground_wait_nanos: AtomicU64,
     routed_selections: AtomicU64,
     storage_sources: Mutex<BTreeMap<usize, (u64, u64)>>,
     routing_heat: Mutex<BTreeMap<ExpertKey, u64>>,
@@ -129,6 +157,15 @@ impl Telemetry {
             prefetch_useful_bytes: AtomicU64::new(0),
             prefetch_unused_weights: AtomicU64::new(0),
             prefetch_unused_bytes: AtomicU64::new(0),
+            staged_batches: AtomicU64::new(0),
+            staged_groups: AtomicU64::new(0),
+            staged_weights: AtomicU64::new(0),
+            staged_resident_weights: AtomicU64::new(0),
+            staged_loaded_weights: AtomicU64::new(0),
+            staged_load_cache_hits: AtomicU64::new(0),
+            staged_service_nanos: AtomicU64::new(0),
+            staged_background_elapsed_nanos: AtomicU64::new(0),
+            staged_foreground_wait_nanos: AtomicU64::new(0),
             routed_selections: AtomicU64::new(0),
             storage_sources: Mutex::new(BTreeMap::new()),
             routing_heat: Mutex::new(BTreeMap::new()),
@@ -186,6 +223,39 @@ impl Telemetry {
         self.increment(&self.prefetch_unused_bytes, bytes);
     }
 
+    pub(crate) fn staged_batch(&self, report: &StagedWeightBatchReport) {
+        self.increment(&self.staged_batches, 1);
+        self.increment(
+            &self.staged_groups,
+            saturating_usize(report.requested_groups),
+        );
+        self.increment(
+            &self.staged_weights,
+            saturating_usize(report.requested_weights),
+        );
+        self.increment(
+            &self.staged_resident_weights,
+            saturating_usize(report.resident_weights),
+        );
+        self.increment(
+            &self.staged_loaded_weights,
+            saturating_usize(report.loaded_weights),
+        );
+        self.increment(
+            &self.staged_load_cache_hits,
+            saturating_usize(report.load_cache_hits),
+        );
+        self.increment(&self.staged_service_nanos, report.cumulative_service_nanos);
+        self.increment(
+            &self.staged_background_elapsed_nanos,
+            report.background_elapsed_nanos,
+        );
+        self.increment(
+            &self.staged_foreground_wait_nanos,
+            report.foreground_wait_nanos,
+        );
+    }
+
     pub(crate) fn routes(&self, batch: &RoutedExpertBatch) {
         if self.mode == TelemetryMode::Disabled {
             return;
@@ -229,6 +299,15 @@ impl Telemetry {
             prefetch_useful_bytes: self.load(&self.prefetch_useful_bytes),
             prefetch_unused_weights: self.load(&self.prefetch_unused_weights),
             prefetch_unused_bytes: self.load(&self.prefetch_unused_bytes),
+            staged_batches: self.load(&self.staged_batches),
+            staged_groups: self.load(&self.staged_groups),
+            staged_weights: self.load(&self.staged_weights),
+            staged_resident_weights: self.load(&self.staged_resident_weights),
+            staged_loaded_weights: self.load(&self.staged_loaded_weights),
+            staged_load_cache_hits: self.load(&self.staged_load_cache_hits),
+            staged_service_nanos: self.load(&self.staged_service_nanos),
+            staged_background_elapsed_nanos: self.load(&self.staged_background_elapsed_nanos),
+            staged_foreground_wait_nanos: self.load(&self.staged_foreground_wait_nanos),
             routed_selections: self.load(&self.routed_selections),
             host_resident_bytes,
             device_resident_bytes,
@@ -328,6 +407,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn saturating_usize(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +438,37 @@ mod tests {
         assert!(snapshot.storage_sources.is_empty());
         assert!(snapshot.routing_heat.is_empty());
         assert!(telemetry.history("hash").is_err());
+    }
+
+    #[test]
+    fn staged_counters_have_backward_compatible_serde_defaults() {
+        let telemetry = Telemetry::new(TelemetryMode::Aggregate);
+        let mut serialized = serde_json::to_value(telemetry.snapshot(0, 0)).unwrap();
+        let object = serialized.as_object_mut().unwrap();
+        for field in [
+            "stagedBatches",
+            "stagedGroups",
+            "stagedWeights",
+            "stagedResidentWeights",
+            "stagedLoadedWeights",
+            "stagedLoadCacheHits",
+            "stagedServiceNanos",
+            "stagedBackgroundElapsedNanos",
+            "stagedForegroundWaitNanos",
+        ] {
+            object.remove(field);
+        }
+
+        let restored: PlacementTelemetry = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.staged_batches, 0);
+        assert_eq!(restored.staged_groups, 0);
+        assert_eq!(restored.staged_weights, 0);
+        assert_eq!(restored.staged_resident_weights, 0);
+        assert_eq!(restored.staged_loaded_weights, 0);
+        assert_eq!(restored.staged_load_cache_hits, 0);
+        assert_eq!(restored.staged_service_nanos, 0);
+        assert_eq!(restored.staged_background_elapsed_nanos, 0);
+        assert_eq!(restored.staged_foreground_wait_nanos, 0);
     }
 
     #[test]

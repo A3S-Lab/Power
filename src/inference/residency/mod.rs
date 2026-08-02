@@ -7,6 +7,10 @@ mod planner;
 #[cfg(test)]
 mod planner_tests;
 mod prefetch;
+mod staging;
+#[cfg(test)]
+mod staging_tests;
+mod staging_types;
 mod types;
 
 use std::collections::HashMap;
@@ -28,6 +32,10 @@ use super::{EmbeddedRuntime, ExecutionPermit, RuntimeDeviceKind, TensorDescripto
 pub use adaptation::{ResidencyAdaptation, ResidencyAdaptationPolicy, ResidencyReplacement};
 use cache::{CacheAccess, CacheInsert, CacheState, PinReason};
 pub use planner::{PlannedResidencyGroup, ResidencyApplyReport, ResidencyCandidate, ResidencyPlan};
+pub use staging_types::{
+    StagedWeightBatch, StagedWeightBatchCompletion, StagedWeightBatchReport, StagedWeightGroup,
+    StagedWeightGroupRequest,
+};
 pub use types::{
     CacheEvictionPolicy, PlacementPreference, PrefetchReport, PrefetchTask, ResidencyPolicy,
     ResidentWeight, WeightKey, WeightRequest, WeightTier,
