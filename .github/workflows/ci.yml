@@ -73,7 +73,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows-embedded-inference
-      - run: cargo check --locked --no-default-features --features embedded-inference --lib
+      - run: cargo check --no-default-features --features embedded-inference --lib
 
   test:
     name: Test (${{ matrix.label }})
