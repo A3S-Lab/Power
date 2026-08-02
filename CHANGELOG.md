@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added opt-in hardware-aware residency budgets with bounded native
+  Linux/macOS/Windows host-memory discovery, selected CUDA/Metal device-memory
+  discovery, explicit reserves/fractions/caps, deterministic allocation order,
+  runtime-limit enforcement, and single-count Metal unified-memory planning.
+
+### Security
+
+- Kept automatic cache planning disabled by default, failed closed on incomplete
+  hardware discovery, spawned no probe process, and excluded capacity snapshots
+  from automatic logs, placement telemetry, persistence, and execution receipts.
+
 ## [0.5.0] - 2026-08-02
 
 ### Added
