@@ -6,40 +6,60 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::{PowerError, Result};
 
-use super::super::{InferenceLimits, WeightStore};
+use super::super::{EmbeddedRuntime, ExecutionPermit, TensorInput, TensorOutput, WeightStore};
 use super::plan::{GraphNode, GraphOp, GraphPlan};
 use super::value::GraphValue;
 
-pub(super) struct GraphExecutor {
+/// Validated single-input/single-output static graph executor.
+pub struct GraphExecutor {
     plan: GraphPlan,
     constants: HashMap<String, GraphValue>,
-    device: Device,
-    limits: InferenceLimits,
+    runtime: EmbeddedRuntime,
 }
 
 impl GraphExecutor {
-    pub(super) fn new(
+    pub fn new(
         plan: GraphPlan,
         weights: Arc<WeightStore>,
-        device: &Device,
-        limits: InferenceLimits,
+        runtime: EmbeddedRuntime,
     ) -> Result<Self> {
         let mut constants = HashMap::with_capacity(plan.initializers.len());
         for initializer in &plan.initializers {
             constants.insert(
                 initializer.name.clone(),
-                GraphValue::load(initializer, &weights, device)?,
+                GraphValue::load(initializer, &weights, runtime.device().tensor_device())?,
             );
         }
         Ok(Self {
             plan,
             constants,
-            device: device.clone(),
-            limits,
+            runtime,
         })
     }
 
-    pub(super) fn run(&self, input: Tensor, cancellation: &CancellationToken) -> Result<Tensor> {
+    /// Executes a graph under a permit from the same shared runtime.
+    pub fn run(
+        &self,
+        input: TensorInput,
+        permit: &ExecutionPermit,
+        cancellation: &CancellationToken,
+    ) -> Result<TensorOutput> {
+        if !permit.belongs_to(&self.runtime) {
+            return Err(PowerError::InvalidRequest(
+                "graph execution permit belongs to a different embedded runtime".to_string(),
+            ));
+        }
+        if cancellation.is_cancelled() {
+            return Err(PowerError::InferenceFailed(
+                "static graph execution was cancelled".to_string(),
+            ));
+        }
+        let input = input.into_candle(self.runtime.device().tensor_device())?;
+        let output = self.run_tensor(input, cancellation)?;
+        TensorOutput::from_candle(&output, self.runtime.limits())
+    }
+
+    fn run_tensor(&self, input: Tensor, cancellation: &CancellationToken) -> Result<Tensor> {
         let input_name = self.plan.inputs[0].name.clone();
         let output_name = self.plan.outputs[0].name.clone();
         let mut values = self.constants.clone();
@@ -47,19 +67,19 @@ impl GraphExecutor {
         for node in &self.plan.nodes {
             if cancellation.is_cancelled() {
                 return Err(PowerError::InferenceFailed(
-                    "PP-OCRv6 inference was cancelled".to_string(),
+                    "static graph execution was cancelled".to_string(),
                 ));
             }
-            let output = execute(node, &values, &self.device)?;
+            let output = execute(node, &values, self.runtime.device().tensor_device())?;
             #[cfg(test)]
             trace_non_finite(node, &output)?;
             let elements = output
                 .shape()
                 .iter()
                 .try_fold(1_usize, |total, value| total.checked_mul(*value));
-            if elements.is_none_or(|value| value > self.limits.max_tensor_elements) {
+            if elements.is_none_or(|value| value > self.runtime.limits().max_tensor_elements) {
                 return Err(PowerError::InferenceFailed(format!(
-                    "PP-OCRv6 node '{}' exceeded the tensor element limit",
+                    "static graph node '{}' exceeded the tensor element limit",
                     node.name
                 )));
             }
@@ -68,7 +88,7 @@ impl GraphExecutor {
         values
             .remove(&output_name)
             .ok_or_else(|| {
-                PowerError::InferenceFailed("PP-OCRv6 graph returned no output".to_string())
+                PowerError::InferenceFailed("static graph returned no output".to_string())
             })?
             .tensor("graph output")
             .cloned()
@@ -113,7 +133,7 @@ fn execute(
         .map(|name| {
             values.get(name).ok_or_else(|| {
                 PowerError::InferenceFailed(format!(
-                    "PP-OCRv6 node '{}' could not resolve input '{name}'",
+                    "static graph node '{}' could not resolve input '{name}'",
                     node.name
                 ))
             })
@@ -174,7 +194,7 @@ fn required<'a>(
 ) -> Result<&'a GraphValue> {
     inputs.get(index).copied().ok_or_else(|| {
         PowerError::InvalidFormat(format!(
-            "PP-OCRv6 node '{}' is missing input {index}",
+            "static graph node '{}' is missing input {index}",
             node.name
         ))
     })
@@ -222,7 +242,7 @@ fn pow(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
     if exponent.as_slice() != [2.0] {
         return Err(execution_error(
             node,
-            "the reviewed PP-OCRv6 graph only permits a scalar square exponent",
+            "the static graph executor only permits a scalar square exponent",
         ));
     }
     base.sqr()
@@ -848,7 +868,7 @@ fn nonnegative_usize(value: i64, name: &str, node: &GraphNode) -> Result<usize> 
 
 fn execution_error(node: &GraphNode, error: impl std::fmt::Display) -> PowerError {
     PowerError::InferenceFailed(format!(
-        "PP-OCRv6 node '{}' ({:?}) failed: {error}",
+        "static graph node '{}' ({:?}) failed: {error}",
         node.name, node.op
     ))
 }

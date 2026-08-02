@@ -11,6 +11,10 @@ pub enum DevicePreference {
     #[default]
     Auto,
     Cpu,
+    /// Select a CUDA device by ordinal.
+    Cuda {
+        ordinal: usize,
+    },
     /// Select a Metal device by ordinal.
     Metal {
         ordinal: usize,
@@ -21,6 +25,7 @@ pub enum DevicePreference {
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeDeviceKind {
     Cpu,
+    Cuda,
     Metal,
 }
 
@@ -38,6 +43,7 @@ impl RuntimeDevice {
         match preference {
             DevicePreference::Cpu => Ok(Self::cpu()),
             DevicePreference::Auto => Self::auto(),
+            DevicePreference::Cuda { ordinal } => Self::cuda(ordinal),
             DevicePreference::Metal { ordinal } => Self::metal(ordinal),
         }
     }
@@ -54,6 +60,12 @@ impl RuntimeDevice {
         &self.name
     }
 
+    /// Low-level tensor device for model crates built on Power's native
+    /// inference engine.
+    pub fn tensor_device(&self) -> &Device {
+        &self.candle
+    }
+
     fn cpu() -> Self {
         Self {
             kind: RuntimeDeviceKind::Cpu,
@@ -64,11 +76,37 @@ impl RuntimeDevice {
     }
 
     fn auto() -> Result<Self> {
+        #[cfg(feature = "embedded-cuda")]
+        if let Ok(device) = Self::cuda(0) {
+            return Ok(device);
+        }
         #[cfg(all(feature = "embedded-metal", target_os = "macos"))]
         if let Ok(device) = Self::metal(0) {
             return Ok(device);
         }
         Ok(Self::cpu())
+    }
+
+    #[cfg(feature = "embedded-cuda")]
+    fn cuda(ordinal: usize) -> Result<Self> {
+        let candle = Device::new_cuda(ordinal).map_err(|error| {
+            PowerError::BackendNotAvailable(format!(
+                "failed to initialize CUDA device {ordinal}: {error}"
+            ))
+        })?;
+        Ok(Self {
+            kind: RuntimeDeviceKind::Cuda,
+            ordinal: Some(ordinal),
+            name: format!("cuda:{ordinal}"),
+            candle,
+        })
+    }
+
+    #[cfg(not(feature = "embedded-cuda"))]
+    fn cuda(ordinal: usize) -> Result<Self> {
+        Err(PowerError::BackendNotAvailable(format!(
+            "CUDA device {ordinal} requires a build with the embedded-cuda feature"
+        )))
     }
 
     #[cfg(all(feature = "embedded-metal", target_os = "macos"))]
@@ -121,5 +159,11 @@ mod tests {
     fn unavailable_metal_fails_instead_of_falling_back() {
         #[cfg(not(all(feature = "embedded-metal", target_os = "macos")))]
         assert!(RuntimeDevice::resolve(DevicePreference::Metal { ordinal: 0 }).is_err());
+    }
+
+    #[test]
+    fn unavailable_cuda_fails_instead_of_falling_back() {
+        #[cfg(not(feature = "embedded-cuda"))]
+        assert!(RuntimeDevice::resolve(DevicePreference::Cuda { ordinal: 0 }).is_err());
     }
 }

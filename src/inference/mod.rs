@@ -6,18 +6,29 @@
 //! process.
 
 mod device;
+pub mod graph;
 mod limits;
 mod receipt;
+mod residency;
+mod routing;
+mod runtime;
+mod telemetry;
 mod tensor;
 mod weights;
 
-#[cfg(feature = "ppocr-v6")]
-pub mod ppocr_v6;
-
 pub use device::{DevicePreference, RuntimeDevice, RuntimeDeviceKind};
 pub use limits::InferenceLimits;
-pub use receipt::{ExecutionReceipt, ModelIdentity, RuntimeIdentity};
+pub use receipt::{
+    ExecutionDigest, ExecutionReceipt, ExecutionRepresentation, ModelIdentity, RuntimeIdentity,
+};
+pub use residency::{
+    PlacementPreference, PrefetchReport, PrefetchTask, ResidencyPolicy, ResidentWeight,
+    WeightHierarchy, WeightKey, WeightRequest, WeightTier,
+};
+pub use routing::{ExpertAssignment, ExpertKey, RoutedExpert, RoutedExpertBatch};
+pub use runtime::{EmbeddedRuntime, ExecutionPermit};
+pub use telemetry::{PlacementTelemetry, RouteHeat, RoutingHistory, TelemetryMode};
 pub use tensor::{TensorInput, TensorOutput};
-pub use weights::{TensorDescriptor, WeightStore};
+pub use weights::{TensorDescriptor, WeightFileDescriptor, WeightStore};
 
 pub(crate) const RUNTIME_NAME: &str = "a3s-power-native";

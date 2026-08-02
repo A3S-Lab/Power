@@ -11,14 +11,12 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-
+use crate::admission::{AdmissionController, AdmissionPermit};
 use crate::server::metrics::Metrics;
 
 /// Admits inference requests up to a fixed concurrency limit.
 pub struct ConcurrencyLimiter {
-    /// `None` = unbounded (limit was 0).
-    sem: Option<Arc<Semaphore>>,
+    admission: AdmissionController,
     metrics: Arc<Metrics>,
 }
 
@@ -26,7 +24,7 @@ pub struct ConcurrencyLimiter {
 /// completion, or early client disconnect) returns the permit to the pool and
 /// decrements the running-requests gauge.
 pub struct RequestPermit {
-    _permit: Option<OwnedSemaphorePermit>,
+    _permit: AdmissionPermit,
     metrics: Arc<Metrics>,
 }
 
@@ -50,37 +48,28 @@ impl Drop for WaitGuard {
 impl ConcurrencyLimiter {
     /// `max_concurrent == 0` means unbounded.
     pub fn new(max_concurrent: u64, metrics: Arc<Metrics>) -> Self {
-        let sem = if max_concurrent == 0 {
+        let maximum = if max_concurrent == 0 {
             None
         } else {
-            // usize::MAX would be absurd; Semaphore caps at MAX_PERMITS anyway.
-            Some(Arc::new(Semaphore::new(max_concurrent as usize)))
+            Some(usize::try_from(max_concurrent).unwrap_or(usize::MAX))
         };
-        Self { sem, metrics }
+        Self {
+            admission: AdmissionController::new(maximum),
+            metrics,
+        }
     }
 
     /// Acquire an admission permit, awaiting if the server is at capacity.
     /// Returns immediately when unbounded. Time spent waiting is reflected in
     /// the `power_requests_waiting` gauge.
     pub async fn acquire(&self) -> RequestPermit {
-        let permit = match &self.sem {
-            None => None,
-            Some(sem) => match sem.clone().try_acquire_owned() {
-                // Fast path: a permit is free right now.
-                Ok(permit) => Some(permit),
-                // Slow path: queue, accounting for it in the waiting gauge. The
-                // guard decrements on admission *or* on cancellation while queued.
-                Err(_) => {
-                    self.metrics.increment_waiting_requests();
-                    let _wait = WaitGuard(self.metrics.clone());
-                    let permit = sem
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .expect("admission semaphore is never closed");
-                    Some(permit)
-                }
-            },
+        let permit = match self.admission.try_acquire() {
+            Some(permit) => permit,
+            None => {
+                self.metrics.increment_waiting_requests();
+                let _wait = WaitGuard(self.metrics.clone());
+                self.admission.acquire().await
+            }
         };
         self.metrics.increment_running_requests();
         RequestPermit {

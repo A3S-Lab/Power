@@ -1,3 +1,4 @@
+pub mod admission;
 pub mod api;
 pub mod backend;
 pub mod cli;

@@ -36,12 +36,7 @@ impl GraphValue {
                     .collect(),
                 shape: tensor.dims().to_vec(),
             }),
-            _ => Ok(Self::Tensor(
-                tensor
-                    .to_dtype(DType::F32)
-                    .and_then(|value| value.to_device(device))
-                    .map_err(value_error)?,
-            )),
+            _ => Ok(Self::Tensor(tensor.to_device(device).map_err(value_error)?)),
         }
     }
 
@@ -49,7 +44,7 @@ impl GraphValue {
         match self {
             Self::Tensor(value) => Ok(value),
             Self::Ints { .. } => Err(PowerError::InvalidFormat(format!(
-                "PP-OCRv6 node '{node}' expected a tensor value"
+                "static graph node '{node}' expected a tensor value"
             ))),
         }
     }
@@ -58,7 +53,7 @@ impl GraphValue {
         match self {
             Self::Ints { values, .. } => Ok(values),
             Self::Tensor(_) => Err(PowerError::InvalidFormat(format!(
-                "PP-OCRv6 node '{node}' expected an integer control value"
+                "static graph node '{node}' expected an integer control value"
             ))),
         }
     }
@@ -72,5 +67,5 @@ impl GraphValue {
 }
 
 fn value_error(error: candle_core::Error) -> PowerError {
-    PowerError::InvalidFormat(format!("failed to load PP-OCRv6 initializer: {error}"))
+    PowerError::InvalidFormat(format!("failed to load static graph initializer: {error}"))
 }

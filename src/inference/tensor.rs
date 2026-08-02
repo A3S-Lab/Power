@@ -38,6 +38,9 @@ impl TensorInput {
 }
 
 /// Provider-neutral owned F32 tensor returned by an embedded session.
+///
+/// Static graphs must produce F32 explicitly. The runtime refuses other
+/// dtypes instead of silently changing model precision at the API boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TensorOutput {
@@ -47,9 +50,12 @@ pub struct TensorOutput {
 
 impl TensorOutput {
     pub(crate) fn from_candle(tensor: &Tensor, limits: &InferenceLimits) -> Result<Self> {
-        let tensor = tensor.to_dtype(DType::F32).map_err(|error| {
-            PowerError::InferenceFailed(format!("failed to convert output tensor to F32: {error}"))
-        })?;
+        if tensor.dtype() != DType::F32 {
+            return Err(PowerError::InvalidFormat(format!(
+                "static graph output must be F32, found {:?}",
+                tensor.dtype()
+            )));
+        }
         let shape = tensor.dims().to_vec();
         let expected = limits.checked_elements(&shape, "output tensor")?;
         let values = tensor
@@ -91,5 +97,15 @@ mod tests {
         assert!(TensorInput::new(vec![1, 2], vec![1.0], &limits).is_err());
         assert!(TensorInput::new(vec![1, 2], vec![1.0, f32::NAN], &limits).is_err());
         assert!(TensorInput::new(vec![1, 2], vec![1.0, 2.0], &limits).is_ok());
+    }
+
+    #[test]
+    fn output_precision_is_never_silently_changed() {
+        let limits = InferenceLimits::default();
+        let tensor = Tensor::new(&[1_f32], &Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::F16)
+            .unwrap();
+        assert!(TensorOutput::from_candle(&tensor, &limits).is_err());
     }
 }

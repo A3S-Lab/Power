@@ -1,55 +1,73 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{PowerError, Result};
 
-use super::super::{TensorDescriptor, WeightStore};
+use super::super::{InferenceLimits, TensorDescriptor, WeightStore};
 
-pub(super) const DETECTION_PLAN: &str = include_str!("graphs/small_detection.json");
-pub(super) const RECOGNITION_PLAN: &str = include_str!("graphs/small_recognition.json");
+const GRAPH_SCHEMA_VERSION: u32 = 1;
+const MAX_NODE_ATTRIBUTES: usize = 32;
 
-const FAMILY: &str = "pp-ocr-v6-small";
-const DETECTION_SOURCE_SHA256: &str =
-    "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e";
-const RECOGNITION_SOURCE_SHA256: &str =
-    "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634";
-const MAX_NODES: usize = 2_048;
-const MAX_INITIALIZERS: usize = 4_096;
-const MAX_NAME_BYTES: usize = 1_024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum GraphRole {
-    Detection,
-    Recognition,
+/// Model-owned identity expected for a reviewed static graph.
+///
+/// Power validates this identity but does not define model families, graph
+/// roles, revisions, or source hashes. Those remain the responsibility of the
+/// model crate that embeds the reviewed plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphIdentity {
+    pub family: String,
+    pub role: String,
+    pub source_format: String,
+    pub source_sha256: String,
+    pub opset: u32,
 }
 
-impl GraphRole {
-    pub(super) fn name(self) -> &'static str {
-        match self {
-            Self::Detection => "detection",
-            Self::Recognition => "recognition",
+impl GraphIdentity {
+    pub fn new(
+        family: impl Into<String>,
+        role: impl Into<String>,
+        source_format: impl Into<String>,
+        source_sha256: impl Into<String>,
+        opset: u32,
+    ) -> Self {
+        Self {
+            family: family.into(),
+            role: role.into(),
+            source_format: source_format.into(),
+            source_sha256: source_sha256.into(),
+            opset,
         }
     }
 
-    fn source_sha256(self) -> &'static str {
-        match self {
-            Self::Detection => DETECTION_SOURCE_SHA256,
-            Self::Recognition => RECOGNITION_SOURCE_SHA256,
+    fn validate(&self, limits: &InferenceLimits) -> Result<()> {
+        for (label, value) in [
+            ("family", self.family.as_str()),
+            ("role", self.role.as_str()),
+            ("source format", self.source_format.as_str()),
+        ] {
+            validate_name(value, limits).map_err(|_| {
+                PowerError::InvalidFormat(format!("static graph {label} is invalid"))
+            })?;
         }
-    }
-
-    fn opset(self) -> u32 {
-        match self {
-            Self::Detection => 14,
-            Self::Recognition => 11,
+        if self.source_sha256.len() != 64
+            || !self
+                .source_sha256
+                .bytes()
+                .all(|value| value.is_ascii_hexdigit())
+        {
+            return Err(PowerError::InvalidFormat(
+                "static graph source SHA-256 must contain 64 hexadecimal characters".to_string(),
+            ));
         }
+        Ok(())
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct GraphPlan {
+pub struct GraphPlan {
     schema_version: u32,
     family: String,
     role: String,
@@ -127,47 +145,63 @@ pub(super) enum GraphOp {
 }
 
 impl GraphPlan {
-    pub(super) fn parse(source: &str, role: GraphRole, weights: &WeightStore) -> Result<Self> {
+    pub fn parse(
+        source: &str,
+        expected: &GraphIdentity,
+        weights: &WeightStore,
+        limits: &InferenceLimits,
+    ) -> Result<Self> {
+        expected.validate(limits)?;
+        if source.len() > limits.max_graph_plan_bytes {
+            return Err(PowerError::InvalidFormat(format!(
+                "static graph plan contains {} bytes, exceeding the {} byte limit",
+                source.len(),
+                limits.max_graph_plan_bytes
+            )));
+        }
         let plan: Self = serde_json::from_str(source).map_err(|error| {
-            PowerError::InvalidFormat(format!(
-                "failed to parse embedded PP-OCRv6 {} graph: {error}",
-                role.name()
-            ))
+            PowerError::InvalidFormat(format!("failed to parse static graph plan: {error}"))
         })?;
-        plan.validate(role, weights)?;
+        plan.validate(expected, weights, limits)?;
         Ok(plan)
     }
 
-    fn validate(&self, role: GraphRole, weights: &WeightStore) -> Result<()> {
-        if self.schema_version != 1
-            || self.family != FAMILY
-            || self.role != role.name()
-            || self.source.format != "onnx"
-            || self.source.sha256 != role.source_sha256()
-            || self.source.opset != role.opset()
-        {
-            return Err(PowerError::InvalidFormat(format!(
-                "embedded PP-OCRv6 {} graph identity does not match the reviewed model",
-                role.name()
-            )));
+    pub fn identity(&self) -> GraphIdentity {
+        GraphIdentity {
+            family: self.family.clone(),
+            role: self.role.clone(),
+            source_format: self.source.format.clone(),
+            source_sha256: self.source.sha256.clone(),
+            opset: self.source.opset,
+        }
+    }
+
+    fn validate(
+        &self,
+        expected: &GraphIdentity,
+        weights: &WeightStore,
+        limits: &InferenceLimits,
+    ) -> Result<()> {
+        if self.schema_version != GRAPH_SCHEMA_VERSION || self.identity() != *expected {
+            return Err(PowerError::InvalidFormat(
+                "static graph identity does not match the model-owned reviewed identity"
+                    .to_string(),
+            ));
         }
         if self.inputs.len() != 1 || self.outputs.len() != 1 {
-            return Err(PowerError::InvalidFormat(format!(
-                "PP-OCRv6 {} graph must expose exactly one input and one output",
-                role.name()
-            )));
+            return Err(PowerError::InvalidFormat(
+                "static graph must expose exactly one input and one output".to_string(),
+            ));
         }
-        if self.nodes.is_empty() || self.nodes.len() > MAX_NODES {
-            return Err(PowerError::InvalidFormat(format!(
-                "PP-OCRv6 {} graph node count is outside the supported bound",
-                role.name()
-            )));
+        if self.nodes.is_empty() || self.nodes.len() > limits.max_graph_nodes {
+            return Err(PowerError::InvalidFormat(
+                "static graph node count is outside the configured bound".to_string(),
+            ));
         }
-        if self.initializers.is_empty() || self.initializers.len() > MAX_INITIALIZERS {
-            return Err(PowerError::InvalidFormat(format!(
-                "PP-OCRv6 {} initializer count is outside the supported bound",
-                role.name()
-            )));
+        if self.initializers.len() > limits.max_graph_initializers {
+            return Err(PowerError::InvalidFormat(
+                "static graph initializer count is outside the configured bound".to_string(),
+            ));
         }
 
         let inventory = weights
@@ -176,37 +210,36 @@ impl GraphPlan {
             .collect::<BTreeMap<_, _>>();
         if inventory.len() != self.initializers.len() {
             return Err(PowerError::InvalidFormat(format!(
-                "PP-OCRv6 {} weight inventory contains {} tensors; expected {}",
-                role.name(),
+                "static graph weight inventory contains {} tensors; expected {}",
                 inventory.len(),
                 self.initializers.len()
             )));
         }
         let mut available = BTreeSet::new();
+        validate_name(&self.inputs[0].name, limits)?;
+        validate_name(&self.outputs[0].name, limits)?;
         available.insert(self.inputs[0].name.as_str());
         for initializer in &self.initializers {
-            validate_name(&initializer.name)?;
+            validate_name(&initializer.name, limits)?;
             let descriptor = inventory.get(initializer.name.as_str()).ok_or_else(|| {
                 PowerError::InvalidFormat(format!(
-                    "PP-OCRv6 {} is missing initializer '{}'",
-                    role.name(),
+                    "static graph is missing initializer '{}'",
                     initializer.name
                 ))
             })?;
             validate_initializer(initializer, descriptor)?;
             if !available.insert(initializer.name.as_str()) {
                 return Err(PowerError::InvalidFormat(format!(
-                    "PP-OCRv6 {} declares duplicate value '{}'",
-                    role.name(),
+                    "static graph declares duplicate value '{}'",
                     initializer.name
                 )));
             }
         }
         for node in &self.nodes {
-            validate_name(&node.name)?;
+            validate_name(&node.name, limits)?;
             if node.outputs.len() != 1 {
                 return Err(PowerError::InvalidFormat(format!(
-                    "PP-OCRv6 node '{}' must have exactly one output",
+                    "static graph node '{}' must have exactly one output",
                     node.name
                 )));
             }
@@ -216,29 +249,28 @@ impl GraphPlan {
                 .any(|name| !available.contains(name.as_str()))
             {
                 return Err(PowerError::InvalidFormat(format!(
-                    "PP-OCRv6 node '{}' consumes an undeclared value",
+                    "static graph node '{}' consumes an undeclared value",
                     node.name
                 )));
             }
             let output = &node.outputs[0];
-            validate_name(output)?;
+            validate_name(output, limits)?;
             if !available.insert(output) {
                 return Err(PowerError::InvalidFormat(format!(
-                    "PP-OCRv6 graph writes value '{output}' more than once"
+                    "static graph writes value '{output}' more than once"
                 )));
             }
-            if node.attributes.len() > 32 {
+            if node.attributes.len() > MAX_NODE_ATTRIBUTES {
                 return Err(PowerError::InvalidFormat(format!(
-                    "PP-OCRv6 node '{}' has too many attributes",
+                    "static graph node '{}' has too many attributes",
                     node.name
                 )));
             }
         }
         if !available.contains(self.outputs[0].name.as_str()) {
-            return Err(PowerError::InvalidFormat(format!(
-                "PP-OCRv6 {} output is not produced by its graph",
-                role.name()
-            )));
+            return Err(PowerError::InvalidFormat(
+                "static graph output is not produced by its graph".to_string(),
+            ));
         }
         Ok(())
     }
@@ -279,7 +311,7 @@ impl GraphNode {
 
     fn attribute_error(&self, name: &str) -> PowerError {
         PowerError::InvalidFormat(format!(
-            "PP-OCRv6 node '{}' has an invalid '{name}' attribute",
+            "static graph node '{}' has an invalid '{name}' attribute",
             self.name
         ))
     }
@@ -295,17 +327,20 @@ fn validate_initializer(initializer: &Initializer, descriptor: &TensorDescriptor
     };
     if descriptor.dtype != dtype || descriptor.shape != initializer.shape {
         return Err(PowerError::InvalidFormat(format!(
-            "PP-OCRv6 initializer '{}' expected {dtype} {:?}, found {} {:?}",
+            "static graph initializer '{}' expected {dtype} {:?}, found {} {:?}",
             initializer.name, initializer.shape, descriptor.dtype, descriptor.shape
         )));
     }
     Ok(())
 }
 
-fn validate_name(value: &str) -> Result<()> {
-    if value.is_empty() || value.len() > MAX_NAME_BYTES || value.chars().any(char::is_control) {
+fn validate_name(value: &str, limits: &InferenceLimits) -> Result<()> {
+    if value.is_empty()
+        || value.len() > limits.max_graph_name_bytes
+        || value.chars().any(char::is_control)
+    {
         return Err(PowerError::InvalidFormat(
-            "PP-OCRv6 graph contains an invalid value name".to_string(),
+            "static graph contains an invalid value name".to_string(),
         ));
     }
     Ok(())
@@ -316,12 +351,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_graphs_have_reviewed_identity() {
-        let detection: GraphPlan = serde_json::from_str(DETECTION_PLAN).unwrap();
-        let recognition: GraphPlan = serde_json::from_str(RECOGNITION_PLAN).unwrap();
-        assert_eq!(detection.source.sha256, DETECTION_SOURCE_SHA256);
-        assert_eq!(recognition.source.sha256, RECOGNITION_SOURCE_SHA256);
-        assert_eq!(detection.nodes.len(), 242);
-        assert_eq!(recognition.nodes.len(), 481);
+    fn reviewed_identity_requires_a_sha256() {
+        let limits = InferenceLimits::default();
+        let valid = GraphIdentity::new("model", "encoder", "onnx", "a".repeat(64), 17);
+        assert!(valid.validate(&limits).is_ok());
+
+        let invalid = GraphIdentity::new("model", "encoder", "onnx", "not-a-hash", 17);
+        assert!(invalid.validate(&limits).is_err());
     }
 }
