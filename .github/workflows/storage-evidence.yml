@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -87,6 +87,7 @@ jobs:
           filesystem_class="$(findmnt -n -o FSTYPE --target "${MODEL_ROOT}")"
           test -n "${filesystem_class}"
           device_class="github-hosted-${ImageOS:-unknown}-${ImageVersion:-unknown}-ephemeral-os-disk"
+          architecture="$(uname -m)"
 
           run_report() {
             local collection="$1"
@@ -109,16 +110,85 @@ jobs:
               --samples "${samples}" > "${output}"
           }
 
+          record_cold_attempts() {
+            local collection="$1"
+            local strategy="$2"
+            local verified=0
+            local complete=true
+            local limitation=""
+            local error_log="${RUNNER_TEMP}/a3s-power-cold-${collection}-${strategy}.stderr"
+            local output
+
+            for attempt in $(seq 1 "${COLD_PROCESSES}"); do
+              output="${raw}/${collection}/cold-${strategy}-${attempt}.json"
+              if run_report \
+                "${collection}" "${strategy}" cold linux-fadvise-dontneed 1 \
+                "${output}" 2> "${error_log}"; then
+                verified=$((verified + 1))
+              elif grep -Fqx \
+                "storage benchmark failed: Backend not available: Linux retained at least one requested weight page after POSIX_FADV_DONTNEED; refusing to label the run cold" \
+                "${error_log}"; then
+                rm -f "${output}"
+                complete=false
+                limitation="page-cache-pages-remained-resident"
+                break
+              else
+                cat "${error_log}" >&2
+                return 1
+              fi
+            done
+            rm -f "${error_log}"
+
+            local model_digest
+            local sequence_digest
+            model_digest="$(jq -er '.modelCollectionSha256' "${raw}/${collection}/warm-mmap.json")"
+            sequence_digest="$(jq -er '.sequenceSha256' "${raw}/${collection}/warm-mmap.json")"
+            jq -n \
+              --arg schema "a3s.power.storage-cache-capability.v1" \
+              --arg power_commit "${GITHUB_SHA}" \
+              --arg model_digest "${model_digest}" \
+              --arg sequence_digest "${sequence_digest}" \
+              --arg strategy "${strategy}" \
+              --arg cpu_model "${cpu_model}" \
+              --arg architecture "${architecture}" \
+              --arg filesystem_class "${filesystem_class}" \
+              --arg device_class "${device_class}" \
+              --arg limitation "${limitation}" \
+              --argjson ram_bytes "${ram_bytes}" \
+              --argjson requested_processes "${COLD_PROCESSES}" \
+              --argjson verified_processes "${verified}" \
+              --argjson complete "${complete}" \
+              '{
+                schema: $schema,
+                powerCommit: $power_commit,
+                modelCollectionSha256: $model_digest,
+                sequenceSha256: $sequence_digest,
+                strategy: $strategy,
+                cacheState: "cold",
+                cachePreparation: "linux-fadvise-dontneed",
+                requestedProcesses: $requested_processes,
+                verifiedProcesses: $verified_processes,
+                complete: $complete,
+                limitation: (if $limitation == "" then null else $limitation end),
+                system: {
+                  os: "linux",
+                  architecture: $architecture,
+                  cpuModel: $cpu_model,
+                  ramBytes: $ram_bytes,
+                  filesystemClass: $filesystem_class,
+                  deviceClass: $device_class
+                }
+              }' > "${evidence}/${collection}-cold-${strategy}-capability.json"
+          }
+
           for collection in det rec; do
             for strategy in mmap positional-buffered positional-direct; do
               run_report \
                 "${collection}" "${strategy}" warm warm-sequence "${WARM_SAMPLES}" \
                 "${raw}/${collection}/warm-${strategy}.json"
-              for attempt in $(seq 1 "${COLD_PROCESSES}"); do
-                run_report \
-                  "${collection}" "${strategy}" cold linux-fadvise-dontneed 1 \
-                  "${raw}/${collection}/cold-${strategy}-${attempt}.json"
-              done
+            done
+            for strategy in mmap positional-buffered positional-direct; do
+              record_cold_attempts "${collection}" "${strategy}"
             done
             "${bench}" compare "${raw}/${collection}"/*.json \
               > "${evidence}/${collection}-comparison.json"
@@ -136,7 +206,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
