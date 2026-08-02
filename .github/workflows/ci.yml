@@ -41,6 +41,8 @@ jobs:
           - label: tee-minimal
             features: "--no-default-features --features tee-minimal"
             native_deps: true
+          - label: embedded-inference
+            features: "--no-default-features --features embedded-inference"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -54,6 +56,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
       - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
 
+  embedded-boundary:
+    name: Embedded dependency boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: tools/check-embedded-deps.sh
+
   test:
     name: Test (${{ matrix.label }})
     runs-on: ubuntu-latest
@@ -63,9 +73,14 @@ jobs:
         include:
           - label: default
             args: "--lib"
-          - label: all-features
-            args: "--all-features --lib"
+          # CUDA and Metal are platform/toolchain-specific and cannot be
+          # enabled together on an Ubuntu runner. Exercise every Linux CPU
+          # feature explicitly instead of using Cargo's --all-features.
+          - label: linux-cpu-features
+            args: "--no-default-features --features server,llamacpp,mistralrs,embedded-inference,tls,vsock,hf,hw-verify,picolm --lib"
             native_deps: true
+          - label: embedded-inference
+            args: "--no-default-features --features embedded-inference --lib"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

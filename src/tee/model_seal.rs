@@ -10,12 +10,12 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-
 use crate::error::{PowerError, Result};
 use crate::model::registry::ModelRegistry;
 use crate::model::storage;
 use crate::tee::key_provider::KeyProvider;
+
+pub use super::model_signature::verify_model_signature_hash;
 
 /// Verify a single model artifact's SHA-256 against an expected hash.
 pub fn verify_model_integrity(model_path: &Path, expected_hash: &str) -> Result<bool> {
@@ -133,93 +133,6 @@ pub fn verify_model_signature(model_path: &Path, public_key_hex: &str) -> Result
     verify_model_signature_hash(model_name, &model_hash_hex, model_path, public_key_hex)
 }
 
-/// Verify an Ed25519 signature over a known model SHA-256 hash.
-///
-/// The signature file must be at `<signature_anchor_path>.sig` and contain
-/// exactly 64 bytes. This is used for encrypted artifacts where the signed
-/// message is the plaintext model hash, but the distributable file is
-/// `<model>.enc` and the signature naturally lives beside it as `<model>.enc.sig`.
-pub fn verify_model_signature_hash(
-    model_name: &str,
-    model_hash_hex: &str,
-    signature_anchor_path: &Path,
-    public_key_hex: &str,
-) -> Result<()> {
-    // Parse the public key
-    let key_bytes =
-        hex::decode(public_key_hex).map_err(|e| PowerError::SignatureVerificationFailed {
-            model: model_name.to_string(),
-            reason: format!("invalid public key hex: {}", e),
-        })?;
-    if key_bytes.len() != 32 {
-        return Err(PowerError::SignatureVerificationFailed {
-            model: model_name.to_string(),
-            reason: format!("public key must be 32 bytes, got {}", key_bytes.len()),
-        });
-    }
-    let key_array: [u8; 32] =
-        key_bytes
-            .try_into()
-            .map_err(|_| PowerError::SignatureVerificationFailed {
-                model: model_name.to_string(),
-                reason: "public key length changed after validation".to_string(),
-            })?;
-    let verifying_key = VerifyingKey::from_bytes(&key_array).map_err(|e| {
-        PowerError::SignatureVerificationFailed {
-            model: model_name.to_string(),
-            reason: format!("invalid public key: {}", e),
-        }
-    })?;
-
-    // Read the signature file: <signature_anchor_path>.sig (appended, not replacing extension)
-    let sig_path = signature_path(signature_anchor_path);
-    let sig_bytes =
-        std::fs::read(&sig_path).map_err(|e| PowerError::SignatureVerificationFailed {
-            model: model_name.to_string(),
-            reason: format!("signature file not found at {}: {}", sig_path.display(), e),
-        })?;
-    if sig_bytes.len() != 64 {
-        return Err(PowerError::SignatureVerificationFailed {
-            model: model_name.to_string(),
-            reason: format!("signature must be 64 bytes, got {}", sig_bytes.len()),
-        });
-    }
-    let sig_array: [u8; 64] =
-        sig_bytes
-            .try_into()
-            .map_err(|_| PowerError::SignatureVerificationFailed {
-                model: model_name.to_string(),
-                reason: "signature length changed after validation".to_string(),
-            })?;
-    let signature = Signature::from_bytes(&sig_array);
-
-    let model_hash_bytes =
-        hex::decode(model_hash_hex).map_err(|e| PowerError::SignatureVerificationFailed {
-            model: model_name.to_string(),
-            reason: format!("failed to decode model hash: {}", e),
-        })?;
-    if model_hash_bytes.len() != 32 {
-        return Err(PowerError::SignatureVerificationFailed {
-            model: model_name.to_string(),
-            reason: format!(
-                "model hash must be 32 bytes, got {}",
-                model_hash_bytes.len()
-            ),
-        });
-    }
-
-    // Verify the signature
-    verifying_key
-        .verify(&model_hash_bytes, &signature)
-        .map_err(|e| PowerError::SignatureVerificationFailed {
-            model: model_name.to_string(),
-            reason: format!("signature invalid: {}", e),
-        })?;
-
-    tracing::info!(model = %model_name, "Model signature verified");
-    Ok(())
-}
-
 /// Verify an Ed25519 signature over an in-memory model buffer.
 pub fn verify_model_signature_bytes(
     model_name: &str,
@@ -234,12 +147,6 @@ pub fn verify_model_signature_bytes(
         signature_anchor_path,
         public_key_hex,
     )
-}
-
-fn signature_path(model_path: &Path) -> std::path::PathBuf {
-    let mut p = model_path.as_os_str().to_owned();
-    p.push(".sig");
-    std::path::PathBuf::from(p)
 }
 
 /// Verify signatures for all registered models.
@@ -260,6 +167,7 @@ mod tests {
     use super::*;
     use crate::model::manifest::{ModelFormat, ModelManifest, ModelParameters};
     use crate::model::storage;
+    use crate::tee::model_signature::signature_path;
 
     fn make_manifest(dir: &Path, name: &str, data: &[u8]) -> ModelManifest {
         std::env::set_var("A3S_POWER_HOME", dir);

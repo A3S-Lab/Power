@@ -440,6 +440,7 @@ impl LayerStreamingDecryptedModel {
     /// bounded and zeroized promptly. Backends that keep this view must own the
     /// `LayerStreamingDecryptedModel` for at least as long as any borrowed bytes
     /// can be used.
+    #[cfg(feature = "server")]
     pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.data
     }
@@ -656,7 +657,7 @@ mod tests {
 
         assert_eq!(
             compute_plaintext_sha256(&enc_path, &key).unwrap(),
-            crate::model::storage::compute_sha256(original_data)
+            hex::encode(Sha256::digest(original_data))
         );
     }
 

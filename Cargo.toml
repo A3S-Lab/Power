@@ -17,67 +17,95 @@ path = "src/lib.rs"
 [[bin]]
 name = "a3s-power"
 path = "src/main.rs"
+required-features = ["server"]
 
 [[bin]]
 name = "a3s-power-verify"
 path = "src/bin/a3s-power-verify.rs"
+required-features = ["server"]
 
 [features]
-default = ["mistralrs"]
-llamacpp = ["dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2?/mtmd"]
-mistralrs = ["dep:mistralrs"]
-tls = ["dep:axum-server", "dep:rcgen", "dep:time"]
+default = ["server", "mistralrs"]
+server = [
+    "dep:a3s-acl",
+    "dep:a3s-runtime",
+    "dep:anyhow",
+    "dep:axum",
+    "dep:axum-extra",
+    "dep:base64",
+    "dep:clap",
+    "dep:dirs",
+    "dep:either",
+    "dep:futures",
+    "dep:image",
+    "dep:minijinja",
+    "dep:reqwest",
+    "dep:tokio-stream",
+    "dep:tower",
+    "dep:tower-http",
+    "dep:tracing-subscriber",
+    "dep:ureq",
+    "dep:uuid",
+    "tokio/full",
+]
+llamacpp = ["server", "dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2?/mtmd"]
+mistralrs = ["server", "dep:mistralrs"]
+embedded-inference = ["dep:candle-core", "dep:candle-nn", "dep:safetensors"]
+embedded-cuda = ["embedded-inference", "candle-core/cuda", "candle-nn/cuda"]
+embedded-metal = ["embedded-inference", "candle-core/metal", "candle-nn/metal"]
+tls = ["server", "dep:axum-server", "dep:rcgen", "dep:time"]
 # vsock = Linux-only; requires AF_VSOCK kernel support (a3s-box MicroVMs)
-vsock = ["dep:tokio-vsock", "dep:hyper-util"]
+vsock = ["server", "dep:tokio-vsock", "dep:hyper-util"]
 # hf = HuggingFace Hub model pull support (async HTTP download)
-hf = []
+hf = ["server"]
 # hw-verify = AMD KDS + Intel PCS hardware attestation signature verification
-hw-verify = ["dep:x509-cert", "dep:p384", "dep:p256"]
+hw-verify = ["server", "dep:x509-cert", "dep:p384", "dep:p256"]
 # picolm = pure-Rust layer-streaming GGUF inference for TEE memory-constrained environments.
 # Streams transformer layers one at a time; peak RAM = O(layer_size) not O(model_size).
 # Ideal for 7B+ models inside 512MB EPC. No C/C++ inference backend.
-picolm = ["dep:memmap2", "dep:half", "dep:rayon"]
+picolm = ["server", "dep:memmap2", "dep:half", "dep:rayon"]
 # tee-minimal = smallest auditable TEE build: picolm + full TEE stack, no large dep trees.
 tee-minimal = ["picolm", "tls", "vsock"]
 
 [dependencies]
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
+# Async runtime. Embedded inference needs tasks, cancellation, admission, and
+# timers; socket/process/signal support belongs to the `server` feature.
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-a3s-acl = "=0.3.0"
-a3s-runtime = { version = "=0.2.0", git = "https://github.com/A3S-Lab/Runtime.git", rev = "b0aa0c34e2c8121effbcbfbe6246a860e78ca509" }
+a3s-acl = { version = "=0.3.0", optional = true }
+a3s-runtime = { version = "=0.2.0", git = "https://github.com/A3S-Lab/Runtime.git", rev = "b0aa0c34e2c8121effbcbfbe6246a860e78ca509", optional = true }
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 
 # Error handling
 thiserror = "1"
-anyhow = "1"
+anyhow = { version = "1", optional = true }
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 # Async utilities
 async-trait = "0.1"
-futures = "0.3"
+futures = { version = "0.3", optional = true }
 
 # HTTP server
-axum = { version = "0.7", features = ["macros"] }
-axum-extra = { version = "0.9", features = ["typed-header"] }
+axum = { version = "0.7", features = ["macros"], optional = true }
+axum-extra = { version = "0.9", features = ["typed-header"], optional = true }
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"], optional = true }
-tower = { version = "0.4", features = ["util"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower = { version = "0.4", features = ["util"], optional = true }
+tower-http = { version = "0.5", features = ["cors", "trace"], optional = true }
 
-# Async channels for streaming
-tokio-util = { version = "0.7", features = ["io"] }
+# Cooperative cancellation for embedded and service inference.
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 
 # UUID for request IDs
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4"], optional = true }
 
 # Ed25519 signatures for model integrity verification
 ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
@@ -86,13 +114,13 @@ ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
 hex = "0.4"
 
 # Either type used by mistralrs tokenization APIs
-either = "1"
+either = { version = "1", optional = true }
 
 # Blocking HTTP client for a3s-power-verify CLI
-ureq = "2"
+ureq = { version = "2", optional = true }
 
 # Async HTTP client — used by CLI commands and optionally by hf/hw-verify features
-reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"], optional = true }
 
 # X.509 certificate parsing for hardware attestation verification (hw-verify feature)
 x509-cert = { version = "0.2", optional = true }
@@ -104,10 +132,10 @@ p384 = { version = "0.13", features = ["ecdsa"], optional = true }
 p256 = { version = "0.13", features = ["ecdsa"], optional = true }
 
 # Image decoding for vision/multimodal model inputs
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"], optional = true }
 
 # Base64 encoding/decoding for image inputs
-base64 = "0.22"
+base64 = { version = "0.22", optional = true }
 
 # libc for mlock/munlock (in-memory model decryption)
 libc = "0.2"
@@ -116,7 +144,7 @@ libc = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Directories
-dirs = "5"
+dirs = { version = "5", optional = true }
 
 # SHA256 for model integrity
 sha2 = "0.10"
@@ -129,7 +157,7 @@ aes-gcm = "0.10"
 rand = "0.8"
 
 # Chat template rendering (Jinja2-compatible)
-minijinja = { version = "2", features = ["fuel"] }
+minijinja = { version = "2", features = ["fuel"], optional = true }
 
 # ioctl for TEE attestation (SEV-SNP /dev/sev-guest)
 nix = { version = "0.29", features = ["ioctl"] }
@@ -142,6 +170,12 @@ encoding_rs = { version = "0.8", optional = true }
 
 # mistral.rs backend — pure Rust LLM inference (optional, default)
 mistralrs = { version = "0.7", optional = true }
+
+# Embedded model execution. Power supplies model-neutral scheduling, graph,
+# residency, integrity, and tensor primitives; model crates own architectures.
+candle-core = { version = "0.10.2", default-features = false, optional = true }
+candle-nn = { version = "0.10.2", default-features = false, optional = true }
+safetensors = { version = "0.7", optional = true }
 
 # picolm backend — pure Rust layer-streaming GGUF inference (optional, picolm feature)
 # Memory-mapped file access for layer-streaming (zero-copy GGUF reads)

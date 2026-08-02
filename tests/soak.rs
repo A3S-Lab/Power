@@ -1,3 +1,5 @@
+#![cfg(feature = "server")]
+
 //! Soak / endurance tests for streaming inference and admission control.
 //!
 //! These run sustained / high-churn workloads and assert *stability*: no panic,

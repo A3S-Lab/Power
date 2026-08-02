@@ -17,6 +17,7 @@ env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: a3s-power
   BUILD_FEATURES: "--features hf,hw-verify"
+  LINUX_CPU_FEATURES: "--no-default-features --features server,llamacpp,mistralrs,embedded-inference,tls,vsock,hf,hw-verify,picolm"
 
 jobs:
   # ───────────────────────────────────────────────
@@ -44,11 +45,13 @@ jobs:
       - name: Tests
         run: cargo test --lib
 
-      - name: Install all-features native dependencies
+      - name: Install Linux CPU feature dependencies
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
 
-      - name: All-features tests
-        run: cargo test --all-features --lib
+      # CUDA and Metal need different native runners/toolchains, so a Linux
+      # release gate must not combine both through Cargo's --all-features.
+      - name: Linux CPU feature tests
+        run: cargo test $LINUX_CPU_FEATURES --lib
 
       - name: TEE minimal clippy
         run: cargo clippy --all-targets --no-default-features --features tee-minimal -- -D warnings

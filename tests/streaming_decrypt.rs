@@ -201,6 +201,7 @@ fn test_streaming_and_memory_decrypt_produce_same_plaintext() {
 // ── Config field ──────────────────────────────────────────────────────────────
 
 #[test]
+#[cfg(feature = "server")]
 fn test_streaming_decrypt_config_field_defaults_false() {
     let config = a3s_power::config::PowerConfig::default();
     assert!(
@@ -210,6 +211,7 @@ fn test_streaming_decrypt_config_field_defaults_false() {
 }
 
 #[test]
+#[cfg(feature = "server")]
 fn test_streaming_decrypt_config_field_serializes() {
     let config = a3s_power::config::PowerConfig {
         streaming_decrypt: true,
@@ -223,6 +225,7 @@ fn test_streaming_decrypt_config_field_serializes() {
 }
 
 #[test]
+#[cfg(feature = "server")]
 fn test_streaming_decrypt_config_false_not_serialized() {
     let config = a3s_power::config::PowerConfig::default();
     let acl = config.to_acl().unwrap();
