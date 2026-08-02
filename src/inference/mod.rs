@@ -6,6 +6,9 @@
 //! process.
 
 mod coupling;
+#[cfg(test)]
+mod coupling_tests;
+mod coupling_types;
 mod device;
 pub mod graph;
 mod hardware;
