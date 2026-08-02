@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-02
+
+### Added
+
+- Added model-neutral, usage-ranked partial SafeTensors mirror planning and
+  staging on the existing `WeightStore` integrity path. Selection is
+  deterministic and budget-bound, native filesystem capacity honors an
+  explicit reserve, exact completed files resume without copying, and every
+  new file is SHA-256 verified, synced, and atomically published without
+  replacement.
+
+### Security
+
+- Plaintext mirror staging is denied by default and requires the typed
+  `CallerManagedPlaintext` authority. Staging is cancellable, never overwrites
+  a conflicting destination, refuses symlink/path escape, detects source
+  mutation after store admission, and does not automatically persist routing
+  history, plans, paths, telemetry, or execution receipts.
+
 ## [0.5.1] - 2026-08-02
 
 ### Added
