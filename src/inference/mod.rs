@@ -13,6 +13,7 @@ mod coupling;
 mod coupling_tests;
 mod coupling_types;
 mod device;
+mod filesystem;
 pub mod graph;
 mod hardware;
 mod limits;
@@ -21,6 +22,9 @@ mod receipt;
 mod residency;
 mod routing;
 mod runtime;
+mod sealed_state;
+#[cfg(test)]
+mod sealed_state_tests;
 mod storage_benchmark;
 mod telemetry;
 mod tensor;
@@ -65,6 +69,11 @@ pub use residency::{
 };
 pub use routing::{ExpertAssignment, ExpertKey, RoutedExpert, RoutedExpertBatch};
 pub use runtime::{EmbeddedRuntime, ExecutionPermit};
+pub use sealed_state::{
+    OpenedSealedState, RecoveredSealedState, SealedStateBinding, SealedStateEnvelope,
+    SealedStateExportScope, SealedStateKey, SealedStateRecoverySource, SealedStateRollbackPolicy,
+    SealedStateScope, SealedStateStore, TeeStateExportAuthorization,
+};
 pub use storage_benchmark::{
     compare_storage_benchmarks, run_storage_benchmark, StorageBenchmarkComparison,
     StorageBenchmarkConfig, StorageBenchmarkGroup, StorageBenchmarkReport, StorageBenchmarkSample,

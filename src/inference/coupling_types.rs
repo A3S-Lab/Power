@@ -64,7 +64,7 @@ pub struct RouteCouplingEntry {
     pub observations: u64,
 }
 
-/// Serializable coupling history for a caller-owned encrypted or sealed store.
+/// Serializable coupling history for a caller-owned [`super::SealedStateEnvelope`].
 ///
 /// Power never persists this value automatically. Expert transitions can
 /// correlate with input semantics and must remain inside the applicable trust

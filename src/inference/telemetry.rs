@@ -30,7 +30,7 @@ pub struct RouteHeat {
     pub selections: u64,
 }
 
-/// Serializable route history for a model-owned encrypted or sealed store.
+/// Serializable route history for a model-owned [`super::SealedStateEnvelope`].
 ///
 /// Power never persists this value automatically because route heat is
 /// sensitive inference metadata.

@@ -288,7 +288,7 @@ impl WeightHierarchy {
     }
 
     /// Returns digest-bound route coupling data for an explicitly managed
-    /// encrypted or sealed store. Power never persists this history itself.
+    /// [`super::SealedStateEnvelope`]. Power never persists this history itself.
     pub fn route_coupling_history(&self) -> Result<RouteCouplingHistory> {
         self.inner.route_coupling.history()
     }
