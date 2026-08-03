@@ -17,6 +17,11 @@ mod coupling;
 mod coupling_tests;
 mod coupling_types;
 mod device;
+mod execution_batch;
+#[cfg(test)]
+mod execution_batch_failure_tests;
+#[cfg(test)]
+mod execution_batch_tests;
 mod filesystem;
 pub mod graph;
 mod hardware;
@@ -54,6 +59,12 @@ pub use coupling::{
     RouteHintTelemetry, RouteLayerGeometry, RoutePrefetchHint, RoutePrefetchHints,
 };
 pub use device::{DevicePreference, RuntimeDevice, RuntimeDeviceIdentity, RuntimeDeviceKind};
+pub use execution_batch::{
+    ExecutionBatchBinding, ExecutionBatchLifecycle, ExecutionBatchLifecycleEvidence,
+    ExecutionBatchMemberBinding, ExecutionBatchMemberSnapshot, ExecutionBatchMemberSpec,
+    ExecutionBatchRow, ExecutionBatchRowDisposition, ExecutionBatchRowOutcome,
+    ExecutionBatchRowSpec, ExecutionBatchStep, ExecutionBatchStepEvidence,
+};
 pub use hardware::{
     HardwareMemorySnapshot, MemoryDiscoverySource, MemoryPoolSnapshot, ResidencyAllocationOrder,
     ResidencyBudgetPlan, ResidencyBudgetPolicy, RuntimeMemoryReservations,

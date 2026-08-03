@@ -188,6 +188,10 @@ impl ExecutionPermit {
     pub(crate) fn belongs_to(&self, runtime: &EmbeddedRuntime) -> bool {
         Arc::ptr_eq(&self.inner.runtime, &runtime.inner)
     }
+
+    pub(crate) fn same_admission(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
 }
 
 #[cfg(test)]
