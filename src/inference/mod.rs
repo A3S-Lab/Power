@@ -25,6 +25,11 @@ mod execution_batch_tests;
 mod filesystem;
 pub mod graph;
 mod hardware;
+mod hardware_evidence;
+#[cfg(test)]
+mod hardware_evidence_failure_tests;
+#[cfg(test)]
+mod hardware_evidence_tests;
 mod limits;
 mod mirror;
 mod receipt;
@@ -69,6 +74,7 @@ pub use hardware::{
     HardwareMemorySnapshot, MemoryDiscoverySource, MemoryPoolSnapshot, ResidencyAllocationOrder,
     ResidencyBudgetPlan, ResidencyBudgetPolicy, RuntimeMemoryReservations,
 };
+pub use hardware_evidence::{HardwareEvidenceBinding, HardwareEvidenceBundle, ModelParityArtifact};
 pub use limits::InferenceLimits;
 pub use mirror::{
     WeightMirrorCandidate, WeightMirrorConfidentiality, WeightMirrorPlan,

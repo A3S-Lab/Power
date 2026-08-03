@@ -22,8 +22,8 @@ pub use comparison::{
 };
 
 const REPORT_SCHEMA: &str = "a3s.power.storage-benchmark.v1";
-const MAX_BENCHMARK_SAMPLES: usize = 1_000;
-const MAX_BENCHMARK_CONCURRENCY: usize = 256;
+pub(super) const MAX_BENCHMARK_SAMPLES: usize = 1_000;
+pub(super) const MAX_BENCHMARK_CONCURRENCY: usize = 256;
 const MAX_LABEL_BYTES: usize = 512;
 const WARM_SEQUENCE_PROCEDURE: &str =
     "one complete unmeasured tensor sequence immediately before measurement";
@@ -231,6 +231,10 @@ pub struct StorageBenchmarkReport {
     pub output_validation_nanos: u64,
     pub samples: Vec<StorageBenchmarkSample>,
     pub output_sha256: String,
+}
+
+impl StorageBenchmarkReport {
+    pub const SCHEMA: &'static str = REPORT_SCHEMA;
 }
 
 /// Runs a storage-only benchmark. No graph, model architecture, tokenizer,

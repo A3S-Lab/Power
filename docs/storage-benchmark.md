@@ -54,6 +54,32 @@ digest; reports from different compressed artifacts are never merged silently.
 Reports are written only to stdout. They contain no filesystem path or tensor
 name. Power does not persist or export a report automatically.
 
+## Canonical Hardware Evidence Bundle
+
+Model integrations may combine reviewed reports with the existing lossless
+tuning evidence and model-owned exact-parity artifacts by constructing a
+`HardwareEvidenceBundle`. The bundle embeds the raw path-free reports and
+re-runs `compare_storage_benchmarks`; it does not accept a caller-supplied
+comparison as truth. A valid bundle requires at least two distinct storage
+groups from the same Power revision, model collection, deterministic sequence,
+and exact named system, with byte-identical output across every report.
+
+The same canonical binding covers the reviewed graph or model source, typed
+runtime device, tuning decision, and every parity artifact. Parity artifacts
+contain digests only, must cover the configuration that tuning actually
+selected, and must prove exact typed output parity against the model-owned
+reference implementation. A result that retains the baseline remains valid
+negative evidence; the existence of a bundle does not mean an optimization was
+accepted or enabled.
+
+The bundle intentionally retains named hardware, aggregate timing, and
+workload, output, and artifact digests. This makes the evidence reproducible
+but potentially correlatable. Its SHA-256 detects mutation only when checked
+against a caller-owned pin; it is not a signature or an attestation. Power does
+not upload, persist, serve, or authorize export of either reports or bundles.
+In a TEE deployment, the attested policy remains the sole authority deciding
+whether this evidence may leave the confidential boundary.
+
 ## Warm Runs
 
 A warm run performs one complete unmeasured sequence immediately before the

@@ -39,6 +39,7 @@ model crate
   ├─ one ExecutionPermit per logical request
   ├─ ExecutionBatchLifecycle ───────── distinct existing permit per member
   │    └─ canonical ragged steps ───── atomic state/evidence boundary
+  ├─ HardwareEvidenceBundle ────────── storage + tuning + parity replay
   └─ shared request-scoped execution
        │
        ├─ GraphExecutor ───────── validated dense/static graphs
@@ -715,6 +716,49 @@ workload text, tensor, path, topology, or configuration value, and Power does
 not log, apply, or persist it. If persistence is authorized, the model crate
 uses the shared `SealedStateEnvelope` mechanism with its own layout digest.
 
+### Canonical Hardware Evidence Bundles
+
+Colibri's measurements also show that a locally plausible optimization may
+regress on another machine or workload. Power therefore composes its existing
+evidence instead of adding a second benchmark, telemetry stream, receipt, or
+attestation format.
+
+`HardwareEvidenceBinding::new` takes a Power version and exact Git revision,
+weight and reviewed graph/source digests, one typed `RuntimeDeviceIdentity`, and
+the path-free `StorageBenchmarkSystem`. Domain-separated canonical hashes derive
+the runtime, device, and named environment identities. Its `tuning_binding`
+method is the single mapping into `TuningProfileBinding`; model integrations do
+not invent parallel platform identities for the same review run.
+
+`HardwareEvidenceBundle::build` accepts:
+
+1. 2–128 bounded raw storage reports from one revision, model, deterministic
+   tensor sequence, and exact named system;
+2. the existing raw `TuningProfileEvidence` plus `TuningProfilePolicy`;
+3. 1–256 digest-only `ModelParityArtifact` summaries, each bound to the same
+   platform and the configuration selected by tuning; and
+4. the SHA-256 of each model-owned detailed parity artifact, without its path or
+   contents.
+
+Power canonicalizes report, candidate, round, and parity-artifact order. It
+re-runs `compare_storage_benchmarks` and `evaluate_tuning_profile` rather than
+trusting supplied summaries, requires at least two distinct storage groups with
+exact output-byte parity, requires exact typed reference/tested output parity,
+and rejects duplicate cases or artifacts. Storage, tuning, and model parity
+must agree on the Power revision, weights, reviewed graph/source, runtime,
+typed device, named environment, and selected configuration. A negative result
+is preserved: retaining the baseline still produces valid review evidence.
+
+The self-contained aggregate payload is capped at 32 MiB. `verify` replays all
+derivations and checks its canonical SHA-256 after deserialization;
+`verify_pinned` also requires an expected digest from a caller-owned trust root.
+The digest proves mutation relative to that pin, not authorship. A signed
+release, attestation, or equivalent policy must authenticate it. Construction
+performs no I/O and never logs, persists, uploads, seals, or serves the bundle.
+Named hardware, aggregate timing, workload/output hashes, and artifact hashes
+are deliberate review data and may be correlatable, so TEE deployments retain
+authority over export.
+
 ## Integrity and TEE Invariants
 
 - `WeightStore` hashes every SafeTensors file and a deterministic aggregate
@@ -767,6 +811,11 @@ uses the shared `SealedStateEnvelope` mechanism with its own layout digest.
 - Lossless tuning evidence and decisions contain opaque digests and aggregate
   counters only. Power never receives candidate values or workload content,
   never applies the selected digest, and never creates a tuning sidecar.
+- Hardware evidence bundles intentionally contain path-free named-system data,
+  aggregate measurements, and model-owned workload/output/artifact digests.
+  Their debug view omits named hardware and detailed artifact identities. Power
+  does not log, persist, upload, add them to receipts/attestation claims, or
+  authorize TEE export automatically; a bundle digest is not a signature.
 - Lossless representation admission and reads zeroize encoded, decoded,
   canonical-comparison, and integrity-hash heap buffers. Artifact and table
   metadata stays inside the pinned collection; typed representation and
@@ -803,6 +852,7 @@ uses the shared `SealedStateEnvelope` mechanism with its own layout digest.
 | Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, primary fallback, bounded positional reads, and aligned Linux/Windows direct reads share one `WeightStore`; mmap remains default pending end-to-end wins |
 | Cold-storage microbenchmark | Standalone path-free reports separate integrity-open, output validation, and measured demand reads; Linux cold labels require `FADV_DONTNEED` plus `mincore`, while unsupported platforms refuse the claim |
 | Measured machine/model tuning | Implemented as bounded digest-only AB/BA evidence evaluation for model-owned lossless knobs; Power keeps defaults on insufficient gain, parity regression, or a winner tie and never applies or persists a profile |
+| Reproducible review envelope | Implemented as one bounded canonical bundle that replays existing storage comparison and tuning evaluation, binds model-owned exact-parity artifact pins to the selected configuration and one named platform, preserves negative results, and requires an external authenticity pin; no new collector, upload path, receipt, or attestation schema is introduced |
 | Lossless entropy-coded weight tier | Implemented as optional digest-pinned read-only replicas behind the existing `WeightStore`: mandatory stamps, shard-local 256-stream nibble rANS tables, exact framing/state checks, bounded zeroizing decode, full canonical byte admission, complete/proper-partial coverage, and primary fallback; canonical SafeTensors remains mandatory |
 | Accelerator resident registries and fused groups | Implemented as digest-bound selections from the active device plan, atomic device-cache-only acquisition, bounded model-owned Candle execution, typed kernel-unavailable fallback, actual-device receipts, and optional canonical confidential-GPU claim binding; no second registry or kernel backend is introduced |
 | Multi-device home placement and peer traffic | Implemented as a canonical typed mesh capped at 16 devices, strongly connected directed edges, synchronous bounded Candle copies, explicit backend-unavailable fallback, exact confidential GPU/NVSwitch claim-index sets, and digest-only receipt evidence; the active residency cache remains the sole weight registry and model crates own graph partitioning |
@@ -830,7 +880,7 @@ The current sequence is:
 | 7 | Resource planning that accounts for fixed runtime state before hot weights | **Power substrate complete:** the existing budget policy accepts typed host/device fixed-state and peak-scratch reservations, subtracts them before cache capacity, accounts for both sets once on unified memory, and revalidates a fresh native snapshot before applying cache bytes | Power tests cover checked discrete/unified arithmetic, unavailable pools, overflow/malformed input, serde compatibility, exact topology and stale-pressure rejection, runtime application, privacy boundaries, and `Send + Sync`; model integrations must still publish named-hardware peak-memory evidence |
 | 8 | Heterogeneous multi-device resident pipelines | **Power substrate complete:** canonical typed meshes reuse the active residency declaration/cache, cap topology at 16 devices, require bidirectional reachability to the primary, bound every synchronous peer copy and aggregate traffic, and bind exact confidential GPU/NVSwitch claim-index sets; model crates retain graph partitioning and kernels | Power tests cover exact single-device Candle parity, canonical topology, stale/malformed/wrong-mesh rejection, per-edge and aggregate byte/count bounds, cancellation, typed fallback, exact attested claim sets, privacy-safe receipt v3, and `Send + Sync`; model integrations must still publish named-hardware parity and end-to-end gains before enabling a mesh policy |
 | 9 | Continuous and ragged execution batches | **Power substrate complete:** a digest-bound lifecycle gives every member a distinct existing runtime permit, includes all boundary members exactly once in admission order, admits late members only to the next step, supports ragged position/shape metadata, and commits bounded state atomically with row-local cancellation; model crates retain sequence scheduling, KV/recurrent topology, tensors, kernels, and arithmetic | Power tests cover binding/isolation, permit and state-identity alias refusal, fair canonical rosters, late admission, ragged and aggregate bounds, cancellation, atomic retry, state accounting, digest-only evidence, and `Send + Sync`; each model integration must publish unbatched-versus-batched output parity and named-workload throughput/latency evidence |
-| 10 | Reproducible hardware evidence bundles | **Planned:** bind existing storage comparisons, tuning decisions, runtime/device identity, and model-owned parity artifacts into one reviewable evidence envelope; no automatic upload or plaintext sidecar | Canonical schema/digest, tamper and mixed-hardware refusal, privacy review, and reproducible named-hardware runs |
+| 10 | Reproducible hardware evidence bundles | **Power substrate complete:** one 32 MiB-bounded canonical envelope embeds raw path-free storage and tuning evidence, replays the existing comparison/evaluator, binds typed runtime/device/named-environment identities plus selected-configuration model parity artifact pins, preserves baseline-retained negative results, and performs no automatic I/O | Power tests cover canonical ordering/serde/digest pins, replayed derivations, exact storage/model parity, mixed revision/model/hardware/runtime/device/environment/configuration refusal, nested tamper, collection bounds, privacy-safe debug, negative results, and `Send + Sync`; model integrations must still publish externally authenticated bundles from reproducible named-hardware runs |
 
 Cache-aware expert substitution remains outside the default path because it
 changes model semantics. Grammar drafts, MTP/speculative control flow,
@@ -850,7 +900,9 @@ Every model integration must publish reproducible evidence for:
    continuous/ragged batching disabled versus enabled;
 5. cancellation, resource-limit, malformed-plan, and wrong-digest failures;
 6. TEE regression tests, including telemetry-off behavior and no plaintext
-   persistence.
+   persistence; and
+7. an externally authenticated `HardwareEvidenceBundle` digest tying storage,
+   tuning, parity artifacts, and the named platform together.
 
 An optimization is not enabled by default from a microbenchmark alone. It must
 preserve model semantics and improve an end-to-end workload under a documented
