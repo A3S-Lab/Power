@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added canonical, self-verifying hardware evidence bundles that compose the
+  existing path-free storage reports/comparison, raw lossless tuning evidence,
+  replayed tuning decision, and model-owned exact-parity artifact pins under
+  one model/runtime/device/environment binding.
+- Added deterministic ordering, a 32 MiB canonical envelope bound, pinned
+  bundle verification, exact re-derivation of storage and tuning summaries,
+  and preservation of reviewed negative results when the baseline remains
+  selected.
 - Added Colibri-inspired, model-neutral continuous and ragged execution-batch
   lifecycles. Every member holds a distinct permit from the existing runtime
   admission controller, every step covers the complete boundary roster in
@@ -52,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Hardware evidence construction rejects mixed revisions, models, named
+  hardware, runtime devices, tuning bindings, selected configurations, and
+  parity artifacts. Bundle SHA-256 is mutation evidence rather than a
+  signature; callers must pin it in an attestation, signed release, or another
+  trust root. Construction never logs, persists, uploads, or opens a listener.
 - Bound execution batches to exact weight, model-owned state-layout, scheduler,
   runtime-device, and limit digests. Member/state identities and row data remain
   out of public evidence and debug output; Power retains no model state bytes

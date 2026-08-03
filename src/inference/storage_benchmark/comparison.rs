@@ -81,6 +81,10 @@ pub struct StorageBenchmarkComparison {
     pub groups: Vec<StorageBenchmarkGroup>,
 }
 
+impl StorageBenchmarkComparison {
+    pub const SCHEMA: &'static str = COMPARISON_SCHEMA;
+}
+
 /// Combines separately recorded cold/warm, strategy, and source-count runs.
 /// Reports must share one exact model, deterministic sequence, Power revision,
 /// and named hardware environment. A mismatch is retained as explicit output

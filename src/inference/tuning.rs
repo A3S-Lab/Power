@@ -10,7 +10,7 @@ use super::tuning_types::{
 };
 use super::ExecutionDigest;
 
-const MAX_CANDIDATES: usize = 32;
+pub(super) const MAX_CANDIDATES: usize = 32;
 const BASIS_POINTS: u128 = 10_000;
 
 #[derive(Clone, Copy)]
