@@ -124,7 +124,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
 - **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional), proxy (forwards to an upstream OpenAI-compatible server — vLLM/TGI/SGLang/OpenAI — so Power can front an existing accelerated engine)
 - **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
-- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, mmap-default or bounded positional tensor reads, complete or partial weighted read-only replicas, digest-pinned and canonically verified pure-Rust lossless rANS representations, usage-ranked verified partial-mirror staging, validation-throughput source weighting, typed devices, opt-in hardware-aware host/CUDA/Metal cache budgets, LFRU/LRU residency, hysteresis-bounded live hot-tier adaptation, privacy-gated cross-layer route hints, event-driven current-layer staged batches with a shared worker-and-byte flight window, attestation-bound accelerator residency declarations, fused Candle batches with explicit exact-fallback identity, bounded sealed warm-state envelopes, digest-bound lossless tuning evidence, measurable prefetch, cancellation, and execution receipts. Model architectures and KV/recurrent layouts live in their owning crates; embedded sessions never bind a Web port
+- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, mmap-default or bounded positional tensor reads, complete or partial weighted read-only replicas, digest-pinned and canonically verified pure-Rust lossless rANS representations, usage-ranked verified partial-mirror staging, validation-throughput source weighting, typed devices, fixed-state/scratch-aware host/CUDA/Metal cache budgets with current-pressure revalidation, LFRU/LRU residency, hysteresis-bounded live hot-tier adaptation, privacy-gated cross-layer route hints, event-driven current-layer staged batches with a shared worker-and-byte flight window, attestation-bound accelerator residency declarations, fused Candle batches with explicit exact-fallback identity, bounded sealed warm-state envelopes, digest-bound lossless tuning evidence, measurable prefetch, cancellation, and execution receipts. Model architectures and KV/recurrent layouts live in their owning crates; embedded sessions never bind a Web port
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
 - **JSON Schema Structured Output**: Constrain local llama.cpp output via JSON Schema → GBNF grammar conversion; unsupported local backend/schema combinations fail closed instead of silently ignoring output policy
@@ -143,21 +143,27 @@ useful/unused accounting, event-driven current-layer staging with canonical
 group reassembly, deterministic heat-driven weight placement, and
 digest-verified bandwidth-weighted storage replicas. It can discover bounded
 host, CUDA, and Metal memory snapshots and derive an explicitly requested cache
-budget with caller-owned reserves, fractions, caps, and allocation order. Metal
-unified memory is counted once across host and device tiers. Automatic budgeting
-remains opt-in, never changes the zero-cache default, and never logs or adds the
-hardware snapshot to receipts. A replica may explicitly cover the complete
-collection or an exact subset of primary SafeTensors files; source weights can
-reuse throughput observed during the mandatory integrity read without scanning
-the model again. Hot plans can be replaced transactionally without releasing
-explicit caller pins. At a model-defined safe boundary, caller-owned live heat
-can derive an ephemeral incremental plan with a bounded replacement count and
-deterministic hysteresis. Only groups with identical byte and per-layer entry
-footprints exchange tiers, and a stale base plan fails closed. This changes
-placement only; routing, gate values, dtype, precision, and tensor contents stay
-exact. A model crate may also provide opaque positive benefits
-for complete SafeTensors files and ask the same `WeightStore` to plan and stage
-a usage-ranked partial mirror. Staging is denied by default, requires explicit
+budget with caller-owned safety reserves, available-memory fractions, caps,
+allocation order, and typed host/device fixed-state plus peak-scratch
+reservations. Those runtime bytes are removed before hot-weight cache capacity;
+Metal unified memory counts both reservation sets against one physical pool.
+`EmbeddedRuntime::apply_residency_budget` takes a fresh native snapshot and
+fails before changing cache policy if availability or pool topology no longer
+supports the plan; plans with non-zero runtime reservations cannot use the
+offline-only `ResidencyBudgetPlan::apply_to` shortcut. Automatic budgeting
+remains opt-in, never changes the zero-cache default, and never logs
+reservations/snapshots or adds them to receipts. A replica may explicitly cover
+the complete collection or an exact subset of primary SafeTensors files; source
+weights can reuse throughput observed during the mandatory integrity read
+without scanning the model again. Hot plans can be replaced transactionally
+without releasing explicit caller pins. At a model-defined safe boundary,
+caller-owned live heat can derive an ephemeral incremental plan with a bounded
+replacement count and deterministic hysteresis. Only groups with identical
+byte and per-layer entry footprints exchange tiers, and a stale base plan fails
+closed. This changes placement only; routing, gate values, dtype, precision,
+and tensor contents stay exact. A model crate may also provide opaque positive
+benefits for complete SafeTensors files and ask the same `WeightStore` to plan
+and stage a usage-ranked partial mirror. Staging is denied by default, requires explicit
 caller-managed plaintext authority, respects a byte budget and free-space
 reserve, resumes exact files, detects source mutation, and atomically publishes
 only digest-verified files without replacement. Power never persists the
@@ -1746,7 +1752,7 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 ### Completed
 
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
-- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native hardware-aware cache budgets with unified-memory accounting, LFRU hot sets, atomic plans, hysteresis-bounded live hot-tier adaptation, batched expert unions, privacy-gated cross-layer route hints, event-driven current-layer staged batches with shared count/byte admission, attestation-bound accelerator residency declarations, fused Candle batches with explicit actual-device/fallback identity, AES-256-GCM sealed warm-state envelopes with authenticated recovery and explicit TEE export authorization, digest-bound AB/BA lossless tuning evidence, complete/partial weighted replicas, optional artifact-pinned and canonical-byte-verified pure-Rust rANS representations, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
+- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native fixed-state/scratch-aware cache budgets with live pressure revalidation and unified-memory accounting, LFRU hot sets, atomic plans, hysteresis-bounded live hot-tier adaptation, batched expert unions, privacy-gated cross-layer route hints, event-driven current-layer staged batches with shared count/byte admission, attestation-bound accelerator residency declarations, fused Candle batches with explicit actual-device/fallback identity, AES-256-GCM sealed warm-state envelopes with authenticated recovery and explicit TEE export authorization, digest-bound AB/BA lossless tuning evidence, complete/partial weighted replicas, optional artifact-pinned and canonical-byte-verified pure-Rust rANS representations, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
 - [x] Pure Rust inference backend — `mistralrs` feature (default): GGUF inference via candle, no C++ dependency; ideal for TEE supply-chain auditing
 - [x] OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`)
 - [x] Content-addressed model storage with SHA-256

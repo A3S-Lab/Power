@@ -160,11 +160,19 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   serialization buffers use zeroizing owners.
 - `EmbeddedRuntime::plan_residency_budget` discovers host memory through bounded
   native Linux, macOS, or Windows APIs and device memory through the selected
-  CUDA or Metal handle. The caller supplies explicit fractions, reserves, caps,
-  and host/device allocation order. The resulting plan is capped by
+  CUDA or Metal handle. The caller supplies explicit fractions, safety
+  reserves, caps, host/device allocation order, and model-neutral fixed-state
+  plus peak-scratch byte reservations. Power applies the fraction first and
+  removes declared runtime bytes before assigning hot-weight cache capacity.
+  The resulting plan is capped by
   `InferenceLimits::max_resident_weight_bytes`; Metal unified memory is counted
-  once, and a failed or incomplete discovery fails closed instead of guessing.
-  Discovery is opt-in and does not change the zero-cache default.
+  once while both host and device runtime allocations consume that shared pool.
+  `EmbeddedRuntime::apply_residency_budget` refreshes the native snapshot and
+  fails before cache-policy mutation when availability or exact pool topology
+  no longer supports the plan. Plans with non-zero runtime reservations cannot
+  use the offline-only `ResidencyBudgetPlan::apply_to` shortcut. Discovery is
+  opt-in, incomplete discovery fails closed instead of guessing, and the
+  zero-cache default does not change.
 - `WeightStoreConfig` accepts a primary collection plus bounded, read-only
   replicas. Complete replicas must match the primary aggregate digest. An
   explicitly partial replica may contain a non-empty subset of primary
@@ -358,23 +366,31 @@ reproducible plan from caller-owned policy:
 ```rust
 use a3s_power::inference::{
     DevicePreference, EmbeddedRuntime, InferenceLimits, ResidencyBudgetPolicy,
-    ResidencyPolicy,
+    ResidencyPolicy, RuntimeMemoryReservations,
 };
 
 let runtime = EmbeddedRuntime::new(DevicePreference::Auto, InferenceLimits::default())?;
+// Counts future allocations not already reflected in the planning snapshot.
+let reservations = RuntimeMemoryReservations::default()
+    .with_host_fixed_bytes(512 * 1024 * 1024)
+    .with_host_scratch_bytes(256 * 1024 * 1024);
 let budget = ResidencyBudgetPolicy::new(5_000, 5_000)?
     .with_host_reserve_bytes(2 * 1024 * 1024 * 1024)
-    .with_device_reserve_bytes(512 * 1024 * 1024);
+    .with_device_reserve_bytes(512 * 1024 * 1024)
+    .with_runtime_reservations(reservations)?;
 let plan = runtime.plan_residency_budget(&budget)?;
-let residency = plan.apply_to(&ResidencyPolicy::default())?;
+let residency = runtime.apply_residency_budget(&plan, &ResidencyPolicy::default())?;
 # Ok::<(), a3s_power::error::PowerError>(())
 ```
 
-The serialized snapshot and plan are available for explicit operator review,
-but Power never logs, persists, exports through placement telemetry, or binds
-them into execution receipts automatically. A TEE guest therefore plans only
-from the memory visible inside that guest, while policy still controls whether
-the result may leave the trust boundary.
+Fixed bytes remain live for the execution; scratch is the caller's maximum
+additional simultaneous working set. The owning model crate computes those
+four byte counts without exposing KV, recurrent, activation, or model topology
+to Power. The serialized reservations, snapshot, and plan are available for
+explicit operator review, but Power never logs, persists, exports them through
+placement telemetry, or binds them into execution receipts automatically. A
+TEE guest therefore plans only from memory visible inside that guest, while
+policy still controls whether the result may leave the trust boundary.
 
 ### Attestation-Bound Fused Accelerator Batches
 
@@ -651,8 +667,9 @@ uses the shared `SealedStateEnvelope` mechanism with its own layout digest.
   Caller-supplied heat and replacement identities are not placed in telemetry,
   logs, receipts, or attestation claims.
 - Hardware memory snapshots can reveal deployment capacity. Automatic budgeting
-  is explicit, snapshots are never logged or placed in execution receipts, and
-  callers must apply their own TEE export policy.
+  is explicit; snapshots, runtime reservations, and pressure decisions are
+  never logged or placed in telemetry or execution receipts, and callers must
+  apply their own TEE export policy.
 - Accelerator declarations can reveal group and tensor membership, so Power
   never logs or persists them. Normal telemetry receives no new identities.
   Receipt evidence contains declaration and claims digests only and always
@@ -669,7 +686,7 @@ uses the shared `SealedStateEnvelope` mechanism with its own layout digest.
 | One-layer-ahead I/O overlap | Implemented with cancellable Tokio blocking workers, shared count/byte flight admission, useful/unused measurement, and peak-flight evidence |
 | Current-layer resident/cold overlap | Implemented with atomic staged groups, event-driven issue/take readiness, exact-demand miss loading through the same admission/cache/source routing, canonical completion, and separate event/final wait evidence |
 | Cross-layer coupling hints | Implemented as bounded, digest/geometry-bound, detailed-telemetry-only co-occurrence learning with deterministic per-position scores, batch union, and measured recall; hints never alter router output |
-| Hardware-aware placement | Native Linux/macOS/Windows host discovery, selected CUDA/Metal device discovery, unified-memory accounting, deterministic capped budget planning, and integrity-read storage weighting are implemented without subprocesses |
+| Hardware-aware placement | Native Linux/macOS/Windows host discovery, selected CUDA/Metal device discovery, caller-owned fixed-state/scratch reservations, current-pressure revalidation, unified-memory accounting, deterministic capped budget planning, and integrity-read storage weighting are implemented without subprocesses |
 | Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, primary fallback, bounded positional reads, and aligned Linux/Windows direct reads share one `WeightStore`; mmap remains default pending end-to-end wins |
 | Cold-storage microbenchmark | Standalone path-free reports separate integrity-open, output validation, and measured demand reads; Linux cold labels require `FADV_DONTNEED` plus `mincore`, while unsupported platforms refuse the claim |
 | Measured machine/model tuning | Implemented as bounded digest-only AB/BA evidence evaluation for model-owned lossless knobs; Power keeps defaults on insufficient gain, parity regression, or a winner tie and never applies or persists a profile |
@@ -695,7 +712,7 @@ The current sequence is:
 | 4 | Accelerator-wide residency declarations and fused batches | **Power substrate complete:** exact active-plan device groups, fused/fallback implementation digests, typed actual-device evidence, permit/cancellation/limit checks, and existing confidential-GPU claim binding share one residency and receipt path; model crates own kernels | Power tests cover deterministic binding, Candle fused/reference parity, pressure and kernel-unavailable fallback identity, malformed/stale/device/permit/cancellation/limit failures, confidential-claim mismatch, privacy-safe receipts, and `Send + Sync`; each model integration must still publish named-hardware kernel parity and gains |
 | 5 | Warm model state across sessions | **Power substrate complete:** model-owned opaque bytes are bounded and sealed with authenticated model/layout/state/generation/scope binding; synchronized primary/backup publication, caller-pinned rollback floors, zeroization, and explicit hardware-TEE export authorization share existing attestation and filesystem durability paths | Power tests cover round trips, fresh nonces, wrong key/model/layout/state, tamper/truncation/oversize, interruption recovery, monotonic saves, rollback floors, cancellation, export mismatch, privacy-safe debug, and `Send + Sync`; model integrations must publish uninterrupted-vs-restored output parity and named-workload warm-start gains |
 | 6 | Async issue/take and staged loading rounds | **Power substrate complete:** prefetch and current-layer staging share one task, worker, item, total-byte, and in-flight-byte admission path; `next_ready_group` wakes on atomic readiness without polling, while final completion keeps canonical order | Power tests cover event wakeup, out-of-order readiness with canonical completion, cancellation/failure termination, shared materialization, byte-window scheduling, peak-flight evidence, telemetry-off privacy, serde compatibility, and `Send + Sync`; model integrations must publish end-to-end overlap gains |
-| 7 | Resource planning that accounts for fixed runtime state before hot weights | **Planned:** extend the existing hardware budget plan with caller-supplied, model-neutral state/scratch reservations and pressure revalidation; no second planner or automatic allocation policy | Exact budget arithmetic on discrete and unified memory, stale-snapshot behavior, TEE export privacy, and named-hardware peak-memory evidence |
+| 7 | Resource planning that accounts for fixed runtime state before hot weights | **Power substrate complete:** the existing budget policy accepts typed host/device fixed-state and peak-scratch reservations, subtracts them before cache capacity, accounts for both sets once on unified memory, and revalidates a fresh native snapshot before applying cache bytes | Power tests cover checked discrete/unified arithmetic, unavailable pools, overflow/malformed input, serde compatibility, exact topology and stale-pressure rejection, runtime application, privacy boundaries, and `Send + Sync`; model integrations must still publish named-hardware peak-memory evidence |
 | 8 | Heterogeneous multi-device resident pipelines | **Planned:** generalize typed device residency into an attestation-bound device mesh and peer-transfer declarations; model crates continue to own graph partitioning and kernels | Exact single-device parity, topology/peer failure handling, bounded transfer memory, confidential-GPU topology binding, and actual-device receipts |
 | 9 | Continuous and ragged execution batches | **Planned:** add model-neutral bounded batch admission and lifecycle primitives while model crates retain sequence scheduling, KV/recurrent topology, and arithmetic | Per-session isolation, cancellation/fairness, ragged-shape bounds, uninterrupted output parity, and TEE state non-leakage |
 | 10 | Reproducible hardware evidence bundles | **Planned:** bind existing storage comparisons, tuning decisions, runtime/device identity, and model-owned parity artifacts into one reviewable evidence envelope; no automatic upload or plaintext sidecar | Canonical schema/digest, tamper and mixed-hardware refusal, privacy review, and reproducible named-hardware runs |

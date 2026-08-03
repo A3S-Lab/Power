@@ -49,7 +49,7 @@ pub use coupling::{
 pub use device::{DevicePreference, RuntimeDevice, RuntimeDeviceIdentity, RuntimeDeviceKind};
 pub use hardware::{
     HardwareMemorySnapshot, MemoryDiscoverySource, MemoryPoolSnapshot, ResidencyAllocationOrder,
-    ResidencyBudgetPlan, ResidencyBudgetPolicy,
+    ResidencyBudgetPlan, ResidencyBudgetPolicy, RuntimeMemoryReservations,
 };
 pub use limits::InferenceLimits;
 pub use mirror::{
