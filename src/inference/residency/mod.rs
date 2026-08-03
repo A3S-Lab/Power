@@ -3,6 +3,7 @@
 
 mod adaptation;
 mod cache;
+mod load_window;
 mod planner;
 #[cfg(test)]
 mod planner_tests;

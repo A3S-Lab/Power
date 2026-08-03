@@ -156,6 +156,8 @@ async fn staged_batch_exposes_resident_groups_before_background_loads() {
     assert_eq!(completion.report.pending_groups, 1);
     assert_eq!(completion.report.resident_weights, 1);
     assert_eq!(completion.report.loaded_weights, 1);
+    assert_eq!(completion.report.peak_inflight_weights, 1);
+    assert_eq!(completion.report.peak_inflight_bytes, 4);
 }
 
 #[tokio::test]
@@ -220,20 +222,33 @@ async fn staged_completion_restores_canonical_order_after_out_of_order_readiness
         )
         .unwrap();
 
-    second_held.release();
-    let out_of_order = tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            let ready = batch.ready_groups();
-            if !ready.is_empty() {
-                break ready;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(out_of_order[0].canonical_index(), 1);
-    first_held.release();
+    let release_second = async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        second_held.release();
+    };
+    let ((), out_of_order) = tokio::join!(
+        release_second,
+        tokio::time::timeout(Duration::from_secs(1), batch.next_ready_group())
+    );
+    let out_of_order = out_of_order.unwrap().unwrap().unwrap();
+    assert_eq!(out_of_order.canonical_index(), 1);
+    let release_first = async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        first_held.release();
+    };
+    let ((), first) = tokio::join!(
+        release_first,
+        tokio::time::timeout(Duration::from_secs(1), batch.next_ready_group())
+    );
+    let first = first.unwrap().unwrap().unwrap();
+    assert_eq!(first.canonical_index(), 0);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), batch.next_ready_group())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
 
     let completion = batch.wait().await.unwrap();
     assert_eq!(
@@ -246,6 +261,49 @@ async fn staged_completion_restores_canonical_order_after_out_of_order_readiness
     );
     assert_eq!(value(&completion.groups[0].weights()[0]), 1.0);
     assert_eq!(value(&completion.groups[1].weights()[0]), 3.0);
+    assert!(completion.report.event_wait_nanos > 0);
+    assert_eq!(
+        hierarchy.telemetry().staged_event_wait_nanos,
+        completion.report.event_wait_nanos
+    );
+}
+
+#[tokio::test]
+async fn staged_background_window_is_bounded_by_canonical_bytes() {
+    let (_directory, store) = staged_weight_store();
+    let runtime = new_runtime();
+    let hierarchy = WeightHierarchy::new(
+        store,
+        runtime.clone(),
+        ResidencyPolicy {
+            host_cache_bytes: 64,
+            max_prefetch_workers: 2,
+            max_background_inflight_bytes: 4,
+            telemetry: TelemetryMode::Aggregate,
+            ..ResidencyPolicy::default()
+        },
+    )
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+
+    let completion = hierarchy
+        .start_staged_batch(
+            vec![group(0, &[WEIGHT_A]), group(0, &[WEIGHT_C])],
+            &permit,
+            cancellation,
+        )
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+
+    assert_eq!(completion.report.requested_weights, 2);
+    assert_eq!(completion.report.peak_inflight_weights, 1);
+    assert_eq!(completion.report.peak_inflight_bytes, 4);
+    let telemetry = hierarchy.telemetry();
+    assert_eq!(telemetry.staged_peak_inflight_weights, 1);
+    assert_eq!(telemetry.staged_peak_inflight_bytes, 4);
 }
 
 #[test]
@@ -495,6 +553,7 @@ async fn disabled_telemetry_keeps_staged_timing_private() {
 
     assert_eq!(completion.report.cumulative_service_nanos, 0);
     assert_eq!(completion.report.background_elapsed_nanos, 0);
+    assert_eq!(completion.report.event_wait_nanos, 0);
     assert_eq!(completion.report.foreground_wait_nanos, 0);
     let telemetry = hierarchy.telemetry();
     assert_eq!(telemetry.staged_batches, 0);
@@ -502,7 +561,10 @@ async fn disabled_telemetry_keeps_staged_timing_private() {
     assert_eq!(telemetry.staged_loaded_weights, 0);
     assert_eq!(telemetry.staged_service_nanos, 0);
     assert_eq!(telemetry.staged_background_elapsed_nanos, 0);
+    assert_eq!(telemetry.staged_event_wait_nanos, 0);
     assert_eq!(telemetry.staged_foreground_wait_nanos, 0);
+    assert_eq!(telemetry.staged_peak_inflight_weights, 0);
+    assert_eq!(telemetry.staged_peak_inflight_bytes, 0);
 }
 
 #[test]

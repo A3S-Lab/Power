@@ -44,8 +44,8 @@ model crate
             ├─ route coupling ─── private bounded hints, measured against truth
             ├─ device cache ───── bounded, typed device, exact dtype
             ├─ host cache ─────── per-layer LFRU/LRU + provenance-aware pins
-            ├─ prefetch pool ───── bounded tasks and blocking workers
-            ├─ staged batches ──── current-layer readiness + canonical order
+            ├─ load window ─────── shared worker + canonical-byte admission
+            ├─ staged batches ──── event readiness + canonical order
             ├─ residency plan ──── replaceable and stably adapted atomic groups
             ├─ fused batches ───── attested device-only groups + explicit fallback
             └─ SafeTensors ─────── canonical primary + verified weighted representations
@@ -85,19 +85,21 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   workload and a low-recall hint can waste bandwidth, so recording and use are
   explicit instead of an automatic default.
 - `start_prefetch` starts bounded blocking I/O immediately. The hierarchy caps
-  active tasks and workers, unions duplicate requests, and propagates
-  cancellation when the task is aborted or dropped. A model can prefetch layer
-  N+1, compute layer N, then await the task, providing the one-layer-ahead
-  overlap used by routed models.
+  active tasks, workers, total bytes, and bytes concurrently owned by workers;
+  it unions duplicate requests and propagates cancellation when the task is
+  aborted or dropped. A model can prefetch layer N+1, compute layer N, then
+  await the task, providing the one-layer-ahead overlap used by routed models.
 - `start_staged_batch` adapts Colibri's current-layer pipeline without moving
   model execution into Power. It validates every non-empty atomic group,
   duplicate key, layer, tensor descriptor, item count, and byte total before
   touching cache heat. Fully resident groups are available synchronously;
   exact misses use the same prefetch admission, bounded Tokio blocking workers,
-  source router, cache, per-key load serialization, and cancellation path.
-  Early groups carry an implicit canonical input index, and final completion
-  always restores the original order. Model crates compute into indexed output
-  slots and retain their exact gate application and reduction order.
+  canonical-byte flight window, source router, cache, per-key load
+  serialization, and cancellation path. `next_ready_group().await` exposes
+  each newly complete group without a polling loop. Early groups carry an
+  implicit canonical input index, and final completion always restores the
+  original order. Model crates compute into indexed output slots and retain
+  their exact gate application and reduction order.
 - Prefetch bookkeeping distinguishes a cache hit at prefetch time, a materialized
   weight later consumed by demand, and a materialized weight evicted unused.
   Aggregate telemetry reports useful and unused counts and bytes, allowing the
@@ -234,7 +236,7 @@ let mut batch = hierarchy.start_staged_batch(groups, &permit, cancellation.clone
 
 // Model-owned compute can start while exact cache misses load in the shared
 // bounded background path. Each output is written by canonical_index.
-for group in batch.ready_groups() {
+while let Some(group) = batch.next_ready_group().await? {
     compute_into_slot(group.canonical_index(), group.weights())?;
 }
 
@@ -252,8 +254,13 @@ A group is exposed only when all of its weights are ready. Different groups may
 become ready out of order, but `StagedWeightBatchCompletion::groups` is strictly
 canonical. Staging is exact current-layer demand, so it does not inflate
 speculative-prefetch usefulness. The report separates cumulative worker service
-time, background wall time, and the time spent inside the caller's final
-`wait`. Timing and aggregate placement counters remain zero under
+time, background wall time, event-driven readiness wait, and the time spent
+inside the caller's final `wait`. It also reports peak active-worker count and
+canonical bytes. `ResidencyPolicy::max_background_inflight_bytes` is shared by
+prefetch and staging, is capped by the total batch byte limit, and rejects an
+individual tensor that cannot fit; the scheduler may issue a smaller later
+item into spare capacity without reordering the pending queue. Timing and
+aggregate placement counters remain zero under
 `TelemetryMode::Disabled`; enabled staged counters contain no layer, tensor,
 route, expert, or tensor-value identity. Dropping or aborting the batch
 propagates cancellation and releases the same admission capacity used by
@@ -659,8 +666,8 @@ uses the shared `SealedStateEnvelope` mechanism with its own layout digest.
 | Layer-local LFRU/LRU and learned hot pins | Implemented with decaying frequency, bounded recency, separate manual/plan pins, and transactional hot-set replacement |
 | Lossless live tier adaptation | Implemented at explicit safe boundaries with caller-owned heat, default 25% + 4 hysteresis, a four-replacement cap, exact-footprint swaps, stale-plan rejection, and the existing transactional pin/cache path |
 | Batched expert union | Implemented without changing router order, top-k, or gate weights |
-| One-layer-ahead I/O overlap | Implemented with bounded, cancellable Tokio blocking workers and useful/unused prefetch measurement |
-| Current-layer resident/cold overlap | Implemented with atomic staged groups, immediate resident readiness, exact-demand miss loading through shared admission/cache/source routing, and canonical completion |
+| One-layer-ahead I/O overlap | Implemented with cancellable Tokio blocking workers, shared count/byte flight admission, useful/unused measurement, and peak-flight evidence |
+| Current-layer resident/cold overlap | Implemented with atomic staged groups, event-driven issue/take readiness, exact-demand miss loading through the same admission/cache/source routing, canonical completion, and separate event/final wait evidence |
 | Cross-layer coupling hints | Implemented as bounded, digest/geometry-bound, detailed-telemetry-only co-occurrence learning with deterministic per-position scores, batch union, and measured recall; hints never alter router output |
 | Hardware-aware placement | Native Linux/macOS/Windows host discovery, selected CUDA/Metal device discovery, unified-memory accounting, deterministic capped budget planning, and integrity-read storage weighting are implemented without subprocesses |
 | Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, primary fallback, bounded positional reads, and aligned Linux/Windows direct reads share one `WeightStore`; mmap remains default pending end-to-end wins |
@@ -687,6 +694,11 @@ The current sequence is:
 | 3 | Lossless compressed expert tiers | **Power substrate complete:** optional `rans-nibble-256-v1` replicas remain behind the existing verified `WeightStore`; canonical SafeTensors is mandatory, every physical artifact is pinned before parsing, and every record is admitted only after exact canonical decode parity | Power tests cover deterministic multi-symbol round trips, stamps/tables, artifact pins, malformed framing/state/amplification, complete/proper-partial coverage, mmap/positional reads, scratch, cancellation, fallback, benchmark identity/parity, privacy-safe debug, and `Send + Sync`; model integrations must still publish named-hardware end-to-end wins before use by default |
 | 4 | Accelerator-wide residency declarations and fused batches | **Power substrate complete:** exact active-plan device groups, fused/fallback implementation digests, typed actual-device evidence, permit/cancellation/limit checks, and existing confidential-GPU claim binding share one residency and receipt path; model crates own kernels | Power tests cover deterministic binding, Candle fused/reference parity, pressure and kernel-unavailable fallback identity, malformed/stale/device/permit/cancellation/limit failures, confidential-claim mismatch, privacy-safe receipts, and `Send + Sync`; each model integration must still publish named-hardware kernel parity and gains |
 | 5 | Warm model state across sessions | **Power substrate complete:** model-owned opaque bytes are bounded and sealed with authenticated model/layout/state/generation/scope binding; synchronized primary/backup publication, caller-pinned rollback floors, zeroization, and explicit hardware-TEE export authorization share existing attestation and filesystem durability paths | Power tests cover round trips, fresh nonces, wrong key/model/layout/state, tamper/truncation/oversize, interruption recovery, monotonic saves, rollback floors, cancellation, export mismatch, privacy-safe debug, and `Send + Sync`; model integrations must publish uninterrupted-vs-restored output parity and named-workload warm-start gains |
+| 6 | Async issue/take and staged loading rounds | **Power substrate complete:** prefetch and current-layer staging share one task, worker, item, total-byte, and in-flight-byte admission path; `next_ready_group` wakes on atomic readiness without polling, while final completion keeps canonical order | Power tests cover event wakeup, out-of-order readiness with canonical completion, cancellation/failure termination, shared materialization, byte-window scheduling, peak-flight evidence, telemetry-off privacy, serde compatibility, and `Send + Sync`; model integrations must publish end-to-end overlap gains |
+| 7 | Resource planning that accounts for fixed runtime state before hot weights | **Planned:** extend the existing hardware budget plan with caller-supplied, model-neutral state/scratch reservations and pressure revalidation; no second planner or automatic allocation policy | Exact budget arithmetic on discrete and unified memory, stale-snapshot behavior, TEE export privacy, and named-hardware peak-memory evidence |
+| 8 | Heterogeneous multi-device resident pipelines | **Planned:** generalize typed device residency into an attestation-bound device mesh and peer-transfer declarations; model crates continue to own graph partitioning and kernels | Exact single-device parity, topology/peer failure handling, bounded transfer memory, confidential-GPU topology binding, and actual-device receipts |
+| 9 | Continuous and ragged execution batches | **Planned:** add model-neutral bounded batch admission and lifecycle primitives while model crates retain sequence scheduling, KV/recurrent topology, and arithmetic | Per-session isolation, cancellation/fairness, ragged-shape bounds, uninterrupted output parity, and TEE state non-leakage |
+| 10 | Reproducible hardware evidence bundles | **Planned:** bind existing storage comparisons, tuning decisions, runtime/device identity, and model-owned parity artifacts into one reviewable evidence envelope; no automatic upload or plaintext sidecar | Canonical schema/digest, tamper and mixed-hardware refusal, privacy review, and reproducible named-hardware runs |
 
 Cache-aware expert substitution remains outside the default path because it
 changes model semantics. Grammar drafts, MTP/speculative control flow,

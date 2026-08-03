@@ -86,6 +86,12 @@ pub struct ResidencyPolicy {
     pub max_prefetch_workers: usize,
     pub max_prefetch_items: usize,
     pub max_prefetch_bytes: u64,
+    /// Maximum canonical bytes concurrently owned by background load workers.
+    ///
+    /// This is shared by speculative prefetch and exact current-layer staging.
+    /// The effective value is capped by `max_prefetch_bytes`.
+    #[serde(default = "default_max_background_inflight_bytes")]
+    pub max_background_inflight_bytes: u64,
     #[serde(default)]
     pub route_coupling: RouteCouplingPolicy,
     pub telemetry: TelemetryMode,
@@ -105,6 +111,7 @@ impl Default for ResidencyPolicy {
             max_prefetch_workers: 4,
             max_prefetch_items: 128,
             max_prefetch_bytes: 1024 * 1024 * 1024,
+            max_background_inflight_bytes: default_max_background_inflight_bytes(),
             route_coupling: RouteCouplingPolicy::default(),
             telemetry: TelemetryMode::Disabled,
         }
@@ -115,6 +122,10 @@ const fn default_cache_heat_decay_interval() -> u64 {
     4_096
 }
 
+const fn default_max_background_inflight_bytes() -> u64 {
+    1024 * 1024 * 1024
+}
+
 impl ResidencyPolicy {
     pub fn validate(&self) -> Result<()> {
         if self.max_entries_per_layer == 0
@@ -122,6 +133,7 @@ impl ResidencyPolicy {
             || self.max_prefetch_workers == 0
             || self.max_prefetch_items == 0
             || self.max_prefetch_bytes == 0
+            || self.max_background_inflight_bytes == 0
             || self.cache_heat_decay_interval == 0
         {
             return Err(PowerError::Config(
@@ -130,6 +142,11 @@ impl ResidencyPolicy {
         }
         self.route_coupling.validate()?;
         Ok(())
+    }
+
+    pub(super) fn background_inflight_bytes(&self) -> u64 {
+        self.max_background_inflight_bytes
+            .min(self.max_prefetch_bytes)
     }
 }
 
@@ -171,6 +188,10 @@ pub struct PrefetchReport {
     pub cache_hits: usize,
     pub materialized: usize,
     pub bytes: u64,
+    #[serde(default)]
+    pub peak_inflight_weights: usize,
+    #[serde(default)]
+    pub peak_inflight_bytes: u64,
 }
 
 pub struct PrefetchTask {

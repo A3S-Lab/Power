@@ -113,6 +113,8 @@ async fn prefetch_unions_duplicate_requests_and_reuses_residency() {
     assert_eq!(first.requested, 2);
     assert_eq!(first.unique, 1);
     assert_eq!(first.materialized, 1);
+    assert_eq!(first.peak_inflight_weights, 1);
+    assert_eq!(first.peak_inflight_bytes, 8);
 
     let demand = hierarchy.load(&request, &permit, &cancellation).unwrap();
     assert!(demand.cache_hit());
@@ -127,7 +129,13 @@ async fn prefetch_unions_duplicate_requests_and_reuses_residency() {
         .await
         .unwrap();
     assert_eq!(second.cache_hits, 1);
-    assert_eq!(hierarchy.telemetry().storage_reads, 1);
+    assert_eq!(second.peak_inflight_weights, 1);
+    assert_eq!(second.peak_inflight_bytes, 8);
+    let telemetry = hierarchy.telemetry();
+    assert_eq!(telemetry.storage_reads, 1);
+    assert_eq!(telemetry.prefetch_batches, 2);
+    assert_eq!(telemetry.prefetch_peak_inflight_weights, 1);
+    assert_eq!(telemetry.prefetch_peak_inflight_bytes, 8);
 }
 
 #[tokio::test]
@@ -234,6 +242,12 @@ fn residency_policy_rejects_unbounded_prefetch_controls() {
     .validate()
     .is_err());
     assert!(ResidencyPolicy {
+        max_background_inflight_bytes: 0,
+        ..ResidencyPolicy::default()
+    }
+    .validate()
+    .is_err());
+    assert!(ResidencyPolicy {
         route_coupling: super::super::coupling::RouteCouplingPolicy {
             max_entries: 0,
             ..super::super::coupling::RouteCouplingPolicy::default()
@@ -252,6 +266,20 @@ fn route_coupling_policy_has_a_backward_compatible_serde_default() {
     assert_eq!(
         restored.route_coupling,
         super::super::coupling::RouteCouplingPolicy::default()
+    );
+}
+
+#[test]
+fn background_byte_window_has_a_backward_compatible_serde_default() {
+    let mut serialized = serde_json::to_value(ResidencyPolicy::default()).unwrap();
+    serialized
+        .as_object_mut()
+        .unwrap()
+        .remove("maxBackgroundInflightBytes");
+    let restored: ResidencyPolicy = serde_json::from_value(serialized).unwrap();
+    assert_eq!(
+        restored.max_background_inflight_bytes,
+        ResidencyPolicy::default().max_background_inflight_bytes
     );
 }
 
