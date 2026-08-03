@@ -36,7 +36,7 @@ pub fn weight_collection_sha256(
     root: impl AsRef<Path>,
     limits: &InferenceLimits,
 ) -> Result<String> {
-    Ok(verify_collection(root.as_ref(), limits)?.sha256)
+    Ok(verify_collection(root.as_ref(), limits, WeightReadStrategy::Mmap)?.sha256)
 }
 
 pub(in crate::inference::weights) fn open_lossless_source(
@@ -60,7 +60,7 @@ pub(in crate::inference::weights) fn open_lossless_source(
     // The complete physical collection is pinned before SafeTensors metadata,
     // record lengths, or decoded allocation sizes are inspected.
     let validation_started = Instant::now();
-    let collection = verify_collection(&config.root, limits)?;
+    let collection = verify_collection(&config.root, limits, config.read_strategy)?;
     if collection.sha256 != expected_artifact_sha256 {
         return Err(PowerError::IntegrityCheckFailed {
             model: "lossless weight artifact".to_string(),
@@ -263,7 +263,11 @@ pub(in crate::inference::weights) fn physical_location<'a>(
         .and_then(|state| state.record_locations.get(name))
 }
 
-fn verify_collection(root: &Path, limits: &InferenceLimits) -> Result<VerifiedCollection> {
+fn verify_collection(
+    root: &Path,
+    limits: &InferenceLimits,
+    read_strategy: WeightReadStrategy,
+) -> Result<VerifiedCollection> {
     limits.validate()?;
     let root = std::fs::canonicalize(root).map_err(|error| {
         PowerError::InvalidFormat(format!(
@@ -285,7 +289,7 @@ fn verify_collection(root: &Path, limits: &InferenceLimits) -> Result<VerifiedCo
             root.display()
         )));
     }
-    let (sha256, bytes, files) = hash_files(&root, &paths, limits.max_model_bytes)?;
+    let (sha256, bytes, files) = hash_files(&root, &paths, limits.max_model_bytes, read_strategy)?;
     Ok(VerifiedCollection {
         root,
         paths,

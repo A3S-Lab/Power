@@ -21,12 +21,16 @@ cross-platform, and reproducibility requirements.
 | --- | --- | --- |
 | `mmap` | Candle's validated SafeTensors mmap path | Yes |
 | `positional-buffered` | Exact indexed ranges through bounded page-cache-backed positional reads; no collection-wide mmap is retained | No |
+| `positional-cache-bypass` | macOS `F_NOCACHE` on integrity-hash and exact range handles; no collection-wide mmap is retained | No |
 | `positional-direct` | Aligned `O_DIRECT` on Linux or `FILE_FLAG_NO_BUFFERING` on Windows | No |
 
 Every strategy and representation returns the same canonical tensor dtype,
-shape, and bytes. Direct mode never silently falls back to buffered I/O. macOS
-reports direct mode as unsupported because `F_NOCACHE` is not equivalent
-evidence for this contract.
+shape, and bytes. Cache-bypass and direct modes never silently fall back to a
+buffered handle under the same source. `F_NOCACHE` asks macOS not to retain new
+file data in the unified buffer cache, but it is not equivalent to aligned
+direct I/O and does not prove that an earlier handle did not populate a page.
+Power therefore records it under its own strategy and continues to report
+direct mode as unsupported on macOS.
 
 ## Timing and Evidence
 
@@ -102,7 +106,8 @@ cargo run --release \
   --samples 30
 ```
 
-Repeat with `--strategy positional-buffered`. Use
+Repeat with `--strategy positional-buffered`. On macOS, use
+`--strategy positional-cache-bypass` for explicit `F_NOCACHE` evidence. Use
 `--strategy positional-direct` only when the platform and source support it.
 Add `--replica` or `--partial-replica` for a separately captured multi-source
 run; all sources in one run must use the same strategy.
@@ -201,6 +206,38 @@ for recognition on this host. Direct mode returned an explicit unsupported
 error, and no cold result was recorded because macOS lacks the required proof.
 These negative results keep mmap as the default. Direct I/O must remain opt-in
 until a named-hardware end-to-end model workload demonstrates a repeatable win.
+
+## Official PP-OCRv6 macOS Cache-Bypass Follow-Up
+
+The cache-bypass implementation was measured on the same pinned PP-OCRv6
+collections. This remains a storage-only result, not an end-to-end OCR latency
+claim. Each strategy ran in two release processes with 30 warm samples; the
+first pair used mmap then cache-bypass and the second pair reversed that order.
+
+| Field | Value |
+| --- | --- |
+| Power commit | `2697e77126d3c1d6399e72e578a65fdfe95abc7f` |
+| Host | Apple M2 Pro, 10 logical CPUs, 16 GiB RAM, macOS/aarch64 |
+| Storage | Internal Apple Fabric SSD, APFS |
+| Detection collection | 169 tensors, 9,813,472 requested bytes, digest `0439824a102e0b365ca905355553985a885773ca0ea9f6a526e5f7317fc15592` |
+| Recognition collection | 241 tensors, 21,071,132 requested bytes, digest `e8bf34a6900addc8cd9ec1d1ea73ea56e97cb0d668c8c45508a885924078761f` |
+
+| Collection | Strategy | p50 latency | p95 latency | p50 throughput |
+| --- | --- | ---: | ---: | ---: |
+| Detection | mmap | 11.96 ms | 13.04 ms | 815.2 MB/s |
+| Detection | positional cache-bypass | 12.75 ms | 13.60 ms | 769.0 MB/s |
+| Recognition | mmap | 25.07 ms | 27.17 ms | 840.0 MB/s |
+| Recognition | positional cache-bypass | 27.61 ms | 30.76 ms | 762.9 MB/s |
+
+Both detection groups produced output digest
+`f427bbbedfbedcabdc711d8597e59ce61d9b1645a8e71c5c8dad26a75caea7fe`;
+both recognition groups produced
+`2416672993f3e99941a5a80242804a1c1e33a1610adaa39c5c43956dceaef2f8`.
+Cache-bypass regressed p50 latency by 6.6% for detection and 10.1% for
+recognition on this warm, small-model workload. It remains an explicit tool for
+memory-pressure and larger-model experiments rather than a new default.
+Because macOS has no post-integrity page-residency verifier in Power, none of
+these reports is labeled cold.
 
 ## Hosted-Runner Evidence Workflow
 

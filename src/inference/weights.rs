@@ -98,6 +98,12 @@ pub enum WeightReadStrategy {
     Mmap,
     /// Bounded positional reads through the operating-system page cache.
     PositionalBuffered,
+    /// Bounded positional reads through a platform cache-bypass handle.
+    ///
+    /// macOS uses `F_NOCACHE`. This is intentionally distinct from direct I/O:
+    /// it does not prove that pages populated by an earlier handle were absent,
+    /// and unsupported platforms fail explicitly.
+    PositionalCacheBypass,
     /// Explicit OS direct/unbuffered reads with aligned scratch buffers.
     /// Unsupported filesystems and platforms fail explicitly without falling
     /// back to buffered reads under the same source.
@@ -429,7 +435,8 @@ impl WeightStore {
             )));
         }
         let validation_started = Instant::now();
-        let (sha256, bytes, files) = hash_files(&root, &paths, limits.max_model_bytes)?;
+        let (sha256, bytes, files) =
+            hash_files(&root, &paths, limits.max_model_bytes, config.read_strategy)?;
         let validation_bytes_per_second = bytes_per_second(bytes, validation_started.elapsed());
 
         let tensors = if config.read_strategy == WeightReadStrategy::Mmap {

@@ -7,7 +7,8 @@ use zeroize::Zeroizing;
 
 use crate::error::{PowerError, Result};
 
-use super::WeightFileDescriptor;
+use super::range_io::open_cache_bypass;
+use super::{WeightFileDescriptor, WeightReadStrategy};
 
 const HASH_BUFFER_BYTES: usize = 1024 * 1024;
 
@@ -55,6 +56,7 @@ pub(super) fn hash_files(
     root: &Path,
     paths: &[PathBuf],
     max_bytes: u64,
+    read_strategy: WeightReadStrategy,
 ) -> Result<(String, u64, Vec<WeightFileDescriptor>)> {
     let mut hasher = Sha256::new();
     let mut total = 0_u64;
@@ -89,7 +91,11 @@ pub(super) fn hash_files(
         hasher.update(relative.as_bytes());
         hasher.update(metadata.len().to_le_bytes());
         let mut file_hasher = Sha256::new();
-        let mut file = File::open(path)?;
+        let mut file = if read_strategy == WeightReadStrategy::PositionalCacheBypass {
+            open_cache_bypass(path)?
+        } else {
+            File::open(path)?
+        };
         loop {
             let read = file.read(&mut buffer)?;
             if read == 0 {

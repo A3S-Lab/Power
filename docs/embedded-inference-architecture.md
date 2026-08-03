@@ -222,6 +222,12 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   positional path does not retain a collection-wide mmap and uses a 1 MiB
   full-read loop with interruption, cancellation, overflow, truncation, and
   honest short-read handling. Its plaintext buffers zeroize on drop.
+- The opt-in macOS cache-bypass path applies `F_NOCACHE` to the mandatory
+  integrity hash and exact positional range handles while reusing the same
+  index, source router, primary fallback, cancellation, zeroizing buffers, and
+  benchmark evidence. It is not labeled direct I/O and does not prove that
+  pages populated by another handle were absent, so it cannot mint a verified
+  cold-cache claim.
 - Direct positional reads reuse that index, source router, primary fallback,
   demand path, and prefetch path. Linux uses aligned `O_DIRECT`; Windows queries
   the storage transfer alignment and uses `FILE_FLAG_NO_BUFFERING`. Unsupported
@@ -849,7 +855,7 @@ authority over export.
 | Current-layer resident/cold overlap | Implemented with atomic staged groups, event-driven issue/take readiness, exact-demand miss loading through the same admission/cache/source routing, canonical completion, and separate event/final wait evidence |
 | Cross-layer coupling hints | Implemented as bounded, digest/geometry-bound, detailed-telemetry-only co-occurrence learning with deterministic per-position scores, batch union, and measured recall; hints never alter router output |
 | Hardware-aware placement | Native Linux/macOS/Windows host discovery, selected CUDA/Metal device discovery, caller-owned fixed-state/scratch reservations, current-pressure revalidation, unified-memory accounting, deterministic capped budget planning, and integrity-read storage weighting are implemented without subprocesses |
-| Multi-drive weighted mirrors and direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, primary fallback, bounded positional reads, and aligned Linux/Windows direct reads share one `WeightStore`; mmap remains default pending end-to-end wins |
+| Multi-drive weighted mirrors and cache-bypass/direct I/O | Exact complete/partial replicas, usage-ranked budgeted staging, coverage-aware weighted routing, primary fallback, bounded positional reads, explicit macOS `F_NOCACHE`, and aligned Linux/Windows direct reads share one `WeightStore`; mmap remains default pending end-to-end wins |
 | Cold-storage microbenchmark | Standalone path-free reports separate integrity-open, output validation, and measured demand reads; Linux cold labels require `FADV_DONTNEED` plus `mincore`, while unsupported platforms refuse the claim |
 | Measured machine/model tuning | Implemented as bounded digest-only AB/BA evidence evaluation for model-owned lossless knobs; Power keeps defaults on insufficient gain, parity regression, or a winner tie and never applies or persists a profile |
 | Reproducible review envelope | Implemented as one bounded canonical bundle that replays existing storage comparison and tuning evaluation, binds model-owned exact-parity artifact pins to the selected configuration and one named platform, preserves negative results, and requires an external authenticity pin; no new collector, upload path, receipt, or attestation schema is introduced |

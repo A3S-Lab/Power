@@ -207,6 +207,44 @@ fn direct_reads_are_exact_or_explicitly_unsupported() {
 }
 
 #[test]
+fn cache_bypass_reads_are_exact_or_explicitly_unsupported() {
+    let root = tempfile::tempdir().unwrap();
+    write_large_weight(
+        root.path(),
+        "model.safetensors",
+        "cache-bypass.weight",
+        16 * 1024,
+    );
+    let expected = WeightStore::open(root.path(), &InferenceLimits::default())
+        .unwrap()
+        .read_tensor_bytes("cache-bypass.weight")
+        .unwrap()
+        .bytes()
+        .to_vec();
+    let cache_bypass = WeightStore::open_config(
+        &WeightStoreConfig::new(root.path())
+            .with_primary_read_strategy(WeightReadStrategy::PositionalCacheBypass),
+        &InferenceLimits::default(),
+    );
+    match cache_bypass {
+        Ok(store) => {
+            let read = store.read_tensor_bytes("cache-bypass.weight").unwrap();
+            assert_eq!(read.strategy(), WeightReadStrategy::PositionalCacheBypass);
+            assert_eq!(read.bytes(), expected);
+        }
+        Err(PowerError::BackendNotAvailable(message)) => {
+            #[cfg(target_os = "macos")]
+            panic!("cache-bypass is expected to be available on macOS: {message}");
+            #[cfg(not(target_os = "macos"))]
+            assert!(!message.is_empty());
+        }
+        Err(error) => {
+            panic!("cache-bypass open failed without an explicit unsupported result: {error}")
+        }
+    }
+}
+
+#[test]
 fn weighted_replicas_are_exact_and_deterministic() {
     let primary = tempfile::tempdir().unwrap();
     let replica = tempfile::tempdir().unwrap();

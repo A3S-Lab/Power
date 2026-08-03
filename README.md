@@ -313,13 +313,15 @@ owned by zeroizing types, paths and state identifiers stay out of debug output,
 and persistence remains caller-invoked blocking filesystem work rather than a
 background service or listener.
 
-The same `WeightStore` now offers three explicit materialization strategies.
+The same `WeightStore` now offers four explicit materialization strategies.
 `Mmap` remains the default. `PositionalBuffered` avoids mapping the complete
 collection and reads each indexed tensor through bounded, cancellable
-positional reads. `PositionalDirect` uses aligned `O_DIRECT` on Linux and
-`FILE_FLAG_NO_BUFFERING` on Windows; unsupported platforms and filesystems fail
-explicitly instead of silently falling back. Direct I/O remains opt-in until a
-documented end-to-end workload wins on named hardware.
+positional reads. `PositionalCacheBypass` applies macOS `F_NOCACHE` to both
+integrity hashing and tensor-range handles without claiming direct I/O or a
+verified cold cache. `PositionalDirect` uses aligned `O_DIRECT` on Linux and
+`FILE_FLAG_NO_BUFFERING` on Windows. Unsupported combinations fail explicitly
+instead of silently falling back, and mmap remains the default until a
+documented end-to-end workload proves another strategy on named hardware.
 
 Model-owning crates provide graph identities and plans, network control flow,
 tokenizers, preprocessing, postprocessing, and revision policy. Consequently,
