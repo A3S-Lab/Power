@@ -131,6 +131,76 @@ pub enum ResidencyAllocationOrder {
     HostFirst,
 }
 
+/// Caller-owned model-neutral memory that must fit before weight caches.
+///
+/// Fixed bytes remain live for the planned execution. Scratch bytes are the
+/// maximum additional transient working set expected at one time. Model crates
+/// own the meaning and topology of those bytes; Power only performs checked
+/// pool accounting and never persists or exports these values automatically.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeMemoryReservations {
+    #[serde(default)]
+    pub host_fixed_bytes: u64,
+    #[serde(default)]
+    pub host_scratch_bytes: u64,
+    #[serde(default)]
+    pub device_fixed_bytes: u64,
+    #[serde(default)]
+    pub device_scratch_bytes: u64,
+}
+
+impl RuntimeMemoryReservations {
+    pub fn with_host_fixed_bytes(mut self, bytes: u64) -> Self {
+        self.host_fixed_bytes = bytes;
+        self
+    }
+
+    pub fn with_host_scratch_bytes(mut self, bytes: u64) -> Self {
+        self.host_scratch_bytes = bytes;
+        self
+    }
+
+    pub fn with_device_fixed_bytes(mut self, bytes: u64) -> Self {
+        self.device_fixed_bytes = bytes;
+        self
+    }
+
+    pub fn with_device_scratch_bytes(mut self, bytes: u64) -> Self {
+        self.device_scratch_bytes = bytes;
+        self
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.host_bytes()?;
+        self.device_bytes()?;
+        Ok(())
+    }
+
+    fn host_bytes(&self) -> Result<u64> {
+        checked_memory_sum(
+            self.host_fixed_bytes,
+            self.host_scratch_bytes,
+            "host runtime reservation",
+        )
+    }
+
+    fn device_bytes(&self) -> Result<u64> {
+        checked_memory_sum(
+            self.device_fixed_bytes,
+            self.device_scratch_bytes,
+            "device runtime reservation",
+        )
+    }
+
+    fn is_empty(&self) -> bool {
+        self.host_fixed_bytes == 0
+            && self.host_scratch_bytes == 0
+            && self.device_fixed_bytes == 0
+            && self.device_scratch_bytes == 0
+    }
+}
+
 /// Explicit policy for deriving cache budgets from a point-in-time snapshot.
 ///
 /// Fractions use basis points. Automatic planning is opt-in; the default
@@ -144,6 +214,8 @@ pub struct ResidencyBudgetPolicy {
     pub host_reserve_bytes: u64,
     #[serde(default)]
     pub device_reserve_bytes: u64,
+    #[serde(default)]
+    pub runtime_reservations: RuntimeMemoryReservations,
     #[serde(default)]
     pub max_host_cache_bytes: Option<u64>,
     #[serde(default)]
@@ -162,6 +234,7 @@ impl ResidencyBudgetPolicy {
             device_available_fraction_bps,
             host_reserve_bytes: 0,
             device_reserve_bytes: 0,
+            runtime_reservations: RuntimeMemoryReservations::default(),
             max_host_cache_bytes: None,
             max_device_cache_bytes: None,
             allocation_order: ResidencyAllocationOrder::DeviceFirst,
@@ -178,6 +251,15 @@ impl ResidencyBudgetPolicy {
     pub fn with_device_reserve_bytes(mut self, bytes: u64) -> Self {
         self.device_reserve_bytes = bytes;
         self
+    }
+
+    pub fn with_runtime_reservations(
+        mut self,
+        reservations: RuntimeMemoryReservations,
+    ) -> Result<Self> {
+        reservations.validate()?;
+        self.runtime_reservations = reservations;
+        Ok(self)
     }
 
     pub fn with_max_host_cache_bytes(mut self, bytes: u64) -> Result<Self> {
@@ -223,6 +305,7 @@ impl ResidencyBudgetPolicy {
                 "automatic residency cache caps must be greater than zero when present".to_string(),
             ));
         }
+        self.runtime_reservations.validate()?;
         Ok(())
     }
 
@@ -270,16 +353,26 @@ impl ResidencyBudgetPlan {
                 "runtime resident-weight limit must be greater than zero".to_string(),
             ));
         }
-        let host_target = fractional_budget(
+        let host_runtime_bytes = policy.runtime_reservations.host_bytes()?;
+        let device_runtime_bytes = policy.runtime_reservations.device_bytes()?;
+        if snapshot.device.is_none() && device_runtime_bytes != 0 {
+            return Err(PowerError::Config(
+                "device runtime reservations require an accelerator memory pool".to_string(),
+            ));
+        }
+        ensure_reserved_memory_fits(snapshot, policy, host_runtime_bytes, device_runtime_bytes)?;
+        let host_target = fractional_cache_budget(
             snapshot.host.available_bytes,
             policy.host_reserve_bytes,
+            host_runtime_bytes,
             policy.host_available_fraction_bps,
             policy.max_host_cache_bytes,
         );
         let device_target = snapshot.device.as_ref().map_or(0, |device| {
-            fractional_budget(
+            fractional_cache_budget(
                 device.available_bytes,
                 policy.device_reserve_bytes,
+                device_runtime_bytes,
                 policy.device_available_fraction_bps,
                 policy.max_device_cache_bytes,
             )
@@ -293,9 +386,12 @@ impl ResidencyBudgetPlan {
             .as_ref()
             .filter(|device| device.unified_with_host)
             .map(|device| snapshot.host.available_bytes.min(device.available_bytes));
-        let shared_limit = shared_available_bytes.map(|available| {
-            available.saturating_sub(policy.host_reserve_bytes.max(policy.device_reserve_bytes))
-        });
+        let shared_limit = shared_available_bytes
+            .map(|available| {
+                shared_runtime_reserve(policy, host_runtime_bytes, device_runtime_bytes)
+                    .map(|reserved| available.saturating_sub(reserved))
+            })
+            .transpose()?;
         let total_limit = shared_limit.map_or(runtime_limit_bytes, |shared| {
             shared.min(runtime_limit_bytes)
         });
@@ -343,16 +439,156 @@ impl ResidencyBudgetPlan {
         Ok(())
     }
 
-    /// Replaces only cache byte budgets, retaining all eviction, prefetch, and
-    /// telemetry choices from the caller-owned base policy.
+    /// Revalidates a serialized plan against a fresh point-in-time snapshot.
+    ///
+    /// This fails closed if the runtime/pool topology changed or if current
+    /// pressure no longer leaves the policy-defined fraction, safety reserve,
+    /// fixed state, peak scratch, and planned cache bytes available together.
+    pub fn revalidate_pressure(&self, current: &HardwareMemorySnapshot) -> Result<()> {
+        self.validate()?;
+        current.validate()?;
+        self.validate_current_topology(current)?;
+
+        let host_runtime_bytes = self.policy.runtime_reservations.host_bytes()?;
+        let device_runtime_bytes = self.policy.runtime_reservations.device_bytes()?;
+        ensure_reserved_memory_fits(
+            current,
+            &self.policy,
+            host_runtime_bytes,
+            device_runtime_bytes,
+        )?;
+        let host_target = fractional_cache_budget(
+            current.host.available_bytes,
+            self.policy.host_reserve_bytes,
+            host_runtime_bytes,
+            self.policy.host_available_fraction_bps,
+            self.policy.max_host_cache_bytes,
+        );
+        if self.host_cache_bytes > host_target {
+            return Err(PowerError::InferenceFailed(
+                "current host memory pressure no longer supports the planned residency cache"
+                    .to_string(),
+            ));
+        }
+
+        if let Some(device) = &current.device {
+            let device_target = fractional_cache_budget(
+                device.available_bytes,
+                self.policy.device_reserve_bytes,
+                device_runtime_bytes,
+                self.policy.device_available_fraction_bps,
+                self.policy.max_device_cache_bytes,
+            );
+            if self.device_cache_bytes > device_target {
+                return Err(PowerError::InferenceFailed(
+                    "current device memory pressure no longer supports the planned residency cache"
+                        .to_string(),
+                ));
+            }
+        }
+
+        if self.unified_memory {
+            let shared_available = current
+                .device
+                .as_ref()
+                .map(|device| current.host.available_bytes.min(device.available_bytes))
+                .ok_or_else(|| {
+                    PowerError::Config(
+                        "unified residency plan lost its accelerator memory pool".to_string(),
+                    )
+                })?;
+            let shared_reserved =
+                shared_runtime_reserve(&self.policy, host_runtime_bytes, device_runtime_bytes)?;
+            if self.total_cache_bytes > shared_available.saturating_sub(shared_reserved) {
+                return Err(PowerError::InferenceFailed(
+                    "current unified memory pressure no longer supports the planned residency cache"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_current_topology(&self, current: &HardwareMemorySnapshot) -> Result<()> {
+        let planned_device = self.snapshot.device.as_ref();
+        let current_device = current.device.as_ref();
+        let device_shape_matches = match (planned_device, current_device) {
+            (None, None) => true,
+            (Some(planned), Some(current)) => {
+                planned.total_bytes == current.total_bytes
+                    && planned.unified_with_host == current.unified_with_host
+            }
+            (None, Some(_)) | (Some(_), None) => false,
+        };
+        if self.runtime_device != current.runtime_device
+            || self.snapshot.host.total_bytes != current.host.total_bytes
+            || !device_shape_matches
+        {
+            return Err(PowerError::Config(
+                "current memory snapshot does not match the planned runtime topology".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Replaces only cache byte budgets for deterministic/offline projection,
+    /// retaining every other caller-owned residency choice.
+    ///
+    /// This validates the recorded snapshot but cannot observe later pressure.
+    /// Plans with non-zero runtime reservations are rejected here. Runtime
+    /// allocation paths should use
+    /// [`EmbeddedRuntime::apply_residency_budget`](crate::inference::EmbeddedRuntime::apply_residency_budget)
+    /// or [`Self::apply_to_revalidated`] with a fresh snapshot.
     pub fn apply_to(&self, base: &ResidencyPolicy) -> Result<ResidencyPolicy> {
         self.validate()?;
+        if !self.policy.runtime_reservations.is_empty() {
+            return Err(PowerError::PolicyViolation(
+                "residency plans with runtime reservations require current memory-pressure revalidation"
+                    .to_string(),
+            ));
+        }
+        self.project_cache_bytes(base)
+    }
+
+    /// Applies cache bytes only after validating current memory pressure.
+    pub fn apply_to_revalidated(
+        &self,
+        base: &ResidencyPolicy,
+        current: &HardwareMemorySnapshot,
+    ) -> Result<ResidencyPolicy> {
+        self.revalidate_pressure(current)?;
+        self.project_cache_bytes(base)
+    }
+
+    fn project_cache_bytes(&self, base: &ResidencyPolicy) -> Result<ResidencyPolicy> {
         let mut policy = base.clone();
         policy.host_cache_bytes = self.host_cache_bytes;
         policy.device_cache_bytes = self.device_cache_bytes;
         policy.validate()?;
         Ok(policy)
     }
+}
+
+fn checked_memory_sum(left: u64, right: u64, label: &str) -> Result<u64> {
+    left.checked_add(right)
+        .ok_or_else(|| PowerError::Config(format!("{label} overflowed")))
+}
+
+fn shared_runtime_reserve(
+    policy: &ResidencyBudgetPolicy,
+    host_runtime_bytes: u64,
+    device_runtime_bytes: u64,
+) -> Result<u64> {
+    let runtime_bytes = checked_memory_sum(
+        host_runtime_bytes,
+        device_runtime_bytes,
+        "unified runtime reservation",
+    )?;
+    checked_memory_sum(
+        policy.host_reserve_bytes.max(policy.device_reserve_bytes),
+        runtime_bytes,
+        "unified reserve and runtime memory",
+    )
 }
 
 impl RuntimeDevice {
@@ -424,16 +660,62 @@ impl RuntimeDevice {
     }
 }
 
-fn fractional_budget(
+fn fractional_cache_budget(
     available_bytes: u64,
     reserve_bytes: u64,
+    runtime_bytes: u64,
     fraction_bps: u16,
     cap_bytes: Option<u64>,
 ) -> u64 {
     let usable = available_bytes.saturating_sub(reserve_bytes);
-    let target = (u128::from(usable) * u128::from(fraction_bps) / u128::from(BASIS_POINTS))
-        .min(u128::from(u64::MAX)) as u64;
+    let target = ((u128::from(usable) * u128::from(fraction_bps) / u128::from(BASIS_POINTS))
+        .min(u128::from(u64::MAX)) as u64)
+        .saturating_sub(runtime_bytes);
     cap_bytes.map_or(target, |cap| target.min(cap))
+}
+
+fn ensure_reserved_memory_fits(
+    snapshot: &HardwareMemorySnapshot,
+    policy: &ResidencyBudgetPolicy,
+    host_runtime_bytes: u64,
+    device_runtime_bytes: u64,
+) -> Result<()> {
+    let host_required = checked_memory_sum(
+        policy.host_reserve_bytes,
+        host_runtime_bytes,
+        "host reserve and runtime memory",
+    )?;
+    if host_required > snapshot.host.available_bytes {
+        return Err(PowerError::InferenceFailed(
+            "host reserve, runtime state, and scratch exceed current memory availability"
+                .to_string(),
+        ));
+    }
+    if let Some(device) = &snapshot.device {
+        let device_required = checked_memory_sum(
+            policy.device_reserve_bytes,
+            device_runtime_bytes,
+            "device reserve and runtime memory",
+        )?;
+        if device_required > device.available_bytes {
+            return Err(PowerError::InferenceFailed(
+                "device reserve, runtime state, and scratch exceed current memory availability"
+                    .to_string(),
+            ));
+        }
+        if device.unified_with_host {
+            let shared_required =
+                shared_runtime_reserve(policy, host_runtime_bytes, device_runtime_bytes)?;
+            let shared_available = snapshot.host.available_bytes.min(device.available_bytes);
+            if shared_required > shared_available {
+                return Err(PowerError::InferenceFailed(
+                    "unified reserve, runtime state, and scratch exceed current memory availability"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn allocate_pair(

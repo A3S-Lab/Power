@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added model-neutral host/device fixed-state and peak-scratch reservations to
+  the existing hardware residency budget policy. Cache budgets now account for
+  these bytes after applying caller-owned available-memory fractions, while
+  unified host/device memory remains one physical pool.
+- Added current-pressure revalidation for serialized residency plans and an
+  `EmbeddedRuntime::apply_residency_budget` path that refreshes native memory
+  availability before applying cache bytes.
 - Added Colibri-inspired event-driven current-layer staging through
   `StagedWeightBatch::next_ready_group`, allowing model-owned compute to consume
   newly complete atomic groups without polling while preserving canonical final
@@ -26,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Runtime reservations, memory snapshots, and pressure decisions remain
+  caller-owned and are never logged, persisted, placed in telemetry, bound into
+  receipts, or exported from a TEE automatically. Overflow, unavailable pools,
+  changed topology, and stale headroom fail closed before cache policy changes.
 - Kept the new scheduling path inside existing admission, cancellation,
   per-key serialization, cache, source routing, telemetry, and TEE boundaries.
   Background byte limits fail before I/O, and telemetry-off mode exposes no

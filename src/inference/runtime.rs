@@ -10,7 +10,7 @@ use super::RuntimeDeviceKind;
 use super::{
     AcceleratorExecutionEvidence, DevicePreference, ExecutionDigest, ExecutionReceipt,
     HardwareMemorySnapshot, InferenceLimits, ModelIdentity, ResidencyBudgetPlan,
-    ResidencyBudgetPolicy, RuntimeDevice, RuntimeIdentity,
+    ResidencyBudgetPolicy, ResidencyPolicy, RuntimeDevice, RuntimeIdentity,
 };
 
 /// Shared execution context for every embedded model implementation.
@@ -74,6 +74,16 @@ impl EmbeddedRuntime {
         policy: &ResidencyBudgetPolicy,
     ) -> Result<ResidencyBudgetPlan> {
         policy.plan(&self.memory_snapshot()?, &self.inner.limits)
+    }
+
+    /// Revalidates current memory pressure and applies only the planned cache
+    /// bytes to a caller-owned residency policy.
+    pub fn apply_residency_budget(
+        &self,
+        plan: &ResidencyBudgetPlan,
+        base: &ResidencyPolicy,
+    ) -> Result<ResidencyPolicy> {
+        plan.apply_to_revalidated(base, &self.memory_snapshot()?)
     }
 
     /// Acquires one shared embedded-inference admission permit.
@@ -222,9 +232,14 @@ mod tests {
         let policy = ResidencyBudgetPolicy::new(10_000, 0).unwrap();
 
         let plan = runtime.plan_residency_budget(&policy).unwrap();
+        let projected = runtime
+            .apply_residency_budget(&plan, &ResidencyPolicy::default())
+            .unwrap();
 
         assert_eq!(plan.runtime_device, runtime.device().name());
         assert!(plan.total_cache_bytes <= 1_024);
         assert_eq!(plan.device_cache_bytes, 0);
+        assert_eq!(projected.host_cache_bytes, plan.host_cache_bytes);
+        assert_eq!(projected.device_cache_bytes, plan.device_cache_bytes);
     }
 }

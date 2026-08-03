@@ -63,6 +63,96 @@ fn cpu_budget_is_fractional_reserved_and_runtime_capped() {
 }
 
 #[test]
+fn fixed_state_and_peak_scratch_are_reserved_before_cache_bytes() {
+    let snapshot = HardwareMemorySnapshot::new(
+        "cuda:0",
+        pool(2_000, 1_000, MemoryDiscoverySource::LinuxProcMeminfo, false),
+        Some(pool(1_500, 800, MemoryDiscoverySource::CudaDriver, false)),
+    )
+    .unwrap();
+    let reservations = RuntimeMemoryReservations::default()
+        .with_host_fixed_bytes(200)
+        .with_host_scratch_bytes(100)
+        .with_device_fixed_bytes(100)
+        .with_device_scratch_bytes(50);
+    let policy = ResidencyBudgetPolicy::new(5_000, 5_000)
+        .unwrap()
+        .with_host_reserve_bytes(100)
+        .with_device_reserve_bytes(50)
+        .with_runtime_reservations(reservations)
+        .unwrap();
+
+    let plan = policy.plan(&snapshot, &InferenceLimits::default()).unwrap();
+
+    assert_eq!(plan.host_cache_bytes, 150);
+    assert_eq!(plan.device_cache_bytes, 225);
+    assert_eq!(plan.total_cache_bytes, 375);
+    assert!(plan.apply_to(&ResidencyPolicy::default()).is_err());
+    let projected = plan
+        .apply_to_revalidated(&ResidencyPolicy::default(), &snapshot)
+        .unwrap();
+    assert_eq!(projected.host_cache_bytes, 150);
+    assert_eq!(projected.device_cache_bytes, 225);
+}
+
+#[test]
+fn unified_memory_counts_both_runtime_reservations_once() {
+    let snapshot = HardwareMemorySnapshot::new(
+        "metal:0",
+        pool(
+            2_000,
+            1_000,
+            MemoryDiscoverySource::MachHostStatistics,
+            false,
+        ),
+        Some(pool(
+            1_500,
+            900,
+            MemoryDiscoverySource::MetalRecommendedWorkingSet,
+            true,
+        )),
+    )
+    .unwrap();
+    let reservations = RuntimeMemoryReservations::default()
+        .with_host_fixed_bytes(100)
+        .with_host_scratch_bytes(50)
+        .with_device_fixed_bytes(100)
+        .with_device_scratch_bytes(50);
+    let policy = ResidencyBudgetPolicy::new(10_000, 10_000)
+        .unwrap()
+        .with_host_reserve_bytes(50)
+        .with_device_reserve_bytes(100)
+        .with_runtime_reservations(reservations)
+        .unwrap();
+
+    let plan = policy.plan(&snapshot, &InferenceLimits::default()).unwrap();
+
+    assert_eq!(plan.shared_available_bytes, Some(900));
+    assert_eq!(plan.host_cache_bytes, 0);
+    assert_eq!(plan.device_cache_bytes, 500);
+    assert_eq!(plan.total_cache_bytes, 500);
+    plan.revalidate_pressure(&snapshot).unwrap();
+
+    let pressured = HardwareMemorySnapshot::new(
+        "metal:0",
+        pool(
+            2_000,
+            1_000,
+            MemoryDiscoverySource::MachHostStatistics,
+            false,
+        ),
+        Some(pool(
+            1_500,
+            899,
+            MemoryDiscoverySource::MetalRecommendedWorkingSet,
+            true,
+        )),
+    )
+    .unwrap();
+    assert!(plan.revalidate_pressure(&pressured).is_err());
+}
+
+#[test]
 fn discrete_device_is_prioritized_without_exceeding_runtime_limit() {
     let snapshot = HardwareMemorySnapshot::new(
         "cuda:0",
@@ -211,6 +301,18 @@ fn serialized_or_mutated_plans_are_revalidated_before_use() {
 
     assert!(plan.apply_to(&ResidencyPolicy::default()).is_err());
 
+    let mut reservation_mutated = ResidencyBudgetPolicy::new(5_000, 0)
+        .unwrap()
+        .plan(&snapshot, &InferenceLimits::default())
+        .unwrap();
+    reservation_mutated
+        .policy
+        .runtime_reservations
+        .host_fixed_bytes = 1;
+    assert!(reservation_mutated
+        .apply_to(&ResidencyPolicy::default())
+        .is_err());
+
     let invalid_policy = serde_json::from_str::<ResidencyBudgetPolicy>(
         r#"{"hostAvailableFractionBps":10001,"deviceAvailableFractionBps":0}"#,
     )
@@ -222,6 +324,117 @@ fn serialized_or_mutated_plans_are_revalidated_before_use() {
         r#"{"hostAvailableFractionBps":1,"deviceAvailableFractionBps":0,"unknown":true}"#,
     )
     .is_err());
+}
+
+#[test]
+fn pressure_revalidation_uses_current_availability_and_exact_topology() {
+    let planned_snapshot = HardwareMemorySnapshot::new(
+        "cpu",
+        pool(2_000, 1_000, MemoryDiscoverySource::LinuxProcMeminfo, false),
+        None,
+    )
+    .unwrap();
+    let reservations = RuntimeMemoryReservations::default()
+        .with_host_fixed_bytes(200)
+        .with_host_scratch_bytes(100);
+    let policy = ResidencyBudgetPolicy::new(10_000, 0)
+        .unwrap()
+        .with_host_reserve_bytes(100)
+        .with_runtime_reservations(reservations)
+        .unwrap();
+    let plan = policy
+        .plan(&planned_snapshot, &InferenceLimits::default())
+        .unwrap();
+    assert_eq!(plan.host_cache_bytes, 600);
+
+    plan.revalidate_pressure(&planned_snapshot).unwrap();
+    let pressured = HardwareMemorySnapshot::new(
+        "cpu",
+        pool(2_000, 999, MemoryDiscoverySource::LinuxProcMeminfo, false),
+        None,
+    )
+    .unwrap();
+    assert!(plan.revalidate_pressure(&pressured).is_err());
+    assert!(plan
+        .apply_to_revalidated(&ResidencyPolicy::default(), &pressured)
+        .is_err());
+
+    let changed_host = HardwareMemorySnapshot::new(
+        "cpu",
+        pool(2_001, 1_000, MemoryDiscoverySource::LinuxProcMeminfo, false),
+        None,
+    )
+    .unwrap();
+    assert!(plan.revalidate_pressure(&changed_host).is_err());
+}
+
+#[test]
+fn invalid_or_inapplicable_runtime_reservations_fail_closed() {
+    let overflow = RuntimeMemoryReservations {
+        host_fixed_bytes: u64::MAX,
+        host_scratch_bytes: 1,
+        ..RuntimeMemoryReservations::default()
+    };
+    assert!(ResidencyBudgetPolicy::new(1, 0)
+        .unwrap()
+        .with_runtime_reservations(overflow)
+        .is_err());
+
+    let cpu = HardwareMemorySnapshot::new(
+        "cpu",
+        pool(1_000, 800, MemoryDiscoverySource::LinuxProcMeminfo, false),
+        None,
+    )
+    .unwrap();
+    let device_state = RuntimeMemoryReservations::default().with_device_fixed_bytes(1);
+    assert!(ResidencyBudgetPolicy::new(1, 0)
+        .unwrap()
+        .with_runtime_reservations(device_state)
+        .unwrap()
+        .plan(&cpu, &InferenceLimits::default())
+        .is_err());
+
+    let oversized_host = RuntimeMemoryReservations::default().with_host_fixed_bytes(700);
+    assert!(ResidencyBudgetPolicy::new(0, 1)
+        .unwrap()
+        .with_host_reserve_bytes(101)
+        .with_runtime_reservations(oversized_host)
+        .unwrap()
+        .plan(&cpu, &InferenceLimits::default())
+        .is_err());
+
+    assert!(serde_json::from_str::<RuntimeMemoryReservations>(
+        r#"{"hostFixedBytes":1,"unknown":true}"#
+    )
+    .is_err());
+}
+
+#[test]
+fn runtime_reservations_have_a_backward_compatible_serde_default() {
+    let policy = serde_json::from_str::<ResidencyBudgetPolicy>(
+        r#"{"hostAvailableFractionBps":5000,"deviceAvailableFractionBps":0}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        policy.runtime_reservations,
+        RuntimeMemoryReservations::default()
+    );
+
+    let snapshot = HardwareMemorySnapshot::new(
+        "cpu",
+        pool(1_000, 800, MemoryDiscoverySource::LinuxProcMeminfo, false),
+        None,
+    )
+    .unwrap();
+    let plan = policy.plan(&snapshot, &InferenceLimits::default()).unwrap();
+    let mut serialized = serde_json::to_value(&plan).unwrap();
+    serialized["policy"]
+        .as_object_mut()
+        .unwrap()
+        .remove("runtimeReservations");
+    let restored: ResidencyBudgetPlan = serde_json::from_value(serialized).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(restored, plan);
 }
 
 #[test]
@@ -286,6 +499,7 @@ fn live_metal_snapshot_uses_one_unified_pool() {
 fn public_hardware_types_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<HardwareMemorySnapshot>();
+    assert_send_sync::<RuntimeMemoryReservations>();
     assert_send_sync::<ResidencyBudgetPolicy>();
     assert_send_sync::<ResidencyBudgetPlan>();
 }
