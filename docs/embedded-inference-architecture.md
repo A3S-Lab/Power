@@ -36,7 +36,10 @@ model crate
   ├─ model-owned KV/recurrent layout ── opaque bytes to SealedStateEnvelope
   ├─ SealedStateStore ──────────────── authenticated primary/backup recovery
   ├─ one EmbeddedRuntime per model session
-  └─ one ExecutionPermit per logical request
+  ├─ one ExecutionPermit per logical request
+  ├─ ExecutionBatchLifecycle ───────── distinct existing permit per member
+  │    └─ canonical ragged steps ───── atomic state/evidence boundary
+  └─ shared request-scoped execution
        │
        ├─ GraphExecutor ───────── validated dense/static graphs
        ├─ RoutedExpertBatch ───── exact batch union, no route changes
@@ -71,6 +74,23 @@ systems for its vision encoder, projector, dense layers, and routed experts.
 - `RoutedExpertBatch` unions repeated expert IDs across batch positions so each
   unique expert can be staged once. Original expert order, gate weight, and
   top-k selection remain intact.
+- `ExecutionBatchLifecycle` adapts Colibri's continuously batched multi-slot
+  decode boundary without importing its model loop. Its global declaration
+  binds exact weights, the model-owned state layout, scheduler semantics,
+  runtime device, and relevant limits. Each member consumes a distinct permit
+  from the existing runtime admission controller and cannot alias another
+  active member's model-state identity.
+- Every execution step contains all members present at that boundary exactly
+  once, canonically ordered by admission while allowing different positions and
+  row shapes. Members admitted while arithmetic is running enter only the next
+  step. Power validates aggregate input, shape, context, generation, and state
+  bounds before launch and before commit; it does not choose tokens, batch
+  shapes, KV layouts, kernels, or completion policy.
+- Step commits are atomic. Cancellation discards only the affected row, an
+  invalid commit changes no lifecycle position or state and can be retried, and
+  completion releases the same permit that admitted the member. Step and final
+  evidence expose aggregate counts plus canonical input/output/transcript
+  digests, never member/state identities or model-owned bytes.
 - Explicitly paired, position-aligned route batches can teach a bounded
   cross-layer coupling table. For each position, Power sums raw learned
   co-occurrence counts over the current exact routed set, ranks target experts
@@ -786,6 +806,7 @@ uses the shared `SealedStateEnvelope` mechanism with its own layout digest.
 | Lossless entropy-coded weight tier | Implemented as optional digest-pinned read-only replicas behind the existing `WeightStore`: mandatory stamps, shard-local 256-stream nibble rANS tables, exact framing/state checks, bounded zeroizing decode, full canonical byte admission, complete/proper-partial coverage, and primary fallback; canonical SafeTensors remains mandatory |
 | Accelerator resident registries and fused groups | Implemented as digest-bound selections from the active device plan, atomic device-cache-only acquisition, bounded model-owned Candle execution, typed kernel-unavailable fallback, actual-device receipts, and optional canonical confidential-GPU claim binding; no second registry or kernel backend is introduced |
 | Multi-device home placement and peer traffic | Implemented as a canonical typed mesh capped at 16 devices, strongly connected directed edges, synchronous bounded Candle copies, explicit backend-unavailable fallback, exact confidential GPU/NVSwitch claim-index sets, and digest-only receipt evidence; the active residency cache remains the sole weight registry and model crates own graph partitioning |
+| Continuous multi-slot decode | Implemented as a model-neutral continuous/ragged lifecycle using distinct existing runtime permits, admission-order complete rosters, late-member next-step admission, bounded atomic commits, row-local cancellation, and digest-only evidence; model crates retain sequence policy, KV/recurrent topology, tensors, kernels, and arithmetic |
 | Persistent warm conversations | Implemented as model-neutral opaque AES-256-GCM envelopes bound to exact weights, model-owned layout, hashed state identity, generation, bounds, and export scope; synchronized primary/backup recovery adapts commit-last durability without adopting plaintext `.coli_kv` or moving KV topology into Power |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
@@ -808,7 +829,7 @@ The current sequence is:
 | 6 | Async issue/take and staged loading rounds | **Power substrate complete:** prefetch and current-layer staging share one task, worker, item, total-byte, and in-flight-byte admission path; `next_ready_group` wakes on atomic readiness without polling, while final completion keeps canonical order | Power tests cover event wakeup, out-of-order readiness with canonical completion, cancellation/failure termination, shared materialization, byte-window scheduling, peak-flight evidence, telemetry-off privacy, serde compatibility, and `Send + Sync`; model integrations must publish end-to-end overlap gains |
 | 7 | Resource planning that accounts for fixed runtime state before hot weights | **Power substrate complete:** the existing budget policy accepts typed host/device fixed-state and peak-scratch reservations, subtracts them before cache capacity, accounts for both sets once on unified memory, and revalidates a fresh native snapshot before applying cache bytes | Power tests cover checked discrete/unified arithmetic, unavailable pools, overflow/malformed input, serde compatibility, exact topology and stale-pressure rejection, runtime application, privacy boundaries, and `Send + Sync`; model integrations must still publish named-hardware peak-memory evidence |
 | 8 | Heterogeneous multi-device resident pipelines | **Power substrate complete:** canonical typed meshes reuse the active residency declaration/cache, cap topology at 16 devices, require bidirectional reachability to the primary, bound every synchronous peer copy and aggregate traffic, and bind exact confidential GPU/NVSwitch claim-index sets; model crates retain graph partitioning and kernels | Power tests cover exact single-device Candle parity, canonical topology, stale/malformed/wrong-mesh rejection, per-edge and aggregate byte/count bounds, cancellation, typed fallback, exact attested claim sets, privacy-safe receipt v3, and `Send + Sync`; model integrations must still publish named-hardware parity and end-to-end gains before enabling a mesh policy |
-| 9 | Continuous and ragged execution batches | **Planned:** add model-neutral bounded batch admission and lifecycle primitives while model crates retain sequence scheduling, KV/recurrent topology, and arithmetic | Per-session isolation, cancellation/fairness, ragged-shape bounds, uninterrupted output parity, and TEE state non-leakage |
+| 9 | Continuous and ragged execution batches | **Power substrate complete:** a digest-bound lifecycle gives every member a distinct existing runtime permit, includes all boundary members exactly once in admission order, admits late members only to the next step, supports ragged position/shape metadata, and commits bounded state atomically with row-local cancellation; model crates retain sequence scheduling, KV/recurrent topology, tensors, kernels, and arithmetic | Power tests cover binding/isolation, permit and state-identity alias refusal, fair canonical rosters, late admission, ragged and aggregate bounds, cancellation, atomic retry, state accounting, digest-only evidence, and `Send + Sync`; each model integration must publish unbatched-versus-batched output parity and named-workload throughput/latency evidence |
 | 10 | Reproducible hardware evidence bundles | **Planned:** bind existing storage comparisons, tuning decisions, runtime/device identity, and model-owned parity artifacts into one reviewable evidence envelope; no automatic upload or plaintext sidecar | Canonical schema/digest, tamper and mixed-hardware refusal, privacy review, and reproducible named-hardware runs |
 
 Cache-aware expert substitution remains outside the default path because it
@@ -825,8 +846,8 @@ Every model integration must publish reproducible evidence for:
 2. exact model revision, graph-plan digest, and weight digest;
 3. cold and warm latency, peak host/device memory, per-source bytes read, cache
    hit rate, and useful/unused prefetch rate on named hardware;
-4. identical outputs with caching, prefetch, and current-layer staging disabled
-   versus enabled;
+4. identical outputs with caching, prefetch, current-layer staging, and
+   continuous/ragged batching disabled versus enabled;
 5. cancellation, resource-limit, malformed-plan, and wrong-digest failures;
 6. TEE regression tests, including telemetry-off behavior and no plaintext
    persistence.

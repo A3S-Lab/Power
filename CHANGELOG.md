@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added Colibri-inspired, model-neutral continuous and ragged execution-batch
+  lifecycles. Every member holds a distinct permit from the existing runtime
+  admission controller, every step covers the complete boundary roster in
+  canonical admission order, and members admitted during arithmetic join only
+  the next step.
+- Added atomic batch-step commits with row-local cancellation, bounded ragged
+  shape/input/context/generation/state accounting, non-aliasing model-owned
+  state identities, exact retry after invalid outcomes, and aggregate-only
+  step/lifecycle evidence with canonical transcript digests.
 - Added Colibri-inspired heterogeneous accelerator meshes with at most 16
   unique resolved devices, a canonical primary/home device, strongly connected
   directed transfer edges, per-edge count/byte bounds, and one aggregate byte
@@ -43,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Bound execution batches to exact weight, model-owned state-layout, scheduler,
+  runtime-device, and limit digests. Member/state identities and row data remain
+  out of public evidence and debug output; Power retains no model state bytes
+  and adds no scheduler, persistence path, listener, or second admission queue.
 - Confidential meshes bind every CUDA node to an explicit NVIDIA claim-array
   index and require exact GPU/NVSwitch claim-index sets from the existing
   verified NRAS evidence. CUDA ordinals are not treated as claim indices or
