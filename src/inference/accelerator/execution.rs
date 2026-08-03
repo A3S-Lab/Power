@@ -7,10 +7,12 @@ use crate::inference::{
     ResidentWeight, RuntimeDevice, RuntimeDeviceIdentity,
 };
 
+use super::mesh_execution::AcceleratorMeshExecutionSummary;
 use super::types::{
     AcceleratorExecutionCompletion, AcceleratorExecutionPath, AcceleratorFallbackMode,
     AcceleratorFallbackReason, AcceleratorFallbackTarget, AcceleratorResidencyDeclaration,
 };
+use super::{AcceleratorDeviceMesh, AcceleratorDeviceMeshDeclaration, AcceleratorMeshExecution};
 
 #[derive(Clone)]
 pub struct AcceleratorFusedGroup {
@@ -85,6 +87,8 @@ pub struct AcceleratorFusedBatch {
     confidential_claims_sha256: Option<String>,
     permit: ExecutionPermit,
     groups: Vec<AcceleratorFusedGroup>,
+    device_mesh_declaration: Option<Box<AcceleratorDeviceMeshDeclaration>>,
+    device_mesh: Option<Box<AcceleratorDeviceMesh>>,
 }
 
 impl AcceleratorFusedBatch {
@@ -95,6 +99,7 @@ impl AcceleratorFusedBatch {
         confidential_claims_sha256: Option<String>,
         permit: ExecutionPermit,
         groups: Vec<AcceleratorFusedGroup>,
+        device_mesh: Option<AcceleratorDeviceMesh>,
     ) -> Self {
         Self {
             declaration_sha256: declaration.declaration_sha256.clone(),
@@ -108,6 +113,8 @@ impl AcceleratorFusedBatch {
             confidential_claims_sha256,
             permit,
             groups,
+            device_mesh_declaration: declaration.device_mesh.clone().map(Box::new),
+            device_mesh: device_mesh.map(Box::new),
         }
     }
 
@@ -153,6 +160,12 @@ impl AcceleratorFusedBatch {
             &CancellationToken,
         ) -> Result<AcceleratorKernelOutcome>,
     {
+        if self.device_mesh.is_some() {
+            return Err(PowerError::InvalidRequest(
+                "mesh accelerator batches must use execute_mesh_or_fallback so peer transfers are tracked"
+                    .to_string(),
+            ));
+        }
         self.validate_tensor(input, "accelerator fused input", false)?;
         check_cancelled(cancellation)?;
         match operation(input, &self.groups, cancellation)? {
@@ -160,7 +173,7 @@ impl AcceleratorFusedBatch {
                 check_cancelled(cancellation)?;
                 self.validate_tensor(&output, "accelerator fused output", true)?;
                 Ok(AcceleratorFusedExecution::Output(
-                    self.finish_accelerated(output),
+                    self.finish_accelerated(output, None),
                 ))
             }
             AcceleratorKernelOutcome::Unavailable => self
@@ -173,6 +186,91 @@ impl AcceleratorFusedBatch {
     /// exact fallback without falsely recording a fused accelerator launch.
     pub fn fallback(self) -> Result<AcceleratorFallback> {
         self.into_fallback(AcceleratorFallbackReason::KernelUnavailable)
+    }
+
+    /// Executes one model-owned mesh kernel with exact single-device semantics
+    /// and Power-managed transfer accounting.
+    pub fn execute_mesh<F>(
+        self,
+        input: &Tensor,
+        cancellation: &CancellationToken,
+        operation: F,
+    ) -> Result<AcceleratorFusedBatchOutput>
+    where
+        F: FnOnce(
+            &Tensor,
+            &[AcceleratorFusedGroup],
+            &mut AcceleratorMeshExecution<'_>,
+            &CancellationToken,
+        ) -> Result<Tensor>,
+    {
+        match self.execute_mesh_or_fallback(
+            input,
+            cancellation,
+            |input, groups, mesh, cancellation| {
+                operation(input, groups, mesh, cancellation).map(AcceleratorKernelOutcome::Output)
+            },
+        )? {
+            AcceleratorFusedExecution::Output(output) => Ok(output),
+            AcceleratorFusedExecution::Fallback(_) => Err(PowerError::InferenceFailed(
+                "infallible mesh-kernel adapter unexpectedly requested fallback".to_string(),
+            )),
+        }
+    }
+
+    /// Executes a mesh kernel whose backend can explicitly become unavailable.
+    /// Bounds, cancellation, and arithmetic errors remain failures; only the
+    /// typed outcome enters the declaration's exact fallback.
+    pub fn execute_mesh_or_fallback<F>(
+        self,
+        input: &Tensor,
+        cancellation: &CancellationToken,
+        operation: F,
+    ) -> Result<AcceleratorFusedExecution>
+    where
+        F: FnOnce(
+            &Tensor,
+            &[AcceleratorFusedGroup],
+            &mut AcceleratorMeshExecution<'_>,
+            &CancellationToken,
+        ) -> Result<AcceleratorKernelOutcome>,
+    {
+        self.validate_tensor(input, "accelerator mesh input", false)?;
+        check_cancelled(cancellation)?;
+        let mesh = self.device_mesh.as_deref().ok_or_else(|| {
+            PowerError::InvalidRequest(
+                "single-device accelerator batches cannot use mesh execution".to_string(),
+            )
+        })?;
+        let declaration = self.device_mesh_declaration.as_deref().ok_or_else(|| {
+            PowerError::InvalidFormat(
+                "resolved accelerator mesh batch lost its declaration".to_string(),
+            )
+        })?;
+        let mut execution =
+            AcceleratorMeshExecution::new(mesh, declaration, &self.limits, cancellation);
+        let outcome = operation(input, &self.groups, &mut execution, cancellation)?;
+        check_cancelled(cancellation)?;
+        match outcome {
+            AcceleratorKernelOutcome::Output(output) => {
+                self.validate_tensor(&output, "accelerator mesh output", true)?;
+                let summary = execution.finish(self.runtime_device.identity())?;
+                Ok(AcceleratorFusedExecution::Output(
+                    self.finish_accelerated(output, Some(summary)),
+                ))
+            }
+            AcceleratorKernelOutcome::Unavailable => {
+                let fallback_device = self
+                    .fallback_target
+                    .identity(self.runtime_device.identity());
+                let summary = execution.finish(fallback_device)?;
+                self.into_fallback_with_mesh(
+                    AcceleratorFallbackReason::KernelUnavailable,
+                    Some(summary),
+                )
+                .map(AcceleratorFusedExecution::Fallback)
+            }
+        }
     }
 
     fn validate_tensor(&self, tensor: &Tensor, label: &str, output: bool) -> Result<()> {
@@ -195,7 +293,11 @@ impl AcceleratorFusedBatch {
         Ok(())
     }
 
-    fn finish_accelerated(self, tensor: Tensor) -> AcceleratorFusedBatchOutput {
+    fn finish_accelerated(
+        self,
+        tensor: Tensor,
+        mesh: Option<AcceleratorMeshExecutionSummary>,
+    ) -> AcceleratorFusedBatchOutput {
         let runtime_device = self.runtime_device.identity();
         AcceleratorFusedBatchOutput {
             tensor,
@@ -208,12 +310,30 @@ impl AcceleratorFusedBatch {
                 fallback_target: None,
                 implementation_sha256: self.fused_kernel_sha256,
                 confidential_claims_sha256: self.confidential_claims_sha256,
+                mesh,
                 _permit: self.permit,
             },
         }
     }
 
     fn into_fallback(self, reason: AcceleratorFallbackReason) -> Result<AcceleratorFallback> {
+        let runtime_identity = self.runtime_device.identity();
+        let execution_identity = self.fallback_target.identity(runtime_identity);
+        let mesh = self
+            .device_mesh_declaration
+            .as_deref()
+            .map(|declaration| {
+                AcceleratorMeshExecutionSummary::empty(declaration, execution_identity)
+            })
+            .transpose()?;
+        self.into_fallback_with_mesh(reason, mesh)
+    }
+
+    fn into_fallback_with_mesh(
+        self,
+        reason: AcceleratorFallbackReason,
+        mesh: Option<AcceleratorMeshExecutionSummary>,
+    ) -> Result<AcceleratorFallback> {
         if self.fallback_mode == AcceleratorFallbackMode::Deny {
             return Err(PowerError::InferenceFailed(format!(
                 "accelerator kernel became unavailable ({reason:?}) and exact fallback is denied"
@@ -231,6 +351,7 @@ impl AcceleratorFusedBatch {
             self.permit,
             runtime_identity,
             reason,
+            mesh,
         ))
     }
 }
@@ -242,6 +363,10 @@ impl std::fmt::Debug for AcceleratorFusedBatch {
             .field("declaration_sha256", &self.declaration_sha256)
             .field("runtime_device", &self.runtime_device.identity())
             .field("groups", &self.groups.len())
+            .field(
+                "mesh",
+                &self.device_mesh.as_deref().map(|mesh| mesh.devices().len()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -287,9 +412,19 @@ impl AcceleratorFallback {
         confidential_claims_sha256: Option<String>,
         permit: ExecutionPermit,
         reason: AcceleratorFallbackReason,
-    ) -> Self {
+    ) -> Result<Self> {
         let runtime_identity = runtime_device.identity();
-        Self::from_parts(
+        let mesh = declaration
+            .device_mesh
+            .as_ref()
+            .map(|mesh| {
+                AcceleratorMeshExecutionSummary::empty(
+                    mesh,
+                    declaration.fallback_target.identity(runtime_identity),
+                )
+            })
+            .transpose()?;
+        Ok(Self::from_parts(
             declaration.declaration_sha256.clone(),
             declaration.weights_sha256.clone(),
             declaration.exact_fallback_sha256.clone(),
@@ -300,7 +435,8 @@ impl AcceleratorFallback {
             permit,
             runtime_identity,
             reason,
-        )
+            mesh,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -315,6 +451,7 @@ impl AcceleratorFallback {
         permit: ExecutionPermit,
         runtime_identity: RuntimeDeviceIdentity,
         reason: AcceleratorFallbackReason,
+        mesh: Option<AcceleratorMeshExecutionSummary>,
     ) -> Self {
         let execution_device = match target {
             AcceleratorFallbackTarget::Cpu => Device::Cpu,
@@ -334,6 +471,7 @@ impl AcceleratorFallback {
                 fallback_target: Some(target),
                 implementation_sha256: exact_fallback_sha256,
                 confidential_claims_sha256,
+                mesh,
                 _permit: permit,
             },
         }

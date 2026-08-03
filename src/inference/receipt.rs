@@ -58,6 +58,7 @@ pub struct ExecutionReceipt {
 impl ExecutionReceipt {
     pub const SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v1";
     pub const ACCELERATOR_SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v2";
+    pub const ACCELERATOR_MESH_SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v3";
 }
 
 /// Canonical representation covered by one side of an execution receipt.

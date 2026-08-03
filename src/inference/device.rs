@@ -21,7 +21,7 @@ pub enum DevicePreference {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeDeviceKind {
     Cpu,
@@ -34,7 +34,7 @@ pub enum RuntimeDeviceKind {
 /// The private Candle handle remains on [`RuntimeDevice`]. Public plans,
 /// declarations, and receipts use this value so a device choice cannot be
 /// represented by an unvalidated backend string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeDeviceIdentity {
     pub kind: RuntimeDeviceKind,
