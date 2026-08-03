@@ -5,6 +5,9 @@
 //! binds a socket, starts a listener, downloads a model, or invokes another
 //! process.
 
+mod accelerator;
+#[cfg(test)]
+mod accelerator_tests;
 mod coupling;
 #[cfg(test)]
 mod coupling_tests;
@@ -27,11 +30,19 @@ mod tuning_tests;
 mod tuning_types;
 mod weights;
 
+pub use accelerator::{
+    AcceleratorBatchResolution, AcceleratorExecutionCompletion, AcceleratorExecutionEvidence,
+    AcceleratorExecutionPath, AcceleratorFallback, AcceleratorFallbackMode,
+    AcceleratorFallbackReason, AcceleratorFallbackTarget, AcceleratorFusedBatch,
+    AcceleratorFusedBatchOutput, AcceleratorFusedBatchSpec, AcceleratorFusedExecution,
+    AcceleratorFusedGroup, AcceleratorKernelOutcome, AcceleratorResidencyDeclaration,
+    AcceleratorResidencyGroup, AcceleratorSecurityRequirement, ConfidentialGpuBinding,
+};
 pub use coupling::{
     RouteCouplingEntry, RouteCouplingHistory, RouteCouplingPolicy, RouteHintEvaluation,
     RouteHintTelemetry, RouteLayerGeometry, RoutePrefetchHint, RoutePrefetchHints,
 };
-pub use device::{DevicePreference, RuntimeDevice, RuntimeDeviceKind};
+pub use device::{DevicePreference, RuntimeDevice, RuntimeDeviceIdentity, RuntimeDeviceKind};
 pub use hardware::{
     HardwareMemorySnapshot, MemoryDiscoverySource, MemoryPoolSnapshot, ResidencyAllocationOrder,
     ResidencyBudgetPlan, ResidencyBudgetPolicy,

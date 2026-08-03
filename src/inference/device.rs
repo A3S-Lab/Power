@@ -29,6 +29,40 @@ pub enum RuntimeDeviceKind {
     Metal,
 }
 
+/// Stable, serializable identity for a resolved embedded execution device.
+///
+/// The private Candle handle remains on [`RuntimeDevice`]. Public plans,
+/// declarations, and receipts use this value so a device choice cannot be
+/// represented by an unvalidated backend string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeDeviceIdentity {
+    pub kind: RuntimeDeviceKind,
+    pub ordinal: Option<usize>,
+}
+
+impl RuntimeDeviceIdentity {
+    pub fn name(self) -> String {
+        match (self.kind, self.ordinal) {
+            (RuntimeDeviceKind::Cpu, None) => "cpu".to_string(),
+            (RuntimeDeviceKind::Cuda, Some(ordinal)) => format!("cuda:{ordinal}"),
+            (RuntimeDeviceKind::Metal, Some(ordinal)) => format!("metal:{ordinal}"),
+            (kind, ordinal) => format!("invalid:{kind:?}:{ordinal:?}"),
+        }
+    }
+
+    pub(crate) fn validate(self) -> Result<()> {
+        match (self.kind, self.ordinal) {
+            (RuntimeDeviceKind::Cpu, None)
+            | (RuntimeDeviceKind::Cuda, Some(_))
+            | (RuntimeDeviceKind::Metal, Some(_)) => Ok(()),
+            _ => Err(PowerError::InvalidFormat(
+                "runtime device identity has an invalid kind/ordinal combination".to_string(),
+            )),
+        }
+    }
+}
+
 /// Resolved device identity paired with the private tensor device handle.
 #[derive(Clone)]
 pub struct RuntimeDevice {
@@ -58,6 +92,13 @@ impl RuntimeDevice {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn identity(&self) -> RuntimeDeviceIdentity {
+        RuntimeDeviceIdentity {
+            kind: self.kind,
+            ordinal: self.ordinal,
+        }
     }
 
     /// Low-level tensor device for model crates built on Power's native
@@ -129,6 +170,28 @@ impl RuntimeDevice {
         Err(PowerError::BackendNotAvailable(format!(
             "Metal device {ordinal} requires a macOS build with the embedded-metal feature"
         )))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_accelerator(kind: RuntimeDeviceKind, ordinal: usize) -> Result<Self> {
+        if kind == RuntimeDeviceKind::Cpu {
+            return Err(PowerError::Config(
+                "test accelerator kind must not be CPU".to_string(),
+            ));
+        }
+        Ok(Self {
+            kind,
+            ordinal: Some(ordinal),
+            name: RuntimeDeviceIdentity {
+                kind,
+                ordinal: Some(ordinal),
+            }
+            .name(),
+            // Contract tests use CPU storage while exercising the logical
+            // accelerator control path. This constructor is absent from
+            // production builds.
+            candle: Device::Cpu,
+        })
     }
 }
 

@@ -113,6 +113,15 @@ impl CacheState {
         })
     }
 
+    pub(super) fn peek(&self, tier: WeightTier, key: &WeightKey) -> Option<CacheLookup> {
+        let entry = self.cache(tier)?.entries.get(key)?;
+        Some(CacheLookup {
+            tensor: entry.tensor.clone(),
+            bytes: entry.bytes,
+            prefetch_useful: false,
+        })
+    }
+
     pub(super) fn insert(
         &mut self,
         tier: WeightTier,

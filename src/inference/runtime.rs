@@ -5,9 +5,12 @@ use tokio_util::sync::CancellationToken;
 use crate::admission::{AdmissionController, AdmissionPermit};
 use crate::error::{PowerError, Result};
 
+#[cfg(test)]
+use super::RuntimeDeviceKind;
 use super::{
-    DevicePreference, ExecutionDigest, ExecutionReceipt, HardwareMemorySnapshot, InferenceLimits,
-    ModelIdentity, ResidencyBudgetPlan, ResidencyBudgetPolicy, RuntimeDevice, RuntimeIdentity,
+    AcceleratorExecutionEvidence, DevicePreference, ExecutionDigest, ExecutionReceipt,
+    HardwareMemorySnapshot, InferenceLimits, ModelIdentity, ResidencyBudgetPlan,
+    ResidencyBudgetPolicy, RuntimeDevice, RuntimeIdentity,
 };
 
 /// Shared execution context for every embedded model implementation.
@@ -28,14 +31,27 @@ struct RuntimeInner {
 
 impl EmbeddedRuntime {
     pub fn new(preference: DevicePreference, limits: InferenceLimits) -> Result<Self> {
+        Self::with_device(RuntimeDevice::resolve(preference)?, limits)
+    }
+
+    fn with_device(device: RuntimeDevice, limits: InferenceLimits) -> Result<Self> {
         limits.validate()?;
         Ok(Self {
             inner: Arc::new(RuntimeInner {
-                device: RuntimeDevice::resolve(preference)?,
+                device,
                 admission: AdmissionController::new(Some(limits.max_concurrent_requests)),
                 limits,
             }),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_test_accelerator(
+        kind: RuntimeDeviceKind,
+        ordinal: usize,
+        limits: InferenceLimits,
+    ) -> Result<Self> {
+        Self::with_device(RuntimeDevice::test_accelerator(kind, ordinal)?, limits)
     }
 
     pub fn device(&self) -> &RuntimeDevice {
@@ -97,7 +113,38 @@ impl EmbeddedRuntime {
             runtime: RuntimeIdentity::current(self.device()),
             input,
             output,
+            accelerator: None,
         }
+    }
+
+    /// Constructs a receipt that commits to the actual accelerator or exact
+    /// fallback path selected by a declaration-bound execution.
+    pub fn receipt_with_accelerator(
+        &self,
+        model: ModelIdentity,
+        input: ExecutionDigest,
+        output: ExecutionDigest,
+        accelerator: AcceleratorExecutionEvidence,
+    ) -> Result<ExecutionReceipt> {
+        accelerator.validate()?;
+        if accelerator.weights_sha256 != model.weights_sha256
+            || accelerator.runtime_device != self.device().identity()
+            || accelerator.input_sha256 != input.sha256
+            || accelerator.output_sha256 != output.sha256
+        {
+            return Err(PowerError::InvalidRequest(
+                "accelerator execution evidence does not match the receipt model, runtime, input, or output"
+                    .to_string(),
+            ));
+        }
+        Ok(ExecutionReceipt {
+            schema: ExecutionReceipt::ACCELERATOR_SCHEMA.to_string(),
+            model,
+            runtime: RuntimeIdentity::current(self.device()),
+            input,
+            output,
+            accelerator: Some(accelerator),
+        })
     }
 }
 

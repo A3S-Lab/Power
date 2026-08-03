@@ -43,6 +43,7 @@ model crate
             ├─ prefetch pool ───── bounded tasks and blocking workers
             ├─ staged batches ──── current-layer readiness + canonical order
             ├─ residency plan ──── replaceable and stably adapted atomic groups
+            ├─ fused batches ───── attested device-only groups + explicit fallback
             └─ SafeTensors ─────── canonical primary + verified weighted representations
 ```
 
@@ -114,6 +115,27 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   ephemeral adaptation is bound to its active base plan; stale application
   fails before any cache mutation. Application reuses the transactional plan
   and pin path rather than creating another cache or residency mechanism.
+- Accelerator declarations select canonical groups from the already active
+  residency plan. Every selected group must be wholly in the device tier, and
+  the declaration binds its exact membership and order to the weight digest,
+  active-plan digest, typed device, fused-kernel digest, exact-fallback digest
+  and target, runtime limits, and security mode. Resolution performs an atomic
+  device-cache-only acquisition: it never reloads a missing tensor, promotes a
+  host entry, or relabels an exact fallback as accelerator execution.
+- `AcceleratorFusedBatch` keeps the existing `ExecutionPermit`, checks
+  cancellation before and after model-owned Candle compute, and rejects
+  cross-device or over-limit input/output tensors. A kernel can report only
+  the typed `Unavailable` outcome to select its declared exact fallback;
+  arithmetic and policy errors remain failures. Fallback execution retains the
+  permit and its own declared CPU or runtime-device target.
+- Embedded receipt v2 commits to the declaration, implementation, input,
+  output, declared device, actual execution device, fallback reason, and an
+  optional canonical attestation-claims digest. It contains no tensor names,
+  group IDs, values, or raw evidence. Confidential-GPU declarations require a
+  hardware CPU-TEE report whose existing canonical v2 claims bind the exact
+  model digest, NVIDIA NRAS evidence/verdict, and declaration policy digest.
+  Power structurally matches that already-verified report; it does not create a
+  second hardware verifier or attestation schema.
 - `EmbeddedRuntime::plan_residency_budget` discovers host memory through bounded
   native Linux, macOS, or Windows APIs and device memory through the selected
   CUDA or Metal handle. The caller supplies explicit fractions, reserves, caps,
@@ -327,6 +349,56 @@ them into execution receipts automatically. A TEE guest therefore plans only
 from the memory visible inside that guest, while policy still controls whether
 the result may leave the trust boundary.
 
+### Attestation-Bound Fused Accelerator Batches
+
+Fused execution references the active plan instead of declaring another
+weight registry:
+
+```rust
+use a3s_power::inference::{
+    AcceleratorBatchResolution, AcceleratorFallbackMode,
+    AcceleratorFusedBatchSpec, AcceleratorKernelOutcome,
+};
+
+let spec = AcceleratorFusedBatchSpec::new(
+    fused_kernel_sha256,
+    exact_fallback_sha256,
+    vec!["model-owned-group-0".to_string()],
+)
+.with_fallback_mode(AcceleratorFallbackMode::AllowExact);
+let declaration = hierarchy.declare_accelerator_residency(&spec)?;
+
+match hierarchy.resolve_accelerator_batch(
+    &declaration,
+    confidential_gpu_binding.as_ref(),
+    &permit,
+    &cancellation,
+)? {
+    AcceleratorBatchResolution::Ready(batch) => {
+        let result = batch.execute_or_fallback(
+            &input,
+            &cancellation,
+            |input, groups, cancellation| {
+                model_owned_fused_candle_kernel(input, groups, cancellation)
+                    .map(AcceleratorKernelOutcome::Output)
+            },
+        )?;
+        consume_fused_or_exact_fallback(result)?;
+    }
+    AcceleratorBatchResolution::Fallback(fallback) => {
+        run_model_owned_exact_fallback(fallback)?;
+    }
+}
+# Ok::<(), a3s_power::error::PowerError>(())
+```
+
+`ConfidentialGpuBinding::from_verified_attestation_report` accepts only a
+hardware SEV-SNP/TDX report with canonical v2 claims and matching model,
+NVIDIA NRAS evidence/verdict, and execution-policy digest. Its name is an
+explicit trust contract: callers must first use Power's existing strict
+hardware verifier or obtain the report inside the currently attested runtime.
+The binding stores digests only.
+
 ### Lossless Live Residency Adaptation
 
 The model owner decides when no model work is in flight and supplies opaque
@@ -477,6 +549,10 @@ must use its existing encrypted or sealed state mechanism.
 - Hardware memory snapshots can reveal deployment capacity. Automatic budgeting
   is explicit, snapshots are never logged or placed in execution receipts, and
   callers must apply their own TEE export policy.
+- Accelerator declarations can reveal group and tensor membership, so Power
+  never logs or persists them. Normal telemetry receives no new identities.
+  Receipt evidence contains declaration and claims digests only and always
+  distinguishes the requested accelerator from the actual execution device.
 
 ## Colibri Adoption Boundaries
 
@@ -494,6 +570,7 @@ must use its existing encrypted or sealed state mechanism.
 | Cold-storage microbenchmark | Standalone path-free reports separate integrity-open, output validation, and measured demand reads; Linux cold labels require `FADV_DONTNEED` plus `mincore`, while unsupported platforms refuse the claim |
 | Measured machine/model tuning | Implemented as bounded digest-only AB/BA evidence evaluation for model-owned lossless knobs; Power keeps defaults on insufficient gain, parity regression, or a winner tie and never applies or persists a profile |
 | Lossless entropy-coded weight tier | Implemented as optional digest-pinned read-only replicas behind the existing `WeightStore`: mandatory stamps, shard-local 256-stream nibble rANS tables, exact framing/state checks, bounded zeroizing decode, full canonical byte admission, complete/proper-partial coverage, and primary fallback; canonical SafeTensors remains mandatory |
+| Accelerator resident registries and fused groups | Implemented as digest-bound selections from the active device plan, atomic device-cache-only acquisition, bounded model-owned Candle execution, typed kernel-unavailable fallback, actual-device receipts, and optional canonical confidential-GPU claim binding; no second registry or kernel backend is introduced |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
 | Speculative decoding and KV policy | Model control flow remains in the model crate; Power supplies shared state bounds and receipts |
@@ -510,7 +587,7 @@ The current sequence is:
 | 1 | Deferred current-layer cold I/O while resident experts compute | **Power substrate complete:** ordered atomic staged batches reuse existing admission, cache, source routing, key locks, cancellation, and privacy-gated telemetry; model crates retain canonical computation | Power tests cover tensor/order parity, immediate readiness, cancellation, shared materialization, and separated timing; each model integration must still publish end-to-end output parity and workload gains |
 | 2 | Hardware/model-specific measured tuning | **Power substrate complete:** bounded digest-only evidence requires repeated baseline→candidate and candidate→baseline rounds, typed output parity, dual-order median gain, cache-hit parity, and bounded p99; model crates retain calibration, candidate application, and sealed persistence | Power tests cover binding, reversal, thresholds, malformed/duplicate/overflow evidence, deterministic selection, tie rejection, privacy-safe serialization, and `Send + Sync`; each model integration must still publish named-hardware end-to-end evidence |
 | 3 | Lossless compressed expert tiers | **Power substrate complete:** optional `rans-nibble-256-v1` replicas remain behind the existing verified `WeightStore`; canonical SafeTensors is mandatory, every physical artifact is pinned before parsing, and every record is admitted only after exact canonical decode parity | Power tests cover deterministic multi-symbol round trips, stamps/tables, artifact pins, malformed framing/state/amplification, complete/proper-partial coverage, mmap/positional reads, scratch, cancellation, fallback, benchmark identity/parity, privacy-safe debug, and `Send + Sync`; model integrations must still publish named-hardware end-to-end wins before use by default |
-| 4 | Accelerator-wide residency declarations and fused batches | Extend typed CUDA/Metal devices without bypassing Candle safety, admission, cancellation, or confidential-GPU claims | Kernel parity, explicit fallback identity, memory-pressure tests, and named-hardware results |
+| 4 | Accelerator-wide residency declarations and fused batches | **Power substrate complete:** exact active-plan device groups, fused/fallback implementation digests, typed actual-device evidence, permit/cancellation/limit checks, and existing confidential-GPU claim binding share one residency and receipt path; model crates own kernels | Power tests cover deterministic binding, Candle fused/reference parity, pressure and kernel-unavailable fallback identity, malformed/stale/device/permit/cancellation/limit failures, confidential-claim mismatch, privacy-safe receipts, and `Send + Sync`; each model integration must still publish named-hardware kernel parity and gains |
 | 5 | Warm model state across sessions | Keep KV/recurrent topology in the model crate; Power supplies bounds, digest binding, zeroization, and a sealed-state envelope rather than plaintext sidecars | Interrupted-write recovery, wrong-model rejection, rollback policy, and TEE export authorization |
 
 Cache-aware expert substitution remains outside the default path because it

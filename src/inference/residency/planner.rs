@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -64,6 +65,16 @@ pub struct ResidencyPlan {
 
 impl ResidencyPlan {
     pub const SCHEMA: &'static str = "a3s.power.weight-residency-plan.v1";
+
+    /// Canonical digest used to bind an ephemeral execution declaration to
+    /// this exact placement, including group membership and tier choices.
+    pub fn sha256(&self) -> Result<String> {
+        let encoded = serde_json::to_vec(self)?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"a3s-power-weight-residency-plan-v1\0");
+        hasher.update(encoded);
+        Ok(format!("{:x}", hasher.finalize()))
+    }
 
     /// Flattens the plan into explicit model-neutral weight requests.
     pub fn requests(&self) -> Vec<WeightRequest> {
