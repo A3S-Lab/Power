@@ -606,6 +606,47 @@ pub fn canonical_claims_bytes(claims: &AttestationClaimsV2) -> crate::error::Res
     serde_json::to_vec(claims).map_err(crate::error::PowerError::from)
 }
 
+/// Structurally matches canonical claims to an already hardware-verified
+/// attestation report.
+///
+/// This function deliberately does not verify the platform signature. Callers
+/// must first pass the report through Power's strict hardware verifier or call
+/// it from the currently attested runtime. Keeping the structural matching in
+/// one place prevents confidential accelerator and sealed-state policies from
+/// drifting into separate attestation formats.
+#[cfg(feature = "embedded-inference")]
+pub(crate) fn require_verified_hardware_claims(
+    report: &AttestationReport,
+) -> crate::error::Result<&AttestationClaimsV2> {
+    use crate::error::PowerError;
+
+    if report.tee_type != TeeType::SevSnp && report.tee_type != TeeType::Tdx {
+        return Err(PowerError::PolicyViolation(
+            "a hardware SEV-SNP or TDX attestation report is required".to_string(),
+        ));
+    }
+    if report.raw_report.as_ref().is_none_or(Vec::is_empty) || report.measurement.len() != 48 {
+        return Err(PowerError::PolicyViolation(
+            "raw hardware attestation evidence and a 48-byte measurement are required".to_string(),
+        ));
+    }
+    let claims = report.claims.as_ref().ok_or_else(|| {
+        PowerError::PolicyViolation(
+            "canonical v2 claims are required for a hardware policy binding".to_string(),
+        )
+    })?;
+    if claims.schema != AttestationClaimsV2::SCHEMA
+        || claims.tee_type != report.tee_type
+        || claims.nonce != report.nonce
+        || report.report_data != build_claims_report_data(claims)?
+    {
+        return Err(PowerError::PolicyViolation(
+            "canonical claims are not bound to this hardware attestation report".to_string(),
+        ));
+    }
+    Ok(claims)
+}
+
 /// SHA-256 digest of canonical v2 claims.
 pub fn claims_digest(claims: &AttestationClaimsV2) -> crate::error::Result<Vec<u8>> {
     let bytes = canonical_claims_bytes(claims)?;

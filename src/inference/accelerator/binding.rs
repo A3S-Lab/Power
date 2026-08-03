@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use crate::error::{PowerError, Result};
 use crate::inference::RuntimeDeviceIdentity;
 use crate::tee::attestation::{
-    build_claims_report_data, canonical_claims_bytes, AttestationReport, ModelDigestKind, TeeType,
+    canonical_claims_bytes, require_verified_hardware_claims, AttestationReport, ModelDigestKind,
 };
 
 use super::types::{
@@ -39,30 +39,7 @@ impl ConfidentialGpuBinding {
                     .to_string(),
             ));
         }
-        if report.tee_type != TeeType::SevSnp && report.tee_type != TeeType::Tdx {
-            return Err(PowerError::PolicyViolation(
-                "confidential GPU execution requires a hardware CPU TEE report".to_string(),
-            ));
-        }
-        if report.raw_report.as_ref().is_none_or(Vec::is_empty) || report.measurement.len() != 48 {
-            return Err(PowerError::PolicyViolation(
-                "confidential GPU execution requires raw hardware attestation evidence".to_string(),
-            ));
-        }
-        let claims = report.claims.as_ref().ok_or_else(|| {
-            PowerError::PolicyViolation(
-                "confidential GPU execution requires canonical v2 attestation claims".to_string(),
-            )
-        })?;
-        if claims.schema != crate::tee::attestation::AttestationClaimsV2::SCHEMA
-            || claims.tee_type != report.tee_type
-            || claims.nonce != report.nonce
-            || report.report_data != build_claims_report_data(claims)?
-        {
-            return Err(PowerError::PolicyViolation(
-                "confidential GPU claims are not bound to this CPU TEE report".to_string(),
-            ));
-        }
+        let claims = require_verified_hardware_claims(report)?;
 
         let expected_weights = hex::decode(&declaration.weights_sha256).map_err(|_| {
             PowerError::InvalidFormat(

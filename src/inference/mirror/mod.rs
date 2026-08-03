@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{PowerError, Result};
+use crate::inference::filesystem::sync_directory;
 
 use super::WeightStore;
 
@@ -13,7 +14,7 @@ mod filesystem;
 
 use filesystem::{
     available_space, copy_verified_no_replace, ensure_target_parent, inspect_destination,
-    resolve_destination, sync_directory,
+    resolve_destination,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

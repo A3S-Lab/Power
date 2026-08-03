@@ -19,7 +19,9 @@ and receipt features. No Colibri source code is copied into Power.
 | Tensor kernels, typed devices, admission, cancellation, limits | `a3s-power` |
 | Static graph validation and reviewed operator execution | `a3s-power` |
 | Storage/RAM/device weight placement and telemetry policy | `a3s-power` |
+| Opaque state sealing, bounds, export authorization, and crash recovery | `a3s-power` |
 | Model family, topology, graph identity, and revision | Model crate |
+| KV/recurrent state layout, serialization, and semantic parity | Model crate |
 | Tokenizer, preprocessing, postprocessing, and generation loop | Model crate |
 | Product orchestration and document structure | Product crate |
 
@@ -31,6 +33,8 @@ tokenizers, conversion tools, or revision hashes.
 ```text
 model crate
   ├─ model-owned reviewed plans and native control flow
+  ├─ model-owned KV/recurrent layout ── opaque bytes to SealedStateEnvelope
+  ├─ SealedStateStore ──────────────── authenticated primary/backup recovery
   ├─ one EmbeddedRuntime per model session
   └─ one ExecutionPermit per logical request
        │
@@ -136,6 +140,22 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   model digest, NVIDIA NRAS evidence/verdict, and declaration policy digest.
   Power structurally matches that already-verified report; it does not create a
   second hardware verifier or attestation schema.
+- Warm-state envelopes adapt Colibri's incremental, commit-last recovery idea
+  but never adopt its plaintext, model-shaped `.coli_kv` file. The owning model
+  crate serializes exact KV/recurrent topology into opaque bytes and supplies a
+  layout digest. Power authenticates weight, layout, hashed state identifier,
+  generation, lengths, scope, and nonce in one fixed AES-256-GCM header.
+- `SealedStateStore` reuses Power's directory durability helper and publishes a
+  synchronized same-directory pending file only after preserving the prior
+  committed primary as a synchronized backup. Recovery never opens pending
+  data; it authenticates primary and backup and selects the highest generation
+  allowed by a caller-owned rollback floor. Power does not invent a hardware
+  monotonic counter or silently lower that floor.
+- TEE-local envelopes expose no byte-export method. Authorized export requires
+  the same canonical hardware-report claim matcher used by confidential GPU
+  binding, an exact attested model digest, and a caller-approved export-policy
+  digest. State keys, opened plaintext, imported ciphertext, and claim
+  serialization buffers use zeroizing owners.
 - `EmbeddedRuntime::plan_residency_budget` discovers host memory through bounded
   native Linux, macOS, or Windows APIs and device memory through the selected
   CUDA or Metal handle. The caller supplies explicit fractions, reserves, caps,
@@ -399,6 +419,70 @@ explicit trust contract: callers must first use Power's existing strict
 hardware verifier or obtain the report inside the currently attested runtime.
 The binding stores digests only.
 
+### Bounded Sealed Warm State
+
+Power treats cross-session state as opaque model-owned bytes. It does not know
+whether the payload contains MLA latents, conventional KV tensors, recurrent
+state, token history, or routing heat:
+
+```rust
+use a3s_power::inference::{
+    SealedStateBinding, SealedStateEnvelope, SealedStateKey,
+    SealedStateRollbackPolicy, SealedStateScope, SealedStateStore,
+};
+
+let binding = SealedStateBinding::for_identifier(
+    weights_sha256,
+    model_owned_state_layout_sha256,
+    session_identifier,
+    &limits,
+)?;
+let key = SealedStateKey::from_bytes(tee_derived_state_key);
+let scope = SealedStateScope::TeeLocal;
+let rollback = SealedStateRollbackPolicy::new(trusted_generation_floor);
+let envelope = SealedStateEnvelope::seal(
+    &binding,
+    next_generation,
+    &model_owned_serialized_state,
+    &key,
+    scope,
+    &limits,
+    &cancellation,
+)?;
+
+let store = SealedStateStore::new(state_path)?;
+store.commit(
+    &envelope,
+    &binding,
+    &key,
+    scope,
+    rollback,
+    &limits,
+    &cancellation,
+)?;
+if let Some(recovered) = store.load(
+    &binding,
+    &key,
+    scope,
+    rollback,
+    &limits,
+    &cancellation,
+)? {
+    model_owned_restore(recovered.as_bytes())?;
+}
+# Ok::<(), a3s_power::error::PowerError>(())
+```
+
+`commit` and `load` perform blocking filesystem and cryptographic work; async
+model code must call them from its existing bounded blocking path. One store
+instance serializes writers, while cross-process writer ownership remains an
+operator responsibility. The primary and backup are both encrypted and
+authenticated. An interrupted pending file is uncommitted even if its bytes are
+complete. A deployment that needs rollback resistance keeps
+`trusted_generation_floor` in a TEE monotonic source or trusted control plane;
+the files alone cannot prove freshness against an attacker able to replace the
+whole directory.
+
 ### Lossless Live Residency Adaptation
 
 The model owner decides when no model work is in flight and supplies opaque
@@ -421,8 +505,9 @@ limit, but Power generalizes the mechanism around atomic `ResidencyCandidate`
 groups. A replacement changes tier only. It cannot change the exact weights in
 a group, router output, gate mass, dtype, precision, or execution receipt. The
 adaptation and replacement identities are intentionally not serializable; a
-TEE caller that wants history across sessions must keep that state in its own
-authorized sealed store and submit a fresh heat snapshot.
+TEE caller that wants history across sessions must serialize opaque state
+through the shared authorized `SealedStateEnvelope` path and submit a fresh
+heat snapshot.
 
 ### Value-Preserving Cross-Layer Prefetch Hints
 
@@ -451,8 +536,8 @@ assert!(evidence.recall() <= 1.0);
 `route_coupling_history` returns a versioned snapshot bound to the admitted
 weight SHA-256 and recorded layer geometry. Restoring a malformed, oversized,
 cross-model, or geometrically inconsistent history fails atomically. Power
-does not write a route trace or sidecar; a TEE deployment must use a
-caller-owned sealed store if cross-session learning is authorized.
+does not write a route trace or sidecar; a TEE deployment uses the shared
+authorized `SealedStateEnvelope` path if cross-session learning is authorized.
 
 ### Digest-Bound Lossless Tuning Evidence
 
@@ -492,7 +577,7 @@ mismatch, and arithmetic overflow fail closed. The serializable decision
 contains only digests, thresholds, and aggregate statistics. It contains no
 workload text, tensor, path, topology, or configuration value, and Power does
 not log, apply, or persist it. If persistence is authorized, the model crate
-must use its existing encrypted or sealed state mechanism.
+uses the shared `SealedStateEnvelope` mechanism with its own layout digest.
 
 ## Integrity and TEE Invariants
 
@@ -515,6 +600,18 @@ must use its existing encrypted or sealed state mechanism.
 - Existing encrypted model loading, remote attestation, privacy redaction,
   request receipts, and zeroizing sensitive request buffers remain independent
   security controls; the embedded runtime does not replace them.
+- Sealed warm-state headers expose only exact digests, generation, sizes,
+  export scope, and nonce. AES-256-GCM authenticates the complete fixed header
+  and opaque payload. Keys and opened plaintext zeroize on drop; model-owned
+  serializers must likewise clear their source buffers after sealing.
+- Local sealed envelopes cannot be exported through Power's API. Hardware-TEE
+  export tokens are model- and policy-bound and consume an already verified
+  SEV-SNP/TDX report; structural claim matching is shared with confidential GPU
+  execution and is not represented as a second signature verifier.
+- Atomic state recovery ignores pending files, authenticates primary and
+  backup, and obeys the caller's minimum generation. Retaining that minimum in
+  a trusted monotonic source and serializing cross-process writers remain
+  deployment responsibilities; encrypted files alone do not prevent rollback.
 - Positional plaintext buffers and aligned direct-I/O scratch allocations are
   zeroized on drop. Read strategies, storage benchmark data, source paths, and
   tensor ranges are not added to attestation claims or execution receipts.
@@ -571,6 +668,7 @@ must use its existing encrypted or sealed state mechanism.
 | Measured machine/model tuning | Implemented as bounded digest-only AB/BA evidence evaluation for model-owned lossless knobs; Power keeps defaults on insufficient gain, parity regression, or a winner tie and never applies or persists a profile |
 | Lossless entropy-coded weight tier | Implemented as optional digest-pinned read-only replicas behind the existing `WeightStore`: mandatory stamps, shard-local 256-stream nibble rANS tables, exact framing/state checks, bounded zeroizing decode, full canonical byte admission, complete/proper-partial coverage, and primary fallback; canonical SafeTensors remains mandatory |
 | Accelerator resident registries and fused groups | Implemented as digest-bound selections from the active device plan, atomic device-cache-only acquisition, bounded model-owned Candle execution, typed kernel-unavailable fallback, actual-device receipts, and optional canonical confidential-GPU claim binding; no second registry or kernel backend is introduced |
+| Persistent warm conversations | Implemented as model-neutral opaque AES-256-GCM envelopes bound to exact weights, model-owned layout, hashed state identity, generation, bounds, and export scope; synchronized primary/backup recovery adapts commit-last durability without adopting plaintext `.coli_kv` or moving KV topology into Power |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
 | Speculative decoding and KV policy | Model control flow remains in the model crate; Power supplies shared state bounds and receipts |
@@ -588,7 +686,7 @@ The current sequence is:
 | 2 | Hardware/model-specific measured tuning | **Power substrate complete:** bounded digest-only evidence requires repeated baseline→candidate and candidate→baseline rounds, typed output parity, dual-order median gain, cache-hit parity, and bounded p99; model crates retain calibration, candidate application, and sealed persistence | Power tests cover binding, reversal, thresholds, malformed/duplicate/overflow evidence, deterministic selection, tie rejection, privacy-safe serialization, and `Send + Sync`; each model integration must still publish named-hardware end-to-end evidence |
 | 3 | Lossless compressed expert tiers | **Power substrate complete:** optional `rans-nibble-256-v1` replicas remain behind the existing verified `WeightStore`; canonical SafeTensors is mandatory, every physical artifact is pinned before parsing, and every record is admitted only after exact canonical decode parity | Power tests cover deterministic multi-symbol round trips, stamps/tables, artifact pins, malformed framing/state/amplification, complete/proper-partial coverage, mmap/positional reads, scratch, cancellation, fallback, benchmark identity/parity, privacy-safe debug, and `Send + Sync`; model integrations must still publish named-hardware end-to-end wins before use by default |
 | 4 | Accelerator-wide residency declarations and fused batches | **Power substrate complete:** exact active-plan device groups, fused/fallback implementation digests, typed actual-device evidence, permit/cancellation/limit checks, and existing confidential-GPU claim binding share one residency and receipt path; model crates own kernels | Power tests cover deterministic binding, Candle fused/reference parity, pressure and kernel-unavailable fallback identity, malformed/stale/device/permit/cancellation/limit failures, confidential-claim mismatch, privacy-safe receipts, and `Send + Sync`; each model integration must still publish named-hardware kernel parity and gains |
-| 5 | Warm model state across sessions | Keep KV/recurrent topology in the model crate; Power supplies bounds, digest binding, zeroization, and a sealed-state envelope rather than plaintext sidecars | Interrupted-write recovery, wrong-model rejection, rollback policy, and TEE export authorization |
+| 5 | Warm model state across sessions | **Power substrate complete:** model-owned opaque bytes are bounded and sealed with authenticated model/layout/state/generation/scope binding; synchronized primary/backup publication, caller-pinned rollback floors, zeroization, and explicit hardware-TEE export authorization share existing attestation and filesystem durability paths | Power tests cover round trips, fresh nonces, wrong key/model/layout/state, tamper/truncation/oversize, interruption recovery, monotonic saves, rollback floors, cancellation, export mismatch, privacy-safe debug, and `Send + Sync`; model integrations must publish uninterrupted-vs-restored output parity and named-workload warm-start gains |
 
 Cache-aware expert substitution remains outside the default path because it
 changes model semantics. Grammar drafts, MTP/speculative control flow,
@@ -624,6 +722,6 @@ ephemeral runners do not provide independent storage controllers, and their
 hardware may change between runs. The current foundation therefore still needs
 reviewed stable-hardware results, independent-controller multi-source evidence,
 end-to-end model workload wins before direct I/O can become a default,
-encrypted persistence for model-owned routing state, and broader cross-model
-benchmarks. These must extend the same runtime and integrity primitives rather
-than introduce parallel model-specific systems.
+model-owned integration evidence for sealed KV/routing state, and broader
+cross-model benchmarks. These must extend the same runtime and integrity
+primitives rather than introduce parallel model-specific systems.

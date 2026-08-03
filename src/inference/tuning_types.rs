@@ -150,8 +150,9 @@ pub enum TuningProfileOutcome {
     BaselineRetainedTie,
 }
 
-/// Ephemeral decision that a model crate may place in an authorized sealed
-/// store. Power never applies or persists the referenced configuration.
+/// Ephemeral decision that a model crate may place in an authorized
+/// [`super::SealedStateEnvelope`]. Power never applies or persists the
+/// referenced configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TuningProfileDecision {

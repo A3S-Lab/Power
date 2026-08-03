@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{PowerError, Result};
+use crate::inference::filesystem::sync_directory;
 
 use super::{check_cancelled, WeightMirrorPlannedFile};
 
@@ -330,15 +331,4 @@ pub(super) fn available_space(path: &Path) -> Result<u64> {
         return Err(std::io::Error::last_os_error().into());
     }
     Ok(available)
-}
-
-#[cfg(unix)]
-pub(super) fn sync_directory(path: &Path) -> Result<()> {
-    File::open(path)?.sync_all()?;
-    Ok(())
-}
-
-#[cfg(windows)]
-pub(super) fn sync_directory(_path: &Path) -> Result<()> {
-    Ok(())
 }
