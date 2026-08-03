@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added Colibri-inspired event-driven current-layer staging through
+  `StagedWeightBatch::next_ready_group`, allowing model-owned compute to consume
+  newly complete atomic groups without polling while preserving canonical final
+  order.
+- Added one shared background load window for prefetch and staging. It bounds
+  active workers and their canonical in-flight bytes, reports peak flight and
+  event/final wait evidence, and looks past a temporarily blocked large item to
+  use safe spare capacity.
+
 - Added privacy-gated, Colibri-inspired cross-layer route coupling for
   value-preserving prefetch hints. Exact aligned route batches produce bounded
   co-occurrence history, deterministic per-position predictions and a batch
@@ -16,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actual router output.
 
 ### Security
+
+- Kept the new scheduling path inside existing admission, cancellation,
+  per-key serialization, cache, source routing, telemetry, and TEE boundaries.
+  Background byte limits fail before I/O, and telemetry-off mode exposes no
+  timing or peak-flight counters.
 
 - Bound route coupling by lookahead, position, entry, and hint limits; require
   detailed telemetry; bind restored history to exact weight SHA-256 and layer

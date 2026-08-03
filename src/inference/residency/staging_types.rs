@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -76,8 +77,14 @@ pub struct StagedWeightBatchReport {
     pub loaded_weights: usize,
     pub load_cache_hits: usize,
     pub bytes: u64,
+    #[serde(default)]
+    pub peak_inflight_weights: usize,
+    #[serde(default)]
+    pub peak_inflight_bytes: u64,
     pub cumulative_service_nanos: u64,
     pub background_elapsed_nanos: u64,
+    #[serde(default)]
+    pub event_wait_nanos: u64,
     pub foreground_wait_nanos: u64,
 }
 
@@ -102,6 +109,8 @@ pub struct StagedWeightBatch {
     handle: Option<JoinHandle<Result<StagedWeightBatchCompletion>>>,
     cancellation: CancellationToken,
     state: Arc<Mutex<StagedBatchState>>,
+    ready: Arc<Notify>,
+    event_wait_nanos: u64,
     hierarchy: WeightHierarchy,
 }
 
@@ -110,12 +119,15 @@ impl StagedWeightBatch {
         handle: JoinHandle<Result<StagedWeightBatchCompletion>>,
         cancellation: CancellationToken,
         state: Arc<Mutex<StagedBatchState>>,
+        ready: Arc<Notify>,
         hierarchy: WeightHierarchy,
     ) -> Self {
         Self {
             handle: Some(handle),
             cancellation,
             state,
+            ready,
+            event_wait_nanos: 0,
             hierarchy,
         }
     }
@@ -128,6 +140,54 @@ impl StagedWeightBatch {
         lock(&self.state).take_ready_groups()
     }
 
+    /// Waits without polling until the next atomic group becomes ready.
+    ///
+    /// Groups can arrive out of canonical order. The model crate may compute
+    /// them immediately, but must place each result in its `canonical_index`
+    /// slot and keep its architecture's canonical reduction order. `None`
+    /// means all groups completed successfully. A background failure is
+    /// surfaced before any subsequently observed ready group.
+    pub async fn next_ready_group(&mut self) -> Result<Option<StagedWeightGroup>> {
+        let mut wait_started = None;
+        loop {
+            let ready = Arc::clone(&self.ready);
+            let notified = ready.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let outcome = {
+                let mut state = lock(&self.state);
+                if let Some(error) = state.terminal_error() {
+                    NextReady::Failed(error.to_string())
+                } else if let Some(group) = state.take_next_ready_group() {
+                    NextReady::Group(group)
+                } else if state.finished_successfully() {
+                    NextReady::Finished
+                } else {
+                    NextReady::Pending
+                }
+            };
+            match outcome {
+                NextReady::Group(group) => {
+                    self.record_event_wait(wait_started);
+                    return Ok(Some(group));
+                }
+                NextReady::Finished => {
+                    self.record_event_wait(wait_started);
+                    return Ok(None);
+                }
+                NextReady::Failed(error) => {
+                    self.record_event_wait(wait_started);
+                    return Err(PowerError::InferenceFailed(format!(
+                        "staged weight batch failed: {error}"
+                    )));
+                }
+                NextReady::Pending => {}
+            }
+            wait_started.get_or_insert_with(Instant::now);
+            notified.await;
+        }
+    }
+
     /// Waits for all missing weights and restores the original group order.
     pub async fn wait(mut self) -> Result<StagedWeightBatchCompletion> {
         let handle = self.handle.take().ok_or_else(|| {
@@ -138,6 +198,7 @@ impl StagedWeightBatch {
             PowerError::InferenceFailed(format!("staged weight batch task failed: {error}"))
         })??;
         if self.hierarchy.inner.policy.telemetry != TelemetryMode::Disabled {
+            completion.report.event_wait_nanos = self.event_wait_nanos;
             completion.report.foreground_wait_nanos = elapsed_nanos(wait_started);
         }
         self.hierarchy
@@ -150,10 +211,28 @@ impl StagedWeightBatch {
     /// Cancels pending loads and releases shared background admission.
     pub fn abort(&self) {
         self.cancellation.cancel();
+        lock(&self.state).finish_error("staged weight batch was aborted".to_string());
+        self.ready.notify_one();
         if let Some(handle) = &self.handle {
             handle.abort();
         }
     }
+
+    fn record_event_wait(&mut self, started: Option<Instant>) {
+        if self.hierarchy.inner.policy.telemetry == TelemetryMode::Disabled {
+            return;
+        }
+        if let Some(started) = started {
+            self.event_wait_nanos = self.event_wait_nanos.saturating_add(elapsed_nanos(started));
+        }
+    }
+}
+
+enum NextReady {
+    Group(StagedWeightGroup),
+    Finished,
+    Failed(String),
+    Pending,
 }
 
 impl Drop for StagedWeightBatch {
@@ -178,6 +257,13 @@ impl std::fmt::Debug for StagedWeightBatch {
 
 pub(super) struct StagedBatchState {
     groups: Vec<StagedGroupState>,
+    terminal: StagedBatchTerminal,
+}
+
+enum StagedBatchTerminal {
+    Running,
+    Succeeded,
+    Failed(String),
 }
 
 struct StagedGroupState {
@@ -189,6 +275,7 @@ impl StagedBatchState {
     pub(super) fn with_capacity(capacity: usize) -> Self {
         Self {
             groups: Vec::with_capacity(capacity),
+            terminal: StagedBatchTerminal::Running,
         }
     }
 
@@ -226,6 +313,44 @@ impl StagedBatchState {
             });
         }
         ready
+    }
+
+    fn take_next_ready_group(&mut self) -> Option<StagedWeightGroup> {
+        for (canonical_index, group) in self.groups.iter_mut().enumerate() {
+            if group.delivered || group.weights.iter().any(Option::is_none) {
+                continue;
+            }
+            let weights = group.weights.iter().cloned().collect::<Option<Vec<_>>>()?;
+            group.delivered = true;
+            return Some(StagedWeightGroup {
+                canonical_index,
+                weights,
+            });
+        }
+        None
+    }
+
+    pub(super) fn finish_success(&mut self) {
+        if matches!(self.terminal, StagedBatchTerminal::Running) {
+            self.terminal = StagedBatchTerminal::Succeeded;
+        }
+    }
+
+    pub(super) fn finish_error(&mut self, error: String) {
+        if matches!(self.terminal, StagedBatchTerminal::Running) {
+            self.terminal = StagedBatchTerminal::Failed(error);
+        }
+    }
+
+    fn terminal_error(&self) -> Option<&str> {
+        match &self.terminal {
+            StagedBatchTerminal::Failed(error) => Some(error),
+            StagedBatchTerminal::Running | StagedBatchTerminal::Succeeded => None,
+        }
+    }
+
+    fn finished_successfully(&self) -> bool {
+        matches!(self.terminal, StagedBatchTerminal::Succeeded)
     }
 
     pub(super) fn insert(

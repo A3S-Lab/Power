@@ -1,9 +1,10 @@
 //! Ordered current-layer weight staging for model-owned computation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -18,9 +19,16 @@ use crate::admission::AdmissionPermit;
 use crate::error::{PowerError, Result};
 use crate::inference::TelemetryMode;
 
+use super::load_window::BackgroundLoadWindow;
+
 struct ValidatedStagedBatch {
-    groups: Vec<Vec<WeightRequest>>,
+    groups: Vec<Vec<ValidatedWeight>>,
     requested_weights: usize,
+    bytes: u64,
+}
+
+struct ValidatedWeight {
+    request: WeightRequest,
     bytes: u64,
 }
 
@@ -28,13 +36,21 @@ struct PendingWeight {
     group_index: usize,
     weight_index: usize,
     request: WeightRequest,
+    bytes: u64,
 }
 
 struct CompletedWeight {
     group_index: usize,
     weight_index: usize,
+    scheduled_bytes: u64,
     weight: ResidentWeight,
     service_nanos: u64,
+}
+
+#[derive(Clone)]
+struct StagedBatchSignal {
+    state: Arc<Mutex<StagedBatchState>>,
+    ready: Arc<Notify>,
 }
 
 impl WeightHierarchy {
@@ -74,7 +90,8 @@ impl WeightHierarchy {
             let _operation = read(&self.inner.operations);
             for (group_index, requests) in validated.groups.iter().enumerate() {
                 let mut weights = Vec::with_capacity(requests.len());
-                for (weight_index, request) in requests.iter().enumerate() {
+                for (weight_index, validated_weight) in requests.iter().enumerate() {
+                    let request = &validated_weight.request;
                     if let Some(weight) =
                         self.cached(&request.key, request.placement, None, CacheAccess::Demand)
                     {
@@ -86,6 +103,7 @@ impl WeightHierarchy {
                             group_index,
                             weight_index,
                             request: request.clone(),
+                            bytes: validated_weight.bytes,
                         });
                     }
                 }
@@ -104,28 +122,43 @@ impl WeightHierarchy {
             ..StagedWeightBatchReport::default()
         };
         let state = Arc::new(Mutex::new(state));
+        let ready = Arc::new(Notify::new());
+        let signal = StagedBatchSignal {
+            state: Arc::clone(&state),
+            ready: Arc::clone(&ready),
+        };
         let task_cancellation = cancellation.child_token();
         let worker_cancellation = task_cancellation.clone();
         let hierarchy = self.clone();
         let worker_hierarchy = hierarchy.clone();
         let permit = permit.clone();
-        let worker_state = Arc::clone(&state);
+        let worker_signal = signal.clone();
         let handle = runtime.spawn(async move {
-            worker_hierarchy
+            let result = worker_hierarchy
                 .complete_staged_batch(
                     pending,
                     permit,
                     worker_cancellation,
-                    worker_state,
+                    worker_signal.clone(),
                     report,
                     admission,
                 )
-                .await
+                .await;
+            {
+                let mut state = lock(&worker_signal.state);
+                match &result {
+                    Ok(_) => state.finish_success(),
+                    Err(error) => state.finish_error(error.to_string()),
+                }
+            }
+            worker_signal.ready.notify_one();
+            result
         });
         Ok(StagedWeightBatch::new(
             handle,
             task_cancellation,
             state,
+            ready,
             hierarchy,
         ))
     }
@@ -143,6 +176,7 @@ impl WeightHierarchy {
         let mut seen = BTreeSet::<WeightKey>::new();
         let mut requested_weights = 0_usize;
         let mut bytes = 0_u64;
+        let inflight_limit = self.inner.policy.background_inflight_bytes();
         let mut validated = Vec::with_capacity(groups.len());
         for group in groups {
             if group.weights.is_empty() {
@@ -165,6 +199,12 @@ impl WeightHierarchy {
             let mut requests = Vec::with_capacity(group.weights.len());
             for request in group.weights {
                 let descriptor = self.validate_request(&request)?;
+                if descriptor.bytes > inflight_limit {
+                    return Err(PowerError::InvalidRequest(format!(
+                        "staged weight '{}' requires {} bytes, exceeding the {inflight_limit} byte background in-flight limit",
+                        request.key.name, descriptor.bytes
+                    )));
+                }
                 match layer {
                     Some(expected) if expected != request.key.layer => {
                         return Err(PowerError::InvalidRequest(
@@ -189,9 +229,12 @@ impl WeightHierarchy {
                         self.inner.policy.max_prefetch_bytes
                     )));
                 }
-                requests.push(WeightRequest {
-                    key: request.key,
-                    placement: self.resolve_placement(request.placement),
+                requests.push(ValidatedWeight {
+                    request: WeightRequest {
+                        key: request.key,
+                        placement: self.resolve_placement(request.placement),
+                    },
+                    bytes: descriptor.bytes,
                 });
             }
             validated.push(requests);
@@ -208,17 +251,27 @@ impl WeightHierarchy {
         pending: Vec<PendingWeight>,
         permit: ExecutionPermit,
         cancellation: CancellationToken,
-        state: Arc<Mutex<StagedBatchState>>,
+        signal: StagedBatchSignal,
         mut report: StagedWeightBatchReport,
         _admission: AdmissionPermit,
     ) -> Result<StagedWeightBatchCompletion> {
         let background_started = Instant::now();
         let measure_timing = self.inner.policy.telemetry != TelemetryMode::Disabled;
+        if pending.is_empty() {
+            if measure_timing {
+                report.background_elapsed_nanos = elapsed_nanos(background_started);
+            }
+            let groups = lock(&signal.state).completed_groups()?;
+            return Ok(StagedWeightBatchCompletion { groups, report });
+        }
         let worker_limit = self.inner.policy.max_prefetch_workers.min(pending.len());
-        let mut pending = pending.into_iter();
+        let mut pending = VecDeque::from(pending);
         let mut workers = JoinSet::new();
-        for _ in 0..worker_limit {
-            if let Some(weight) = pending.next() {
+        let mut window =
+            BackgroundLoadWindow::new(worker_limit, self.inner.policy.background_inflight_bytes())?;
+
+        while !pending.is_empty() || !window.is_idle() {
+            while let Some(weight) = window.take_fitting(&mut pending, |weight| weight.bytes)? {
                 self.spawn_staged_load(
                     &mut workers,
                     weight,
@@ -227,9 +280,11 @@ impl WeightHierarchy {
                     measure_timing,
                 );
             }
-        }
-
-        while !workers.is_empty() {
+            if window.is_idle() {
+                return Err(PowerError::InferenceFailed(
+                    "bounded staged weight queue made no progress".to_string(),
+                ));
+            }
             let joined = tokio::select! {
                 () = cancellation.cancelled() => {
                     workers.abort_all();
@@ -253,8 +308,18 @@ impl WeightHierarchy {
                         "staged weight worker failed: {error}"
                     )));
                 }
-                None => break,
+                None => {
+                    return Err(PowerError::InferenceFailed(
+                        "staged worker set ended before the bounded window drained".to_string(),
+                    ))
+                }
             };
+            window.release(completed.scheduled_bytes)?;
+            if completed.weight.bytes() != completed.scheduled_bytes {
+                return Err(PowerError::InferenceFailed(
+                    "staged weight size changed after bounded admission".to_string(),
+                ));
+            }
             if completed.weight.cache_hit() {
                 report.load_cache_hits = report.load_cache_hits.saturating_add(1);
             } else {
@@ -263,27 +328,22 @@ impl WeightHierarchy {
             report.cumulative_service_nanos = report
                 .cumulative_service_nanos
                 .saturating_add(completed.service_nanos);
-            lock(&state).insert(
-                completed.group_index,
-                completed.weight_index,
-                completed.weight,
-            )?;
-
-            if let Some(weight) = pending.next() {
-                self.spawn_staged_load(
-                    &mut workers,
-                    weight,
-                    &permit,
-                    &cancellation,
-                    measure_timing,
-                );
+            {
+                lock(&signal.state).insert(
+                    completed.group_index,
+                    completed.weight_index,
+                    completed.weight,
+                )?;
             }
+            signal.ready.notify_one();
         }
         self.check_cancelled(&cancellation)?;
+        report.peak_inflight_weights = window.peak_workers();
+        report.peak_inflight_bytes = window.peak_bytes();
         if measure_timing {
             report.background_elapsed_nanos = elapsed_nanos(background_started);
         }
-        let groups = lock(&state).completed_groups()?;
+        let groups = lock(&signal.state).completed_groups()?;
         Ok(StagedWeightBatchCompletion { groups, report })
     }
 
@@ -306,6 +366,7 @@ impl WeightHierarchy {
             Ok(CompletedWeight {
                 group_index: pending.group_index,
                 weight_index: pending.weight_index,
+                scheduled_bytes: pending.bytes,
                 weight,
                 service_nanos: if measure_timing {
                     elapsed_nanos(service_started)
