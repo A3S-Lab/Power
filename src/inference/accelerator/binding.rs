@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use sha2::{Digest, Sha256};
 
 use crate::error::{PowerError, Result};
@@ -25,6 +27,7 @@ pub struct ConfidentialGpuBinding {
     weights_sha256: String,
     execution_policy_sha256: String,
     runtime_device: RuntimeDeviceIdentity,
+    device_mesh_sha256: Option<String>,
 }
 
 impl ConfidentialGpuBinding {
@@ -84,6 +87,9 @@ impl ConfidentialGpuBinding {
                     .to_string(),
             ));
         }
+        if let Some(mesh) = &declaration.device_mesh {
+            validate_attested_mesh(mesh, &gpu.devices)?;
+        }
 
         let execution = claims
             .runtime
@@ -116,6 +122,10 @@ impl ConfidentialGpuBinding {
             weights_sha256: declaration.weights_sha256.clone(),
             execution_policy_sha256: declaration.execution_policy_sha256.clone(),
             runtime_device: declaration.runtime_device,
+            device_mesh_sha256: declaration
+                .device_mesh
+                .as_ref()
+                .map(|mesh| mesh.mesh_sha256.clone()),
         })
     }
 
@@ -128,6 +138,11 @@ impl ConfidentialGpuBinding {
             || self.weights_sha256 != declaration.weights_sha256
             || self.execution_policy_sha256 != declaration.execution_policy_sha256
             || self.runtime_device != declaration.runtime_device
+            || self.device_mesh_sha256
+                != declaration
+                    .device_mesh
+                    .as_ref()
+                    .map(|mesh| mesh.mesh_sha256.clone())
         {
             return Err(PowerError::PolicyViolation(
                 "confidential GPU binding belongs to a different accelerator declaration"
@@ -145,6 +160,54 @@ impl std::fmt::Debug for ConfidentialGpuBinding {
             .field("claims_sha256", &self.claims_sha256)
             .field("declaration_sha256", &self.declaration_sha256)
             .field("runtime_device", &self.runtime_device)
+            .field("device_mesh_sha256", &self.device_mesh_sha256)
             .finish_non_exhaustive()
     }
+}
+
+fn validate_attested_mesh(
+    mesh: &super::AcceleratorDeviceMeshDeclaration,
+    devices: &[crate::tee::attestation::GpuDeviceClaim],
+) -> Result<()> {
+    let expected_gpus = mesh
+        .nodes
+        .iter()
+        .filter_map(|node| node.attestation_gpu_claim_index)
+        .collect::<BTreeSet<_>>();
+    let expected_fabrics = mesh
+        .attestation_fabric_claim_indices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut actual_gpus = BTreeSet::new();
+    let mut actual_fabrics = BTreeSet::new();
+    let mut all_indices = BTreeSet::new();
+    for device in devices {
+        if !all_indices.insert(device.index) {
+            return Err(PowerError::PolicyViolation(
+                "confidential GPU evidence contains duplicate device claim indices".to_string(),
+            ));
+        }
+        match device.device_type.as_str() {
+            "gpu" => {
+                actual_gpus.insert(device.index);
+            }
+            "nvswitch" => {
+                actual_fabrics.insert(device.index);
+            }
+            _ => {
+                return Err(PowerError::PolicyViolation(
+                    "confidential mesh evidence contains an unsupported NVIDIA device type"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+    if expected_gpus != actual_gpus || expected_fabrics != actual_fabrics {
+        return Err(PowerError::PolicyViolation(
+            "confidential accelerator mesh does not bind the exact attested GPU/NVSwitch claim topology"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }

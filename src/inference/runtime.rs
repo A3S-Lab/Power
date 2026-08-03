@@ -147,8 +147,13 @@ impl EmbeddedRuntime {
                     .to_string(),
             ));
         }
+        let schema = if accelerator.device_mesh_sha256.is_some() {
+            ExecutionReceipt::ACCELERATOR_MESH_SCHEMA
+        } else {
+            ExecutionReceipt::ACCELERATOR_SCHEMA
+        };
         Ok(ExecutionReceipt {
-            schema: ExecutionReceipt::ACCELERATOR_SCHEMA.to_string(),
+            schema: schema.to_string(),
             model,
             runtime: RuntimeIdentity::current(self.device()),
             input,

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added Colibri-inspired heterogeneous accelerator meshes with at most 16
+  unique resolved devices, a canonical primary/home device, strongly connected
+  directed transfer edges, per-edge count/byte bounds, and one aggregate byte
+  budget. Model crates retain graph partitioning and kernels; Power performs
+  explicit Candle copies through `AcceleratorMeshExecution` and reuses the
+  active residency plan, device cache, execution permit, cancellation, and
+  exact fallback path.
+- Added mesh execution evidence and embedded receipt v3. Receipts expose only
+  the mesh digest, canonical actual-device identities, and a digest of the
+  bounded transfer trace.
 - Added model-neutral host/device fixed-state and peak-scratch reservations to
   the existing hardware residency budget policy. Cache budgets now account for
   these bytes after applying caller-owned available-memory fractions, while
@@ -33,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Confidential meshes bind every CUDA node to an explicit NVIDIA claim-array
+  index and require exact GPU/NVSwitch claim-index sets from the existing
+  verified NRAS evidence. CUDA ordinals are not treated as claim indices or
+  UEIDs, NVSwitch presence is not treated as proof of edge connectivity, and
+  backend copy failure enters only the declared exact fallback. Mesh node/edge
+  names and transfer details are not logged, persisted, or placed in receipts.
 - Runtime reservations, memory snapshots, and pressure decisions remain
   caller-owned and are never logged, persisted, placed in telemetry, bound into
   receipts, or exported from a TEE automatically. Overflow, unavailable pools,

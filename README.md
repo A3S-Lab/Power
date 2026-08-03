@@ -124,7 +124,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
 - **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional), proxy (forwards to an upstream OpenAI-compatible server — vLLM/TGI/SGLang/OpenAI — so Power can front an existing accelerated engine)
 - **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
-- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, mmap-default or bounded positional tensor reads, complete or partial weighted read-only replicas, digest-pinned and canonically verified pure-Rust lossless rANS representations, usage-ranked verified partial-mirror staging, validation-throughput source weighting, typed devices, fixed-state/scratch-aware host/CUDA/Metal cache budgets with current-pressure revalidation, LFRU/LRU residency, hysteresis-bounded live hot-tier adaptation, privacy-gated cross-layer route hints, event-driven current-layer staged batches with a shared worker-and-byte flight window, attestation-bound accelerator residency declarations, fused Candle batches with explicit exact-fallback identity, bounded sealed warm-state envelopes, digest-bound lossless tuning evidence, measurable prefetch, cancellation, and execution receipts. Model architectures and KV/recurrent layouts live in their owning crates; embedded sessions never bind a Web port
+- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, exact SafeTensors integrity, mmap-default or bounded positional tensor reads, complete or partial weighted read-only replicas, digest-pinned and canonically verified pure-Rust lossless rANS representations, usage-ranked verified partial-mirror staging, validation-throughput source weighting, typed devices, fixed-state/scratch-aware host/CUDA/Metal cache budgets with current-pressure revalidation, LFRU/LRU residency, hysteresis-bounded live hot-tier adaptation, privacy-gated cross-layer route hints, event-driven current-layer staged batches with a shared worker-and-byte flight window, attestation-bound accelerator residency declarations, bounded heterogeneous device meshes and peer copies, fused Candle batches with explicit exact-fallback identity, bounded sealed warm-state envelopes, digest-bound lossless tuning evidence, measurable prefetch, cancellation, and execution receipts. Model architectures and KV/recurrent layouts live in their owning crates; embedded sessions never bind a Web port
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
 - **JSON Schema Structured Output**: Constrain local llama.cpp output via JSON Schema → GBNF grammar conversion; unsupported local backend/schema combinations fail closed instead of silently ignoring output policy
@@ -231,8 +231,30 @@ result produces a separate fallback token when policy permits it. Execution
 evidence records both the declared device and the actual fallback device. In
 confidential-GPU mode, execution requires an existing hardware-verified v2
 attestation report whose model and `runtime.execution.gpu_sha256` claims match
-the declaration. Embedded receipt v2 contains only digests and path identity,
-not tensor names, group IDs, values, or attestation evidence bytes.
+the declaration.
+
+The same declaration can bind a canonical heterogeneous device mesh. Power
+caps it at 16 unique resolved devices, requires every node to be reachable from
+and able to return to the primary device, and checks every directed copy
+against per-edge count/byte limits plus one aggregate byte budget. These reuse
+the existing graph, input, and state limits. A model-owned kernel retains graph
+partitioning and arithmetic, while `AcceleratorMeshExecution` performs and
+accounts explicit Candle device copies. Backend copy failure is a typed
+unavailability result; malformed topology, over-budget traffic, and
+cancellation fail closed. Power does not add a per-device cache or residency
+registry: weights still come only from the active plan and existing device
+cache.
+
+Confidential meshes bind each CUDA node to an explicit NVIDIA claim-array
+index and bind the exact GPU/NVSwitch claim sets. CUDA ordinals are never
+treated as claim indices or UEIDs, and NVSwitch presence is not presented as
+proof that any particular edge works. Runtime copies remain the availability
+test. Embedded receipt v2 covers single-device fusion; receipt v3 adds only the
+mesh digest, canonical actual-device identities, and a peer-transfer trace
+digest—not node names, edges, tensor names, group IDs, values, or attestation
+evidence bytes. As Colibri's multi-GPU measurements show, peer traffic may
+erase a pipeline gain, so no mesh policy is enabled by default without
+model-owned end-to-end evidence on named hardware.
 
 Warm-state persistence adapts Colibri's commit-last recovery principle without
 adopting its plaintext `.coli_kv` format. A model crate serializes its own KV or
@@ -1752,7 +1774,7 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 ### Completed
 
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
-- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native fixed-state/scratch-aware cache budgets with live pressure revalidation and unified-memory accounting, LFRU hot sets, atomic plans, hysteresis-bounded live hot-tier adaptation, batched expert unions, privacy-gated cross-layer route hints, event-driven current-layer staged batches with shared count/byte admission, attestation-bound accelerator residency declarations, fused Candle batches with explicit actual-device/fallback identity, AES-256-GCM sealed warm-state envelopes with authenticated recovery and explicit TEE export authorization, digest-bound AB/BA lossless tuning evidence, complete/partial weighted replicas, optional artifact-pinned and canonical-byte-verified pure-Rust rANS representations, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
+- [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native fixed-state/scratch-aware cache budgets with live pressure revalidation and unified-memory accounting, LFRU hot sets, atomic plans, hysteresis-bounded live hot-tier adaptation, batched expert unions, privacy-gated cross-layer route hints, event-driven current-layer staged batches with shared count/byte admission, attestation-bound accelerator residency declarations, canonical 16-device meshes with bounded peer copies and exact confidential GPU/NVSwitch claim-set binding, fused Candle batches with explicit actual-device/fallback identity, AES-256-GCM sealed warm-state envelopes with authenticated recovery and explicit TEE export authorization, digest-bound AB/BA lossless tuning evidence, complete/partial weighted replicas, optional artifact-pinned and canonical-byte-verified pure-Rust rANS representations, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
 - [x] Pure Rust inference backend — `mistralrs` feature (default): GGUF inference via candle, no C++ dependency; ideal for TEE supply-chain auditing
 - [x] OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`)
 - [x] Content-addressed model storage with SHA-256

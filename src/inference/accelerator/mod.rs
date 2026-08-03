@@ -1,5 +1,7 @@
 mod binding;
 mod execution;
+mod mesh;
+mod mesh_execution;
 mod types;
 
 use std::collections::BTreeMap;
@@ -17,6 +19,12 @@ pub use execution::{
     AcceleratorFusedBatchOutput, AcceleratorFusedExecution, AcceleratorFusedGroup,
     AcceleratorKernelOutcome,
 };
+pub use mesh::{
+    AcceleratorDeviceMesh, AcceleratorDeviceMeshDeclaration, AcceleratorMeshDevice,
+    AcceleratorMeshDeviceDeclaration, AcceleratorPeerTransferDeclaration,
+    AcceleratorPeerTransferSpec,
+};
+pub use mesh_execution::{AcceleratorMeshExecution, AcceleratorPeerTransferOutcome};
 pub use types::{
     AcceleratorExecutionCompletion, AcceleratorExecutionEvidence, AcceleratorExecutionPath,
     AcceleratorFallbackMode, AcceleratorFallbackReason, AcceleratorFallbackTarget,
@@ -33,6 +41,26 @@ impl WeightHierarchy {
     pub fn declare_accelerator_residency(
         &self,
         spec: &AcceleratorFusedBatchSpec,
+    ) -> Result<AcceleratorResidencyDeclaration> {
+        self.declare_accelerator_residency_internal(spec, None)
+    }
+
+    /// Binds the same active device-residency plan to a resolved, bounded
+    /// execution mesh. Resident weights continue to come from the one active
+    /// cache; model-owned kernels use the mesh guard for explicit peer copies
+    /// and graph partitioning.
+    pub fn declare_accelerator_mesh_residency(
+        &self,
+        spec: &AcceleratorFusedBatchSpec,
+        mesh: &AcceleratorDeviceMesh,
+    ) -> Result<AcceleratorResidencyDeclaration> {
+        self.declare_accelerator_residency_internal(spec, Some(mesh))
+    }
+
+    fn declare_accelerator_residency_internal(
+        &self,
+        spec: &AcceleratorFusedBatchSpec,
+        mesh: Option<&AcceleratorDeviceMesh>,
     ) -> Result<AcceleratorResidencyDeclaration> {
         let runtime = self.runtime();
         if runtime.device().kind() == RuntimeDeviceKind::Cpu {
@@ -53,6 +81,17 @@ impl WeightHierarchy {
             runtime.limits().max_graph_nodes,
             runtime.limits().max_graph_name_bytes,
         )?;
+        let device_mesh = mesh
+            .map(|mesh| {
+                let declaration = mesh.declaration(runtime.limits(), spec.security)?;
+                if declaration.primary_runtime_device() != runtime.device().identity() {
+                    return Err(PowerError::InvalidRequest(
+                        "accelerator mesh primary must be the hierarchy runtime device".to_string(),
+                    ));
+                }
+                Ok(declaration)
+            })
+            .transpose()?;
         let plan = self.active_residency_plan().ok_or_else(|| {
             PowerError::InvalidRequest(
                 "accelerator residency requires an active, applied residency plan".to_string(),
@@ -122,6 +161,7 @@ impl WeightHierarchy {
             groups,
             total_weights,
             total_bytes,
+            device_mesh,
         )
     }
 
@@ -131,6 +171,54 @@ impl WeightHierarchy {
     pub fn resolve_accelerator_batch(
         &self,
         declaration: &AcceleratorResidencyDeclaration,
+        confidential_binding: Option<&ConfidentialGpuBinding>,
+        permit: &ExecutionPermit,
+        cancellation: &CancellationToken,
+    ) -> Result<AcceleratorBatchResolution> {
+        if declaration.device_mesh.is_some() {
+            return Err(PowerError::InvalidRequest(
+                "mesh declarations must use resolve_accelerator_mesh_batch so peer execution is tracked"
+                    .to_string(),
+            ));
+        }
+        self.resolve_accelerator_batch_internal(
+            declaration,
+            None,
+            confidential_binding,
+            permit,
+            cancellation,
+        )
+    }
+
+    /// Resolves a mesh declaration against the exact runtime handles used to
+    /// create it. A different node, edge, bound, or claim mapping fails before
+    /// any kernel launch.
+    pub fn resolve_accelerator_mesh_batch(
+        &self,
+        declaration: &AcceleratorResidencyDeclaration,
+        mesh: &AcceleratorDeviceMesh,
+        confidential_binding: Option<&ConfidentialGpuBinding>,
+        permit: &ExecutionPermit,
+        cancellation: &CancellationToken,
+    ) -> Result<AcceleratorBatchResolution> {
+        if declaration.device_mesh.is_none() {
+            return Err(PowerError::InvalidRequest(
+                "single-device declarations must use resolve_accelerator_batch".to_string(),
+            ));
+        }
+        self.resolve_accelerator_batch_internal(
+            declaration,
+            Some(mesh),
+            confidential_binding,
+            permit,
+            cancellation,
+        )
+    }
+
+    fn resolve_accelerator_batch_internal(
+        &self,
+        declaration: &AcceleratorResidencyDeclaration,
+        mesh: Option<&AcceleratorDeviceMesh>,
         confidential_binding: Option<&ConfidentialGpuBinding>,
         permit: &ExecutionPermit,
         cancellation: &CancellationToken,
@@ -146,6 +234,25 @@ impl WeightHierarchy {
                 "accelerator declaration belongs to a different hierarchy, device, or runtime limit set"
                     .to_string(),
             ));
+        }
+        match (&declaration.device_mesh, mesh) {
+            (None, None) => {}
+            (Some(expected), Some(mesh))
+                if mesh.matches_declaration(
+                    expected,
+                    runtime.limits(),
+                    declaration.security,
+                )? => {}
+            (Some(_), Some(_)) => {
+                return Err(PowerError::InvalidFormat(
+                    "resolved accelerator mesh does not match the declaration".to_string(),
+                ))
+            }
+            _ => {
+                return Err(PowerError::InvalidRequest(
+                    "accelerator declaration and resolved mesh shape do not match".to_string(),
+                ))
+            }
         }
         let claims_sha256 = match declaration.security {
             AcceleratorSecurityRequirement::Local => None,
@@ -237,6 +344,7 @@ impl WeightHierarchy {
                 claims_sha256,
                 permit.clone(),
                 groups,
+                mesh.cloned(),
             ),
         ))
     }
@@ -261,7 +369,7 @@ impl WeightHierarchy {
                 confidential_claims_sha256,
                 permit.clone(),
                 reason,
-            ),
+            )?,
         ))
     }
 }

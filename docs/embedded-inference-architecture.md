@@ -442,6 +442,99 @@ explicit trust contract: callers must first use Power's existing strict
 hardware verifier or obtain the report inside the currently attested runtime.
 The binding stores digests only.
 
+### Attestation-Bound Heterogeneous Device Meshes
+
+Colibri assigns each layer or resident expert group a home device, moves the
+residual stream explicitly, and has measured cases where multi-GPU P2P traffic
+costs more than it saves. Power adopts the enforceable substrate without
+moving graph partitioning into the runtime or promising a speedup:
+
+```rust
+use a3s_power::inference::{
+    AcceleratorBatchResolution, AcceleratorDeviceMesh, AcceleratorKernelOutcome,
+    AcceleratorMeshDevice, AcceleratorPeerTransferOutcome,
+    AcceleratorPeerTransferSpec, DevicePreference, RuntimeDevice,
+};
+
+let peer = RuntimeDevice::resolve(DevicePreference::Cuda { ordinal: 1 })?;
+let mesh = AcceleratorDeviceMesh::new(
+    "home",
+    vec![
+        AcceleratorMeshDevice::new("home", hierarchy.runtime().device().clone()),
+        AcceleratorMeshDevice::new("expert-peer", peer),
+    ],
+    vec![
+        AcceleratorPeerTransferSpec::new("home", "expert-peer", 8 * 1024 * 1024, 1),
+        AcceleratorPeerTransferSpec::new("expert-peer", "home", 8 * 1024 * 1024, 1),
+    ],
+    16 * 1024 * 1024,
+)?;
+let declaration = hierarchy.declare_accelerator_mesh_residency(&spec, &mesh)?;
+
+if let AcceleratorBatchResolution::Ready(batch) =
+    hierarchy.resolve_accelerator_mesh_batch(
+        &declaration,
+        &mesh,
+        confidential_gpu_binding.as_ref(),
+        &permit,
+        &cancellation,
+    )?
+{
+    let result = batch.execute_mesh_or_fallback(
+        &input,
+        &cancellation,
+        |input, groups, mesh, cancellation| {
+            let AcceleratorPeerTransferOutcome::Transferred(peer_input) =
+                mesh.transfer("home", "expert-peer", input)?
+            else {
+                return Ok(AcceleratorKernelOutcome::Unavailable);
+            };
+            let peer_output = model_owned_peer_kernel(
+                &peer_input,
+                groups,
+                cancellation,
+            )?;
+            let AcceleratorPeerTransferOutcome::Transferred(home_output) =
+                mesh.transfer("expert-peer", "home", &peer_output)?
+            else {
+                return Ok(AcceleratorKernelOutcome::Unavailable);
+            };
+            Ok(AcceleratorKernelOutcome::Output(home_output))
+        },
+    )?;
+    consume_fused_or_exact_fallback(result)?;
+}
+# Ok::<(), a3s_power::error::PowerError>(())
+```
+
+The mesh contains at most 16 unique typed runtime devices and every node must
+be reachable from and able to return to the primary node. Each directed edge
+has a maximum tensor size and launch count; the mesh also has a total byte
+budget. Power reuses `InferenceLimits::max_graph_nodes` for topology count,
+`max_input_bytes` for one copy, and `max_state_bytes` for aggregate traffic.
+Copies are synchronous at this substrate boundary, so one Power-managed copy
+is in flight at a time; returned tensors remain model-owned state within the
+aggregate bound. Cancellation is checked before and after every copy.
+
+The active residency plan remains the only weight placement source of truth.
+Resolution atomically acquires already-pinned primary-device weights and never
+creates another cache, residency registry, or planner. The model kernel may
+move an activation or selected resident tensor through the guarded edges and
+continues to own graph partitioning, reduction order, and arithmetic. A
+single-device mesh is valid specifically so model integrations can establish
+exact parity before adding peer edges.
+
+In confidential-GPU mode every CUDA node carries an explicit NVIDIA
+claim-array index. Power requires the declaration's CUDA indices and fabric
+indices to equal the verified NRAS GPU/NVSwitch claim sets exactly. A CUDA
+ordinal is never inferred to be a claim index or UEID. NRAS proves the claimed
+devices/fabric are present; it does not prove that a particular directed edge
+is usable, so the actual Candle copy remains the fail-closed availability
+check. Backend unavailability can select only the digest-declared exact
+fallback. Receipt v3 exposes the mesh digest, canonical actual devices, and a
+transfer-trace digest; private node names, edges, group IDs, tensor names, and
+values stay outside receipts and automatic telemetry.
+
 ### Bounded Sealed Warm State
 
 Power treats cross-session state as opaque model-owned bytes. It does not know
@@ -692,6 +785,7 @@ uses the shared `SealedStateEnvelope` mechanism with its own layout digest.
 | Measured machine/model tuning | Implemented as bounded digest-only AB/BA evidence evaluation for model-owned lossless knobs; Power keeps defaults on insufficient gain, parity regression, or a winner tie and never applies or persists a profile |
 | Lossless entropy-coded weight tier | Implemented as optional digest-pinned read-only replicas behind the existing `WeightStore`: mandatory stamps, shard-local 256-stream nibble rANS tables, exact framing/state checks, bounded zeroizing decode, full canonical byte admission, complete/proper-partial coverage, and primary fallback; canonical SafeTensors remains mandatory |
 | Accelerator resident registries and fused groups | Implemented as digest-bound selections from the active device plan, atomic device-cache-only acquisition, bounded model-owned Candle execution, typed kernel-unavailable fallback, actual-device receipts, and optional canonical confidential-GPU claim binding; no second registry or kernel backend is introduced |
+| Multi-device home placement and peer traffic | Implemented as a canonical typed mesh capped at 16 devices, strongly connected directed edges, synchronous bounded Candle copies, explicit backend-unavailable fallback, exact confidential GPU/NVSwitch claim-index sets, and digest-only receipt evidence; the active residency cache remains the sole weight registry and model crates own graph partitioning |
 | Persistent warm conversations | Implemented as model-neutral opaque AES-256-GCM envelopes bound to exact weights, model-owned layout, hashed state identity, generation, bounds, and export scope; synchronized primary/backup recovery adapts commit-last durability without adopting plaintext `.coli_kv` or moving KV topology into Power |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
@@ -713,7 +807,7 @@ The current sequence is:
 | 5 | Warm model state across sessions | **Power substrate complete:** model-owned opaque bytes are bounded and sealed with authenticated model/layout/state/generation/scope binding; synchronized primary/backup publication, caller-pinned rollback floors, zeroization, and explicit hardware-TEE export authorization share existing attestation and filesystem durability paths | Power tests cover round trips, fresh nonces, wrong key/model/layout/state, tamper/truncation/oversize, interruption recovery, monotonic saves, rollback floors, cancellation, export mismatch, privacy-safe debug, and `Send + Sync`; model integrations must publish uninterrupted-vs-restored output parity and named-workload warm-start gains |
 | 6 | Async issue/take and staged loading rounds | **Power substrate complete:** prefetch and current-layer staging share one task, worker, item, total-byte, and in-flight-byte admission path; `next_ready_group` wakes on atomic readiness without polling, while final completion keeps canonical order | Power tests cover event wakeup, out-of-order readiness with canonical completion, cancellation/failure termination, shared materialization, byte-window scheduling, peak-flight evidence, telemetry-off privacy, serde compatibility, and `Send + Sync`; model integrations must publish end-to-end overlap gains |
 | 7 | Resource planning that accounts for fixed runtime state before hot weights | **Power substrate complete:** the existing budget policy accepts typed host/device fixed-state and peak-scratch reservations, subtracts them before cache capacity, accounts for both sets once on unified memory, and revalidates a fresh native snapshot before applying cache bytes | Power tests cover checked discrete/unified arithmetic, unavailable pools, overflow/malformed input, serde compatibility, exact topology and stale-pressure rejection, runtime application, privacy boundaries, and `Send + Sync`; model integrations must still publish named-hardware peak-memory evidence |
-| 8 | Heterogeneous multi-device resident pipelines | **Planned:** generalize typed device residency into an attestation-bound device mesh and peer-transfer declarations; model crates continue to own graph partitioning and kernels | Exact single-device parity, topology/peer failure handling, bounded transfer memory, confidential-GPU topology binding, and actual-device receipts |
+| 8 | Heterogeneous multi-device resident pipelines | **Power substrate complete:** canonical typed meshes reuse the active residency declaration/cache, cap topology at 16 devices, require bidirectional reachability to the primary, bound every synchronous peer copy and aggregate traffic, and bind exact confidential GPU/NVSwitch claim-index sets; model crates retain graph partitioning and kernels | Power tests cover exact single-device Candle parity, canonical topology, stale/malformed/wrong-mesh rejection, per-edge and aggregate byte/count bounds, cancellation, typed fallback, exact attested claim sets, privacy-safe receipt v3, and `Send + Sync`; model integrations must still publish named-hardware parity and end-to-end gains before enabling a mesh policy |
 | 9 | Continuous and ragged execution batches | **Planned:** add model-neutral bounded batch admission and lifecycle primitives while model crates retain sequence scheduling, KV/recurrent topology, and arithmetic | Per-session isolation, cancellation/fairness, ragged-shape bounds, uninterrupted output parity, and TEE state non-leakage |
 | 10 | Reproducible hardware evidence bundles | **Planned:** bind existing storage comparisons, tuning decisions, runtime/device identity, and model-owned parity artifacts into one reviewable evidence envelope; no automatic upload or plaintext sidecar | Canonical schema/digest, tamper and mixed-hardware refusal, privacy review, and reproducible named-hardware runs |
 
@@ -752,5 +846,8 @@ hardware may change between runs. The current foundation therefore still needs
 reviewed stable-hardware results, independent-controller multi-source evidence,
 end-to-end model workload wins before direct I/O can become a default,
 model-owned integration evidence for sealed KV/routing state, and broader
-cross-model benchmarks. These must extend the same runtime and integrity
-primitives rather than introduce parallel model-specific systems.
+cross-model benchmarks. Multi-device integrations also need controlled
+single-device versus mesh A/Bs that report peer bytes/hops and negative results;
+Colibri demonstrates that P2P can erase a resident-pipeline gain. These must
+extend the same runtime and integrity primitives rather than introduce parallel
+model-specific systems.

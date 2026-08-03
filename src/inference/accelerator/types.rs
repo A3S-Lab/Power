@@ -8,6 +8,9 @@ use crate::inference::{
     ExecutionDigest, ExecutionPermit, RuntimeDeviceIdentity, RuntimeDeviceKind, WeightKey,
 };
 
+use super::mesh::AcceleratorDeviceMeshDeclaration;
+use super::mesh_execution::AcceleratorMeshExecutionSummary;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AcceleratorFallbackMode {
@@ -148,12 +151,15 @@ pub struct AcceleratorResidencyDeclaration {
     pub groups: Vec<AcceleratorResidencyGroup>,
     pub total_weights: usize,
     pub total_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_mesh: Option<AcceleratorDeviceMeshDeclaration>,
     pub declaration_sha256: String,
     pub execution_policy_sha256: String,
 }
 
 impl AcceleratorResidencyDeclaration {
     pub const SCHEMA: &'static str = "a3s.power.accelerator-residency-declaration.v1";
+    pub const MESH_SCHEMA: &'static str = "a3s.power.accelerator-residency-declaration.v2";
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build(
@@ -166,9 +172,15 @@ impl AcceleratorResidencyDeclaration {
         groups: Vec<AcceleratorResidencyGroup>,
         total_weights: usize,
         total_bytes: u64,
+        device_mesh: Option<AcceleratorDeviceMeshDeclaration>,
     ) -> Result<Self> {
+        let schema = if device_mesh.is_some() {
+            Self::MESH_SCHEMA
+        } else {
+            Self::SCHEMA
+        };
         let mut declaration = Self {
-            schema: Self::SCHEMA.to_string(),
+            schema: schema.to_string(),
             weights_sha256,
             active_plan_sha256,
             runtime_device,
@@ -182,6 +194,7 @@ impl AcceleratorResidencyDeclaration {
             groups,
             total_weights,
             total_bytes,
+            device_mesh,
             declaration_sha256: String::new(),
             execution_policy_sha256: String::new(),
         };
@@ -193,12 +206,30 @@ impl AcceleratorResidencyDeclaration {
     }
 
     pub(super) fn validate(&self) -> Result<()> {
-        if self.schema != Self::SCHEMA {
+        if self.schema != Self::SCHEMA && self.schema != Self::MESH_SCHEMA {
             return Err(PowerError::InvalidFormat(
                 "accelerator residency declaration has an unsupported schema".to_string(),
             ));
         }
         self.runtime_device.validate()?;
+        match (&self.schema[..], &self.device_mesh) {
+            (Self::SCHEMA, None) => {}
+            (Self::MESH_SCHEMA, Some(mesh)) => {
+                mesh.validate()?;
+                mesh.validate_security(self.security)?;
+                if mesh.primary_runtime_device() != self.runtime_device {
+                    return Err(PowerError::InvalidFormat(
+                        "accelerator device mesh primary does not match the runtime device"
+                            .to_string(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(PowerError::InvalidFormat(
+                    "accelerator residency schema and device mesh shape do not match".to_string(),
+                ))
+            }
+        }
         validate_sha256(&self.weights_sha256, "weight collection")?;
         validate_sha256(&self.active_plan_sha256, "active residency plan")?;
         validate_sha256(&self.fused_kernel_sha256, "fused kernel")?;
@@ -288,6 +319,8 @@ impl AcceleratorResidencyDeclaration {
             groups: &'a [AcceleratorResidencyGroup],
             total_weights: usize,
             total_bytes: u64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            device_mesh: Option<&'a AcceleratorDeviceMeshDeclaration>,
         }
         let payload = Payload {
             schema: &self.schema,
@@ -304,10 +337,15 @@ impl AcceleratorResidencyDeclaration {
             groups: &self.groups,
             total_weights: self.total_weights,
             total_bytes: self.total_bytes,
+            device_mesh: self.device_mesh.as_ref(),
         };
         let encoded = serde_json::to_vec(&payload)?;
         let mut hasher = Sha256::new();
-        hasher.update(b"a3s-power-accelerator-residency-declaration-v1\0");
+        if self.schema == Self::MESH_SCHEMA {
+            hasher.update(b"a3s-power-accelerator-residency-declaration-v2\0");
+        } else {
+            hasher.update(b"a3s-power-accelerator-residency-declaration-v1\0");
+        }
         hasher.update(encoded);
         Ok(format!("{:x}", hasher.finalize()))
     }
@@ -342,15 +380,22 @@ pub struct AcceleratorExecutionEvidence {
     pub implementation_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidential_claims_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_mesh_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_devices: Vec<RuntimeDeviceIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_transfers_sha256: Option<String>,
     pub input_sha256: String,
     pub output_sha256: String,
 }
 
 impl AcceleratorExecutionEvidence {
     pub const SCHEMA: &'static str = "a3s.power.accelerator-execution-evidence.v1";
+    pub const MESH_SCHEMA: &'static str = "a3s.power.accelerator-execution-evidence.v2";
 
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.schema != Self::SCHEMA {
+        if self.schema != Self::SCHEMA && self.schema != Self::MESH_SCHEMA {
             return Err(PowerError::InvalidFormat(
                 "accelerator execution evidence has an unsupported schema".to_string(),
             ));
@@ -377,6 +422,41 @@ impl AcceleratorExecutionEvidence {
         if let Some(digest) = &self.confidential_claims_sha256 {
             validate_sha256(digest, "confidential GPU claims")?;
         }
+        match (&self.schema[..], &self.device_mesh_sha256) {
+            (Self::SCHEMA, None)
+                if self.execution_devices.is_empty() && self.peer_transfers_sha256.is_none() => {}
+            (Self::MESH_SCHEMA, Some(mesh_sha256)) if !self.execution_devices.is_empty() => {
+                validate_sha256(mesh_sha256, "accelerator device mesh")?;
+                validate_sha256(
+                    self.peer_transfers_sha256.as_deref().ok_or_else(|| {
+                        PowerError::InvalidFormat(
+                            "mesh execution evidence is missing its peer-transfer digest"
+                                .to_string(),
+                        )
+                    })?,
+                    "accelerator peer transfers",
+                )?;
+                let mut canonical = self.execution_devices.clone();
+                for device in &canonical {
+                    device.validate()?;
+                }
+                canonical.sort();
+                canonical.dedup();
+                if canonical != self.execution_devices
+                    || !canonical.contains(&self.execution_device)
+                {
+                    return Err(PowerError::InvalidFormat(
+                        "mesh execution devices are not canonical or omit the actual output device"
+                            .to_string(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(PowerError::InvalidFormat(
+                    "accelerator evidence schema and mesh fields do not match".to_string(),
+                ))
+            }
+        }
         Ok(())
     }
 }
@@ -390,6 +470,7 @@ pub struct AcceleratorExecutionCompletion {
     pub(super) fallback_target: Option<AcceleratorFallbackTarget>,
     pub(super) implementation_sha256: String,
     pub(super) confidential_claims_sha256: Option<String>,
+    pub(super) mesh: Option<AcceleratorMeshExecutionSummary>,
     pub(super) _permit: ExecutionPermit,
 }
 
@@ -402,7 +483,11 @@ impl AcceleratorExecutionCompletion {
         validate_sha256(&input.sha256, "execution input")?;
         validate_sha256(&output.sha256, "execution output")?;
         let evidence = AcceleratorExecutionEvidence {
-            schema: AcceleratorExecutionEvidence::SCHEMA.to_string(),
+            schema: if self.mesh.is_some() {
+                AcceleratorExecutionEvidence::MESH_SCHEMA.to_string()
+            } else {
+                AcceleratorExecutionEvidence::SCHEMA.to_string()
+            },
             declaration_sha256: self.declaration_sha256,
             weights_sha256: self.weights_sha256,
             runtime_device: self.runtime_device,
@@ -411,6 +496,16 @@ impl AcceleratorExecutionCompletion {
             fallback_target: self.fallback_target,
             implementation_sha256: self.implementation_sha256,
             confidential_claims_sha256: self.confidential_claims_sha256,
+            device_mesh_sha256: self.mesh.as_ref().map(|mesh| mesh.mesh_sha256.clone()),
+            execution_devices: self
+                .mesh
+                .as_ref()
+                .map(|mesh| mesh.execution_devices.clone())
+                .unwrap_or_default(),
+            peer_transfers_sha256: self
+                .mesh
+                .as_ref()
+                .map(|mesh| mesh.peer_transfers_sha256.clone()),
             input_sha256: input.sha256.clone(),
             output_sha256: output.sha256.clone(),
         };
@@ -443,7 +538,7 @@ pub(super) fn validate_sha256(value: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_identifier(value: &str, max_bytes: usize, label: &str) -> Result<()> {
+pub(super) fn validate_identifier(value: &str, max_bytes: usize, label: &str) -> Result<()> {
     if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
         return Err(PowerError::InvalidRequest(format!(
             "{label} identity is empty, oversized, or contains control characters"

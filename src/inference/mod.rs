@@ -7,6 +7,10 @@
 
 mod accelerator;
 #[cfg(test)]
+mod accelerator_mesh_failure_tests;
+#[cfg(test)]
+mod accelerator_mesh_tests;
+#[cfg(test)]
 mod accelerator_tests;
 mod coupling;
 #[cfg(test)]
@@ -35,12 +39,15 @@ mod tuning_types;
 mod weights;
 
 pub use accelerator::{
-    AcceleratorBatchResolution, AcceleratorExecutionCompletion, AcceleratorExecutionEvidence,
-    AcceleratorExecutionPath, AcceleratorFallback, AcceleratorFallbackMode,
-    AcceleratorFallbackReason, AcceleratorFallbackTarget, AcceleratorFusedBatch,
-    AcceleratorFusedBatchOutput, AcceleratorFusedBatchSpec, AcceleratorFusedExecution,
-    AcceleratorFusedGroup, AcceleratorKernelOutcome, AcceleratorResidencyDeclaration,
-    AcceleratorResidencyGroup, AcceleratorSecurityRequirement, ConfidentialGpuBinding,
+    AcceleratorBatchResolution, AcceleratorDeviceMesh, AcceleratorDeviceMeshDeclaration,
+    AcceleratorExecutionCompletion, AcceleratorExecutionEvidence, AcceleratorExecutionPath,
+    AcceleratorFallback, AcceleratorFallbackMode, AcceleratorFallbackReason,
+    AcceleratorFallbackTarget, AcceleratorFusedBatch, AcceleratorFusedBatchOutput,
+    AcceleratorFusedBatchSpec, AcceleratorFusedExecution, AcceleratorFusedGroup,
+    AcceleratorKernelOutcome, AcceleratorMeshDevice, AcceleratorMeshDeviceDeclaration,
+    AcceleratorMeshExecution, AcceleratorPeerTransferDeclaration, AcceleratorPeerTransferOutcome,
+    AcceleratorPeerTransferSpec, AcceleratorResidencyDeclaration, AcceleratorResidencyGroup,
+    AcceleratorSecurityRequirement, ConfidentialGpuBinding,
 };
 pub use coupling::{
     RouteCouplingEntry, RouteCouplingHistory, RouteCouplingPolicy, RouteHintEvaluation,
