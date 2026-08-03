@@ -60,6 +60,12 @@ struct HierarchyInner {
     route_coupling: RouteCouplingTracker,
 }
 
+pub(super) enum DeviceResidencyAcquire {
+    Ready(Vec<ResidentWeight>),
+    PlanChanged,
+    WeightUnavailable,
+}
+
 impl WeightHierarchy {
     pub fn new(
         store: Arc<WeightStore>,
@@ -168,6 +174,56 @@ impl WeightHierarchy {
     pub fn clear_unpinned(&self) {
         let _operation = read(&self.inner.operations);
         lock(&self.inner.cache).clear_unpinned(&self.inner.telemetry);
+    }
+
+    pub(super) fn acquire_declared_device_weights(
+        &self,
+        expected_plan: &ResidencyPlan,
+        keys: &[WeightKey],
+        permit: &ExecutionPermit,
+        cancellation: &CancellationToken,
+    ) -> Result<DeviceResidencyAcquire> {
+        self.validate_permit(permit)?;
+        self.check_cancelled(cancellation)?;
+        let _operation = read(&self.inner.operations);
+        self.check_cancelled(cancellation)?;
+        if lock(&self.inner.active_plan).as_ref() != Some(expected_plan) {
+            return Ok(DeviceResidencyAcquire::PlanChanged);
+        }
+
+        let mut cache = lock(&self.inner.cache);
+        if keys
+            .iter()
+            .any(|key| cache.peek(WeightTier::Device, key).is_none())
+        {
+            return Ok(DeviceResidencyAcquire::WeightUnavailable);
+        }
+        let mut weights = Vec::with_capacity(keys.len());
+        for key in keys {
+            let lookup = cache
+                .get(
+                    WeightTier::Device,
+                    key,
+                    CacheAccess::Demand,
+                    &self.inner.policy,
+                )
+                .ok_or_else(|| {
+                    PowerError::InferenceFailed(
+                        "declared device weight disappeared during atomic acquisition".to_string(),
+                    )
+                })?;
+            self.inner.telemetry.device_hit();
+            if lookup.prefetch_useful {
+                self.inner.telemetry.prefetch_useful(lookup.bytes);
+            }
+            weights.push(ResidentWeight {
+                tensor: lookup.tensor,
+                tier: WeightTier::Device,
+                bytes: lookup.bytes,
+                cache_hit: true,
+            });
+        }
+        Ok(DeviceResidencyAcquire::Ready(weights))
     }
 
     pub fn record_routes(&self, batch: &RoutedExpertBatch) {

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{RuntimeDevice, RUNTIME_NAME};
+use super::{AcceleratorExecutionEvidence, RuntimeDevice, RUNTIME_NAME};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -51,10 +51,13 @@ pub struct ExecutionReceipt {
     pub runtime: RuntimeIdentity,
     pub input: ExecutionDigest,
     pub output: ExecutionDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accelerator: Option<AcceleratorExecutionEvidence>,
 }
 
 impl ExecutionReceipt {
     pub const SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v1";
+    pub const ACCELERATOR_SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v2";
 }
 
 /// Canonical representation covered by one side of an execution receipt.
