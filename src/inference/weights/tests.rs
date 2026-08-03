@@ -232,8 +232,11 @@ fn cache_bypass_reads_are_exact_or_explicitly_unsupported() {
             assert_eq!(read.strategy(), WeightReadStrategy::PositionalCacheBypass);
             assert_eq!(read.bytes(), expected);
         }
-        Err(PowerError::BackendNotAvailable(_)) => {
-            assert!(!cfg!(target_os = "macos"));
+        Err(PowerError::BackendNotAvailable(message)) => {
+            #[cfg(target_os = "macos")]
+            panic!("cache-bypass is expected to be available on macOS: {message}");
+            #[cfg(not(target_os = "macos"))]
+            assert!(!message.is_empty());
         }
         Err(error) => {
             panic!("cache-bypass open failed without an explicit unsupported result: {error}")

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a Colibri-inspired macOS `PositionalCacheBypass` weight strategy using
+  `F_NOCACHE` for both integrity hashing and exact tensor-range handles. It
+  reuses the existing `WeightStore` index, replica routing, fallback,
+  cancellation, zeroizing buffers, telemetry policy, and benchmark evidence;
+  unsupported platforms fail explicitly and it is never mislabeled direct or
+  verified-cold I/O.
 - Added canonical, self-verifying hardware evidence bundles that compose the
   existing path-free storage reports/comparison, raw lossless tuning evidence,
   replayed tuning decision, and model-owned exact-parity artifact pins under
@@ -57,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   co-occurrence history, deterministic per-position predictions and a batch
   union for the existing prefetch path, plus exact recall evaluation against
   actual router output.
+
+### Changed
+
+- Kept mmap as the default after two forward/reverse PP-OCRv6 storage-only runs
+  on Apple M2 Pro showed exact output-byte parity but cache-bypass p50 latency
+  regressions of 6.6% for detection and 10.1% for recognition weights.
 
 ### Security
 
