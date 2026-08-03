@@ -18,6 +18,7 @@ const MIN_DIRECT_ALIGNMENT: usize = 4 * 1024;
 
 pub(super) struct WeightFileReader {
     buffered: File,
+    cache_bypass: Option<File>,
     direct: Option<File>,
     verified_bytes: u64,
     io_block_size: u64,
@@ -37,6 +38,11 @@ impl WeightFileReader {
             ));
         }
         let io_block_size = platform_block_size(&buffered, &metadata, strategy)?;
+        let cache_bypass = if strategy == WeightReadStrategy::PositionalCacheBypass {
+            Some(open_cache_bypass(path)?)
+        } else {
+            None
+        };
         let direct = if strategy == WeightReadStrategy::PositionalDirect {
             Some(open_direct(path)?)
         } else {
@@ -44,6 +50,7 @@ impl WeightFileReader {
         };
         Ok(Self {
             buffered,
+            cache_bypass,
             direct,
             verified_bytes,
             io_block_size,
@@ -76,6 +83,14 @@ impl WeightFileReader {
             WeightReadStrategy::PositionalBuffered => {
                 read_buffered(&self.buffered, offset, bytes, cancellation)
             }
+            WeightReadStrategy::PositionalCacheBypass => {
+                let cache_bypass = self.cache_bypass.as_ref().ok_or_else(|| {
+                    PowerError::BackendNotAvailable(
+                        "cache-bypass weight reads were not opened for this source".to_string(),
+                    )
+                })?;
+                read_buffered(cache_bypass, offset, bytes, cancellation)
+            }
             WeightReadStrategy::PositionalDirect => {
                 let direct = self.direct.as_ref().ok_or_else(|| {
                     PowerError::BackendNotAvailable(
@@ -93,6 +108,46 @@ impl WeightFileReader {
             }
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn open_cache_bypass(path: &Path) -> Result<File> {
+    let file = File::open(path).map_err(cache_bypass_open_error)?;
+    set_macos_file_flag(&file, libc::F_NOCACHE, 1).map_err(cache_bypass_open_error)?;
+    Ok(file)
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_file_flag(file: &File, command: libc::c_int, value: libc::c_int) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    loop {
+        // SAFETY: `file` owns a valid descriptor for the duration of the call;
+        // this macOS fcntl command accepts one integer argument.
+        let result = unsafe { libc::fcntl(file.as_raw_fd(), command, value) };
+        if result != -1 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn open_cache_bypass(_path: &Path) -> Result<File> {
+    Err(PowerError::BackendNotAvailable(
+        "cache-bypass weight reads are supported only on macOS".to_string(),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn cache_bypass_open_error(error: io::Error) -> PowerError {
+    PowerError::BackendNotAvailable(format!(
+        "macOS cache-bypass weight reads are unsupported by the selected storage source ({:?})",
+        error.kind()
+    ))
 }
 
 fn read_buffered(

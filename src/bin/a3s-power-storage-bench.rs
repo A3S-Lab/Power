@@ -18,7 +18,7 @@ Usage:
     [--partial-replica <directory>]... \
     [--lossless-replica <directory>::<artifact-sha256>]... \
     [--partial-lossless-replica <directory>::<artifact-sha256>]... \
-    --strategy <mmap|positional-buffered|positional-direct> \
+    --strategy <mmap|positional-buffered|positional-cache-bypass|positional-direct> \
     --power-commit <lowercase-git-revision> \
     --filesystem-class <label> \
     --device-class <label> \
@@ -161,6 +161,7 @@ fn parse_strategy(value: &str) -> Result<WeightReadStrategy> {
     match value {
         "mmap" => Ok(WeightReadStrategy::Mmap),
         "positional-buffered" => Ok(WeightReadStrategy::PositionalBuffered),
+        "positional-cache-bypass" => Ok(WeightReadStrategy::PositionalCacheBypass),
         "positional-direct" => Ok(WeightReadStrategy::PositionalDirect),
         _ => Err(PowerError::InvalidRequest(format!(
             "unsupported storage benchmark strategy '{value}'"
