@@ -1,41 +1,114 @@
 # A3S Power
 
 <p align="center">
-  <strong>The Only LLM Inference Server You Don't Have to Trust</strong>
+  <img src="./assets/readme/hero.svg" width="100%" alt="A3S Power provides a listener-free embedded inference library and an optional TEE-aware OpenAI-compatible server over one model-neutral runtime">
 </p>
 
 <p align="center">
-  <a href="https://github.com/A3S-Lab/Power/actions/workflows/ci.yml"><img src="https://github.com/A3S-Lab/Power/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/A3S-Lab/Power/actions/workflows/release.yml"><img src="https://github.com/A3S-Lab/Power/actions/workflows/release.yml/badge.svg" alt="Release"></a>
-  <a href="https://crates.io/crates/a3s-power"><img src="https://img.shields.io/crates/v/a3s-power.svg" alt="crates.io"></a>
-  <a href="https://github.com/A3S-Lab/Power/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <strong>Model-neutral Rust inference with verifiable execution, TEE privacy, and canonical receipts.</strong>
 </p>
 
 <p align="center">
-  <em>Cryptographically prove that a specific model runs unmodified inside hardware-encrypted memory — without trusting the infrastructure operator.</em>
+  <a href="https://github.com/A3S-Lab/Power/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/A3S-Lab/Power/ci.yml?branch=main&amp;style=flat-square&amp;label=CI" alt="CI status"></a>
+  <a href="https://github.com/A3S-Lab/Power/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/A3S-Lab/Power/release.yml?style=flat-square&amp;label=release" alt="Release status"></a>
+  <a href="https://crates.io/crates/a3s-power"><img src="https://img.shields.io/crates/v/a3s-power?style=flat-square&amp;color=5420bd" alt="a3s-power on crates.io"></a>
+  <a href="https://docs.rs/a3s-power"><img src="https://img.shields.io/docsrs/a3s-power?style=flat-square" alt="a3s-power documentation"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-17181a?style=flat-square" alt="MIT License"></a>
 </p>
 
 <p align="center">
-  <a href="#the-problem">The Problem</a> •
-  <a href="#how-power-solves-it">How Power Solves It</a> •
-  <a href="#features">Features</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#layer-streaming-inference-picolm--how-it-works">Layer-Streaming</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="#api-reference">API Reference</a> •
+  <a href="#choose-the-surface">Surfaces</a> ·
+  <a href="#responsibility-boundary">Boundary</a> ·
+  <a href="#trust-chain">Trust chain</a> ·
+  <a href="#embedded-inference-runtime">Embedded runtime</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#installation">Installation</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#api-reference">API</a> ·
   <a href="#development">Development</a>
 </p>
 
 ---
 
-## The Problem
+A3S Power is one model-neutral inference foundation with two deliberately
+separate delivery surfaces: a listener-free embedded Rust library for
+model-owning crates, and an optional OpenAI-compatible service for hosted LLM
+inference. Both reuse the same typed devices, admission, weight integrity and
+residency, cancellation, privacy controls, and execution evidence.
 
-Every LLM inference server — Ollama, vLLM, llama.cpp, TGI, LocalAI — was designed for a world where you **trust the machine**. You send your prompts to a server and hope the operator doesn't look at them. That's a policy promise, not a technical guarantee.
+TEE deployment adds hardware-backed confidentiality and remote attestation.
+Clients can bind a nonce, model/runtime policy, and request receipt to a
+hardware report instead of relying only on an operator promise.
 
-For healthcare (HIPAA), finance (SOX/GLBA), government (classified data), and any multi-tenant AI deployment where the infrastructure operator is a different party than the data owner — "we promise not to look" is not enough.
+## Choose the surface
 
-## How Power Solves It
+| Surface | Enable | Use it when | Network behavior |
+| --- | --- | --- | --- |
+| Embedded library | `default-features = false`, `embedded-inference` | An OCR, vision, language, or other model crate owns the graph and needs Power's shared runtime | Opens no listener; excludes Power's server and model hub |
+| OpenAI-compatible service | Default `server` + `mistralrs` features | You need hosted chat, completions, embeddings, model lifecycle, metrics, attestation, TLS, or vsock | Explicit server process and configured transports |
+| Minimal TEE service | `tee-minimal` | A small auditable GGUF layer-streaming deployment inside a constrained enclave | Server/TLS/vsock are explicit feature choices |
+
+Embedded and server builds are not two inference engines. They are two entry
+points into shared integrity, privacy, and execution contracts.
+
+## Responsibility boundary
+
+Power owns generic inference infrastructure. Model repositories keep model
+semantics.
+
+| Power owns | Model-owning crates own |
+| --- | --- |
+| Typed CPU/CUDA/Metal devices and bounded execution | Architecture, graph topology, layers, kernels, and exact arithmetic |
+| Admission, cancellation, tensor and batch limits | Tokenizer, preprocessing, postprocessing, and generation policy |
+| SafeTensors identity, replicas, mirrors, multi-root placement, and residency | Model assets, revision pins, tensor-name/shape contracts, and conversion |
+| TEE integrity/privacy primitives, attestation binding, sealed state, and receipts | KV/recurrent state layout and any semantic interpretation of opaque state |
+| Privacy-reviewed telemetry and hardware evidence envelopes | Product-level quality, parity, and named-hardware acceptance policy |
+
+Power therefore embeds no PP-OCRv6, Unlimited-OCR, parser, or other product
+model. A3S OCR owns its OCR models; A3S Parser consumes OCR and Office evidence
+at the document layer.
+
+## First successful build
+
+Embed only the model-neutral runtime:
+
+```toml
+[dependencies]
+a3s-power = { version = "0.7.0", default-features = false, features = ["embedded-inference"] }
+```
+
+```rust
+use a3s_power::inference::{DevicePreference, EmbeddedRuntime, InferenceLimits};
+
+fn main() -> Result<(), a3s_power::error::PowerError> {
+    let _runtime = EmbeddedRuntime::new(
+        DevicePreference::Auto,
+        InferenceLimits::default(),
+    )?;
+    Ok(())
+}
+```
+
+Or inspect the service surface:
+
+```bash
+cargo install a3s-power
+a3s-power --help
+```
+
+## Trust model
+
+Ordinary hosted inference asks the data owner to trust the machine operator.
+That may be acceptable for many deployments, but it is insufficient when the
+operator and data owner are different parties and prompts, responses, or model
+weights require hardware-enforced confidentiality.
+
+Power is designed for an explicit verifier: it checks the hardware report,
+launch measurement, nonce, model/runtime claims, and request-level receipt.
+Simulated TEE mode remains a development aid and is rejected by strict
+verification.
+
+## Trust chain
 
 A3S Power runs LLM inference inside **Trusted Execution Environments** (AMD SEV-SNP / Intel TDX). The CPU encrypts all memory. The infrastructure operator **cannot** read prompts, responses, or model weights — the hardware enforces it.
 
@@ -66,40 +139,31 @@ But hardware isolation alone isn't enough. You need to **verify** it. Power prov
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-The difference: every other inference server asks you to **trust**. Power lets you **verify**.
+The verifier, not the server operator, decides which measurement, model,
+runtime policy, GPU evidence, and receipt fields are acceptable.
 
-## Why Not Just Use Ollama / vLLM / TGI?
+## What verification adds
 
-| Capability | Ollama | vLLM | TGI | Power |
-|---|:---:|:---:|:---:|:---:|
-| OpenAI-compatible API | ✅ | ✅ | ✅ | ✅ |
-| GPU acceleration | ✅ | ✅ | ✅ | ✅ |
-| Streaming | ✅ | ✅ | ✅ | ✅ |
-| TEE hardware isolation (SEV-SNP / TDX) | ❌ | ❌ | ❌ | ✅ |
-| Remote attestation (hardware-signed proof) | ❌ | ❌ | ❌ | ✅ |
-| Model-attestation binding (prove which model runs) | ❌ | ❌ | ❌ | ✅ |
-| RA-TLS (attestation in TLS handshake) | ❌ | ❌ | ❌ | ✅ |
-| Encrypted model loading (AES-256-GCM file-backed, picolm RAM, chunk primitive) | ❌ | ❌ | ❌ | ✅ |
-| Deep log redaction (10 keys + error sanitization) | ❌ | ❌ | ❌ | ✅ |
-| Memory zeroing (zeroize on drop) | ❌ | ❌ | ❌ | ✅ |
-| Client-side verification SDK | ❌ | ❌ | ❌ | ✅ |
-| Hardware signature verification (AMD KDS / Intel PCS) | ❌ | ❌ | ❌ | ✅ |
-| Layer-streaming for memory-constrained TEE | ❌ | ❌ | ❌ | ✅ |
-| Pure Rust inference (fully auditable, no C++) | ❌ | ❌ | ❌ | ✅ |
+| Evidence | What the verifier can check |
+| --- | --- |
+| CPU TEE report | SEV-SNP or TDX hardware signature, nonce freshness, and pinned launch measurement |
+| Canonical claims | Model artifact, applied runtime policy, prompt/template policy, and optional confidential-GPU evidence |
+| RA-TLS certificate | The attestation report carried in the TLS handshake |
+| Inference receipt | Prompt-bearing request policy, decoding controls, effective prompt when available, and output digest |
+| Encrypted model state | Ciphertext provenance plus configured plaintext integrity/signature binding |
+| Private runtime behavior | Log redaction, optional token-count suppression, zeroization, cancellation, and bounded sealed state |
 
-The bottom half of this table is Power's moat. No other inference server has a threat model. They all assume you trust the machine.
-
-## Overview
+## Service overview
 
 **A3S Power** is a privacy-preserving LLM inference server designed to run inside Trusted Execution Environments (TEE). It provides an OpenAI-compatible API for chat completions, text completions, and embeddings — with hardware-enforced memory encryption, model integrity verification, and automatic log redaction.
 
 Power is built to run inside [a3s-box](https://github.com/A3S-Lab/Box) MicroVMs with AMD SEV-SNP or Intel TDX, ensuring that inference data (prompts, responses, model weights) never leaves the encrypted enclave.
 
-## Features
+## Capabilities
 
-### Trust & Verification (The Moat)
+### Trust and verification
 
-These features exist in no other LLM inference server:
+The service and verifier surfaces include:
 
 - **TEE-Aware Runtime**: Auto-detects AMD SEV-SNP (`/dev/sev-guest`) and Intel TDX (`/dev/tdx_guest`) at startup; simulated mode for development (`A3S_TEE_SIMULATE=1`)
 - **Remote Attestation**: Real hardware ioctl — AMD `SNP_GET_REPORT` and Intel `TDX_CMD_GET_REPORT0` — generates firmware-signed proof that inference runs in a genuine TEE; full raw reports included for client verification
@@ -116,9 +180,9 @@ These features exist in no other LLM inference server:
 - **picolm Layer-Streaming**: Pure Rust GGUF inference with true O(layer_size) peak RAM via `madvise(DONTNEED)` page release after each layer. Real transformer ops: multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm. FP16 KV cache with fused f16 dot/accumulate (no intermediate buffer). Fused dequant+dot kernels. NEON SIMD (aarch64) + AVX2 (x86_64). Rayon parallel matmul. Pre-computed RoPE tables. Batch prefill, tool calling, grammar-constrained output. Selectable speculative-decoding modes (`spec_mode`: `off` / `prompt-lookup` / DSpark-like `ngram-context`) with **batched layer-streaming verify** — a draft block is verified in one weight-streaming pass instead of one pass per token — adaptive draft length, and lossless rejection-sampling acceptance (output matches plain decoding for the same seed). Zero-alloc hot path. 14+ tok/s decode on Apple Silicon. Enables 7B+ models inside 512MB TEE EPC. No C/C++ inference backend, ~4,500 lines of fully auditable Rust.
 - **Pure Rust Inference Path**: Default backend via `mistralrs` (candle) — no C++ inference engine in the trusted computing base; the `tee-minimal` build (~1,220 dep tree lines) is the smallest auditable LLM inference stack that exists
 
-### Inference Engine
+### Server inference
 
-Full-featured LLM inference, competitive with any standalone server:
+The optional server surface includes:
 
 - **OpenAI-Compatible API**: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings` — works with any OpenAI SDK
 - **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
@@ -133,7 +197,7 @@ Full-featured LLM inference, competitive with any standalone server:
 - **KV Cache Reuse**: Prefix matching across multi-turn requests for conversation speedup
 - **Remote Model Hub Pull**: `POST /v1/models/pull` with SSE progress, Range resume, concurrent dedup, source-specific token auth for ModelScope or HuggingFace Hub
 
-### Embedded Inference Runtime
+## Embedded inference runtime
 
 The `embedded-inference` feature is a library path, separate from Power's HTTP
 server and backend registry. It provides a shared runtime, reviewed static-graph
@@ -362,7 +426,7 @@ adaptation, prefetch semantics, TEE invariants, and model parity gates. See
 standalone mmap/positional comparison tool, cache-state proof rules, platform
 limitations, and measured PP-OCRv6 results.
 
-### Operations
+## Server operations
 
 - **Content-Addressed Storage**: Model blobs stored by SHA-256 hash with automatic deduplication
 - **Automatic Model Lifecycle**: LRU eviction, configurable keep-alive, background reaper for idle models
