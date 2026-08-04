@@ -76,6 +76,11 @@ eviction or persistence policy.
   admission. One execution permit covers the resulting aggregate model call;
   `max_concurrent_requests` limits concurrent calls, not slots within that
   call.
+- `TensorInput::stack_leading` and `TensorOutput::split_leading` provide one
+  canonical model-neutral boundary for fused leading-axis calls. They validate
+  compatible trailing shapes, exact positive partitions, finite values, caller
+  order, and the shared tensor limit. The model crate still owns padding,
+  valid extents, bucketing, and per-slot semantics.
 - Storage, host RAM, and accelerator memory form one typed weight hierarchy.
   Placement changes latency only; tensor dtype and shape are checked after each
   transfer and are never silently converted.
