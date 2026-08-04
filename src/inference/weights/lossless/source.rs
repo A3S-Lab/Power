@@ -12,7 +12,7 @@ use crate::error::{PowerError, Result};
 use crate::inference::InferenceLimits;
 
 use super::{LosslessRansNibbleTable, LosslessSourceState};
-use crate::inference::weights::files::{discover_safetensors, hash_files};
+use crate::inference::weights::files::{discover_safetensors, hash_files, resolve_weight_roots};
 use crate::inference::weights::range_io::WeightFileReader;
 use crate::inference::weights::{
     bytes_per_second, index, storage_descriptor, TensorDescriptor, TensorStorageDescriptor,
@@ -22,6 +22,7 @@ use crate::inference::weights::{
 
 struct VerifiedCollection {
     root: PathBuf,
+    roots: Vec<PathBuf>,
     paths: Vec<PathBuf>,
     sha256: String,
     bytes: u64,
@@ -36,7 +37,7 @@ pub fn weight_collection_sha256(
     root: impl AsRef<Path>,
     limits: &InferenceLimits,
 ) -> Result<String> {
-    Ok(verify_collection(root.as_ref(), limits, WeightReadStrategy::Mmap)?.sha256)
+    Ok(verify_collection(root.as_ref(), &[], limits, WeightReadStrategy::Mmap)?.sha256)
 }
 
 pub(in crate::inference::weights) fn open_lossless_source(
@@ -60,7 +61,12 @@ pub(in crate::inference::weights) fn open_lossless_source(
     // The complete physical collection is pinned before SafeTensors metadata,
     // record lengths, or decoded allocation sizes are inspected.
     let validation_started = Instant::now();
-    let collection = verify_collection(&config.root, limits, config.read_strategy)?;
+    let collection = verify_collection(
+        &config.root,
+        &config.shard_roots,
+        limits,
+        config.read_strategy,
+    )?;
     if collection.sha256 != expected_artifact_sha256 {
         return Err(PowerError::IntegrityCheckFailed {
             model: "lossless weight artifact".to_string(),
@@ -170,6 +176,7 @@ pub(in crate::inference::weights) fn open_lossless_source(
     validate_coverage(config, primary, &inventory)?;
     let mut store = WeightStore {
         root: collection.root,
+        roots: collection.roots,
         paths: collection.paths,
         tensors,
         inventory,
@@ -265,33 +272,21 @@ pub(in crate::inference::weights) fn physical_location<'a>(
 
 fn verify_collection(
     root: &Path,
+    shard_roots: &[PathBuf],
     limits: &InferenceLimits,
     read_strategy: WeightReadStrategy,
 ) -> Result<VerifiedCollection> {
     limits.validate()?;
-    let root = std::fs::canonicalize(root).map_err(|error| {
-        PowerError::InvalidFormat(format!(
-            "failed to resolve model directory '{}': {error}",
-            root.display()
-        ))
-    })?;
-    if !std::fs::metadata(&root)?.is_dir() {
-        return Err(PowerError::InvalidFormat(format!(
-            "model root '{}' is not a directory",
-            root.display()
-        )));
-    }
-    let mut paths = discover_safetensors(&root, limits.max_model_files)?;
-    paths.sort();
-    if paths.is_empty() {
-        return Err(PowerError::InvalidFormat(format!(
-            "model root '{}' contains no SafeTensors files",
-            root.display()
-        )));
-    }
-    let (sha256, bytes, files) = hash_files(&root, &paths, limits.max_model_bytes, read_strategy)?;
+    let roots = resolve_weight_roots(root, shard_roots)?;
+    let discovered = discover_safetensors(&roots, limits.max_model_files)?;
+    let paths = discovered
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    let (sha256, bytes, files) = hash_files(&discovered, limits.max_model_bytes, read_strategy)?;
     Ok(VerifiedCollection {
-        root,
+        root: roots[0].clone(),
+        roots,
         paths,
         sha256,
         bytes,

@@ -20,7 +20,7 @@ mod index;
 mod lossless;
 mod range_io;
 
-use files::{discover_safetensors, hash_files};
+use files::{discover_safetensors, hash_files, resolve_weight_roots};
 use index::TensorLocation;
 pub use lossless::{
     weight_collection_sha256, LosslessEncodedRecord, LosslessRansNibbleHistogram,
@@ -118,6 +118,11 @@ pub enum WeightReadStrategy {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WeightSourceConfig {
     pub root: PathBuf,
+    /// Additional physical roots whose disjoint relative SafeTensors paths
+    /// form the same logical source. Physical placement never enters the
+    /// canonical collection digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shard_roots: Vec<PathBuf>,
     pub read_weight: u32,
     #[serde(default)]
     pub coverage: WeightSourceCoverage,
@@ -131,6 +136,7 @@ impl WeightSourceConfig {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
+            shard_roots: Vec::new(),
             read_weight: 1,
             coverage: WeightSourceCoverage::Complete,
             read_strategy: WeightReadStrategy::Mmap,
@@ -140,6 +146,12 @@ impl WeightSourceConfig {
 
     pub fn with_read_weight(mut self, read_weight: u32) -> Self {
         self.read_weight = read_weight;
+        self
+    }
+
+    /// Adds one disjoint physical root to this logical weight source.
+    pub fn with_shard_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.shard_roots.push(root.into());
         self
     }
 
@@ -184,6 +196,12 @@ impl WeightStoreConfig {
         self
     }
 
+    /// Adds one disjoint physical root to the canonical primary collection.
+    pub fn with_primary_shard_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.primary.shard_roots.push(root.into());
+        self
+    }
+
     pub fn with_primary_read_strategy(mut self, read_strategy: WeightReadStrategy) -> Self {
         self.primary.read_strategy = read_strategy;
         self
@@ -221,6 +239,10 @@ pub struct WeightSourceDescriptor {
     pub index: usize,
     pub role: WeightSourceRole,
     pub root: PathBuf,
+    /// Additional physical roots in this logical source. This explicit
+    /// descriptor API may expose paths; telemetry and receipts never do.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shard_roots: Vec<PathBuf>,
     /// Effective relative weight used by deterministic source selection.
     pub read_weight: u32,
     pub configured_read_weight: u32,
@@ -247,6 +269,7 @@ pub struct WeightSourceDescriptor {
 /// and content in stable lexical order.
 pub struct WeightStore {
     root: PathBuf,
+    roots: Vec<PathBuf>,
     paths: Vec<PathBuf>,
     tensors: Option<MmapedSafetensors>,
     inventory: BTreeMap<String, TensorDescriptor>,
@@ -364,7 +387,7 @@ impl WeightStore {
             )));
         }
         let mut primary = Self::open_single(&config.primary, limits)?;
-        let mut roots = vec![primary.root.clone()];
+        let mut occupied_roots = primary.roots.clone();
         for replica_config in &config.replicas {
             replica_config.representation.validate()?;
             let replica = if replica_config.representation.is_canonical() {
@@ -372,9 +395,13 @@ impl WeightStore {
             } else {
                 lossless::open_lossless_source(replica_config, &primary, limits)?
             };
-            if roots.contains(&replica.root) {
+            if replica.roots.iter().any(|root| {
+                occupied_roots
+                    .iter()
+                    .any(|existing| paths_overlap(root, existing))
+            }) {
                 return Err(PowerError::Config(format!(
-                    "weight source '{}' is configured more than once",
+                    "weight source '{}' duplicates or overlaps another configured source",
                     replica.root.display()
                 )));
             }
@@ -393,7 +420,7 @@ impl WeightStore {
                     WeightSourceCoverage::Complete => {}
                 }
             }
-            roots.push(replica.root.clone());
+            occupied_roots.extend(replica.roots.iter().cloned());
             primary.replicas.push(replica);
         }
         primary.apply_source_weighting(config.source_weighting);
@@ -413,35 +440,20 @@ impl WeightStore {
                 "weight source read weight must be greater than zero".to_string(),
             ));
         }
-        let root = &config.root;
-        let root = std::fs::canonicalize(root).map_err(|error| {
-            PowerError::InvalidFormat(format!(
-                "failed to resolve model directory '{}': {error}",
-                root.display()
-            ))
-        })?;
-        if !std::fs::metadata(&root)?.is_dir() {
-            return Err(PowerError::InvalidFormat(format!(
-                "model root '{}' is not a directory",
-                root.display()
-            )));
-        }
-        let mut paths = discover_safetensors(&root, limits.max_model_files)?;
-        paths.sort();
-        if paths.is_empty() {
-            return Err(PowerError::InvalidFormat(format!(
-                "model root '{}' contains no SafeTensors files",
-                root.display()
-            )));
-        }
+        let roots = resolve_weight_roots(&config.root, &config.shard_roots)?;
+        let discovered = discover_safetensors(&roots, limits.max_model_files)?;
+        let paths = discovered
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
         let validation_started = Instant::now();
         let (sha256, bytes, files) =
-            hash_files(&root, &paths, limits.max_model_bytes, config.read_strategy)?;
+            hash_files(&discovered, limits.max_model_bytes, config.read_strategy)?;
         let validation_bytes_per_second = bytes_per_second(bytes, validation_started.elapsed());
 
         let tensors = if config.read_strategy == WeightReadStrategy::Mmap {
             // SAFETY: every path was canonicalized, checked as a regular file
-            // beneath `root`, and read completely while hashing. The store
+            // beneath one configured root, and read completely while hashing. The store
             // retains the path collection for at least as long as the maps.
             Some(
                 unsafe { MmapedSafetensors::multi(&paths) }.map_err(|error| {
@@ -483,7 +495,8 @@ impl WeightStore {
             }
         }
         Ok(Self {
-            root,
+            root: roots[0].clone(),
+            roots,
             paths,
             tensors,
             inventory,
@@ -509,6 +522,11 @@ impl WeightStore {
         &self.root
     }
 
+    /// Returns every physical root in this one logical canonical source.
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
     pub fn paths(&self) -> &[PathBuf] {
         &self.paths
     }
@@ -527,6 +545,7 @@ impl WeightStore {
             index: 0,
             role: WeightSourceRole::Primary,
             root: self.root.clone(),
+            shard_roots: self.roots.iter().skip(1).cloned().collect(),
             read_weight: self.read_weight,
             configured_read_weight: self.configured_read_weight,
             source_weighting: self.source_weighting,
@@ -544,6 +563,7 @@ impl WeightStore {
                 index: index.saturating_add(1),
                 role: WeightSourceRole::Replica,
                 root: replica.root.clone(),
+                shard_roots: replica.roots.iter().skip(1).cloned().collect(),
                 read_weight: replica.read_weight,
                 configured_read_weight: replica.configured_read_weight,
                 source_weighting: replica.source_weighting,
@@ -621,6 +641,22 @@ impl WeightStore {
 
     pub fn files(&self) -> &[WeightFileDescriptor] {
         &self.files
+    }
+
+    pub(crate) fn verified_file_path(&self, relative_path: &str) -> Result<&Path> {
+        let index = self
+            .files
+            .binary_search_by(|file| file.relative_path.as_str().cmp(relative_path))
+            .map_err(|_| {
+                PowerError::InvalidRequest(format!(
+                    "verified weight collection does not contain file '{relative_path}'"
+                ))
+            })?;
+        self.paths.get(index).map(PathBuf::as_path).ok_or_else(|| {
+            PowerError::InvalidFormat(
+                "verified weight file index lost its physical path".to_string(),
+            )
+        })
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -996,6 +1032,10 @@ fn normalized_throughput_weights(rates: &[u64]) -> Vec<u32> {
             u32::try_from(scaled).unwrap_or(1_024)
         })
         .collect()
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
 }
 
 fn validate_partial_replica(primary: &WeightStore, replica: &WeightStore) -> Result<()> {

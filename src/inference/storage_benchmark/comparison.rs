@@ -29,6 +29,11 @@ pub struct StorageDistributionSummary {
 pub struct StorageBenchmarkSourceSummary {
     pub index: usize,
     pub role: WeightSourceRole,
+    #[serde(
+        default = "default_source_root_count",
+        skip_serializing_if = "source_root_count_is_one"
+    )]
+    pub root_count: usize,
     pub coverage: WeightSourceCoverage,
     pub read_strategy: WeightReadStrategy,
     #[serde(default)]
@@ -41,6 +46,14 @@ pub struct StorageBenchmarkSourceSummary {
     pub verified_files: usize,
     pub verified_tensors: usize,
     pub verified_bytes: u64,
+}
+
+const fn default_source_root_count() -> usize {
+    1
+}
+
+fn source_root_count_is_one(value: &usize) -> bool {
+    *value == 1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +273,8 @@ fn validate_report(report: &StorageBenchmarkReport) -> Result<()> {
                 && source.representation == WeightSourceRepresentation::CanonicalSafeTensors
         }) && report.sources.iter().enumerate().all(|(index, source)| {
             source.index == index
+                && source.root_count > 0
+                && source.root_count <= source.verified_files
                 && (index == 0 || source.role == WeightSourceRole::Replica)
                 && source.representation.validate().is_ok()
         });
@@ -350,6 +365,7 @@ fn summarize_sources(
             Ok(StorageBenchmarkSourceSummary {
                 index: source.index,
                 role: source.role,
+                root_count: source.root_count,
                 coverage: source.coverage,
                 read_strategy: source.read_strategy,
                 representation: source.representation.clone(),
@@ -410,6 +426,7 @@ mod tests {
             sources: vec![StorageBenchmarkSource {
                 index: 0,
                 role: WeightSourceRole::Primary,
+                root_count: 1,
                 coverage: WeightSourceCoverage::Complete,
                 read_strategy: strategy,
                 representation: WeightSourceRepresentation::CanonicalSafeTensors,
@@ -508,6 +525,32 @@ mod tests {
     }
 
     #[test]
+    fn comparison_keeps_distinct_physical_root_topologies_in_separate_groups() {
+        let mut first = report(WeightReadStrategy::Mmap, StorageCacheState::Warm);
+        first.sources[0].verified_files = 2;
+        let mut second = first.clone();
+        second.sources[0].root_count = 2;
+
+        let comparison = compare_storage_benchmarks(&[first, second]).unwrap();
+
+        assert_eq!(comparison.groups.len(), 2);
+        assert_ne!(
+            comparison.groups[0].source_profile_sha256,
+            comparison.groups[1].source_profile_sha256
+        );
+    }
+
+    #[test]
+    fn one_root_reports_retain_the_v1_serialized_shape() {
+        let report = report(WeightReadStrategy::Mmap, StorageCacheState::Warm);
+        let json = serde_json::to_value(&report).unwrap();
+
+        assert!(json["sources"][0].get("rootCount").is_none());
+        let decoded: StorageBenchmarkReport = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.sources[0].root_count, 1);
+    }
+
+    #[test]
     fn comparison_binds_lossless_representation_identity_into_source_profiles() {
         let mut first = report(WeightReadStrategy::Mmap, StorageCacheState::Warm);
         let mut second = first.clone();
@@ -542,5 +585,15 @@ mod tests {
         };
 
         assert!(compare_storage_benchmarks(&[first, malformed]).is_err());
+    }
+
+    #[test]
+    fn comparison_rejects_impossible_physical_root_counts() {
+        let first = report(WeightReadStrategy::Mmap, StorageCacheState::Warm);
+        for root_count in [0, 2] {
+            let mut malformed = first.clone();
+            malformed.sources[0].root_count = root_count;
+            assert!(compare_storage_benchmarks(&[first.clone(), malformed]).is_err());
+        }
     }
 }

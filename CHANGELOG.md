@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added Colibri-inspired N-drive capacity aggregation to the existing
+  `WeightStore`. Canonical and lossless logical sources can span explicit,
+  disjoint, non-empty physical roots while retaining the same relative-file
+  collection digest, integrity/signature identity, source router, residency
+  cache, partial-mirror staging, TEE binding, and receipt path.
+- Added fail-closed duplicate, nested, overlapping, empty-root, duplicate-file,
+  and cross-source checks; the storage benchmark now accepts repeated
+  `--primary-shard` arguments and binds only the path-free physical root count
+  into source-profile and hardware evidence.
 - Added a Colibri-inspired macOS `PositionalCacheBypass` weight strategy using
   `F_NOCACHE` for both integrity hashing and exact tensor-range handles. It
   reuses the existing `WeightStore` index, replica routing, fallback,

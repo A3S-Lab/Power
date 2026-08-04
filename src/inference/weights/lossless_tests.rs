@@ -357,6 +357,60 @@ fn lossless_replica_reuses_the_existing_mmap_materialization_path() {
     assert!(read.storage().bytes < selected.bytes.len() as u64);
 }
 
+#[test]
+fn lossless_replica_can_span_disjoint_physical_roots() {
+    let primary = tempfile::tempdir().unwrap();
+    let compressed_first = tempfile::tempdir().unwrap();
+    let compressed_second = tempfile::tempdir().unwrap();
+    let combined_artifact = tempfile::tempdir().unwrap();
+    let first = FixtureTensor::f32("expert.first.weight", 0, 16 * 1024);
+    let second = FixtureTensor::f32("expert.second.weight", 1, 16 * 1024);
+    write_primary(primary.path(), &[first.clone(), second.clone()]);
+    write_lossless(compressed_first.path(), std::slice::from_ref(&first));
+    write_lossless(compressed_second.path(), std::slice::from_ref(&second));
+    std::fs::rename(
+        compressed_first.path().join("compressed.safetensors"),
+        compressed_first.path().join("first.safetensors"),
+    )
+    .unwrap();
+    std::fs::rename(
+        compressed_second.path().join("compressed.safetensors"),
+        compressed_second.path().join("second.safetensors"),
+    )
+    .unwrap();
+    std::fs::copy(
+        compressed_first.path().join("first.safetensors"),
+        combined_artifact.path().join("first.safetensors"),
+    )
+    .unwrap();
+    std::fs::copy(
+        compressed_second.path().join("second.safetensors"),
+        combined_artifact.path().join("second.safetensors"),
+    )
+    .unwrap();
+    let limits = InferenceLimits::default();
+    let representation = WeightSourceRepresentation::LosslessRansNibble256V1 {
+        artifact_sha256: weight_collection_sha256(combined_artifact.path(), &limits).unwrap(),
+    };
+    let config = WeightStoreConfig::new(primary.path()).with_replica(
+        WeightSourceConfig::new(compressed_first.path())
+            .with_shard_root(compressed_second.path())
+            .with_read_weight(u32::MAX)
+            .with_read_strategy(WeightReadStrategy::PositionalBuffered)
+            .with_representation(representation),
+    );
+
+    let store = WeightStore::open_config(&config, &limits).unwrap();
+
+    assert_eq!(store.sources()[1].verified_files, 2);
+    assert_eq!(store.sources()[1].verified_tensors, 2);
+    for expected in [&first, &second] {
+        let read = store.read_tensor_bytes(&expected.name).unwrap();
+        assert_eq!(read.bytes(), expected.bytes);
+        assert_eq!(read.source_index(), 1);
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn cache_preparation_uses_compressed_physical_record_ranges() {
