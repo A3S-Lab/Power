@@ -1910,10 +1910,15 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 
 ## Roadmap
 
+The acceptance-oriented embedded-runtime plan, including the TurboOCR-derived
+batching workstream and its TEE release gates, lives in
+[`ROADMAP.md`](ROADMAP.md). The checklist below also tracks the broader Power
+server and inference product.
+
 ### Completed
 
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
-- [x] Bounded embedded model/device session pooling, cancellation-safe waiting queues, current-pressure-aware deterministic microbatch plans, and digest-only receipt v4 scheduling evidence
+- [x] Bounded embedded model/device session pooling, cancellation-safe waiting queues, current-pressure-aware deterministic microbatch plans, canonical leading-axis tensor stacking/splitting, and digest-only receipt v4 scheduling evidence
 - [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, disjoint multi-root capacity aggregation, bounded continuous/ragged execution lifecycles on shared request admission, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native fixed-state/scratch-aware cache budgets with live pressure revalidation and unified-memory accounting, LFRU hot sets, atomic plans, hysteresis-bounded live hot-tier adaptation, batched expert unions, privacy-gated cross-layer route hints, event-driven current-layer staged batches with shared count/byte admission, attestation-bound accelerator residency declarations, canonical 16-device meshes with bounded peer copies and exact confidential GPU/NVSwitch claim-set binding, fused Candle batches with explicit actual-device/fallback identity, AES-256-GCM sealed warm-state envelopes with authenticated recovery and explicit TEE export authorization, digest-bound AB/BA lossless tuning evidence, canonical self-verifying hardware evidence bundles, complete/partial weighted replicas, optional artifact-pinned and canonical-byte-verified pure-Rust rANS representations, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
 - [x] Pure Rust inference backend — `mistralrs` feature (default): GGUF inference via candle, no C++ dependency; ideal for TEE supply-chain auditing
 - [x] OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`)
