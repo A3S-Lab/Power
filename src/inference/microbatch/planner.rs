@@ -298,7 +298,7 @@ fn memory_budget(
             }
             Ok(available
                 .saturating_sub(reserved)
-                .min(host.checked_add(device_budget).unwrap_or(u64::MAX)))
+                .min(host.saturating_add(device_budget)))
         })
         .transpose()?;
     Ok(MemoryBudget {
