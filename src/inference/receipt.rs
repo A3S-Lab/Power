@@ -53,12 +53,51 @@ pub struct ExecutionReceipt {
     pub output: ExecutionDigest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accelerator: Option<AcceleratorExecutionEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microbatch: Option<MicrobatchExecutionEvidence>,
 }
 
 impl ExecutionReceipt {
     pub const SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v1";
     pub const ACCELERATOR_SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v2";
     pub const ACCELERATOR_MESH_SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v3";
+    pub const MICROBATCH_SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v4";
+}
+
+/// Digest-only scheduling evidence for one admitted microbatch execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MicrobatchExecutionEvidence {
+    pub schema: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_declaration_sha256: Option<String>,
+    pub plan_sha256: String,
+    pub batch_index: usize,
+    pub batch_count: usize,
+    pub slot_count: usize,
+    pub model_admission_queued: bool,
+    pub device_admission_queued: bool,
+}
+
+impl MicrobatchExecutionEvidence {
+    pub const SCHEMA: &'static str = "a3s.power.microbatch-execution.v1";
+
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.schema != Self::SCHEMA
+            || self.batch_count == 0
+            || self.batch_index >= self.batch_count
+            || self.slot_count == 0
+        {
+            return Err(crate::error::PowerError::InvalidRequest(
+                "microbatch execution evidence shape is invalid".to_string(),
+            ));
+        }
+        super::sealed_state::decode_sha256(&self.plan_sha256, "microbatch execution plan")?;
+        if let Some(session) = &self.session_declaration_sha256 {
+            super::sealed_state::decode_sha256(session, "microbatch execution session")?;
+        }
+        Ok(())
+    }
 }
 
 /// Canonical representation covered by one side of an execution receipt.
@@ -172,5 +211,26 @@ mod tests {
             ExecutionDigest::image_request(b"same bytes", 1).sha256,
             ExecutionDigest::image_request(b"same bytes", 2).sha256,
         );
+    }
+
+    #[test]
+    fn older_receipts_default_to_no_microbatch_evidence() {
+        let encoded = serde_json::json!({
+            "schema": ExecutionReceipt::SCHEMA,
+            "model": {
+                "family": "test-model",
+                "revision": "revision-1",
+                "weightsSha256": "a".repeat(64),
+            },
+            "runtime": {
+                "name": "a3s-power",
+                "version": "0.1.0",
+                "device": "cpu",
+            },
+            "input": ExecutionDigest::token_ids(&[1]),
+            "output": ExecutionDigest::token_ids(&[2]),
+        });
+        let receipt: ExecutionReceipt = serde_json::from_value(encoded).unwrap();
+        assert!(receipt.microbatch.is_none());
     }
 }

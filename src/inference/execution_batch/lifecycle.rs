@@ -21,6 +21,7 @@ use super::types::{
 /// controller. A step contains every member present at its boundary exactly
 /// once, preventing starvation inside this lifecycle. The model still owns
 /// sequence scheduling, tensors, state topology, kernels, and arithmetic.
+#[derive(Clone)]
 pub struct ExecutionBatchLifecycle {
     inner: Arc<BatchInner>,
 }
@@ -107,6 +108,20 @@ impl EmbeddedRuntime {
 impl ExecutionBatchLifecycle {
     pub fn declaration_sha256(&self) -> &str {
         &self.inner.declaration_sha256
+    }
+
+    /// Waits through the runtime's bounded queue and admits one member.
+    ///
+    /// This is the cancellation-safe convenience path for continuously batched
+    /// schedulers. It reuses the runtime permit and never creates a separate
+    /// batch queue.
+    pub async fn admit_wait(
+        &self,
+        spec: ExecutionBatchMemberSpec,
+        cancellation: CancellationToken,
+    ) -> Result<()> {
+        let permit = self.inner.runtime.begin_wait(&cancellation).await?;
+        self.admit(spec, permit, cancellation)
     }
 
     /// Admits a member with a permit from this exact runtime.

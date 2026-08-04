@@ -93,7 +93,7 @@ const SENSITIVE_ERROR_PREFIXES: &[&str] = &["prompt:", "content:", "message:", "
 fn redact_content(msg: &str) -> String {
     let mut result = msg.to_string();
     for key in SENSITIVE_KEYS {
-        let pattern = format!("\"{}\":", key);
+        let pattern = format!("\"{key}\":");
         // Loop to replace all occurrences (multi-turn messages have repeated keys).
         let mut search_from = 0;
         while let Some(rel) = result[search_from..].find(&pattern) {

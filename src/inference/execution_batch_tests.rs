@@ -84,6 +84,39 @@ fn completed(
     )
 }
 
+#[tokio::test]
+async fn batch_waiting_admission_reuses_the_runtime_queue_and_cancellation() {
+    let limits = InferenceLimits {
+        max_concurrent_requests: 1,
+        max_queued_requests: 1,
+        ..limits()
+    };
+    let runtime = EmbeddedRuntime::new(DevicePreference::Cpu, limits.clone()).unwrap();
+    let batch = runtime.execution_batch(batch_binding()).unwrap();
+    let held = runtime.begin(&CancellationToken::new()).unwrap();
+    let cancellation = CancellationToken::new();
+    let (_, waiting_spec) = member(&limits, b"waiting", b"waiting-state", 0, 16);
+    let waiter = tokio::spawn({
+        let batch = batch.clone();
+        let cancellation = cancellation.clone();
+        async move { batch.admit_wait(waiting_spec, cancellation).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while runtime.admission_snapshot().waiting != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    cancellation.cancel();
+    assert!(waiter.await.unwrap().is_err());
+    assert_eq!(batch.active_member_count(), 0);
+    assert_eq!(runtime.admission_snapshot().waiting, 0);
+    drop(held);
+    assert_eq!(runtime.admission_snapshot().active, 0);
+}
+
 #[test]
 fn continuous_ragged_rounds_are_canonical_and_new_members_join_next_round() {
     let limits = limits();

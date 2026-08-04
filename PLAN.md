@@ -17,6 +17,17 @@ A3S Power exists to solve one problem: **LLM inference where the infrastructure 
 - OpenAI-compatible API with streaming
 - picolm: 14+ tok/s decode, pure Rust, layer-streaming, 900+ tests across current validation profiles
 
+### 2026 Shared Document Inference Substrate (TO2)
+
+The model-neutral Power layer now provides the scheduling substrate required by
+`a3s-ocr` and `a3s-parser`: finite cancellation-aware model queues, an exact
+device/model session pool with declared resident-byte bounds, a shared physical
+device gate, deterministic memory-aware microbatch plans with live-pressure
+revalidation, and digest-only receipt v4 evidence. OCR stage semantics, image
+pre/postprocessing, document target identity, cross-page structure, and retry
+policy remain in their owning crates. Ready pool entries intentionally have no
+implicit eviction; the owning service controls pool lifetime.
+
 ### 2026 Attestation Soundness Reopen
 
 The implementation has a production attestation hardening follow-up after an

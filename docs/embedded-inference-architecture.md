@@ -17,6 +17,7 @@ and receipt features. No Colibri source code is copied into Power.
 | Concern | Owner |
 | --- | --- |
 | Tensor kernels, typed devices, admission, cancellation, limits | `a3s-power` |
+| Bounded exact model/device session pools and memory-aware microbatch plans | `a3s-power` |
 | Static graph validation and reviewed operator execution | `a3s-power` |
 | Storage/RAM/device weight placement and telemetry policy | `a3s-power` |
 | Opaque state sealing, bounds, export authorization, and crash recovery | `a3s-power` |
@@ -58,9 +59,23 @@ model crate
 A logical request holds one permit across every component graph. A multimodal
 model must not create independent admission, device, hash, receipt, or cache
 systems for its vision encoder, projector, dense layers, and routed experts.
+Multiple exact model sessions may instead share one device-bound
+`ModelSessionPool<T>`. The pool gives each entry its own bounded
+`EmbeddedRuntime` and one shared physical-device gate; it deduplicates lazy
+initialization and retains ready entries until pool drop without adding an
+eviction or persistence policy.
 
 ## Colibri Ideas Adapted as Generic Mechanisms
 
+- Finite model and device queues reuse one cancellation-aware admission
+  controller. Queue slots, active permits, and unfinished model-load slots are
+  RAII-owned, so cancellation or future drop cannot strand capacity.
+- Deterministic microbatch planning preserves caller order while enforcing
+  explicit input/state bounds and point-in-time host/device peak-memory
+  budgets. Execution refreshes memory pressure and exact topology before
+  admission. One execution permit covers the resulting aggregate model call;
+  `max_concurrent_requests` limits concurrent calls, not slots within that
+  call.
 - Storage, host RAM, and accelerator memory form one typed weight hierarchy.
   Placement changes latency only; tensor dtype and shape are checked after each
   transfer and are never silently converted.
@@ -880,6 +895,7 @@ authority over export.
 | Accelerator resident registries and fused groups | Implemented as digest-bound selections from the active device plan, atomic device-cache-only acquisition, bounded model-owned Candle execution, typed kernel-unavailable fallback, actual-device receipts, and optional canonical confidential-GPU claim binding; no second registry or kernel backend is introduced |
 | Multi-device home placement and peer traffic | Implemented as a canonical typed mesh capped at 16 devices, strongly connected directed edges, synchronous bounded Candle copies, explicit backend-unavailable fallback, exact confidential GPU/NVSwitch claim-index sets, and digest-only receipt evidence; the active residency cache remains the sole weight registry and model crates own graph partitioning |
 | Continuous multi-slot decode | Implemented as a model-neutral continuous/ragged lifecycle using distinct existing runtime permits, admission-order complete rosters, late-member next-step admission, bounded atomic commits, row-local cancellation, and digest-only evidence; model crates retain sequence policy, KV/recurrent topology, tensors, kernels, and arithmetic |
+| Cross-session inference pooling and memory-aware microbatching | Implemented with exact model/execution/resource declarations, bounded model and shared-device queues, lazy-load deduplication, cancellation-safe slot cleanup, deterministic contiguous plans, current-pressure revalidation, unified-memory accounting, and digest-only receipt v4 evidence; model crates own slot semantics and tensor assembly |
 | Persistent warm conversations | Implemented as model-neutral opaque AES-256-GCM envelopes bound to exact weights, model-owned layout, hashed state identity, generation, bounds, and export scope; synchronized primary/backup recovery adapts commit-last durability without adopting plaintext `.coli_kv` or moving KV topology into Power |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
@@ -906,6 +922,7 @@ The current sequence is:
 | 10 | Reproducible hardware evidence bundles | **Power substrate complete:** one 32 MiB-bounded canonical envelope embeds raw path-free storage and tuning evidence, replays the existing comparison/evaluator, binds typed runtime/device/named-environment identities plus selected-configuration model parity artifact pins, preserves baseline-retained negative results, and performs no automatic I/O | Power tests cover canonical ordering/serde/digest pins, replayed derivations, exact storage/model parity, mixed revision/model/hardware/runtime/device/environment/configuration refusal, nested tamper, collection bounds, privacy-safe debug, negative results, and `Send + Sync`; model integrations must still publish externally authenticated bundles from reproducible named-hardware runs |
 | 11 | Cache-bypass reads must remain measurable rather than presumed faster | **Power substrate complete:** explicit macOS `F_NOCACHE` extends the same integrity and positional-range handles, cannot claim direct or verified-cold I/O, and leaves mmap as default after negative PP-OCRv6 evidence | Power tests cover byte parity, cancellation, fallback, unsupported platforms, cache-claim refusal, path-free evidence, and `Send + Sync`; model integrations must retain negative results and promote a strategy only after named-hardware end-to-end wins |
 | 12 | N-drive shard split can aggregate capacity without duplicating the model | **Power substrate complete:** canonical and lossless sources may span explicit disjoint roots under one logical relative-file namespace and one collection identity; the existing readers, source router, cache, partial-mirror staging, TEE binding, and hardware bundle are unchanged | Power tests cover one-root identity parity, mmap/positional loading, canonical and lossless replicas, duplicate/nested/cross-source root refusal, partial-mirror source resolution, path redaction, root-count evidence separation, serde compatibility, and existing TEE bundle validation; model integrations must publish named-volume capacity and performance evidence |
+| 13 | Cross-session device sharing and memory-shaped request batches | **Power substrate complete:** exact model sessions share one bounded resolved-device gate, finite cancellation-aware model/device queues, and deterministic contiguous microbatch plans that are revalidated against live memory before execution; receipt v4 binds scheduling digests without slot identities or snapshots | Power tests cover count/byte limits, concurrent load deduplication, cancellation and future-drop cleanup, model/device queue evidence, CPU/discrete/unified-memory planning, stale pressure/topology, tamper/wrong-session refusal, serde compatibility, privacy-safe debug, and `Send + Sync`; OCR and parser integrations must still publish stage parity, partial-failure, bounded-memory, and named-hardware throughput evidence |
 
 Cache-aware expert substitution remains outside the default path because it
 changes model semantics. Grammar drafts, MTP/speculative control flow,

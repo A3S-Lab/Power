@@ -41,8 +41,7 @@ impl DefaultTeePolicy {
         for (tee_type, hex_measurement) in expected_measurements {
             let bytes = hex::decode(&hex_measurement).map_err(|e| {
                 PowerError::Config(format!(
-                    "Invalid hex measurement for TEE type '{}': {}",
-                    tee_type, e
+                    "Invalid hex measurement for TEE type '{tee_type}': {e}"
                 ))
             })?;
             parsed_measurements.insert(tee_type, bytes);

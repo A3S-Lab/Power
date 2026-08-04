@@ -35,7 +35,7 @@ impl ExecutionBatchBinding {
         Ok(binding)
     }
 
-    pub(super) fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         decode_sha256(&self.weights_sha256, "execution batch weights")?;
         decode_sha256(&self.state_layout_sha256, "execution batch state layout")?;
         decode_sha256(&self.scheduler_sha256, "execution batch scheduler")?;

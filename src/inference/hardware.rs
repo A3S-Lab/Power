@@ -49,7 +49,7 @@ impl MemoryPoolSnapshot {
         Ok(snapshot)
     }
 
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.total_bytes == 0 {
             return Err(PowerError::Config(
                 "discovered memory total must be greater than zero".to_string(),
@@ -89,7 +89,7 @@ impl HardwareMemorySnapshot {
         Ok(snapshot)
     }
 
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.runtime_device.is_empty()
             || self.runtime_device.len() > 64
             || self.runtime_device.chars().any(char::is_control)

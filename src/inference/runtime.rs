@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::admission::{AdmissionController, AdmissionPermit};
+use crate::admission::{AdmissionController, AdmissionError, AdmissionPermit, AdmissionSnapshot};
 use crate::error::{PowerError, Result};
 
 #[cfg(test)]
@@ -27,6 +27,7 @@ struct RuntimeInner {
     device: RuntimeDevice,
     limits: InferenceLimits,
     admission: AdmissionController,
+    device_admission: Option<AdmissionController>,
 }
 
 impl EmbeddedRuntime {
@@ -35,11 +36,31 @@ impl EmbeddedRuntime {
     }
 
     fn with_device(device: RuntimeDevice, limits: InferenceLimits) -> Result<Self> {
+        Self::with_optional_device_admission(device, limits, None)
+    }
+
+    pub(super) fn with_device_admission(
+        device: RuntimeDevice,
+        limits: InferenceLimits,
+        device_admission: AdmissionController,
+    ) -> Result<Self> {
+        Self::with_optional_device_admission(device, limits, Some(device_admission))
+    }
+
+    fn with_optional_device_admission(
+        device: RuntimeDevice,
+        limits: InferenceLimits,
+        device_admission: Option<AdmissionController>,
+    ) -> Result<Self> {
         limits.validate()?;
         Ok(Self {
             inner: Arc::new(RuntimeInner {
                 device,
-                admission: AdmissionController::new(Some(limits.max_concurrent_requests)),
+                admission: AdmissionController::new_bounded(
+                    limits.max_concurrent_requests,
+                    limits.max_queued_requests,
+                ),
+                device_admission,
                 limits,
             }),
         })
@@ -60,6 +81,20 @@ impl EmbeddedRuntime {
 
     pub fn limits(&self) -> &InferenceLimits {
         &self.inner.limits
+    }
+
+    /// Returns content-free counters for this runtime's shared execution gate.
+    pub fn admission_snapshot(&self) -> AdmissionSnapshot {
+        self.inner.admission.snapshot()
+    }
+
+    /// Returns the shared physical-device gate when this runtime came from a
+    /// model session pool.
+    pub fn device_admission_snapshot(&self) -> Option<AdmissionSnapshot> {
+        self.inner
+            .device_admission
+            .as_ref()
+            .map(AdmissionController::snapshot)
     }
 
     /// Discovers memory for the resolved device without spawning a process.
@@ -93,9 +128,7 @@ impl EmbeddedRuntime {
     /// concurrency controls.
     pub fn begin(&self, cancellation: &CancellationToken) -> Result<ExecutionPermit> {
         if cancellation.is_cancelled() {
-            return Err(PowerError::InferenceFailed(
-                "embedded inference was cancelled".to_string(),
-            ));
+            return Err(PowerError::InferenceCancelled);
         }
         let admission = self.inner.admission.try_acquire().ok_or_else(|| {
             PowerError::InferenceFailed(format!(
@@ -103,12 +136,51 @@ impl EmbeddedRuntime {
                 self.inner.limits.max_concurrent_requests
             ))
         })?;
-        Ok(ExecutionPermit {
-            inner: Arc::new(PermitInner {
-                runtime: Arc::clone(&self.inner),
-                _admission: admission,
-            }),
-        })
+        let device_admission = match &self.inner.device_admission {
+            Some(controller) => Some(controller.try_acquire().ok_or_else(|| {
+                PowerError::InferenceFailed(format!(
+                    "embedded device already has {} active request(s)",
+                    controller.maximum().unwrap_or(0)
+                ))
+            })?),
+            None => None,
+        };
+        Ok(self.execution_permit(admission, device_admission))
+    }
+
+    /// Waits for execution capacity through the runtime's bounded queue.
+    ///
+    /// Cancellation before or during the wait releases the queue slot. The
+    /// returned permit is identical to a fail-fast [`Self::begin`] permit and
+    /// must be held across every component graph in the logical request.
+    pub async fn begin_wait(&self, cancellation: &CancellationToken) -> Result<ExecutionPermit> {
+        let admission = self
+            .inner
+            .admission
+            .acquire_cancellable(cancellation)
+            .await
+            .map_err(|error| match error {
+                AdmissionError::QueueFull { maximum } => PowerError::InferenceQueueFull { maximum },
+                AdmissionError::Cancelled => PowerError::InferenceCancelled,
+                AdmissionError::Closed => PowerError::InferenceFailed(
+                    "embedded runtime admission controller was closed".to_string(),
+                ),
+            })?;
+        let device_admission = match &self.inner.device_admission {
+            Some(controller) => Some(controller.acquire_cancellable(cancellation).await.map_err(
+                |error| match error {
+                    AdmissionError::QueueFull { maximum } => {
+                        PowerError::InferenceQueueFull { maximum }
+                    }
+                    AdmissionError::Cancelled => PowerError::InferenceCancelled,
+                    AdmissionError::Closed => PowerError::InferenceFailed(
+                        "embedded device admission controller was closed".to_string(),
+                    ),
+                },
+            )?),
+            None => None,
+        };
+        Ok(self.execution_permit(admission, device_admission))
     }
 
     pub fn receipt(
@@ -124,6 +196,7 @@ impl EmbeddedRuntime {
             input,
             output,
             accelerator: None,
+            microbatch: None,
         }
     }
 
@@ -159,7 +232,22 @@ impl EmbeddedRuntime {
             input,
             output,
             accelerator: Some(accelerator),
+            microbatch: None,
         })
+    }
+
+    fn execution_permit(
+        &self,
+        admission: AdmissionPermit,
+        device_admission: Option<AdmissionPermit>,
+    ) -> ExecutionPermit {
+        ExecutionPermit {
+            inner: Arc::new(PermitInner {
+                runtime: Arc::clone(&self.inner),
+                _admission: admission,
+                _device_admission: device_admission,
+            }),
+        }
     }
 }
 
@@ -170,6 +258,7 @@ impl std::fmt::Debug for EmbeddedRuntime {
             .field("device", &self.inner.device)
             .field("limits", &self.inner.limits)
             .field("admission", &self.inner.admission)
+            .field("device_admission", &self.inner.device_admission)
             .finish_non_exhaustive()
     }
 }
@@ -182,6 +271,7 @@ pub struct ExecutionPermit {
 struct PermitInner {
     runtime: Arc<RuntimeInner>,
     _admission: AdmissionPermit,
+    _device_admission: Option<AdmissionPermit>,
 }
 
 impl ExecutionPermit {
@@ -191,6 +281,17 @@ impl ExecutionPermit {
 
     pub(crate) fn same_admission(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    pub(crate) fn model_admission_was_queued(&self) -> bool {
+        self.inner._admission.was_queued()
+    }
+
+    pub(crate) fn device_admission_was_queued(&self) -> bool {
+        self.inner
+            ._device_admission
+            .as_ref()
+            .is_some_and(AdmissionPermit::was_queued)
     }
 }
 
@@ -214,6 +315,46 @@ mod tests {
         assert!(clone.begin(&cancellation).is_err());
         drop(permit);
         assert!(clone.begin(&cancellation).is_ok());
+    }
+
+    #[tokio::test]
+    async fn waiting_admission_is_bounded_and_cancellation_safe() {
+        let runtime = EmbeddedRuntime::new(
+            DevicePreference::Cpu,
+            InferenceLimits {
+                max_concurrent_requests: 1,
+                max_queued_requests: 1,
+                ..InferenceLimits::default()
+            },
+        )
+        .unwrap();
+        let active = runtime.begin(&CancellationToken::new()).unwrap();
+        let cancellation = CancellationToken::new();
+        let waiter = tokio::spawn({
+            let runtime = runtime.clone();
+            let cancellation = cancellation.clone();
+            async move { runtime.begin_wait(&cancellation).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while runtime.admission_snapshot().waiting != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let overflow = runtime.begin_wait(&CancellationToken::new()).await;
+        assert!(matches!(
+            overflow,
+            Err(PowerError::InferenceQueueFull { maximum: 1 })
+        ));
+
+        cancellation.cancel();
+        assert!(waiter.await.unwrap().is_err());
+        assert_eq!(runtime.admission_snapshot().waiting, 0);
+        assert_eq!(runtime.admission_snapshot().active, 1);
+        drop(active);
+        assert_eq!(runtime.admission_snapshot().active, 0);
     }
 
     #[test]

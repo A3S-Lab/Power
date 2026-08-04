@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 
 use crate::error::{PowerError, Result};
 
@@ -22,6 +23,8 @@ pub struct InferenceLimits {
     pub max_context_tokens: usize,
     pub max_generated_tokens: usize,
     pub max_concurrent_requests: usize,
+    #[serde(default = "default_max_queued_requests")]
+    pub max_queued_requests: usize,
 }
 
 impl Default for InferenceLimits {
@@ -42,12 +45,17 @@ impl Default for InferenceLimits {
             max_context_tokens: 32_768,
             max_generated_tokens: 32_768,
             max_concurrent_requests: 1,
+            max_queued_requests: default_max_queued_requests(),
         }
     }
 }
 
 const fn default_max_weight_sources() -> usize {
     8
+}
+
+const fn default_max_queued_requests() -> usize {
+    32
 }
 
 impl InferenceLimits {
@@ -79,6 +87,14 @@ impl InferenceLimits {
                 "embedded inference model, residency, state, and pixel limits must be greater than zero"
                     .to_string(),
             ));
+        }
+        if self.max_concurrent_requests > Semaphore::MAX_PERMITS
+            || self.max_queued_requests > Semaphore::MAX_PERMITS
+        {
+            return Err(PowerError::Config(format!(
+                "embedded inference active and waiting request limits cannot exceed {}",
+                Semaphore::MAX_PERMITS
+            )));
         }
         Ok(())
     }
@@ -136,6 +152,39 @@ mod tests {
             ..InferenceLimits::default()
         };
         assert!(limits.validate().is_err());
+    }
+
+    #[test]
+    fn zero_waiting_capacity_keeps_fail_fast_admission_valid() {
+        let limits = InferenceLimits {
+            max_queued_requests: 0,
+            ..InferenceLimits::default()
+        };
+        limits.validate().unwrap();
+    }
+
+    #[test]
+    fn admission_capacity_must_fit_the_runtime_semaphore() {
+        let active = InferenceLimits {
+            max_concurrent_requests: Semaphore::MAX_PERMITS + 1,
+            ..InferenceLimits::default()
+        };
+        assert!(active.validate().is_err());
+
+        let waiting = InferenceLimits {
+            max_queued_requests: Semaphore::MAX_PERMITS + 1,
+            ..InferenceLimits::default()
+        };
+        assert!(waiting.validate().is_err());
+    }
+
+    #[test]
+    fn older_serialized_limits_receive_the_bounded_queue_default() {
+        let expected = InferenceLimits::default();
+        let mut encoded = serde_json::to_value(&expected).unwrap();
+        encoded.as_object_mut().unwrap().remove("maxQueuedRequests");
+        let decoded: InferenceLimits = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.max_queued_requests, expected.max_queued_requests);
     }
 
     #[test]

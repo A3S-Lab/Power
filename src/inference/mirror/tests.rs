@@ -4,7 +4,8 @@ use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
 
 use super::*;
 use crate::inference::{
-    InferenceLimits, WeightSourceConfig, WeightSourceCoverage, WeightStoreConfig,
+    InferenceLimits, WeightReadStrategy, WeightSourceConfig, WeightSourceCoverage,
+    WeightStoreConfig,
 };
 
 fn write_weight_file(root: &Path, file_name: &str, tensor_name: &str, byte: u8) {
@@ -218,7 +219,14 @@ fn invalid_candidate_sets_fail_closed() {
 
 #[test]
 fn source_mutation_is_detected_before_any_file_is_published() {
-    let (_primary, store) = open_three_file_store();
+    let (primary, mapped_store) = open_three_file_store();
+    drop(mapped_store);
+    let store = WeightStore::open_config(
+        &WeightStoreConfig::new(primary.path())
+            .with_primary_read_strategy(WeightReadStrategy::PositionalBuffered),
+        &InferenceLimits::default(),
+    )
+    .unwrap();
     let destination_parent = tempfile::tempdir().unwrap();
     let destination = destination_parent.path().join("mirror");
     let file = &store.files()[0];

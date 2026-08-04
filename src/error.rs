@@ -9,6 +9,20 @@ pub enum PowerError {
     #[error("Inference failed: {0}")]
     InferenceFailed(String),
 
+    #[error("Inference waiting queue is full at {maximum} request(s)")]
+    InferenceQueueFull { maximum: usize },
+
+    #[error("Inference was cancelled before admission")]
+    InferenceCancelled,
+
+    #[error(
+        "Embedded model session pool is full at {maximum_sessions} session(s) or {maximum_resident_bytes} resident byte(s)"
+    )]
+    ModelSessionPoolFull {
+        maximum_sessions: usize,
+        maximum_resident_bytes: u64,
+    },
+
     #[error("Invalid model format: {0}")]
     InvalidFormat(String),
 

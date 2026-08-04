@@ -31,6 +31,9 @@ mod hardware_evidence_failure_tests;
 #[cfg(test)]
 mod hardware_evidence_tests;
 mod limits;
+mod microbatch;
+#[cfg(test)]
+mod microbatch_tests;
 mod mirror;
 mod receipt;
 mod residency;
@@ -39,6 +42,9 @@ mod runtime;
 mod sealed_state;
 #[cfg(test)]
 mod sealed_state_tests;
+mod session_pool;
+#[cfg(test)]
+mod session_pool_tests;
 mod storage_benchmark;
 mod telemetry;
 mod tensor;
@@ -76,13 +82,18 @@ pub use hardware::{
 };
 pub use hardware_evidence::{HardwareEvidenceBinding, HardwareEvidenceBundle, ModelParityArtifact};
 pub use limits::InferenceLimits;
+pub use microbatch::{
+    MicrobatchCandidate, MicrobatchExecution, MicrobatchLimits, MicrobatchPlan, MicrobatchPolicy,
+    PlannedMicrobatch, PlannedMicrobatchSlot,
+};
 pub use mirror::{
     WeightMirrorCandidate, WeightMirrorConfidentiality, WeightMirrorPlan,
     WeightMirrorPlanRejection, WeightMirrorPlannedFile, WeightMirrorPolicy,
     WeightMirrorStageReport,
 };
 pub use receipt::{
-    ExecutionDigest, ExecutionReceipt, ExecutionRepresentation, ModelIdentity, RuntimeIdentity,
+    ExecutionDigest, ExecutionReceipt, ExecutionRepresentation, MicrobatchExecutionEvidence,
+    ModelIdentity, RuntimeIdentity,
 };
 pub use residency::{
     CacheEvictionPolicy, PlacementPreference, PlannedResidencyGroup, PrefetchReport, PrefetchTask,
@@ -97,6 +108,10 @@ pub use sealed_state::{
     OpenedSealedState, RecoveredSealedState, SealedStateBinding, SealedStateEnvelope,
     SealedStateExportScope, SealedStateKey, SealedStateRecoverySource, SealedStateRollbackPolicy,
     SealedStateScope, SealedStateStore, TeeStateExportAuthorization,
+};
+pub use session_pool::{
+    ModelSession, ModelSessionBinding, ModelSessionPool, ModelSessionPoolPolicy,
+    ModelSessionPoolSnapshot, ModelSessionSpec,
 };
 pub use storage_benchmark::{
     compare_storage_benchmarks, run_storage_benchmark, StorageBenchmarkComparison,

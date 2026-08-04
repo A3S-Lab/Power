@@ -242,6 +242,26 @@ only digest-verified files without replacement. Power never persists the
 benefits, plan, destination, or a mirror receipt automatically. It never
 downloads a model, starts another process, or opens a listener.
 
+Embedded scheduling uses the same runtime admission primitive at two bounded
+levels. `InferenceLimits::max_queued_requests` caps each model runtime's async
+waiting path (`begin_wait`); zero keeps that path fail-fast. A device-bound
+`ModelSessionPool<T>` additionally caps exact model sessions, declared resident
+bytes, concurrent device work, and the cross-session device queue. Concurrent
+callers initialize one exact model/execution/resource declaration once, while
+cancellation or future drop releases an unfinished pool slot. Ready entries are
+retained until the pool is dropped; Power does not add eviction, persistence,
+networking, or model semantics.
+
+`plan_microbatches` accepts model-owned digest identities and explicit per-slot
+input, state, host-peak, and device-peak resource declarations. It groups
+contiguous slots deterministically under caller policy, runtime limits, and a
+fresh host/device memory snapshot, counting Metal unified memory only once.
+`begin_microbatch` revalidates topology and current headroom before waiting
+through both bounded admission gates. Receipt v4 records only the exact session
+and plan digests, aggregate batch position/counts, and queue-path booleans; slot
+digests and raw memory snapshots remain in caller-owned plan data and are never
+copied into a receipt automatically.
+
 Prefetch and current-layer staging share one background-load admission path.
 `max_prefetch_workers` bounds tasks by count, while
 `max_background_inflight_bytes` independently bounds the sum of canonical
@@ -1889,6 +1909,7 @@ A3S Power is the inference engine of the A3S privacy-preserving AI platform. It 
 ### Completed
 
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
+- [x] Bounded embedded model/device session pooling, cancellation-safe waiting queues, current-pressure-aware deterministic microbatch plans, and digest-only receipt v4 scheduling evidence
 - [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, disjoint multi-root capacity aggregation, bounded continuous/ragged execution lifecycles on shared request admission, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native fixed-state/scratch-aware cache budgets with live pressure revalidation and unified-memory accounting, LFRU hot sets, atomic plans, hysteresis-bounded live hot-tier adaptation, batched expert unions, privacy-gated cross-layer route hints, event-driven current-layer staged batches with shared count/byte admission, attestation-bound accelerator residency declarations, canonical 16-device meshes with bounded peer copies and exact confidential GPU/NVSwitch claim-set binding, fused Candle batches with explicit actual-device/fallback identity, AES-256-GCM sealed warm-state envelopes with authenticated recovery and explicit TEE export authorization, digest-bound AB/BA lossless tuning evidence, canonical self-verifying hardware evidence bundles, complete/partial weighted replicas, optional artifact-pinned and canonical-byte-verified pure-Rust rANS representations, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
 - [x] Pure Rust inference backend — `mistralrs` feature (default): GGUF inference via candle, no C++ dependency; ideal for TEE supply-chain auditing
 - [x] OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`)

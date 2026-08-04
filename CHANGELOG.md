@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and cross-source checks; the storage benchmark now accepts repeated
   `--primary-shard` arguments and binds only the path-free physical root count
   into source-profile and hardware evidence.
+- Added finite, cancellation-aware embedded inference queues with explicit
+  active/waiting bounds, fail-fast overflow, RAII cleanup, and content-free
+  admission snapshots. Existing fail-fast admission remains available.
+- Added a device-bound, model-neutral `ModelSessionPool<T>` with hard session
+  count, declared resident-byte, device concurrency, and device queue bounds.
+  Exact model/execution/resource declarations share one lazily initialized
+  value and one resolved device; abandoned initialization releases its slot.
+- Added deterministic memory-aware microbatch plans with caller-declared
+  per-slot input, state, host-peak, and device-peak resources. Plans preserve
+  contiguous order, account for unified memory once, and revalidate current
+  memory pressure before bounded admission.
+- Added embedded receipt v4 for admitted microbatches. It binds the exact pool
+  session (when present), plan digest, batch position, slot count, and whether
+  model or device admission queued without adding model input, slot identity,
+  or raw memory snapshots to receipt evidence.
 - Added a Colibri-inspired macOS `PositionalCacheBypass` weight strategy using
   `F_NOCACHE` for both integrity hashing and exact tensor-range handles. It
   reuses the existing `WeightStore` index, replica routing, fallback,
@@ -81,6 +96,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Model-session keys and declarations bind exact model, execution, resolved
+  device, limits, and resident bytes. Microbatch plans fail closed on duplicate
+  slot digests, overflow, wrong session/device/limits, tampering, stale memory
+  headroom, and malformed topology. Pool and receipt debug output is
+  content-free; raw memory snapshots remain caller-owned plan data.
 - Hardware evidence construction rejects mixed revisions, models, named
   hardware, runtime devices, tuning bindings, selected configurations, and
   parity artifacts. Bundle SHA-256 is mutation evidence rather than a
