@@ -753,6 +753,11 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["object"], "list");
         assert_eq!(json["data"].as_array().unwrap().len(), 2);
+        assert!(json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|model| model["context_length"] == 4096));
 
         std::env::remove_var("A3S_POWER_HOME");
     }
@@ -796,6 +801,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["id"], "llama3");
         assert_eq!(json["object"], "model");
+        assert_eq!(json["context_length"], 4096);
 
         std::env::remove_var("A3S_POWER_HOME");
     }
