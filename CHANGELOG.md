@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-04
+
 ### Added
 
 - Added Colibri-inspired N-drive capacity aggregation to the existing
@@ -33,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session (when present), plan digest, batch position, slot count, and whether
   model or device admission queued without adding model input, slot identity,
   or raw memory snapshots to receipt evidence.
+- Added model-neutral leading-axis tensor assembly and exact ordered output
+  partitioning with finite-value, shape, resource-limit, and full-partition
+  validation for OCR and other model-owned batched graphs.
 - Added a Colibri-inspired macOS `PositionalCacheBypass` weight strategy using
   `F_NOCACHE` for both integrity hashing and exact tensor-range handles. It
   reuses the existing `WeightStore` index, replica routing, fallback,
