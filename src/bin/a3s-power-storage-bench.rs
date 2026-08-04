@@ -14,6 +14,7 @@ const USAGE: &str = r#"A3S Power storage benchmark
 Usage:
   a3s-power-storage-bench \
     --primary <directory> \
+    [--primary-shard <directory>]... \
     [--replica <directory>]... \
     [--partial-replica <directory>]... \
     [--lossless-replica <directory>::<artifact-sha256>]... \
@@ -58,6 +59,7 @@ fn run() -> Result<()> {
         return Ok(());
     }
     let primary = parser.required_path("--primary")?;
+    let primary_shards = parser.paths("--primary-shard")?;
     let strategy = parse_strategy(&parser.required("--strategy")?)?;
     let source_weighting = parser
         .optional("--source-weighting")?
@@ -67,6 +69,9 @@ fn run() -> Result<()> {
     let mut weights = WeightStoreConfig::new(primary)
         .with_primary_read_strategy(strategy)
         .with_source_weighting(source_weighting);
+    for shard in primary_shards {
+        weights = weights.with_primary_shard_root(shard);
+    }
     for replica in parser.paths("--replica")? {
         weights =
             weights.with_replica(WeightSourceConfig::new(replica).with_read_strategy(strategy));

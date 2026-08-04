@@ -15,7 +15,10 @@ use super::{check_cancelled, WeightMirrorPlannedFile};
 const COPY_BUFFER_BYTES: usize = 1024 * 1024;
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub(super) fn resolve_destination(primary: &Path, destination: &Path) -> Result<PathBuf> {
+pub(super) fn resolve_destination(
+    primary_roots: &[PathBuf],
+    destination: &Path,
+) -> Result<PathBuf> {
     if destination.as_os_str().is_empty() {
         return Err(PowerError::InvalidRequest(
             "partial weight mirror destination must not be empty".to_string(),
@@ -55,9 +58,11 @@ pub(super) fn resolve_destination(primary: &Path, destination: &Path) -> Result<
         }
         Err(error) => return Err(error.into()),
     };
-    if resolved == primary || resolved.starts_with(primary) || primary.starts_with(&resolved) {
+    if primary_roots.iter().any(|primary| {
+        resolved == *primary || resolved.starts_with(primary) || primary.starts_with(&resolved)
+    }) {
         return Err(PowerError::InvalidRequest(
-            "partial weight mirror destination must be separate from the primary collection"
+            "partial weight mirror destination must be separate from every primary collection root"
                 .to_string(),
         ));
     }

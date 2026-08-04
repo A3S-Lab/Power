@@ -6,6 +6,12 @@ subprocess, network client, or listener. It extends the same `WeightStore`
 integrity, replica routing, cancellation, and fallback path used by embedded
 inference; it is not a second storage engine.
 
+A canonical source may span an anchor `--primary` directory plus repeated
+`--primary-shard` directories. The roots contribute disjoint relative
+SafeTensors paths to one logical collection, so this measures N-volume capacity
+aggregation without requiring a complete copy on one volume. The combined
+collection retains the same digest as the same relative files under one root.
+
 The same runner also measures optional lossless representations. Canonical
 SafeTensors remains the primary; each compressed replica carries an explicit
 physical artifact pin and must pass full decoded-byte admission before timing.
@@ -39,7 +45,7 @@ Each report records:
 - exact Power version and commit;
 - primary collection digest and path-free source descriptors, including typed
   canonical or lossless representation identity and the compressed artifact
-  digest where applicable;
+  digest where applicable, plus physical root count without root paths;
 - OS, architecture, named CPU, RAM, filesystem class, device class, transfer
   alignment, concurrency, strategy, and cache procedure;
 - deterministic sequence digest, tensor count, requested bytes, read bytes,
@@ -54,6 +60,8 @@ size. Sample `bytesRead`, requested-byte totals, and throughput use decoded
 canonical bytes, so a lossless run measures effective model-byte delivery plus
 decode cost. Representation identity participates in the stable source-profile
 digest; reports from different compressed artifacts are never merged silently.
+Physical root count participates in the same profile digest, so single-volume
+and sharded-volume runs also remain separate groups.
 
 Reports are written only to stdout. They contain no filesystem path or tensor
 name. Power does not persist or export a report automatically.
@@ -94,6 +102,7 @@ cargo run --release \
   --no-default-features --features embedded-inference \
   --bin a3s-power-storage-bench -- \
   --primary /models/collection \
+  --primary-shard /models-on-second-volume/collection \
   --strategy mmap \
   --power-commit 0123456789abcdef0123456789abcdef01234567 \
   --filesystem-class ext4 \

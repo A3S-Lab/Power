@@ -32,6 +32,7 @@ pub(super) fn storage_report(strategy: WeightReadStrategy) -> StorageBenchmarkRe
         sources: vec![StorageBenchmarkSource {
             index: 0,
             role: WeightSourceRole::Primary,
+            root_count: 1,
             coverage: WeightSourceCoverage::Complete,
             read_strategy: strategy,
             representation: WeightSourceRepresentation::CanonicalSafeTensors,

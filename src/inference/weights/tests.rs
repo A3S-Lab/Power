@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use candle_core::Device;
 use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
@@ -285,6 +285,172 @@ fn weighted_replicas_are_exact_and_deterministic() {
 }
 
 #[test]
+fn sharded_primary_matches_one_root_identity_and_loads_every_tensor() {
+    let combined = tempfile::tempdir().unwrap();
+    let primary = tempfile::tempdir().unwrap();
+    let shard = tempfile::tempdir().unwrap();
+    write_weight_file(
+        combined.path(),
+        "first.safetensors",
+        "layer.0.weight",
+        0,
+        8,
+        1,
+    );
+    write_weight_file(
+        combined.path(),
+        "second.safetensors",
+        "layer.1.weight",
+        0,
+        8,
+        2,
+    );
+    std::fs::copy(
+        combined.path().join("first.safetensors"),
+        primary.path().join("first.safetensors"),
+    )
+    .unwrap();
+    std::fs::copy(
+        combined.path().join("second.safetensors"),
+        shard.path().join("second.safetensors"),
+    )
+    .unwrap();
+
+    let expected = WeightStore::open(combined.path(), &InferenceLimits::default()).unwrap();
+    let split = WeightStore::open_config(
+        &WeightStoreConfig::new(primary.path()).with_primary_shard_root(shard.path()),
+        &InferenceLimits::default(),
+    )
+    .unwrap();
+    let primary_root = std::fs::canonicalize(primary.path()).unwrap();
+    let shard_root = std::fs::canonicalize(shard.path()).unwrap();
+
+    assert_eq!(split.sha256(), expected.sha256());
+    assert_eq!(split.files(), expected.files());
+    assert_eq!(
+        split.roots(),
+        [primary_root.as_path(), shard_root.as_path()]
+    );
+    assert_eq!(split.sources()[0].shard_roots, [shard_root.as_path()]);
+    assert!(split.paths()[0].starts_with(&primary_root));
+    assert!(split.paths()[1].starts_with(&shard_root));
+    for name in ["layer.0.weight.3", "layer.1.weight.5"] {
+        let expected = expected
+            .load(name, &Device::Cpu)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        let actual = split
+            .load(name, &Device::Cpu)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn sharded_collections_reject_ambiguous_or_overlapping_roots() {
+    let primary = tempfile::tempdir().unwrap();
+    let duplicate_name = tempfile::tempdir().unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    write_weight_file(
+        primary.path(),
+        "model.safetensors",
+        "layer.0.weight",
+        0,
+        1,
+        1,
+    );
+    write_weight_file(
+        duplicate_name.path(),
+        "model.safetensors",
+        "layer.1.weight",
+        0,
+        1,
+        2,
+    );
+    let duplicate_file =
+        WeightStoreConfig::new(primary.path()).with_primary_shard_root(duplicate_name.path());
+    assert!(WeightStore::open_config(&duplicate_file, &InferenceLimits::default()).is_err());
+
+    let nested = primary.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    write_weight_file(&nested, "nested.safetensors", "layer.2.weight", 0, 1, 3);
+    let overlapping = WeightStoreConfig::new(primary.path()).with_primary_shard_root(&nested);
+    assert!(WeightStore::open_config(&overlapping, &InferenceLimits::default()).is_err());
+
+    let repeated = WeightStoreConfig::new(primary.path()).with_primary_shard_root(primary.path());
+    assert!(WeightStore::open_config(&repeated, &InferenceLimits::default()).is_err());
+
+    let empty_root = WeightStoreConfig::new(primary.path()).with_primary_shard_root(empty.path());
+    assert!(WeightStore::open_config(&empty_root, &InferenceLimits::default()).is_err());
+}
+
+#[test]
+fn sharded_complete_replicas_reuse_the_existing_source_router() {
+    let primary = tempfile::tempdir().unwrap();
+    let primary_shard = tempfile::tempdir().unwrap();
+    let replica = tempfile::tempdir().unwrap();
+    let replica_shard = tempfile::tempdir().unwrap();
+    write_weight_file(
+        primary.path(),
+        "first.safetensors",
+        "layer.0.weight",
+        0,
+        64,
+        1,
+    );
+    write_weight_file(
+        primary_shard.path(),
+        "second.safetensors",
+        "layer.1.weight",
+        0,
+        64,
+        2,
+    );
+    std::fs::copy(
+        primary.path().join("first.safetensors"),
+        replica.path().join("first.safetensors"),
+    )
+    .unwrap();
+    std::fs::copy(
+        primary_shard.path().join("second.safetensors"),
+        replica_shard.path().join("second.safetensors"),
+    )
+    .unwrap();
+
+    let config = WeightStoreConfig::new(primary.path())
+        .with_primary_shard_root(primary_shard.path())
+        .with_primary_read_weight(1)
+        .with_replica(
+            WeightSourceConfig::new(replica.path())
+                .with_shard_root(replica_shard.path())
+                .with_read_weight(31),
+        );
+    let store = WeightStore::open_config(&config, &InferenceLimits::default()).unwrap();
+    let replica_shard_root = std::fs::canonicalize(replica_shard.path()).unwrap();
+
+    assert_eq!(store.sources().len(), 2);
+    assert_eq!(store.sources()[0].verified_files, 2);
+    assert_eq!(store.sources()[1].verified_files, 2);
+    assert_eq!(
+        store.sources()[1].shard_roots,
+        [replica_shard_root.as_path()]
+    );
+    let routed = store
+        .inventory()
+        .map(|descriptor| store.select_source(&descriptor.name))
+        .collect::<Vec<_>>();
+    assert!(routed.contains(&0));
+    assert!(routed.contains(&1));
+}
+
+#[test]
 fn replica_digest_mismatch_fails_closed() {
     let primary = tempfile::tempdir().unwrap();
     let replica = tempfile::tempdir().unwrap();
@@ -434,6 +600,7 @@ fn new_source_options_have_backward_compatible_serde_defaults() {
     .unwrap();
 
     assert_eq!(config.source_weighting, WeightSourceWeighting::Configured);
+    assert!(config.primary.shard_roots.is_empty());
     assert_eq!(config.primary.coverage, WeightSourceCoverage::Complete);
     assert_eq!(config.primary.read_strategy, WeightReadStrategy::Mmap);
     assert_eq!(
@@ -442,9 +609,31 @@ fn new_source_options_have_backward_compatible_serde_defaults() {
     );
     assert_eq!(config.replicas[0].coverage, WeightSourceCoverage::Complete);
     assert_eq!(config.replicas[0].read_strategy, WeightReadStrategy::Mmap);
+    assert!(config.replicas[0].shard_roots.is_empty());
     assert_eq!(
         config.replicas[0].representation,
         WeightSourceRepresentation::CanonicalSafeTensors
+    );
+    let serialized = serde_json::to_value(&config).unwrap();
+    assert!(serialized["primary"].get("shardRoots").is_none());
+    assert!(serialized["replicas"][0].get("shardRoots").is_none());
+}
+
+#[test]
+fn source_shard_roots_have_an_explicit_serde_shape() {
+    let config: WeightStoreConfig = serde_json::from_value(serde_json::json!({
+        "primary": {
+            "root": "/models/primary-a",
+            "shardRoots": ["/models/primary-b"],
+            "readWeight": 1
+        },
+        "replicas": []
+    }))
+    .unwrap();
+
+    assert_eq!(
+        config.primary.shard_roots,
+        [PathBuf::from("/models/primary-b")]
     );
 }
 

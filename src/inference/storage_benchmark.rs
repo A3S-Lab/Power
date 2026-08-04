@@ -172,6 +172,13 @@ impl StorageBenchmarkConfig {
 pub struct StorageBenchmarkSource {
     pub index: usize,
     pub role: WeightSourceRole,
+    /// Count of physical roots in this one logical source. Paths remain
+    /// absent from benchmark evidence.
+    #[serde(
+        default = "default_source_root_count",
+        skip_serializing_if = "source_root_count_is_one"
+    )]
+    pub root_count: usize,
     pub coverage: WeightSourceCoverage,
     pub read_strategy: WeightReadStrategy,
     #[serde(default)]
@@ -184,6 +191,14 @@ pub struct StorageBenchmarkSource {
     pub verified_files: usize,
     pub verified_tensors: usize,
     pub verified_bytes: u64,
+}
+
+const fn default_source_root_count() -> usize {
+    1
+}
+
+fn source_root_count_is_one(value: &usize) -> bool {
+    *value == 1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -339,6 +354,7 @@ pub fn run_storage_benchmark(
             .map(|source| StorageBenchmarkSource {
                 index: source.index,
                 role: source.role,
+                root_count: source.shard_roots.len().saturating_add(1),
                 coverage: source.coverage,
                 read_strategy: source.read_strategy,
                 representation: source.representation,

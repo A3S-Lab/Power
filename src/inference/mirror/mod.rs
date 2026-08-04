@@ -140,7 +140,7 @@ impl WeightStore {
         policy: &WeightMirrorPolicy,
     ) -> Result<WeightMirrorPlan> {
         validate_policy(policy)?;
-        let destination = resolve_destination(self.root(), destination.as_ref())?;
+        let destination = resolve_destination(self.roots(), destination.as_ref())?;
         let inventory = self
             .files()
             .iter()
@@ -267,7 +267,7 @@ impl WeightStore {
         cancellation: &CancellationToken,
     ) -> Result<WeightMirrorStageReport> {
         check_cancelled(cancellation)?;
-        let destination = resolve_destination(self.root(), destination.as_ref())?;
+        let destination = resolve_destination(self.roots(), destination.as_ref())?;
         let plan = self.plan_partial_mirror(&destination, candidates, policy)?;
         if let Some(rejection) = &plan.rejection {
             return Err(plan_rejection_error(rejection));
@@ -300,10 +300,10 @@ impl WeightStore {
                 })?;
                 continue;
             }
-            let source = self.root().join(&file.relative_path);
+            let source = self.verified_file_path(&file.relative_path)?;
             let target = destination.join(&file.relative_path);
             ensure_target_parent(&destination, &target)?;
-            copy_verified_no_replace(&source, &target, file.bytes, &file.sha256, cancellation)?;
+            copy_verified_no_replace(source, &target, file.bytes, &file.sha256, cancellation)?;
             copied_files = copied_files.saturating_add(1);
             copied_bytes = copied_bytes.checked_add(file.bytes).ok_or_else(|| {
                 PowerError::InvalidRequest(

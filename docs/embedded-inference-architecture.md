@@ -194,6 +194,15 @@ systems for its vision encoder, projector, dense layers, and routed experts.
   use the offline-only `ResidencyBudgetPlan::apply_to` shortcut. Discovery is
   opt-in, incomplete discovery fails closed instead of guessing, and the
   zero-cache default does not change.
+- `WeightSourceConfig` may combine one anchor root with explicit disjoint
+  `shard_roots`. Every physical root must resolve to a real, non-empty
+  directory; duplicate, nested, or overlapping roots and duplicate logical
+  relative paths fail closed. Discovery, file/byte bounds, hashing, indexing,
+  mmap or positional readers, lossless admission, and partial-mirror staging
+  operate on the combined logical collection. The canonical digest covers
+  stable relative paths, lengths, and bytes, not physical roots, so moving
+  unchanged shards across volumes does not change model identity, signatures,
+  TEE binding, or receipts.
 - `WeightStoreConfig` accepts a primary collection plus bounded, read-only
   replicas. Complete replicas must match the primary aggregate digest. An
   explicitly partial replica may contain a non-empty subset of primary
@@ -312,6 +321,7 @@ use a3s_power::inference::{
 };
 
 let config = WeightStoreConfig::new("/models/primary")
+    .with_primary_shard_root("/models/primary-overflow")
     .with_partial_replica(WeightSourceConfig::new("/models/replica"))
     .with_source_weighting(WeightSourceWeighting::ValidationThroughput);
 let store = WeightStore::open_config(&config, &InferenceLimits::default())?;
@@ -771,6 +781,12 @@ authority over export.
   manifest before serving it through mmap or positional reads. Model crates pin
   the aggregate digest with `verify_integrity` and may reuse Power's Ed25519
   model seal verification with `verify_signature`.
+- Physical multi-root placement is configuration, not model identity. Each
+  logical source has one canonical relative-file namespace; every root is
+  non-empty and non-overlapping, duplicate paths fail, and the combined file
+  count remains bounded. Path-free storage evidence binds only the aggregate
+  `rootCount`; actual roots never enter telemetry, receipts, hardware bundles,
+  or attestation claims.
 - Replica selection never changes dtype, shape, bytes, routing, or precision.
   Complete canonical sources require the primary aggregate digest; partial
   canonical sources require exact per-file digests and tensor descriptors.
@@ -848,6 +864,7 @@ authority over export.
 | Colibri mechanism | Power treatment |
 | --- | --- |
 | VRAM/RAM/storage as one hierarchy | Implemented generically with exact dtype and shape checks |
+| N-drive shard split for capacity aggregation | Implemented as explicit disjoint physical roots inside one logical `WeightStore` source; stable relative files produce the same collection digest as one root, all existing integrity/read/cache/replica/mirror paths are reused, and evidence exposes only root count |
 | Layer-local LFRU/LRU and learned hot pins | Implemented with decaying frequency, bounded recency, separate manual/plan pins, and transactional hot-set replacement |
 | Lossless live tier adaptation | Implemented at explicit safe boundaries with caller-owned heat, default 25% + 4 hysteresis, a four-replacement cap, exact-footprint swaps, stale-plan rejection, and the existing transactional pin/cache path |
 | Batched expert union | Implemented without changing router order, top-k, or gate weights |
@@ -887,6 +904,8 @@ The current sequence is:
 | 8 | Heterogeneous multi-device resident pipelines | **Power substrate complete:** canonical typed meshes reuse the active residency declaration/cache, cap topology at 16 devices, require bidirectional reachability to the primary, bound every synchronous peer copy and aggregate traffic, and bind exact confidential GPU/NVSwitch claim-index sets; model crates retain graph partitioning and kernels | Power tests cover exact single-device Candle parity, canonical topology, stale/malformed/wrong-mesh rejection, per-edge and aggregate byte/count bounds, cancellation, typed fallback, exact attested claim sets, privacy-safe receipt v3, and `Send + Sync`; model integrations must still publish named-hardware parity and end-to-end gains before enabling a mesh policy |
 | 9 | Continuous and ragged execution batches | **Power substrate complete:** a digest-bound lifecycle gives every member a distinct existing runtime permit, includes all boundary members exactly once in admission order, admits late members only to the next step, supports ragged position/shape metadata, and commits bounded state atomically with row-local cancellation; model crates retain sequence scheduling, KV/recurrent topology, tensors, kernels, and arithmetic | Power tests cover binding/isolation, permit and state-identity alias refusal, fair canonical rosters, late admission, ragged and aggregate bounds, cancellation, atomic retry, state accounting, digest-only evidence, and `Send + Sync`; each model integration must publish unbatched-versus-batched output parity and named-workload throughput/latency evidence |
 | 10 | Reproducible hardware evidence bundles | **Power substrate complete:** one 32 MiB-bounded canonical envelope embeds raw path-free storage and tuning evidence, replays the existing comparison/evaluator, binds typed runtime/device/named-environment identities plus selected-configuration model parity artifact pins, preserves baseline-retained negative results, and performs no automatic I/O | Power tests cover canonical ordering/serde/digest pins, replayed derivations, exact storage/model parity, mixed revision/model/hardware/runtime/device/environment/configuration refusal, nested tamper, collection bounds, privacy-safe debug, negative results, and `Send + Sync`; model integrations must still publish externally authenticated bundles from reproducible named-hardware runs |
+| 11 | Cache-bypass reads must remain measurable rather than presumed faster | **Power substrate complete:** explicit macOS `F_NOCACHE` extends the same integrity and positional-range handles, cannot claim direct or verified-cold I/O, and leaves mmap as default after negative PP-OCRv6 evidence | Power tests cover byte parity, cancellation, fallback, unsupported platforms, cache-claim refusal, path-free evidence, and `Send + Sync`; model integrations must retain negative results and promote a strategy only after named-hardware end-to-end wins |
+| 12 | N-drive shard split can aggregate capacity without duplicating the model | **Power substrate complete:** canonical and lossless sources may span explicit disjoint roots under one logical relative-file namespace and one collection identity; the existing readers, source router, cache, partial-mirror staging, TEE binding, and hardware bundle are unchanged | Power tests cover one-root identity parity, mmap/positional loading, canonical and lossless replicas, duplicate/nested/cross-source root refusal, partial-mirror source resolution, path redaction, root-count evidence separation, serde compatibility, and existing TEE bundle validation; model integrations must publish named-volume capacity and performance evidence |
 
 Cache-aware expert substitution remains outside the default path because it
 changes model semantics. Grammar drafts, MTP/speculative control flow,

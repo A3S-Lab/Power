@@ -293,6 +293,47 @@ fn nested_shards_stage_without_escaping_and_unselected_shards_conflict() {
 }
 
 #[test]
+fn mirror_staging_resolves_files_from_every_primary_shard_root() {
+    let primary = tempfile::tempdir().unwrap();
+    let shard = tempfile::tempdir().unwrap();
+    write_weight_file(primary.path(), "first.safetensors", "layer.first", 1);
+    write_weight_file(shard.path(), "second.safetensors", "layer.second", 2);
+    let store = WeightStore::open_config(
+        &WeightStoreConfig::new(primary.path()).with_primary_shard_root(shard.path()),
+        &InferenceLimits::default(),
+    )
+    .unwrap();
+    let selected = store
+        .files()
+        .iter()
+        .find(|file| file.relative_path == "second.safetensors")
+        .unwrap();
+    let destination_parent = tempfile::tempdir().unwrap();
+    let destination = destination_parent.path().join("mirror");
+
+    store
+        .stage_partial_mirror_blocking(
+            &destination,
+            &[WeightMirrorCandidate::new(&selected.relative_path, 1)],
+            &approved_policy(selected.bytes, 0),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read(destination.join("second.safetensors")).unwrap(),
+        std::fs::read(shard.path().join("second.safetensors")).unwrap()
+    );
+    assert!(store
+        .plan_partial_mirror(
+            shard.path().join("nested-mirror"),
+            &[WeightMirrorCandidate::new(&selected.relative_path, 1)],
+            &approved_policy(selected.bytes, 0),
+        )
+        .is_err());
+}
+
+#[test]
 fn serialized_policy_defaults_to_denying_plaintext_staging() {
     let policy: WeightMirrorPolicy = serde_json::from_value(serde_json::json!({
         "maxBytes": 1024,

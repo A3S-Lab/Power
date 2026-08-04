@@ -68,6 +68,43 @@ fn mmap_and_positional_reports_have_exact_output_parity_without_paths() {
 }
 
 #[test]
+fn sharded_primary_reports_root_count_without_exposing_paths() {
+    let primary = tempfile::tempdir().unwrap();
+    let shard = tempfile::tempdir().unwrap();
+    let first = [1_u8; 16];
+    let second = [2_u8; 32];
+    serialize_to_file(
+        [(
+            "layer.0.weight",
+            TensorView::new(Dtype::F32, vec![4], &first).unwrap(),
+        )],
+        None,
+        &primary.path().join("first.safetensors"),
+    )
+    .unwrap();
+    serialize_to_file(
+        [(
+            "layer.1.weight",
+            TensorView::new(Dtype::F32, vec![8], &second).unwrap(),
+        )],
+        None,
+        &shard.path().join("second.safetensors"),
+    )
+    .unwrap();
+    let mut benchmark = config(primary.path(), WeightReadStrategy::PositionalBuffered);
+    benchmark.weights = benchmark.weights.with_primary_shard_root(shard.path());
+
+    let report = run_storage_benchmark(&benchmark, &InferenceLimits::default()).unwrap();
+
+    assert_eq!(report.sources[0].root_count, 2);
+    assert_eq!(report.sources[0].verified_files, 2);
+    let json = serde_json::to_string(&report).unwrap();
+    assert!(json.contains("\"rootCount\":2"));
+    assert!(!json.contains(primary.path().to_string_lossy().as_ref()));
+    assert!(!json.contains(shard.path().to_string_lossy().as_ref()));
+}
+
+#[test]
 fn cold_labels_require_one_runner_verified_sample() {
     let root = tempfile::tempdir().unwrap();
     model(root.path());
