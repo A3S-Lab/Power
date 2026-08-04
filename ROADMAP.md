@@ -20,8 +20,9 @@ kernels.
   decoding, page windows, or model semantics.
 - Canonical weights, execution declarations, and confidential-computing claims
   remain digest-bound. A faster path may not weaken or omit them.
-- Registry publication must package and rebuild the exact lockfile-resolved
-  crate. Release automation never bypasses Cargo package verification.
+- Registry publication must match the tag to the crate version, then package
+  and rebuild the exact lockfile-resolved crate. Release automation never
+  bypasses Cargo package verification.
 
 ## Execution milestones
 

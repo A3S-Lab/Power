@@ -34,6 +34,20 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Verify release identity
+        env:
+          RELEASE_TAG_INPUT: ${{ github.event.inputs.tag }}
+        run: |
+          RELEASE_TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            RELEASE_TAG="${RELEASE_TAG_INPUT}"
+          fi
+          CRATE_VERSION="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
+          if [ -z "${CRATE_VERSION}" ] || [ "${RELEASE_TAG}" != "v${CRATE_VERSION}" ]; then
+            echo "release tag ${RELEASE_TAG} does not match a3s-power v${CRATE_VERSION}" >&2
+            exit 1
+          fi
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Format check
