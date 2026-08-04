@@ -1402,6 +1402,10 @@ server default.
 curl http://localhost:11434/v1/models
 ```
 
+Each model entry includes `context_length` when the registered manifest
+declares an exact token window. The field is omitted when unknown; Power does
+not invent a backend default.
+
 #### Pull a Model from a Remote Hub
 
 Requires the `hf` feature (`cargo build --features hf`). Power pulls from

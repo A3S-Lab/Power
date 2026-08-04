@@ -192,6 +192,7 @@ async fn test_v1_models_with_registered_model() {
     let data = json["data"].as_array().unwrap();
     assert_eq!(data.len(), 1);
     assert_eq!(data[0]["id"], "test-model");
+    assert_eq!(data[0]["context_length"], 4096);
 }
 
 // ============================================================================

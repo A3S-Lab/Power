@@ -867,6 +867,11 @@ pub struct ModelInfo {
     /// The parent model (null if not applicable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// Maximum context window in tokens, when declared by the model manifest.
+    /// Omitted when unknown so clients do not mistake a guessed default for
+    /// model authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
 }
 
 // ============================================================================
@@ -1304,11 +1309,29 @@ mod tests {
                 owned_by: "local".to_string(),
                 root: None,
                 parent: None,
+                context_length: Some(131072),
             }],
         };
         let json = serde_json::to_string(&list).unwrap();
         assert!(json.contains("llama3"));
         assert!(json.contains("\"object\":\"list\""));
+        assert!(json.contains("\"context_length\":131072"));
+    }
+
+    #[test]
+    fn test_model_info_omits_unknown_context_length() {
+        let model = ModelInfo {
+            id: "unknown-window".to_string(),
+            object: "model".to_string(),
+            created: 1700000000,
+            owned_by: "local".to_string(),
+            root: None,
+            parent: None,
+            context_length: None,
+        };
+
+        let json = serde_json::to_value(model).unwrap();
+        assert!(json.get("context_length").is_none());
     }
 
     #[test]

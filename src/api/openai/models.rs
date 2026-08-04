@@ -28,6 +28,7 @@ pub async fn list_handler(State(state): State<AppState>) -> impl IntoResponse {
                     owned_by: "local".to_string(),
                     root: None,
                     parent: None,
+                    context_length: m.parameters.as_ref().and_then(|p| p.context_length),
                 })
                 .collect();
 
@@ -64,6 +65,7 @@ pub async fn get_handler(
             owned_by: "local".to_string(),
             root: None,
             parent: None,
+            context_length: m.parameters.as_ref().and_then(|p| p.context_length),
         })
         .into_response(),
         Err(_) => (
@@ -751,6 +753,11 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["object"], "list");
         assert_eq!(json["data"].as_array().unwrap().len(), 2);
+        assert!(json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|model| model["context_length"] == 4096));
 
         std::env::remove_var("A3S_POWER_HOME");
     }
@@ -794,6 +801,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["id"], "llama3");
         assert_eq!(json["object"], "model");
+        assert_eq!(json["context_length"], 4096);
 
         std::env::remove_var("A3S_POWER_HOME");
     }
