@@ -95,4 +95,12 @@ fn seekable_weight_keys_are_redacted_and_reader_is_send_sync() {
     assert_send_sync::<SeekableEncryptedFile>();
     assert_send_sync::<SeekableWeightKey>();
     assert_eq!(format!("{:?}", key(9)), "SeekableWeightKey([REDACTED])");
+    assert_eq!(
+        format!(
+            "{:?}",
+            SeekableWeightKey::from_hex(&"09".repeat(32)).unwrap()
+        ),
+        "SeekableWeightKey([REDACTED])"
+    );
+    assert!(SeekableWeightKey::from_hex("not-a-key").is_err());
 }

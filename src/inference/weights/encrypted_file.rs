@@ -29,6 +29,41 @@ impl SeekableWeightKey {
         Self(Zeroizing::new(bytes))
     }
 
+    /// Parses a 32-byte key without retaining the decoded temporary buffer.
+    pub fn from_hex(value: &str) -> Result<Self> {
+        let value = value.trim();
+        if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(PowerError::Config(
+                "seekable weight key must contain exactly 64 hexadecimal characters".to_string(),
+            ));
+        }
+        let mut bytes = Zeroizing::new([0_u8; 32]);
+        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            let pair = std::str::from_utf8(pair).map_err(|_| {
+                PowerError::Config("seekable weight key contains invalid hexadecimal".to_string())
+            })?;
+            bytes[index] = u8::from_str_radix(pair, 16).map_err(|_| {
+                PowerError::Config("seekable weight key contains invalid hexadecimal".to_string())
+            })?;
+        }
+        Ok(Self(Zeroizing::new(*bytes)))
+    }
+
+    /// Loads a hex key from an environment variable into a zeroizing owner.
+    pub fn from_env(variable: &str) -> Result<Self> {
+        if variable.is_empty() {
+            return Err(PowerError::Config(
+                "seekable weight key environment variable must not be empty".to_string(),
+            ));
+        }
+        let value = Zeroizing::new(std::env::var(variable).map_err(|_| {
+            PowerError::Config(format!(
+                "seekable weight key environment variable '{variable}' is not set"
+            ))
+        })?);
+        Self::from_hex(&value)
+    }
+
     fn cipher(&self) -> Result<Aes256Gcm> {
         Aes256Gcm::new_from_slice(self.0.as_slice())
             .map_err(|error| PowerError::Config(format!("invalid AES-256 weight key: {error}")))
