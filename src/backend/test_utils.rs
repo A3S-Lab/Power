@@ -19,6 +19,8 @@ use crate::server::state::AppState;
 
 /// A mock backend for testing handlers without real inference.
 pub struct MockBackend {
+    backend_name: &'static str,
+    supported_family: Option<String>,
     load_succeeds: bool,
     memory_load_succeeds: bool,
     supports_memory_load: bool,
@@ -48,6 +50,8 @@ impl MockBackend {
     /// Create a mock backend where all operations succeed.
     pub fn success() -> Self {
         Self {
+            backend_name: "mock",
+            supported_family: None,
             load_succeeds: true,
             memory_load_succeeds: true,
             supports_memory_load: false,
@@ -71,6 +75,8 @@ impl MockBackend {
     /// Create a mock backend where `load()` returns an error.
     pub fn load_fails() -> Self {
         Self {
+            backend_name: "mock",
+            supported_family: None,
             load_succeeds: false,
             memory_load_succeeds: false,
             supports_memory_load: false,
@@ -94,6 +100,8 @@ impl MockBackend {
     /// Create a mock backend where `unload()` returns an error.
     pub fn unload_fails() -> Self {
         Self {
+            backend_name: "mock",
+            supported_family: None,
             load_succeeds: true,
             memory_load_succeeds: true,
             supports_memory_load: false,
@@ -117,6 +125,8 @@ impl MockBackend {
     /// Create a mock backend where `cleanup_request()` returns an error.
     pub fn cleanup_fails() -> Self {
         Self {
+            backend_name: "mock",
+            supported_family: None,
             load_succeeds: true,
             memory_load_succeeds: true,
             supports_memory_load: false,
@@ -140,6 +150,8 @@ impl MockBackend {
     /// Create a mock backend that emits thinking content in chat responses.
     pub fn with_thinking() -> Self {
         Self {
+            backend_name: "mock",
+            supported_family: None,
             load_succeeds: true,
             memory_load_succeeds: true,
             supports_memory_load: false,
@@ -193,6 +205,18 @@ impl MockBackend {
         self
     }
 
+    /// Override the mock's stable backend name.
+    pub fn with_name(mut self, name: &'static str) -> Self {
+        self.backend_name = name;
+        self
+    }
+
+    /// Restrict the mock to one manifest family.
+    pub fn with_family(mut self, family: impl Into<String>) -> Self {
+        self.supported_family = Some(family.into());
+        self
+    }
+
     /// Share a handle that captures the most recent chat request.
     pub fn chat_request_capture(&self) -> Arc<Mutex<Option<ChatRequest>>> {
         self.last_chat_request.clone()
@@ -207,12 +231,20 @@ impl MockBackend {
 #[async_trait]
 impl Backend for MockBackend {
     fn name(&self) -> &str {
-        "mock"
+        self.backend_name
     }
 
     fn supports(&self, format: &ModelFormat) -> bool {
         matches!(format, ModelFormat::Gguf)
             || (self.supports_remote && matches!(format, ModelFormat::Remote))
+    }
+
+    fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
+        self.supports(&manifest.format)
+            && match self.supported_family.as_deref() {
+                Some(family) => manifest.family.as_deref() == Some(family),
+                None => true,
+            }
     }
 
     async fn load(&self, _manifest: &ModelManifest) -> Result<()> {

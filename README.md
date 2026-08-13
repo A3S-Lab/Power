@@ -596,7 +596,7 @@ Client
 │  1. Build RequestContext (request_id, auth_id)                   │
 │  2. Privacy: sanitize_log() if redaction enabled                 │
 │  3. ModelRegistry.get(model) → ModelManifest                     │
-│  4. BackendRegistry.find_for_format(format) → Backend            │
+│  4. BackendRegistry.find_for_manifest(manifest) → Backend        │
 │                                                                  │
 │  5. autoload::ensure_loaded()                                    │
 │     ├─ LRU eviction if at max_loaded_models                     │
@@ -688,7 +688,12 @@ Three backends are available, each feature-gated:
 - **`llamacpp`** (optional): C++ llama.cpp via `llama-cpp-2` bindings. GGUF only. Session KV cache with prefix matching, LoRA adapters, MTMD multimodal, grammar constraints, mirostat sampling.
 - **`picolm`** (optional): Pure Rust layer-streaming. GGUF only. Real transformer inference (multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm). Peak RAM = O(layer_size) not O(model_size) via `madvise(DONTNEED)` page release. FP16 KV cache with fused f16 dot/accumulate. Fused dequant+dot kernels (Q4_K, Q6_K, Q8_0). NEON SIMD (aarch64) + AVX2 (x86_64). Rayon parallel matmul. Batch prefill, speculative decoding, tool calling, grammar-constrained output. 14+ tok/s decode on Apple Silicon. Enables 7B+ models in 512MB TEE EPC. No C/C++ inference backend — ~4,500 lines of fully auditable Rust.
 
-The `BackendRegistry` selects backends by priority and model format. In TEE environments, `find_for_tee()` auto-routes to picolm when the model exceeds 75% of available EPC memory.
+The `BackendRegistry` selects backends by priority and exact model manifest.
+Format-only backends inherit the existing behavior, while architecture-aware
+backends override `supports_manifest()` so multiple implementations of the same
+container format can coexist. In TEE environments,
+`find_for_tee_manifest()` retains exact manifest matching while preferring
+picolm when a compatible model exceeds 75% of available EPC memory.
 
 Without any backend feature enabled, Power can manage models but returns "backend not available" for inference.
 
@@ -697,6 +702,9 @@ Without any backend feature enabled, Power can manage models but returns "backen
 pub trait Backend: Send + Sync {
     fn name(&self) -> &str;
     fn supports(&self, format: &ModelFormat) -> bool;
+    fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
+        self.supports(&manifest.format)
+    }
     async fn load(&self, manifest: &ModelManifest) -> Result<()>;
     async fn unload(&self, model_name: &str) -> Result<()>;
     async fn chat(&self, model_name: &str, request: ChatRequest)
@@ -707,6 +715,28 @@ pub trait Backend: Send + Sync {
         -> Result<EmbeddingResponse>;
 }
 ```
+
+Downstream model crates can compose the HTTP service without making Power
+depend on the model implementation:
+
+```rust,no_run
+use std::sync::Arc;
+use a3s_power::server::PowerServerBuilder;
+
+# async fn run(
+#     config: a3s_power::config::PowerConfig,
+#     backend: Arc<dyn a3s_power::backend::Backend>,
+# ) -> a3s_power::error::Result<()> {
+PowerServerBuilder::new(config)
+    .with_backend(backend)
+    .start()
+    .await
+# }
+```
+
+Injected backends have priority over built-ins. Calling
+`without_default_backends()` makes the injected registry complete and avoids
+starting any built-in inference backend.
 
 ### Extension Points
 
@@ -1805,7 +1835,7 @@ power/
     │       └── attestation.rs   # GET /v1/attestation (nonce + model hash binding)
     │
     ├── backend/                 # Backend layer — inference engine abstraction
-    │   ├── mod.rs               # Backend trait (8 methods) + BackendRegistry (priority, TEE routing)
+    │   ├── mod.rs               # Backend trait + manifest-aware BackendRegistry (priority, TEE routing)
     │   ├── types.rs             # ChatRequest, ChatResponseChunk, EmbeddingRequest, Tool, ToolCall
     │   ├── mistralrs_backend.rs # Pure Rust: GGUF/SafeTensors/HF/Vision, ISQ (feature: mistralrs) ★
     │   ├── llamacpp.rs          # C++ bindings: KV cache, LoRA, MTMD vision, grammar (feature: llamacpp)

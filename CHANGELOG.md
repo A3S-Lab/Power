@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added manifest-aware backend capability matching. Backends may override
+  `supports_manifest` to select an exact model family while format-only
+  implementations retain their existing behavior. Request, unload, reaper,
+  and TEE routing paths now preserve that exact selection.
+- Added the typed `PowerServerBuilder` composition root. Downstream model crates
+  can inject backend objects ahead of Power's built-ins or explicitly run with
+  only their supplied registry without configuring raw backend names.
+- Added exact positional-staging coverage for model-owned packed `U8` weight
+  records, demonstrating that one atomic record can carry adjacent expert
+  matrices and scales through the existing hierarchy without a second cache.
+
 ## [0.8.0] - 2026-08-04
 
 ### Added

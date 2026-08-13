@@ -272,6 +272,21 @@ impl AppState {
         }
     }
 
+    /// Find the best backend for one exact model manifest.
+    ///
+    /// New callers should prefer this over [`Self::find_backend`] so
+    /// architecture-aware backends can share a container format safely.
+    pub fn find_backend_for_manifest(
+        &self,
+        manifest: &crate::model::manifest::ModelManifest,
+    ) -> crate::error::Result<std::sync::Arc<dyn crate::backend::Backend>> {
+        if self.config.tee_mode {
+            self.backends.find_for_tee_manifest(manifest)
+        } else {
+            self.backends.find_for_manifest(manifest)
+        }
+    }
+
     /// Whether token counts in responses should be rounded (side-channel mitigation).
     pub fn suppress_token_metrics(&self) -> bool {
         self.privacy
@@ -384,6 +399,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::test_utils::{sample_manifest, MockBackend};
 
     #[test]
     fn test_app_state_new() {
@@ -921,5 +937,23 @@ mod tests {
         assert!(result.is_ok());
         #[cfg(not(any(feature = "mistralrs", feature = "llamacpp", feature = "picolm")))]
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn find_backend_for_manifest_uses_architecture_aware_matching() {
+        let config = Arc::new(PowerConfig::default());
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(
+            MockBackend::success()
+                .with_name("olmoe")
+                .with_family("olmoe"),
+        ));
+        backends.register(Arc::new(MockBackend::success().with_name("generic")));
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+        let mut manifest = sample_manifest("other-model");
+        manifest.family = Some("other".to_string());
+
+        let backend = state.find_backend_for_manifest(&manifest).unwrap();
+        assert_eq!(backend.name(), "generic");
     }
 }

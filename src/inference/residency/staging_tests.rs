@@ -115,6 +115,64 @@ fn hierarchy(
 }
 
 #[tokio::test]
+async fn packed_u8_weight_record_survives_positional_staging_exactly() {
+    const PACKED_EXPERT: &str = "layer.0.expert.7.packed";
+    let directory = tempfile::tempdir().unwrap();
+    // One model-owned record can place gate, up, down, and scale payloads next
+    // to each other while Power treats the bytes as one opaque atomic weight.
+    let packed = [
+        0x47, 0x41, 0x54, 0x45, // GATE
+        0x55, 0x50, 0x00, 0x01, // UP
+        0x44, 0x4f, 0x57, 0x4e, // DOWN
+        0x10, 0x20, 0x30, 0x40, // scales
+    ];
+    let view = TensorView::new(Dtype::U8, vec![packed.len()], packed.as_slice()).unwrap();
+    serialize_to_file(
+        [(PACKED_EXPERT, view)],
+        None,
+        &directory.path().join("model.safetensors"),
+    )
+    .unwrap();
+    let store = Arc::new(
+        WeightStore::open_config(
+            &WeightStoreConfig::new(directory.path())
+                .with_primary_read_strategy(WeightReadStrategy::PositionalBuffered),
+            &InferenceLimits::default(),
+        )
+        .unwrap(),
+    );
+    let descriptor = store.descriptor(PACKED_EXPERT).unwrap();
+    assert_eq!(descriptor.dtype, "u8");
+    assert_eq!(descriptor.shape, [packed.len()]);
+    assert_eq!(descriptor.bytes, packed.len() as u64);
+
+    let runtime = new_runtime();
+    let hierarchy = hierarchy(store, &runtime, TelemetryMode::Aggregate);
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+    let completion = hierarchy
+        .start_staged_batch(vec![group(0, &[PACKED_EXPERT])], &permit, cancellation)
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+
+    assert_eq!(completion.groups.len(), 1);
+    assert_eq!(completion.groups[0].weights().len(), 1);
+    assert_eq!(
+        completion.groups[0].weights()[0]
+            .tensor()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<u8>()
+            .unwrap(),
+        packed
+    );
+    assert_eq!(completion.report.loaded_weights, 1);
+    assert_eq!(completion.report.bytes, packed.len() as u64);
+}
+
+#[tokio::test]
 async fn staged_batch_exposes_resident_groups_before_background_loads() {
     let (_directory, store) = staged_weight_store();
     let runtime = new_runtime();

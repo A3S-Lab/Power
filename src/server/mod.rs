@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod auth;
+mod builder;
 pub mod limiter;
 pub(crate) mod lock;
 pub mod log_stream;
@@ -7,6 +8,7 @@ pub mod metrics;
 pub mod request_context;
 pub mod router;
 pub mod state;
+pub use builder::PowerServerBuilder;
 #[cfg(any(
     all(feature = "vsock", target_os = "linux"),
     all(feature = "vsock", test)
@@ -38,14 +40,28 @@ const NVIDIA_NRAS_PROVIDER: &str = "nvidia-nras";
 /// has already been installed in the global tracing subscriber so that startup
 /// logs are also captured.
 pub async fn start(config: PowerConfig) -> Result<()> {
-    start_with_log_buffer(config, None).await
+    PowerServerBuilder::new(config).start().await
 }
 
 /// Start the HTTP server, injecting an existing `LogBuffer`.
 pub async fn start_with_log_buffer(
-    mut config: PowerConfig,
+    config: PowerConfig,
     log_buffer: Option<LogBuffer>,
 ) -> Result<()> {
+    let mut builder = PowerServerBuilder::new(config);
+    if let Some(log_buffer) = log_buffer {
+        builder = builder.with_log_buffer(log_buffer);
+    }
+    builder.start().await
+}
+
+async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> {
+    let builder::PowerServerOptions {
+        mut config,
+        log_buffer,
+        mut backends,
+        include_default_backends,
+    } = options;
     config.validate()?;
 
     // Ensure storage directories exist
@@ -149,8 +165,12 @@ pub async fn start_with_log_buffer(
     let bind_addr = config.bind_address();
     let config = Arc::new(config);
 
-    // Initialize backends
-    let backends = Arc::new(backend::default_backends(config.clone()));
+    // Initialize built-in backends after typed caller extensions so the caller
+    // controls priority without a string-based backend selector.
+    if include_default_backends {
+        backends.extend(backend::default_backends(config.clone()));
+    }
+    let backends = Arc::new(backends);
     tracing::info!(
         backends = ?backends.list_names(),
         "Initialized backends"
@@ -416,13 +436,15 @@ async fn unload_models_for_shutdown(state: &state::AppState) {
     if !loaded.is_empty() {
         tracing::info!(count = loaded.len(), "Unloading all models before shutdown");
         for model_name in &loaded {
-            let format = state
-                .registry
-                .get(model_name)
-                .map(|m| m.format.clone())
-                .unwrap_or(crate::model::manifest::ModelFormat::Gguf);
+            let manifest = state.registry.get(model_name).ok();
+            let backend_result = match manifest.as_ref() {
+                Some(manifest) => state.find_backend_for_manifest(manifest),
+                None => state
+                    .backends
+                    .find_for_format(&crate::model::manifest::ModelFormat::Gguf),
+            };
 
-            let backend = match state.backends.find_for_format(&format) {
+            let backend = match backend_result {
                 Ok(backend) => backend,
                 Err(e) => {
                     tracing::warn!(
@@ -782,13 +804,15 @@ async fn reap_expired_models_once(state: &state::AppState) {
     let expired = state.expired_models();
     for model_name in expired {
         // Look up the model's actual format to find the right backend.
-        let format = state
-            .registry
-            .get(&model_name)
-            .map(|m| m.format.clone())
-            .unwrap_or(crate::model::manifest::ModelFormat::Gguf);
+        let manifest = state.registry.get(&model_name).ok();
+        let backend_result = match manifest.as_ref() {
+            Some(manifest) => state.find_backend_for_manifest(manifest),
+            None => state
+                .backends
+                .find_for_format(&crate::model::manifest::ModelFormat::Gguf),
+        };
 
-        let backend = match state.backends.find_for_format(&format) {
+        let backend = match backend_result {
             Ok(backend) => backend,
             Err(e) => {
                 tracing::warn!(

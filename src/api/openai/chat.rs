@@ -262,7 +262,7 @@ pub async fn handler(
         }
     };
 
-    let backend = match state.find_backend(&manifest.format, manifest.size) {
+    let backend = match state.find_backend_for_manifest(&manifest) {
         Ok(b) => b,
         Err(e) => {
             state.metrics.decrement_active_requests();

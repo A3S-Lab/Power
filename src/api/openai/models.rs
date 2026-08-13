@@ -91,12 +91,12 @@ pub async fn delete_handler(
 ) -> impl IntoResponse {
     // Unload from backend if currently loaded, using the model's actual format.
     if state.is_model_loaded(&name) {
-        let format = state
-            .registry
-            .get(&name)
-            .map(|m| m.format.clone())
-            .unwrap_or(ModelFormat::Gguf);
-        let backend = match state.backends.find_for_format(&format) {
+        let manifest = state.registry.get(&name).ok();
+        let backend_result = match manifest.as_ref() {
+            Some(manifest) => state.find_backend_for_manifest(manifest),
+            None => state.backends.find_for_format(&ModelFormat::Gguf),
+        };
+        let backend = match backend_result {
             Ok(backend) => backend,
             Err(e) => {
                 return super::openai_error(

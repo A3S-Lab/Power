@@ -373,6 +373,33 @@ across primary and replica sources is non-resident. Other platforms currently
 refuse the verified cold label.
 See [Storage Benchmark Protocol](storage-benchmark.md).
 
+### Model-Owned Packed Weight Records
+
+A model crate may encode one atomic expert or another architecture-owned weight
+group as a one-dimensional `U8` SafeTensor. For example, a single record may
+place gate, up, down, and scale payloads next to each other so one exact tensor
+request covers the complete group. `WeightStore` validates the record's dtype,
+shape, byte range, collection digest, and selected source; `WeightHierarchy`
+then stages and caches that one record through the existing path. Power does not
+interpret the record header, matrix offsets, quantization format, expert
+identity, or reduction semantics. Those remain digest-bound model-owned data.
+
+This representation does not introduce a byte cache or expert registry. A model
+kernel consumes the resident `U8` tensor directly, and any future raw-buffer
+view must extend the same `WeightHierarchy` rather than create a parallel
+placement system.
+
+### Downstream Server Composition
+
+Model crates that need Power's OpenAI-compatible transport use the typed
+`PowerServerBuilder`. They inject `Arc<dyn Backend>` values before built-in
+backends, or explicitly disable built-ins when the supplied registry is
+complete. `Backend::supports_manifest` defaults to format matching but allows a
+model backend to restrict itself to an exact family. Normal request routing,
+TEE-aware selection, shutdown, deletion, and keep-alive eviction all use the
+same manifest-aware match, so a generic backend cannot intercept an
+architecture-specific model merely because both use SafeTensors or GGUF.
+
 ### Usage-Ranked Partial Mirror Staging
 
 Routing heat remains model-owned. A model crate can reduce it to bounded opaque

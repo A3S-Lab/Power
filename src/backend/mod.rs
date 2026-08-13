@@ -40,6 +40,15 @@ pub trait Backend: Send + Sync {
     /// Check if this backend can serve the given model format.
     fn supports(&self, format: &ModelFormat) -> bool;
 
+    /// Check whether this backend can serve one exact model manifest.
+    ///
+    /// Format-only backends inherit the existing behavior. Architecture-aware
+    /// backends should override this method so multiple implementations of the
+    /// same container format can coexist without relying on raw backend names.
+    fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
+        self.supports(&manifest.format)
+    }
+
     /// Load a model into memory, ready for inference.
     async fn load(&self, manifest: &ModelManifest) -> Result<()>;
 
@@ -197,6 +206,25 @@ impl BackendRegistry {
             })
     }
 
+    /// Find the highest-priority backend that supports the exact manifest.
+    pub fn find_for_manifest(&self, manifest: &ModelManifest) -> Result<Arc<dyn Backend>> {
+        self.backends
+            .iter()
+            .find(|backend| backend.supports_manifest(manifest))
+            .cloned()
+            .ok_or_else(|| {
+                PowerError::BackendNotAvailable(format!(
+                    "No backend available for model '{}' with format {}",
+                    manifest.name, manifest.format
+                ))
+            })
+    }
+
+    /// Append another registry while preserving both registries' priority order.
+    pub fn extend(&mut self, other: BackendRegistry) {
+        self.backends.extend(other.backends);
+    }
+
     /// Find a backend for TEE-constrained inference.
     ///
     /// When `model_size_bytes` exceeds 75% of available EPC memory, prefers the
@@ -229,6 +257,33 @@ impl BackendRegistry {
         }
 
         self.find_for_format(format)
+    }
+
+    /// Find a backend for one exact manifest under TEE memory pressure.
+    ///
+    /// The EPC-aware picolm preference is retained, but the candidate must also
+    /// accept the complete manifest. This prevents a format-compatible backend
+    /// from intercepting a model family it cannot execute.
+    pub fn find_for_tee_manifest(&self, manifest: &ModelManifest) -> Result<Arc<dyn Backend>> {
+        use crate::tee::epc::model_exceeds_epc;
+
+        if model_exceeds_epc(manifest.size) {
+            if let Ok(backend) = self.find_by_name("picolm") {
+                if backend.supports_manifest(manifest) {
+                    tracing::info!(
+                        model_size_mb = manifest.size / 1_048_576,
+                        "TEE EPC pressure: routing to picolm layer-streaming backend"
+                    );
+                    return Ok(backend);
+                }
+            }
+            tracing::warn!(
+                model_size_mb = manifest.size / 1_048_576,
+                "Model may exceed TEE EPC budget. Enable --features picolm for layer-streaming."
+            );
+        }
+
+        self.find_for_manifest(manifest)
     }
 
     /// Find a backend by name.
@@ -290,6 +345,7 @@ pub fn default_backends(#[allow(unused)] config: Arc<PowerConfig>) -> BackendReg
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::test_utils::{sample_manifest, MockBackend};
 
     #[cfg(any(feature = "mistralrs", feature = "llamacpp"))]
     fn test_config() -> Arc<PowerConfig> {
@@ -413,5 +469,73 @@ mod tests {
         let first = registry.find_for_format(&ModelFormat::Gguf).unwrap();
         // First registered backend should be returned
         assert_eq!(first.name(), registry.list_names()[0]);
+    }
+
+    #[test]
+    fn manifest_matching_skips_an_incompatible_specialized_backend() {
+        let mut registry = BackendRegistry::new();
+        registry.register(Arc::new(
+            MockBackend::success()
+                .with_name("olmoe")
+                .with_family("olmoe"),
+        ));
+        registry.register(Arc::new(MockBackend::success().with_name("generic")));
+
+        let mut manifest = sample_manifest("other-model");
+        manifest.family = Some("other".to_string());
+
+        let backend = registry.find_for_manifest(&manifest).unwrap();
+        assert_eq!(backend.name(), "generic");
+    }
+
+    #[test]
+    fn manifest_matching_prefers_a_compatible_specialized_backend() {
+        let mut registry = BackendRegistry::new();
+        registry.register(Arc::new(
+            MockBackend::success()
+                .with_name("olmoe")
+                .with_family("olmoe"),
+        ));
+        registry.register(Arc::new(MockBackend::success().with_name("generic")));
+
+        let mut manifest = sample_manifest("olmoe-model");
+        manifest.family = Some("olmoe".to_string());
+
+        let backend = registry.find_for_manifest(&manifest).unwrap();
+        assert_eq!(backend.name(), "olmoe");
+    }
+
+    #[test]
+    fn tee_manifest_matching_preserves_manifest_filtering() {
+        let mut registry = BackendRegistry::new();
+        registry.register(Arc::new(
+            MockBackend::success()
+                .with_name("olmoe")
+                .with_family("olmoe"),
+        ));
+        registry.register(Arc::new(MockBackend::success().with_name("generic")));
+
+        let mut manifest = sample_manifest("other-model");
+        manifest.family = Some("other".to_string());
+        manifest.size = 0;
+
+        let backend = registry.find_for_tee_manifest(&manifest).unwrap();
+        assert_eq!(backend.name(), "generic");
+    }
+
+    #[test]
+    fn extending_a_registry_preserves_custom_backend_priority() {
+        let mut custom = BackendRegistry::new();
+        custom.register(Arc::new(MockBackend::success().with_name("custom")));
+        let mut defaults = BackendRegistry::new();
+        defaults.register(Arc::new(MockBackend::success().with_name("default")));
+
+        custom.extend(defaults);
+
+        assert_eq!(custom.list_names(), ["custom", "default"]);
+        assert_eq!(
+            custom.find_for_format(&ModelFormat::Gguf).unwrap().name(),
+            "custom"
+        );
     }
 }
