@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added the typed `PowerServerBuilder` composition root. Downstream model crates
   can inject backend objects ahead of Power's built-ins or explicitly run with
   only their supplied registry without configuring raw backend names.
+- Added process-local model manifest injection to `PowerServerBuilder`, so a
+  downstream backend and its exact manifest can be composed without mutating
+  Power's global model registry on disk.
 - Added exact positional-staging coverage for model-owned packed `U8` weight
   records, demonstrating that one atomic record can carry adjacent expert
   matrices and scales through the existing hierarchy without a second cache.

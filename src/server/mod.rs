@@ -60,6 +60,7 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         mut config,
         log_buffer,
         mut backends,
+        model_manifests,
         include_default_backends,
     } = options;
     config.validate()?;
@@ -76,6 +77,9 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
     // Initialize model registry and scan for existing models
     let registry = Arc::new(ModelRegistry::new());
     registry.scan()?;
+    for manifest in model_manifests {
+        registry.register_transient(manifest)?;
+    }
     tracing::info!(count = registry.count(), "Loaded model registry");
 
     // Initialize key provider early so startup integrity checks can verify

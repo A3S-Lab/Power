@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::backend::{Backend, BackendRegistry};
 use crate::config::PowerConfig;
 use crate::error::Result;
+use crate::model::manifest::ModelManifest;
 
 use super::log_stream::LogBuffer;
 
@@ -19,6 +20,7 @@ pub(super) struct PowerServerOptions {
     pub(super) config: PowerConfig,
     pub(super) log_buffer: Option<LogBuffer>,
     pub(super) backends: BackendRegistry,
+    pub(super) model_manifests: Vec<ModelManifest>,
     pub(super) include_default_backends: bool,
 }
 
@@ -29,6 +31,7 @@ impl PowerServerBuilder {
                 config,
                 log_buffer: None,
                 backends: BackendRegistry::new(),
+                model_manifests: Vec::new(),
                 include_default_backends: true,
             },
         }
@@ -54,6 +57,17 @@ impl PowerServerBuilder {
         self
     }
 
+    /// Register an in-memory model manifest when the server starts.
+    ///
+    /// This is intended for typed downstream composition roots whose model is
+    /// already available locally. The manifest is not persisted into Power's
+    /// global model directory and replaces a scanned manifest with the same
+    /// name for this server process only.
+    pub fn with_model_manifest(mut self, manifest: ModelManifest) -> Self {
+        self.options.model_manifests.push(manifest);
+        self
+    }
+
     /// Start with only caller-injected backends.
     pub fn without_default_backends(mut self) -> Self {
         self.options.include_default_backends = false;
@@ -71,10 +85,12 @@ impl PowerServerBuilder {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use crate::backend::test_utils::MockBackend;
     use crate::config::PowerConfig;
+    use crate::model::manifest::{ModelFormat, ModelManifest};
 
     use super::PowerServerBuilder;
 
@@ -101,6 +117,45 @@ mod tests {
 
         assert!(!options.include_default_backends);
         assert!(options.backends.list_names().is_empty());
+    }
+
+    #[test]
+    fn downstream_models_are_process_local_and_keep_registration_order() {
+        let first = ModelManifest {
+            name: "olmoe-a".to_string(),
+            format: ModelFormat::SafeTensors,
+            size: 10,
+            sha256: "11".repeat(32),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: PathBuf::from("/models/olmoe-a"),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: Vec::new(),
+            family: Some("olmoe".to_string()),
+            families: None,
+        };
+        let mut second = first.clone();
+        second.name = "olmoe-b".to_string();
+
+        let options = PowerServerBuilder::new(PowerConfig::default())
+            .with_model_manifest(first)
+            .with_model_manifest(second)
+            .into_options();
+
+        assert_eq!(
+            options
+                .model_manifests
+                .iter()
+                .map(|manifest| manifest.name.as_str())
+                .collect::<Vec<_>>(),
+            ["olmoe-a", "olmoe-b"]
+        );
     }
 
     #[test]
