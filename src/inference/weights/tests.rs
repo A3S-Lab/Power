@@ -87,6 +87,62 @@ fn positional_index_and_exact_bytes_match_the_mmap_default() {
 }
 
 #[test]
+fn verified_tensor_ranges_match_for_mmap_and_positional_sources() {
+    let root = tempfile::tempdir().unwrap();
+    write_large_weight(root.path(), "model.safetensors", "range.weight", 64);
+    let mmap = WeightStore::open(root.path(), &InferenceLimits::default()).unwrap();
+    let positional = WeightStore::open_config(
+        &WeightStoreConfig::new(root.path())
+            .with_primary_read_strategy(WeightReadStrategy::PositionalBuffered),
+        &InferenceLimits::default(),
+    )
+    .unwrap();
+
+    let expected = mmap.read_tensor_bytes("range.weight").unwrap();
+    let mmap_range = mmap.read_tensor_range("range.weight", 7, 19).unwrap();
+    let positional_range = positional.read_tensor_range("range.weight", 7, 19).unwrap();
+
+    assert_eq!(mmap_range.bytes(), &expected.bytes()[7..26]);
+    assert_eq!(positional_range.bytes(), mmap_range.bytes());
+    assert_eq!(mmap_range.tensor_offset(), 7);
+    assert_eq!(mmap_range.storage().bytes, 64);
+    assert_eq!(mmap_range.strategy(), WeightReadStrategy::Mmap);
+    assert_eq!(
+        positional_range.strategy(),
+        WeightReadStrategy::PositionalBuffered
+    );
+    assert_eq!(mmap_range.source_index(), 0);
+    assert!(!mmap_range.fell_back());
+}
+
+#[test]
+fn verified_tensor_ranges_reject_empty_overflowing_and_cancelled_reads() {
+    let root = tempfile::tempdir().unwrap();
+    write_large_weight(root.path(), "model.safetensors", "range.weight", 64);
+    let store = WeightStore::open(root.path(), &InferenceLimits::default()).unwrap();
+
+    assert!(matches!(
+        store.read_tensor_range("range.weight", 0, 0),
+        Err(PowerError::InvalidRequest(_))
+    ));
+    assert!(matches!(
+        store.read_tensor_range("range.weight", 63, 2),
+        Err(PowerError::InvalidRequest(_))
+    ));
+    assert!(matches!(
+        store.read_tensor_range("range.weight", u64::MAX, 2),
+        Err(PowerError::InvalidRequest(_))
+    ));
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        store.read_tensor_range_with_cancellation("range.weight", 0, 1, &cancelled),
+        Err(PowerError::InferenceFailed(_))
+    ));
+}
+
+#[test]
 fn positional_reads_are_chunked_cancellable_and_fail_on_truncation() {
     let root = tempfile::tempdir().unwrap();
     let tensor_bytes = range_io::RANGE_READ_CHUNK_BYTES * 2 + 4096;

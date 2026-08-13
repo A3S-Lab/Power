@@ -80,11 +80,26 @@ fn encrypted_collection_preserves_logical_identity_and_tensor_bytes() {
                 .unwrap()
         );
     }
+    let encrypted_range = opened
+        .read_tensor_range("layer.0.weight", 3_500, 5_000)
+        .unwrap();
+    let canonical_range = canonical
+        .read_tensor_range("layer.0.weight", 3_500, 5_000)
+        .unwrap();
+    assert_eq!(encrypted_range.bytes(), canonical_range.bytes());
+    assert_eq!(encrypted_range.tensor_offset(), 3_500);
+    assert!(matches!(
+        encrypted_range.representation(),
+        WeightSourceRepresentation::SeekableAes256GcmV1 { .. }
+    ));
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     assert!(opened
         .read_tensor_bytes_with_cancellation("layer.0.weight", &cancellation)
+        .is_err());
+    assert!(opened
+        .read_tensor_range_with_cancellation("layer.0.weight", 0, 1, &cancellation)
         .is_err());
     let cancelled_source =
         SeekableEncryptedWeightSource::new(&encrypted, report.manifest_sha256, key(17)).unwrap();

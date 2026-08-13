@@ -26,6 +26,9 @@ mod files;
 mod index;
 mod lossless;
 mod range_io;
+mod tensor_range;
+
+pub use tensor_range::TensorRangeRead;
 
 pub use encrypted_collection::{
     encrypt_seekable_weight_collection, SeekableEncryptedWeightCollectionReport,
