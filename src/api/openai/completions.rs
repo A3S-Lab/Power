@@ -9,10 +9,15 @@ use zeroize::Zeroize;
 
 use super::openai_error;
 use crate::api::types::{CompletionChoice, CompletionRequest, CompletionResponse, Usage};
+use crate::backend::types::CompletionResponseChunk;
 use crate::server::audit::AuditEvent;
 use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
+
+fn chunk_emits_token(chunk: &CompletionResponseChunk) -> bool {
+    chunk.token_id.is_some() || !chunk.done || !chunk.text.is_empty()
+}
 
 /// POST /v1/completions - OpenAI-compatible text completion.
 pub async fn handler(
@@ -336,7 +341,7 @@ pub async fn handler(
                 let sse_stream = stream.map(move |chunk| {
                     let data = match chunk {
                         Ok(c) => {
-                            if !c.done {
+                            if chunk_emits_token(&c) {
                                 counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 if !ttft_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
                                     metrics.record_ttft(
@@ -471,7 +476,7 @@ pub async fn handler(
                     match chunk {
                         Ok(c) => {
                             full_text.push_str(&c.text);
-                            if !c.done {
+                            if chunk_emits_token(&c) {
                                 completion_tokens += 1;
                                 if !ttft_recorded {
                                     state
@@ -586,13 +591,68 @@ pub async fn handler(
 #[cfg(test)]
 mod tests {
     use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
-    use crate::backend::types::EffectivePromptDigest;
+    use crate::backend::types::{CompletionResponseChunk, EffectivePromptDigest};
     use crate::model::manifest::ModelFormat;
     use crate::server::router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use serial_test::serial;
     use tower::util::ServiceExt;
+
+    #[test]
+    fn terminal_payload_chunks_count_as_output_tokens() {
+        let terminal_token = CompletionResponseChunk {
+            text: "last".to_string(),
+            done: true,
+            prompt_tokens: Some(3),
+            done_reason: Some("length".to_string()),
+            prompt_eval_duration_ns: None,
+            token_id: Some(42),
+        };
+        let terminal_metadata = CompletionResponseChunk {
+            text: String::new(),
+            done: true,
+            prompt_tokens: Some(3),
+            done_reason: Some("length".to_string()),
+            prompt_eval_duration_ns: None,
+            token_id: None,
+        };
+        assert!(super::chunk_emits_token(&terminal_token));
+        assert!(!super::chunk_emits_token(&terminal_metadata));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn terminal_payload_is_returned_and_counted_in_non_streaming_usage() {
+        let directory = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", directory.path());
+        let state = test_state_with_mock(MockBackend::with_terminal_payload());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let response = router::build(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"test","prompt":"hi","stream":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["choices"][0]["text"], "World");
+        assert_eq!(json["usage"]["completion_tokens"], 1);
+        assert_eq!(json["usage"]["total_tokens"], 6);
+        std::env::remove_var("A3S_POWER_HOME");
+    }
 
     #[tokio::test]
     async fn test_openai_completions_model_not_found() {

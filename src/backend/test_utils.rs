@@ -33,6 +33,8 @@ pub struct MockBackend {
     emit_thinking: bool,
     /// When true, chat() emits a tool-call response.
     emit_tool_calls: bool,
+    /// When true, the final chunk carries the generated token and metadata.
+    terminal_payload: bool,
     effective_prompt: Option<EffectivePromptDigest>,
     last_chat_request: Arc<Mutex<Option<ChatRequest>>>,
     last_completion_request: Arc<Mutex<Option<CompletionRequest>>>,
@@ -62,6 +64,7 @@ impl MockBackend {
             cleanup_succeeds: true,
             emit_thinking: false,
             emit_tool_calls: false,
+            terminal_payload: false,
             effective_prompt: None,
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
@@ -87,6 +90,7 @@ impl MockBackend {
             cleanup_succeeds: true,
             emit_thinking: false,
             emit_tool_calls: false,
+            terminal_payload: false,
             effective_prompt: None,
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
@@ -112,6 +116,7 @@ impl MockBackend {
             cleanup_succeeds: true,
             emit_thinking: false,
             emit_tool_calls: false,
+            terminal_payload: false,
             effective_prompt: None,
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
@@ -137,6 +142,7 @@ impl MockBackend {
             cleanup_succeeds: false,
             emit_thinking: false,
             emit_tool_calls: false,
+            terminal_payload: false,
             effective_prompt: None,
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
@@ -162,6 +168,7 @@ impl MockBackend {
             cleanup_succeeds: true,
             emit_thinking: true,
             emit_tool_calls: false,
+            terminal_payload: false,
             effective_prompt: None,
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
@@ -203,6 +210,13 @@ impl MockBackend {
     pub fn with_remote_support(mut self) -> Self {
         self.supports_remote = true;
         self
+    }
+
+    /// Create a mock backend whose generated token is carried by the terminal chunk.
+    pub fn with_terminal_payload() -> Self {
+        let mut mock = Self::success();
+        mock.terminal_payload = true;
+        mock
     }
 
     /// Override the mock's stable backend name.
@@ -375,6 +389,16 @@ impl Backend for MockBackend {
                     tool_calls: None,
                 }),
             ]
+        } else if self.terminal_payload {
+            vec![Ok(ChatResponseChunk {
+                content: "Hello".to_string(),
+                thinking_content: None,
+                done: true,
+                prompt_tokens: Some(5),
+                done_reason: Some("length".to_string()),
+                prompt_eval_duration_ns: Some(1_000_000),
+                tool_calls: None,
+            })]
         } else {
             vec![
                 Ok(ChatResponseChunk {
@@ -418,24 +442,35 @@ impl Backend for MockBackend {
             .lock()
             .expect("completion request lock poisoned") = Some(request);
 
-        let chunks = vec![
-            Ok(CompletionResponseChunk {
+        let chunks = if self.terminal_payload {
+            vec![Ok(CompletionResponseChunk {
                 text: "World".to_string(),
-                done: false,
-                prompt_tokens: None,
-                done_reason: None,
-                prompt_eval_duration_ns: None,
-                token_id: Some(42),
-            }),
-            Ok(CompletionResponseChunk {
-                text: "".to_string(),
                 done: true,
                 prompt_tokens: Some(5),
-                done_reason: Some("stop".to_string()),
+                done_reason: Some("length".to_string()),
                 prompt_eval_duration_ns: Some(1_000_000),
-                token_id: None,
-            }),
-        ];
+                token_id: Some(42),
+            })]
+        } else {
+            vec![
+                Ok(CompletionResponseChunk {
+                    text: "World".to_string(),
+                    done: false,
+                    prompt_tokens: None,
+                    done_reason: None,
+                    prompt_eval_duration_ns: None,
+                    token_id: Some(42),
+                }),
+                Ok(CompletionResponseChunk {
+                    text: "".to_string(),
+                    done: true,
+                    prompt_tokens: Some(5),
+                    done_reason: Some("stop".to_string()),
+                    prompt_eval_duration_ns: Some(1_000_000),
+                    token_id: None,
+                }),
+            ]
+        };
         Ok(Box::pin(futures::stream::iter(chunks)))
     }
 

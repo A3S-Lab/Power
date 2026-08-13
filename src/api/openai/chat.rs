@@ -12,11 +12,26 @@ use crate::api::types::{
     ChatChoice, ChatChunkChoice, ChatCompletionChunk, ChatCompletionMessage, ChatCompletionRequest,
     ChatCompletionResponse, ChatDelta, Usage,
 };
-use crate::backend::types::{ChatMessage, ChatRequest, MessageContent, ToolCall, ToolChoice};
+use crate::backend::types::{
+    ChatMessage, ChatRequest, ChatResponseChunk, MessageContent, ToolCall, ToolChoice,
+};
 use crate::server::audit::AuditEvent;
 use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
+
+fn chunk_emits_token(chunk: &ChatResponseChunk) -> bool {
+    !chunk.done
+        || !chunk.content.is_empty()
+        || chunk
+            .thinking_content
+            .as_ref()
+            .is_some_and(|content| !content.is_empty())
+        || chunk
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty())
+}
 
 fn has_effective_tools(request: &ChatCompletionRequest) -> bool {
     request
@@ -491,7 +506,7 @@ pub async fn handler(
                 let content_stream = stream.map(move |chunk| {
                     let event_data = match chunk {
                         Ok(c) => {
-                            if !c.done {
+                            if chunk_emits_token(&c) {
                                 counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 // Record TTFT on first content chunk
                                 if !ttft_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -518,12 +533,10 @@ pub async fn handler(
                                     index: 0,
                                     delta: ChatDelta {
                                         role: None,
-                                        content: if c.done { None } else { Some(c.content) },
-                                        reasoning_content: if c.done {
-                                            None
-                                        } else {
-                                            c.thinking_content
-                                        },
+                                        content: (!c.content.is_empty()).then_some(c.content),
+                                        reasoning_content: c
+                                            .thinking_content
+                                            .filter(|content| !content.is_empty()),
                                         tool_calls: c.tool_calls,
                                     },
                                     finish_reason,
@@ -655,7 +668,7 @@ pub async fn handler(
                             if let Some(ref t) = c.thinking_content {
                                 full_thinking.push_str(t);
                             }
-                            if !c.done {
+                            if chunk_emits_token(&c) {
                                 completion_tokens += 1;
                                 if !ttft_recorded {
                                     state
@@ -794,13 +807,68 @@ pub async fn handler(
 mod tests {
     use crate::api::types::ChatCompletionRequest;
     use crate::backend::test_utils::{sample_manifest, test_state_with_mock, MockBackend};
-    use crate::backend::types::EffectivePromptDigest;
+    use crate::backend::types::{ChatResponseChunk, EffectivePromptDigest};
     use crate::model::manifest::ModelFormat;
     use crate::server::router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use serial_test::serial;
     use tower::util::ServiceExt;
+
+    #[test]
+    fn terminal_chat_payload_chunks_count_as_output_tokens() {
+        let terminal_token = ChatResponseChunk {
+            content: "last".to_string(),
+            thinking_content: None,
+            done: true,
+            prompt_tokens: Some(3),
+            done_reason: Some("length".to_string()),
+            prompt_eval_duration_ns: None,
+            tool_calls: None,
+        };
+        let terminal_metadata = ChatResponseChunk {
+            content: String::new(),
+            thinking_content: None,
+            done: true,
+            prompt_tokens: Some(3),
+            done_reason: Some("length".to_string()),
+            prompt_eval_duration_ns: None,
+            tool_calls: None,
+        };
+        assert!(super::chunk_emits_token(&terminal_token));
+        assert!(!super::chunk_emits_token(&terminal_metadata));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn streaming_preserves_terminal_chat_payload() {
+        let directory = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", directory.path());
+        let state = test_state_with_mock(MockBackend::with_terminal_payload());
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let response = router::build(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("\"content\":\"Hello\""));
+        std::env::remove_var("A3S_POWER_HOME");
+    }
 
     #[test]
     fn backend_response_format_preserves_remote_json_schema_wire_shape() {
