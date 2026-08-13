@@ -43,6 +43,33 @@ fn new_runtime() -> EmbeddedRuntime {
 }
 
 #[test]
+fn hierarchy_accounts_for_model_owned_fixed_weights() {
+    let (_directory, store) = weight_store(Dtype::F32, vec![2], &[0; 8]);
+    let limits = InferenceLimits {
+        max_resident_weight_bytes: 12,
+        ..InferenceLimits::default()
+    };
+    let runtime = EmbeddedRuntime::new(DevicePreference::Cpu, limits).unwrap();
+    let policy = ResidencyPolicy {
+        host_cache_bytes: 4,
+        ..ResidencyPolicy::default()
+    };
+
+    let hierarchy = WeightHierarchy::new_with_fixed_weight_bytes(
+        Arc::clone(&store),
+        runtime.clone(),
+        policy.clone(),
+        8,
+    )
+    .unwrap();
+    assert_eq!(hierarchy.fixed_weight_bytes(), 8);
+
+    let error =
+        WeightHierarchy::new_with_fixed_weight_bytes(store, runtime, policy, 9).unwrap_err();
+    assert!(error.to_string().contains("total 13 bytes"));
+}
+
+#[test]
 fn hierarchy_preserves_dtype_and_uses_layer_cache() {
     let (_directory, store) = weight_store(Dtype::BF16, vec![2], &[0, 0, 0, 0]);
     let runtime = new_runtime();

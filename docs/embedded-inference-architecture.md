@@ -293,8 +293,10 @@ eviction or persistence policy.
 - CPU, CUDA, and Metal are explicit device choices. An unavailable explicit
   device fails instead of silently moving execution elsewhere.
 - Runtime limits bound graph plans, tensor elements, resident weights, model
-  state, context, generation, and concurrency. Model-owned KV or recurrent
-  state must call `checked_state_bytes` before allocation.
+  state, context, generation, and concurrency. `WeightHierarchy` can account
+  for model-owned fixed dense weights together with its complete host/device
+  cache budgets before allocation. Model-owned KV or recurrent state must call
+  `checked_state_bytes` before allocation.
 - Placement and routing telemetry are controlled by `TelemetryMode`. It is off
   by default. Detailed expert heat can reveal input semantics, is never logged
   or persisted automatically, and must remain inside the TEE unless policy

@@ -52,6 +52,7 @@ struct HierarchyInner {
     store: Arc<WeightStore>,
     runtime: EmbeddedRuntime,
     policy: ResidencyPolicy,
+    fixed_weight_bytes: u64,
     operations: RwLock<()>,
     cache: Mutex<CacheState>,
     active_plan: Mutex<Option<ResidencyPlan>>,
@@ -73,16 +74,32 @@ impl WeightHierarchy {
         runtime: EmbeddedRuntime,
         policy: ResidencyPolicy,
     ) -> Result<Self> {
+        Self::new_with_fixed_weight_bytes(store, runtime, policy, 0)
+    }
+
+    /// Creates a hierarchy while accounting for model-owned fixed weights.
+    ///
+    /// `fixed_weight_bytes` covers dense or otherwise permanently resident
+    /// weights held outside this hierarchy. The fixed bytes and the complete
+    /// configured host/device cache budgets must jointly fit the runtime's
+    /// resident-weight limit before any hierarchy allocation occurs.
+    pub fn new_with_fixed_weight_bytes(
+        store: Arc<WeightStore>,
+        runtime: EmbeddedRuntime,
+        policy: ResidencyPolicy,
+        fixed_weight_bytes: u64,
+    ) -> Result<Self> {
         policy.validate()?;
         let resident_bytes = policy
             .host_cache_bytes
             .checked_add(policy.device_cache_bytes)
+            .and_then(|bytes| bytes.checked_add(fixed_weight_bytes))
             .ok_or_else(|| {
                 PowerError::Config("weight residency byte budget overflowed".to_string())
             })?;
         if resident_bytes > runtime.limits().max_resident_weight_bytes {
             return Err(PowerError::Config(format!(
-                "weight residency budgets total {resident_bytes} bytes, exceeding the {} byte runtime limit",
+                "fixed weights and residency budgets total {resident_bytes} bytes, exceeding the {} byte runtime limit",
                 runtime.limits().max_resident_weight_bytes
             )));
         }
@@ -96,6 +113,7 @@ impl WeightHierarchy {
             inner: Arc::new(HierarchyInner {
                 store,
                 runtime,
+                fixed_weight_bytes,
                 telemetry: Telemetry::new(policy.telemetry),
                 route_coupling,
                 policy,
@@ -118,6 +136,12 @@ impl WeightHierarchy {
 
     pub fn policy(&self) -> &ResidencyPolicy {
         &self.inner.policy
+    }
+
+    /// Model-owned fixed weights included in this hierarchy's admission
+    /// budget but not duplicated in its cache.
+    pub fn fixed_weight_bytes(&self) -> u64 {
+        self.inner.fixed_weight_bytes
     }
 
     /// Loads an exact tensor through the configured hierarchy.
