@@ -11,17 +11,24 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{PowerError, Result};
 
-use super::WeightReadStrategy;
+use super::{SeekableEncryptedFile, WeightReadStrategy};
 
 pub(super) const RANGE_READ_CHUNK_BYTES: usize = 1024 * 1024;
 const MIN_DIRECT_ALIGNMENT: usize = 4 * 1024;
 
 pub(super) struct WeightFileReader {
-    buffered: File,
-    cache_bypass: Option<File>,
-    direct: Option<File>,
+    source: WeightFileReaderSource,
     verified_bytes: u64,
     io_block_size: u64,
+}
+
+enum WeightFileReaderSource {
+    Plain {
+        buffered: File,
+        cache_bypass: Option<File>,
+        direct: Option<File>,
+    },
+    SeekableEncrypted(Box<SeekableEncryptedFile>),
 }
 
 impl WeightFileReader {
@@ -49,12 +56,22 @@ impl WeightFileReader {
             None
         };
         Ok(Self {
-            buffered,
-            cache_bypass,
-            direct,
+            source: WeightFileReaderSource::Plain {
+                buffered,
+                cache_bypass,
+                direct,
+            },
             verified_bytes,
             io_block_size,
         })
+    }
+
+    pub(super) fn from_encrypted(source: SeekableEncryptedFile) -> Self {
+        Self {
+            verified_bytes: source.descriptor().plaintext_bytes,
+            source: WeightFileReaderSource::SeekableEncrypted(Box::new(source)),
+            io_block_size: 0,
+        }
     }
 
     pub(super) fn io_block_size(&self) -> u64 {
@@ -76,36 +93,50 @@ impl WeightFileReader {
                 "tensor byte range exceeds its verified source file".to_string(),
             ));
         }
-        match strategy {
-            WeightReadStrategy::Mmap => Err(PowerError::InvalidRequest(
-                "mmap tensor reads do not use the positional range reader".to_string(),
-            )),
-            WeightReadStrategy::PositionalBuffered => {
-                read_buffered(&self.buffered, offset, bytes, cancellation)
+        match &self.source {
+            WeightFileReaderSource::SeekableEncrypted(source) => {
+                if strategy != WeightReadStrategy::PositionalBuffered {
+                    return Err(PowerError::InvalidRequest(
+                        "seekable encrypted weights require positional-buffered reads".to_string(),
+                    ));
+                }
+                source.read_range(offset, bytes, cancellation)
             }
-            WeightReadStrategy::PositionalCacheBypass => {
-                let cache_bypass = self.cache_bypass.as_ref().ok_or_else(|| {
-                    PowerError::BackendNotAvailable(
-                        "cache-bypass weight reads were not opened for this source".to_string(),
+            WeightFileReaderSource::Plain {
+                buffered,
+                cache_bypass,
+                direct,
+            } => match strategy {
+                WeightReadStrategy::Mmap => Err(PowerError::InvalidRequest(
+                    "mmap tensor reads do not use the positional range reader".to_string(),
+                )),
+                WeightReadStrategy::PositionalBuffered => {
+                    read_buffered(buffered, offset, bytes, cancellation)
+                }
+                WeightReadStrategy::PositionalCacheBypass => {
+                    let cache_bypass = cache_bypass.as_ref().ok_or_else(|| {
+                        PowerError::BackendNotAvailable(
+                            "cache-bypass weight reads were not opened for this source".to_string(),
+                        )
+                    })?;
+                    read_buffered(cache_bypass, offset, bytes, cancellation)
+                }
+                WeightReadStrategy::PositionalDirect => {
+                    let direct = direct.as_ref().ok_or_else(|| {
+                        PowerError::BackendNotAvailable(
+                            "direct weight reads were not opened for this source".to_string(),
+                        )
+                    })?;
+                    read_direct(
+                        direct,
+                        offset,
+                        bytes,
+                        self.verified_bytes,
+                        self.io_block_size,
+                        cancellation,
                     )
-                })?;
-                read_buffered(cache_bypass, offset, bytes, cancellation)
-            }
-            WeightReadStrategy::PositionalDirect => {
-                let direct = self.direct.as_ref().ok_or_else(|| {
-                    PowerError::BackendNotAvailable(
-                        "direct weight reads were not opened for this source".to_string(),
-                    )
-                })?;
-                read_direct(
-                    direct,
-                    offset,
-                    bytes,
-                    self.verified_bytes,
-                    self.io_block_size,
-                    cancellation,
-                )
-            }
+                }
+            },
         }
     }
 }
@@ -169,7 +200,7 @@ fn read_buffered(
     Ok(output)
 }
 
-fn read_exact_loop<F>(
+pub(super) fn read_exact_loop<F>(
     output: &mut [u8],
     offset: u64,
     cancellation: &CancellationToken,

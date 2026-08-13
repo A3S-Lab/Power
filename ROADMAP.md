@@ -34,6 +34,9 @@ kernels.
 - [x] Model-owned continuous/ragged execution lifecycles with atomic commits.
 - [x] CPU, CUDA, and Metal device identity plus TEE/confidential accelerator
       evidence and explicit fallback identity.
+- [x] Digest-pinned seekable AES-256-GCM weight collections with bounded
+      authentication, positional decryption, cancellation, and unchanged
+      `WeightHierarchy` residency semantics.
 
 ### P1 — Canonical tensor batch layout
 

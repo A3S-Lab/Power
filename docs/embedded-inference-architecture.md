@@ -232,7 +232,18 @@ eviction or persistence policy.
   tensor, and recoverable replica errors fall back to primary. This extends the
   existing `WeightStore` rather than creating a second model cache or integrity
   path.
-- The primary is always canonical SafeTensors. A typed lossless replica may
+- Ordinary `WeightStoreConfig` primaries are canonical plaintext SafeTensors.
+  The specialized `open_seekable_encrypted` constructor admits a complete
+  logical primary only after a caller-pinned manifest, every independent
+  AES-256-GCM chunk, every plaintext file digest, and the canonical aggregate
+  collection digest have all passed. It retains encrypted file handles and a
+  SafeTensors range index, not collection-wide plaintext. A demand, prefetch,
+  or staged tensor read decrypts only covering chunks into zeroizing buffers
+  and then enters the same source, residency, cancellation, and telemetry
+  path. Headers and chunk indices are authenticated additional data; an
+  unmanifested artifact, wrong key, truncated file, modified header/ciphertext,
+  unsafe path, or cancelled verification fails closed.
+- A typed lossless replica may
   store opaque U8 records under the original tensor names, using Power's
   pure-Rust `rans-nibble-256-v1` codec: one shard-local 16-symbol static table,
   256 round-robin streams, exact derived framing, and mandatory zero padding.
@@ -828,6 +839,12 @@ authority over export.
   manifest before serving it through mmap or positional reads. Model crates pin
   the aggregate digest with `verify_integrity` and may reuse Power's Ed25519
   model seal verification with `verify_signature`.
+- Seekable encrypted collections additionally require an out-of-band pinned
+  manifest digest. Complete open-time authentication reconstructs the exact
+  plaintext collection identity one bounded chunk at a time; runtime reads
+  never create a plaintext file and reuse the same indexed `WeightStore` and
+  `WeightHierarchy`. Key provisioning and binding the manifest digest into an
+  attested deployment policy remain outside model semantics.
 - Physical multi-root placement is configuration, not model identity. Each
   logical source has one canonical relative-file namespace; every root is
   non-empty and non-overlapping, duplicate paths fail, and the combined file

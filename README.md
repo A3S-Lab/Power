@@ -188,7 +188,7 @@ The optional server surface includes:
 - **True Token-by-Token Streaming**: Per-token SSE delivery via `stream_chat_request`
 - **Multiple Backends**: mistralrs (pure Rust, default), llama.cpp (C++ bindings, optional), picolm (TEE layer-streaming, optional), proxy (forwards to an upstream OpenAI-compatible server — vLLM/TGI/SGLang/OpenAI — so Power can front an existing accelerated engine)
 - **Model Formats**: GGUF, SafeTensors (ISQ quantization), Vision/Multimodal (LLaVA, Phi-3-Vision), HuggingFace Embeddings (Qwen3, GTE, NomicBert)
-- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, continuous ragged execution lifecycles, exact SafeTensors integrity, multi-root capacity aggregation, mmap-default or bounded positional tensor reads, complete or partial weighted read-only replicas, digest-pinned and canonically verified pure-Rust lossless rANS representations, usage-ranked verified partial-mirror staging, validation-throughput source weighting, typed devices, fixed-state/scratch-aware host/CUDA/Metal cache budgets with current-pressure revalidation, LFRU/LRU residency, hysteresis-bounded live hot-tier adaptation, privacy-gated cross-layer route hints, event-driven current-layer staged batches with a shared worker-and-byte flight window, attestation-bound accelerator residency declarations, bounded heterogeneous device meshes and peer copies, fused Candle batches with explicit exact-fallback identity, bounded sealed warm-state envelopes, digest-bound lossless tuning evidence, canonical privacy-reviewed hardware evidence bundles, measurable prefetch, cancellation, and execution receipts. Model architectures and KV/recurrent layouts live in their owning crates; embedded sessions never bind a Web port
+- **Embedded Inference Runtime**: Model-neutral Rust library primitives for reviewed static graphs, bounded admission, continuous ragged execution lifecycles, exact SafeTensors integrity, multi-root capacity aggregation, mmap-default or bounded positional tensor reads, independently authenticated seekable AES-256-GCM weight collections, complete or partial weighted read-only replicas, digest-pinned and canonically verified pure-Rust lossless rANS representations, usage-ranked verified partial-mirror staging, validation-throughput source weighting, typed devices, fixed-state/scratch-aware host/CUDA/Metal cache budgets with current-pressure revalidation, LFRU/LRU residency, hysteresis-bounded live hot-tier adaptation, privacy-gated cross-layer route hints, event-driven current-layer staged batches with a shared worker-and-byte flight window, attestation-bound accelerator residency declarations, bounded heterogeneous device meshes and peer copies, fused Candle batches with explicit exact-fallback identity, bounded sealed warm-state envelopes, digest-bound lossless tuning evidence, canonical privacy-reviewed hardware evidence bundles, measurable prefetch, cancellation, and execution receipts. Model architectures and KV/recurrent layouts live in their owning crates; embedded sessions never bind a Web port
 - **GPU Acceleration**: Auto-detection of Apple Metal and NVIDIA CUDA; configurable layer offloading, multi-GPU support
 - **Tool/Function Calling**: Structured tool definitions with XML, Mistral, and JSON output parsing
 - **JSON Schema Structured Output**: Constrain local llama.cpp output via JSON Schema → GBNF grammar conversion; unsupported local backend/schema combinations fail closed instead of silently ignoring output policy
@@ -419,6 +419,19 @@ verified cold cache. `PositionalDirect` uses aligned `O_DIRECT` on Linux and
 `FILE_FLAG_NO_BUFFERING` on Windows. Unsupported combinations fail explicitly
 instead of silently falling back, and mmap remains the default until a
 documented end-to-end workload proves another strategy on named hardware.
+
+For confidential sparse-weight execution, `encrypt_seekable_weight_collection`
+converts a validated SafeTensors collection into
+`a3s.power.seekable-encrypted-weights.v1`. Each source file uses fixed-size,
+independently authenticated AES-256-GCM chunks; its header and chunk index are
+authenticated additional data. `WeightStore::open_seekable_encrypted` requires
+the caller-pinned manifest SHA-256, authenticates every ciphertext chunk, and
+reconstructs the original logical collection digest before it can serve a
+tensor. Subsequent positional reads decrypt only covering chunks into
+zeroizing buffers and flow through the existing demand, prefetch, staging,
+cache, cancellation, and telemetry paths. No plaintext weight file or
+collection-wide plaintext allocation is created. Key acquisition and binding
+the manifest digest into TEE attestation remain deployment policy.
 
 Model-owning crates provide graph identities and plans, network control flow,
 tokenizers, preprocessing, postprocessing, and revision policy. Consequently,

@@ -31,21 +31,26 @@ pub enum WeightSourceRepresentation {
     CanonicalSafeTensors,
     #[serde(rename = "lossless-rans-nibble-256-v1")]
     LosslessRansNibble256V1 { artifact_sha256: String },
+    #[serde(rename = "seekable-aes-256-gcm-v1")]
+    SeekableAes256GcmV1 { manifest_sha256: String },
 }
 
 impl WeightSourceRepresentation {
     pub(crate) fn validate(&self) -> Result<()> {
-        if let Self::LosslessRansNibble256V1 { artifact_sha256 } = self {
-            if artifact_sha256.len() != 64
-                || !artifact_sha256
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                return Err(PowerError::Config(
-                    "lossless weight artifact SHA-256 must contain 64 lowercase hexadecimal characters"
-                        .to_string(),
-                ));
-            }
+        let digest = match self {
+            Self::CanonicalSafeTensors => return Ok(()),
+            Self::LosslessRansNibble256V1 { artifact_sha256 } => artifact_sha256,
+            Self::SeekableAes256GcmV1 { manifest_sha256 } => manifest_sha256,
+        };
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(PowerError::Config(
+                "weight representation digest must contain 64 lowercase hexadecimal characters"
+                    .to_string(),
+            ));
         }
         Ok(())
     }
@@ -54,11 +59,17 @@ impl WeightSourceRepresentation {
         match self {
             Self::CanonicalSafeTensors => None,
             Self::LosslessRansNibble256V1 { artifact_sha256 } => Some(artifact_sha256),
+            Self::SeekableAes256GcmV1 { manifest_sha256 } => Some(manifest_sha256),
         }
     }
 
     pub(super) fn is_canonical(&self) -> bool {
         matches!(self, Self::CanonicalSafeTensors)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn is_seekable_encrypted(&self) -> bool {
+        matches!(self, Self::SeekableAes256GcmV1 { .. })
     }
 }
 

@@ -129,12 +129,17 @@ pub use tuning_types::{
     TuningProfileDecision, TuningProfileEvidence, TuningProfileOutcome, TuningProfilePolicy,
     TuningRoundEvidence, TuningRunEvidence,
 };
+pub use weights::{encrypt_seekable_weight_collection, encrypt_seekable_weight_file};
 pub use weights::{
     weight_collection_sha256, LosslessEncodedRecord, LosslessRansNibbleHistogram,
-    LosslessRansNibbleTable, TensorDescriptor, TensorRead, TensorStorageDescriptor,
-    WeightFileDescriptor, WeightReadStrategy, WeightSourceConfig, WeightSourceCoverage,
-    WeightSourceDescriptor, WeightSourceRepresentation, WeightSourceRole, WeightSourceWeighting,
-    WeightStore, WeightStoreConfig, LOSSLESS_RANS_FORMAT_METADATA_KEY,
+    LosslessRansNibbleTable, SeekableEncryptedFile, SeekableEncryptedFileDescriptor,
+    SeekableEncryptedFileVerification, SeekableEncryptedWeightCollectionReport,
+    SeekableEncryptedWeightFile, SeekableEncryptedWeightManifest, SeekableEncryptedWeightSource,
+    SeekableWeightKey, TensorDescriptor, TensorRead, TensorStorageDescriptor, WeightFileDescriptor,
+    WeightReadStrategy, WeightSourceConfig, WeightSourceCoverage, WeightSourceDescriptor,
+    WeightSourceRepresentation, WeightSourceRole, WeightSourceWeighting, WeightStore,
+    WeightStoreConfig, DEFAULT_ENCRYPTED_CHUNK_BYTES, ENCRYPTED_WEIGHT_MANIFEST_FILE,
+    ENCRYPTED_WEIGHT_MANIFEST_SCHEMA, LOSSLESS_RANS_FORMAT_METADATA_KEY,
     LOSSLESS_RANS_TABLE_METADATA_KEY,
 };
 

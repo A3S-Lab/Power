@@ -15,11 +15,28 @@ use crate::error::{PowerError, Result};
 
 use super::{InferenceLimits, RuntimeDevice};
 
+mod encrypted_collection;
+#[cfg(test)]
+mod encrypted_collection_tests;
+mod encrypted_file;
+#[cfg(test)]
+mod encrypted_file_tests;
+mod encrypted_format;
 mod files;
 mod index;
 mod lossless;
 mod range_io;
 
+pub use encrypted_collection::{
+    encrypt_seekable_weight_collection, SeekableEncryptedWeightCollectionReport,
+    SeekableEncryptedWeightFile, SeekableEncryptedWeightManifest, SeekableEncryptedWeightSource,
+    ENCRYPTED_WEIGHT_MANIFEST_FILE, ENCRYPTED_WEIGHT_MANIFEST_SCHEMA,
+};
+pub use encrypted_file::{
+    encrypt_seekable_weight_file, SeekableEncryptedFile, SeekableEncryptedFileVerification,
+    SeekableWeightKey,
+};
+pub use encrypted_format::{SeekableEncryptedFileDescriptor, DEFAULT_ENCRYPTED_CHUNK_BYTES};
 use files::{discover_safetensors, hash_files, resolve_weight_roots};
 use index::TensorLocation;
 pub use lossless::{
@@ -360,6 +377,25 @@ impl WeightStore {
         Self::open_config(&WeightStoreConfig::new(root.as_ref()), limits)
     }
 
+    /// Opens an integrity-pinned collection whose SafeTensors files use
+    /// independently authenticated, seekable AES-256-GCM chunks.
+    pub fn open_seekable_encrypted(
+        source: SeekableEncryptedWeightSource,
+        limits: &InferenceLimits,
+    ) -> Result<Self> {
+        Self::open_seekable_encrypted_with_cancellation(source, limits, &CancellationToken::new())
+    }
+
+    /// Opens and authenticates an encrypted collection with cooperative
+    /// cancellation between bounded decryption chunks.
+    pub fn open_seekable_encrypted_with_cancellation(
+        source: SeekableEncryptedWeightSource,
+        limits: &InferenceLimits,
+        cancellation: &CancellationToken,
+    ) -> Result<Self> {
+        encrypted_collection::open_seekable_encrypted(source, limits, cancellation)
+    }
+
     /// Opens a primary SafeTensors collection and verified read-only replicas.
     /// Complete replicas must match the aggregate collection digest. Partial
     /// replicas may contain a non-empty subset of byte-identical primary files.
@@ -598,6 +634,15 @@ impl WeightStore {
         names: &[String],
     ) -> Result<Vec<VerifiedWeightCacheRange>> {
         let sources = std::iter::once(self).chain(self.replicas.iter());
+        if sources
+            .clone()
+            .any(|source| source.representation.is_seekable_encrypted())
+        {
+            return Err(PowerError::BackendNotAvailable(
+                "filesystem cache-range preparation is unavailable for encrypted weight sources"
+                    .to_string(),
+            ));
+        }
         let mut ranges = Vec::new();
         for source in sources {
             for name in names {

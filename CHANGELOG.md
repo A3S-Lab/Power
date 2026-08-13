@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a seekable AES-256-GCM weight representation for embedded inference.
+  Each SafeTensors file is split into independently authenticated chunks under
+  a digest-pinned collection manifest; opening verifies the complete logical
+  plaintext identity with bounded zeroizing buffers, while demand, prefetch,
+  and staged reads decrypt only the chunks covering an indexed tensor.
 - Added manifest-aware backend capability matching. Backends may override
   `supports_manifest` to select an exact model family while format-only
   implementations retain their existing behavior. Request, unload, reaper,
