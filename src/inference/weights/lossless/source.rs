@@ -75,21 +75,6 @@ pub(in crate::inference::weights) fn open_lossless_source(
         });
     }
 
-    let tensors = if config.read_strategy == WeightReadStrategy::Mmap {
-        // SAFETY: every path was canonicalized, checked as a regular file
-        // beneath `root`, and read completely while verifying the pinned
-        // collection digest. The returned store retains every path and map.
-        Some(
-            unsafe { MmapedSafetensors::multi(&collection.paths) }.map_err(|error| {
-                PowerError::InvalidFormat(format!(
-                    "failed to map lossless SafeTensors weights: {error}"
-                ))
-            })?,
-        )
-    } else {
-        None
-    };
-
     let mut inventory = BTreeMap::new();
     let mut canonical_locations = BTreeMap::new();
     let mut record_locations = BTreeMap::new();
@@ -175,6 +160,21 @@ pub(in crate::inference::weights) fn open_lossless_source(
     }
 
     validate_coverage(config, primary, &inventory)?;
+    let tensors = if config.read_strategy == WeightReadStrategy::Mmap {
+        // SAFETY: every path was canonicalized, checked as a regular file,
+        // read completely while verifying the pinned collection digest, and
+        // indexed under all record/allocation bounds. The returned store
+        // retains every path and map.
+        Some(
+            unsafe { MmapedSafetensors::multi(&collection.paths) }.map_err(|error| {
+                PowerError::InvalidFormat(format!(
+                    "failed to map lossless SafeTensors weights: {error}"
+                ))
+            })?,
+        )
+    } else {
+        None
+    };
     let mut store = WeightStore {
         root: collection.root,
         roots: collection.roots,

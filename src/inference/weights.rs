@@ -490,18 +490,6 @@ impl WeightStore {
             hash_files(&discovered, limits.max_model_bytes, config.read_strategy)?;
         let validation_bytes_per_second = bytes_per_second(bytes, validation_started.elapsed());
 
-        let tensors = if config.read_strategy == WeightReadStrategy::Mmap {
-            // SAFETY: every path was canonicalized, checked as a regular file
-            // beneath one configured root, and read completely while hashing. The store
-            // retains the path collection for at least as long as the maps.
-            Some(
-                unsafe { MmapedSafetensors::multi(&paths) }.map_err(|error| {
-                    PowerError::InvalidFormat(format!("failed to map SafeTensors weights: {error}"))
-                })?,
-            )
-        } else {
-            None
-        };
         let mut inventory = BTreeMap::new();
         let mut locations = BTreeMap::new();
         let mut readers = Vec::with_capacity(if config.read_strategy == WeightReadStrategy::Mmap {
@@ -534,6 +522,19 @@ impl WeightStore {
                 readers.push(reader);
             }
         }
+        let tensors = if config.read_strategy == WeightReadStrategy::Mmap {
+            // SAFETY: every path was canonicalized, checked as a regular file
+            // beneath one configured root, read completely while hashing, and
+            // indexed under the configured tensor bounds. The store retains
+            // the path collection for at least as long as the maps.
+            Some(
+                unsafe { MmapedSafetensors::multi(&paths) }.map_err(|error| {
+                    PowerError::InvalidFormat(format!("failed to map SafeTensors weights: {error}"))
+                })?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             root: roots[0].clone(),
             roots,
