@@ -127,9 +127,7 @@ impl ExecutionDigest {
         for dimension in shape {
             hasher.update((*dimension as u64).to_le_bytes());
         }
-        for value in values {
-            hasher.update(value.to_bits().to_le_bytes());
-        }
+        update_f32_values(&mut hasher, values);
         Self {
             representation: ExecutionRepresentation::F32Tensor,
             sha256: format!("{:x}", hasher.finalize()),
@@ -141,9 +139,7 @@ impl ExecutionDigest {
     pub fn token_ids(values: &[u32]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"a3s-power-token-ids-v1\0");
-        for value in values {
-            hasher.update(value.to_le_bytes());
-        }
+        update_u32_values(&mut hasher, values);
         Self {
             representation: ExecutionRepresentation::TokenIds,
             sha256: format!("{:x}", hasher.finalize()),
@@ -186,9 +182,68 @@ impl ExecutionDigest {
     }
 }
 
+#[cfg(target_endian = "little")]
+fn update_f32_values(hasher: &mut Sha256, values: &[f32]) {
+    hasher.update(bytemuck::cast_slice(values));
+}
+
+#[cfg(target_endian = "big")]
+fn update_f32_values(hasher: &mut Sha256, values: &[f32]) {
+    update_canonical_u32_words(hasher, values.iter().map(|value| value.to_bits()));
+}
+
+#[cfg(target_endian = "little")]
+fn update_u32_values(hasher: &mut Sha256, values: &[u32]) {
+    hasher.update(bytemuck::cast_slice(values));
+}
+
+#[cfg(target_endian = "big")]
+fn update_u32_values(hasher: &mut Sha256, values: &[u32]) {
+    update_canonical_u32_words(hasher, values.iter().copied());
+}
+
+#[cfg(target_endian = "big")]
+fn update_canonical_u32_words(hasher: &mut Sha256, values: impl Iterator<Item = u32>) {
+    const WORDS_PER_CHUNK: usize = 4_096;
+    let mut encoded = [0_u8; WORDS_PER_CHUNK * std::mem::size_of::<u32>()];
+    let mut encoded_len = 0;
+
+    for value in values {
+        encoded[encoded_len..encoded_len + 4].copy_from_slice(&value.to_le_bytes());
+        encoded_len += 4;
+        if encoded_len == encoded.len() {
+            hasher.update(encoded);
+            encoded_len = 0;
+        }
+    }
+    hasher.update(&encoded[..encoded_len]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scalar_f32_tensor_digest(shape: &[usize], values: &[f32]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"a3s-power-f32-tensor-v1\0");
+        hasher.update((shape.len() as u64).to_le_bytes());
+        for dimension in shape {
+            hasher.update((*dimension as u64).to_le_bytes());
+        }
+        for value in values {
+            hasher.update(value.to_bits().to_le_bytes());
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn scalar_token_digest(values: &[u32]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"a3s-power-token-ids-v1\0");
+        for value in values {
+            hasher.update(value.to_le_bytes());
+        }
+        format!("{:x}", hasher.finalize())
+    }
 
     #[test]
     fn tensor_digest_binds_shape_and_values() {
@@ -199,10 +254,31 @@ mod tests {
     }
 
     #[test]
+    fn tensor_digest_preserves_the_scalar_v1_encoding() {
+        let values = [
+            0.0,
+            -0.0,
+            1.25,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::from_bits(0x7fc0_0001),
+        ];
+        let digest = ExecutionDigest::f32_tensor(&[2, 3], &values);
+        assert_eq!(digest.sha256, scalar_f32_tensor_digest(&[2, 3], &values));
+    }
+
+    #[test]
     fn token_digest_has_typed_domain_separator() {
         let tokens = ExecutionDigest::token_ids(&[1, 2]);
         let tensor = ExecutionDigest::f32_tensor(&[2], &[f32::from_bits(1), f32::from_bits(2)]);
         assert_ne!(tokens.sha256, tensor.sha256);
+    }
+
+    #[test]
+    fn token_digest_preserves_the_scalar_v1_encoding() {
+        let values = [0, 1, u32::MAX, 0x0102_0304];
+        let digest = ExecutionDigest::token_ids(&values);
+        assert_eq!(digest.sha256, scalar_token_digest(&values));
     }
 
     #[test]

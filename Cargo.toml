@@ -158,6 +158,7 @@ dirs = { version = "5", optional = true }
 
 # SHA256 for model integrity
 sha2 = "0.10"
+bytemuck = "1"
 
 # Memory zeroing for TEE privacy
 zeroize = { version = "1", features = ["derive"] }

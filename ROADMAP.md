@@ -51,6 +51,9 @@ kernels.
 - [x] Lower CUDA multiplier-one depthwise convolution to device-wide,
       kernel-area-bounded accumulation with padded, dilated, and strided
       numerical-parity coverage; other layouts retain the generic fallback.
+- [x] Preserve canonical v1 tensor and token receipt bytes while hashing
+      contiguous little-endian inputs directly, with a bounded canonical
+      staging fallback on big-endian hosts.
 - [ ] Add benchmark evidence for allocation count and host-copy cost on named
       hardware before claiming a throughput improvement.
 

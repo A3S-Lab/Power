@@ -248,6 +248,10 @@ output. On CUDA, multiplier-one depthwise `Conv` nodes use a generic
 device-wide shift/multiply accumulation whose launch count is bounded by kernel
 area rather than channel count; strided views avoid materializing discarded
 spatial positions. Other convolution layouts retain the existing Candle path.
+Canonical F32-tensor and token-ID receipt payloads hash their contiguous
+read-only bytes directly on little-endian hosts; big-endian hosts retain the
+same v1 little-endian byte protocol through bounded staging. Both paths preserve
+the exact receipt digest while avoiding one hasher update call per value.
 These executor choices do not alter graph topology, model-owned preprocessing,
 or execution-receipt semantics, and tensor-limit failures report both the
 observed and configured element counts.
