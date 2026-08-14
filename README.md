@@ -250,7 +250,17 @@ every kernel position. The kernel supports independent spatial strides,
 dilation, arbitrary NCHW storage strides, and optional fused bias. Explicit
 round-to-nearest multiply/add operations preserve the prior accumulation order;
 an RTX 4090 parity gate is byte-exact against the reviewed scalar accumulation.
+Adjacent single-consumer F32 `HardSigmoid`-to-`Mul` pairs also execute as one
+CUDA kernel when both operands have the same rank-four shape or the activation
+is an exact contiguous `[N, C, 1, 1]` channel gate over `[N, C, H, W]`. The
+specialized path preserves the original two affine stages, ordered clamp, and
+final multiplication with explicit round-to-nearest operations. It removes
+four intermediate activation buffers and four launches per matched pair
+without changing the admitted graph or its public schema.
 Other devices, dtypes, and convolution layouts retain the existing Candle path.
+Unsupported gated-activation shapes and layouts likewise retain ordinary
+node-by-node execution. CPU fallback, full graph execution on an RTX 4090, and
+byte-exact CUDA comparisons cover both equal-shape and channel-gate forms.
 Canonical F32-tensor and token-ID receipt payloads hash their contiguous
 read-only bytes directly on little-endian hosts; big-endian hosts retain the
 same v1 little-endian byte protocol through bounded staging. Both paths preserve

@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::inference::{
-    DevicePreference, EmbeddedRuntime, InferenceLimits, TensorInput, WeightStore,
+    DevicePreference, EmbeddedRuntime, InferenceLimits, TensorInput, TensorOutput, WeightStore,
 };
 
 const SOURCE_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -66,6 +66,39 @@ fn model_owned_reviewed_plan_executes_on_shared_runtime() {
     assert_eq!(output.values, [4.0, 6.0]);
 }
 
+fn gated_hard_sigmoid_plan_json() -> String {
+    serde_json::json!({
+        "schemaVersion": 1,
+        "family": "test-model",
+        "role": "encoder",
+        "source": {
+            "format": "onnx",
+            "sha256": SOURCE_SHA256,
+            "opset": 17
+        },
+        "inputs": [{"name": "input", "shape": [1, 2, 1, 1]}],
+        "outputs": [{"name": "output", "shape": [1, 2, 2, 2]}],
+        "initializers": [{"name": "features", "dtype": "float32", "shape": [1, 2, 2, 2]}],
+        "nodes": [
+            {
+                "name": "bounded-gate",
+                "op": "HardSigmoid",
+                "inputs": ["input"],
+                "outputs": ["gate"],
+                "attributes": {"alpha": 0.2, "beta": 0.5}
+            },
+            {
+                "name": "apply-gate",
+                "op": "Mul",
+                "inputs": ["features", "gate"],
+                "outputs": ["output"],
+                "attributes": {}
+            }
+        ]
+    })
+    .to_string()
+}
+
 #[test]
 fn model_owned_output_projection_runs_before_host_materialization() {
     let directory = tempfile::tempdir().unwrap();
@@ -102,6 +135,53 @@ fn model_owned_output_projection_runs_before_host_materialization() {
 
     assert_eq!(output.shape, [1, 1]);
     assert_eq!(output.values, [10.0]);
+}
+
+fn run_gated_hard_sigmoid_plan(device: DevicePreference) -> TensorOutput {
+    let directory = tempfile::tempdir().unwrap();
+    let features = [1_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let bytes = features
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let view = TensorView::new(Dtype::F32, vec![1, 2, 2, 2], &bytes).unwrap();
+    serialize_to_file(
+        vec![("features", view)],
+        None,
+        &directory.path().join("model.safetensors"),
+    )
+    .unwrap();
+
+    let limits = InferenceLimits::default();
+    let store = Arc::new(WeightStore::open(directory.path(), &limits).unwrap());
+    let identity = GraphIdentity::new("test-model", "encoder", "onnx", SOURCE_SHA256, 17);
+    let plan =
+        GraphPlan::parse(&gated_hard_sigmoid_plan_json(), &identity, &store, &limits).unwrap();
+    let runtime = EmbeddedRuntime::new(device, limits.clone()).unwrap();
+    let graph = GraphExecutor::new(plan, store, runtime.clone()).unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+    let input = TensorInput::new(vec![1, 2, 1, 1], vec![-9.0, 9.0], &limits).unwrap();
+
+    graph.run(input, &permit, &cancellation).unwrap()
+}
+
+#[test]
+fn gated_hard_sigmoid_plan_retains_the_cpu_fallback() {
+    let output = run_gated_hard_sigmoid_plan(DevicePreference::Cpu);
+
+    assert_eq!(output.shape, [1, 2, 2, 2]);
+    assert_eq!(output.values, [0.0, 0.0, 0.0, 0.0, 5.0, 6.0, 7.0, 8.0]);
+}
+
+#[cfg(feature = "embedded-cuda")]
+#[test]
+#[ignore = "requires an explicit CUDA device"]
+fn gated_hard_sigmoid_plan_executes_through_the_fused_cuda_step() {
+    let output = run_gated_hard_sigmoid_plan(DevicePreference::Cuda { ordinal: 0 });
+
+    assert_eq!(output.shape, [1, 2, 2, 2]);
+    assert_eq!(output.values, [0.0, 0.0, 0.0, 0.0, 5.0, 6.0, 7.0, 8.0]);
 }
 
 #[test]

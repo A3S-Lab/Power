@@ -312,6 +312,19 @@ eviction or persistence policy.
   fused paths. Unsupported devices, dtypes, and layouts keep the existing
   Candle convolution path, while model-owning crates remain responsible for
   end-to-end output parity.
+- The executor privately lowers an adjacent, single-consumer F32
+  `HardSigmoid`-to-`Mul` pair to one CUDA kernel when both contiguous operands
+  have the same rank-four shape or the activation is exactly `[N, C, 1, 1]`
+  over an `[N, C, H, W]` multiplicand. Matching rejects a graph output or any
+  activation with another consumer. The kernel retains the two original
+  affine rounding boundaries, ordered maximum/minimum clamp, and final
+  multiplication, while avoiding four intermediate buffers and four launches.
+  Liveness accounting still consumes both admitted nodes in order; limits and
+  non-finite tracing apply to the `Mul` output, and cancellation is rechecked
+  at that node boundary before the fused launch. CPU and every unreviewed CUDA
+  dtype, shape, broadcast form, or layout continue through the ordinary nodes.
+  A CPU fallback test, an ignored real-device graph test, and byte-exact CUDA
+  tests for equal-shape and channel-gate operands guard this private lowering.
 - Placement and routing telemetry are controlled by `TelemetryMode`. It is off
   by default. Detailed expert heat can reveal input semantics, is never logged
   or persisted automatically, and must remain inside the TEE unless policy

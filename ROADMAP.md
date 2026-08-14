@@ -53,6 +53,11 @@ kernels.
       arbitrary-layout parity coverage. Explicit round-to-nearest arithmetic
       preserves the prior accumulation order; other layouts retain the generic
       fallback.
+- [x] Fuse adjacent single-consumer F32 `HardSigmoid`-to-`Mul` CUDA pairs for
+      equal rank-four tensors and exact contiguous NCHW channel gates. Preserve
+      the original affine/clamp/multiply arithmetic byte-for-byte, keep the
+      graph schema unchanged, and retain node-by-node fallback for every
+      unreviewed device, dtype, shape, or layout.
 - [x] Preserve canonical v1 tensor and token receipt bytes while hashing
       contiguous little-endian inputs directly, with a bounded canonical
       staging fallback on big-endian hosts.

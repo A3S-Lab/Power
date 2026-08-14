@@ -11,6 +11,7 @@ use super::plan::{GraphNode, GraphOp, GraphPlan};
 use super::value::GraphValue;
 
 mod depthwise;
+mod gated_hard_sigmoid;
 mod liveness;
 
 /// Validated single-input/single-output static graph executor.
@@ -103,39 +104,50 @@ impl GraphExecutor {
         let mut values = self.constants.clone();
         let mut remaining_uses = self.value_use_counts.clone();
         values.insert(input_name, GraphValue::Tensor(input));
-        for node in &self.plan.nodes {
+        let mut node_index = 0;
+        while let Some(node) = self.plan.nodes.get(node_index) {
             if cancellation.is_cancelled() {
                 return Err(PowerError::InferenceFailed(
                     "static graph execution was cancelled".to_string(),
                 ));
             }
-            let output = execute(node, &values, self.runtime.device().tensor_device())?;
-            #[cfg(test)]
-            trace_non_finite(node, &output)?;
-            let elements = output
-                .shape()
-                .iter()
-                .try_fold(1_usize, |total, value| total.checked_mul(*value))
-                .ok_or_else(|| {
-                    PowerError::InferenceFailed(format!(
-                        "static graph node '{}' tensor element count overflowed",
-                        node.name
-                    ))
-                })?;
-            let limit = self.runtime.limits().max_tensor_elements;
-            if elements > limit {
-                return Err(PowerError::InferenceFailed(format!(
-                    "static graph node '{}' produced {elements} tensor elements, exceeding the {limit}-element limit",
-                    node.name,
-                )));
+            if let Some(next) = self.plan.nodes.get(node_index + 1) {
+                if let Some(output) = gated_hard_sigmoid::try_mul(
+                    node,
+                    next,
+                    &values,
+                    &self.value_use_counts,
+                    &output_name,
+                    cancellation,
+                )? {
+                    liveness::release_consumed_values(
+                        &node.inputs,
+                        &output_name,
+                        &mut remaining_uses,
+                        &mut values,
+                    );
+                    commit_node_output(
+                        next,
+                        output,
+                        &output_name,
+                        self.runtime.limits().max_tensor_elements,
+                        &mut remaining_uses,
+                        &mut values,
+                    )?;
+                    node_index += 2;
+                    continue;
+                }
             }
-            liveness::release_consumed_values(
-                &node.inputs,
+            let output = execute(node, &values, self.runtime.device().tensor_device())?;
+            commit_node_output(
+                node,
+                output,
                 &output_name,
+                self.runtime.limits().max_tensor_elements,
                 &mut remaining_uses,
                 &mut values,
-            );
-            values.insert(node.outputs[0].clone(), output);
+            )?;
+            node_index += 1;
         }
         values
             .remove(&output_name)
@@ -145,6 +157,37 @@ impl GraphExecutor {
             .tensor("graph output")
             .cloned()
     }
+}
+
+fn commit_node_output(
+    node: &GraphNode,
+    output: GraphValue,
+    retained_output: &str,
+    element_limit: usize,
+    remaining_uses: &mut HashMap<String, usize>,
+    values: &mut HashMap<String, GraphValue>,
+) -> Result<()> {
+    #[cfg(test)]
+    trace_non_finite(node, &output)?;
+    let elements = output
+        .shape()
+        .iter()
+        .try_fold(1_usize, |total, value| total.checked_mul(*value))
+        .ok_or_else(|| {
+            PowerError::InferenceFailed(format!(
+                "static graph node '{}' tensor element count overflowed",
+                node.name
+            ))
+        })?;
+    if elements > element_limit {
+        return Err(PowerError::InferenceFailed(format!(
+            "static graph node '{}' produced {elements} tensor elements, exceeding the {element_limit}-element limit",
+            node.name,
+        )));
+    }
+    liveness::release_consumed_values(&node.inputs, retained_output, remaining_uses, values);
+    values.insert(node.outputs[0].clone(), output);
+    Ok(())
 }
 
 #[cfg(test)]
