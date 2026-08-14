@@ -252,6 +252,12 @@ Canonical F32-tensor and token-ID receipt payloads hash their contiguous
 read-only bytes directly on little-endian hosts; big-endian hosts retain the
 same v1 little-endian byte protocol through bounded staging. Both paths preserve
 the exact receipt digest while avoiding one hasher update call per value.
+`GraphExecutor::run_with_output_projection` additionally lets the owning model
+apply a deterministic same-device projection before the bounded F32 result is
+copied to the host. The model must bind that arithmetic into its execution
+identity; Power still enforces the original permit and cancellation boundary,
+rejects a device change, and applies the normal tensor, dtype, and finite-value
+checks to the projected result.
 These executor choices do not alter graph topology, model-owned preprocessing,
 or execution-receipt semantics, and tensor-limit failures report both the
 observed and configured element counts.

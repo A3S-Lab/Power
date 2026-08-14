@@ -67,6 +67,44 @@ fn model_owned_reviewed_plan_executes_on_shared_runtime() {
 }
 
 #[test]
+fn model_owned_output_projection_runs_before_host_materialization() {
+    let directory = tempfile::tempdir().unwrap();
+    let values = [1_f32, 2_f32];
+    let bytes = values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let view = TensorView::new(Dtype::F32, vec![2], &bytes).unwrap();
+    serialize_to_file(
+        vec![("bias", view)],
+        None,
+        &directory.path().join("model.safetensors"),
+    )
+    .unwrap();
+
+    let limits = InferenceLimits::default();
+    let store = Arc::new(WeightStore::open(directory.path(), &limits).unwrap());
+    let identity = GraphIdentity::new("test-model", "encoder", "onnx", SOURCE_SHA256, 17);
+    let plan = GraphPlan::parse(&plan_json(), &identity, &store, &limits).unwrap();
+    let runtime = EmbeddedRuntime::new(DevicePreference::Cpu, limits.clone()).unwrap();
+    let graph = GraphExecutor::new(plan, store, runtime.clone()).unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+    let input = TensorInput::new(vec![1, 2], vec![3.0, 4.0], &limits).unwrap();
+
+    let output = graph
+        .run_with_output_projection(input, &permit, &cancellation, |tensor| {
+            tensor
+                .sum_keepdim(1)
+                .map_err(|error| crate::error::PowerError::InferenceFailed(error.to_string()))
+        })
+        .unwrap();
+
+    assert_eq!(output.shape, [1, 1]);
+    assert_eq!(output.values, [10.0]);
+}
+
+#[test]
 fn graph_identity_mismatch_fails_before_execution() {
     let directory = tempfile::tempdir().unwrap();
     let view = TensorView::new(Dtype::F32, vec![2], &[0; 8]).unwrap();

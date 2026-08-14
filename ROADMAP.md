@@ -54,6 +54,10 @@ kernels.
 - [x] Preserve canonical v1 tensor and token receipt bytes while hashing
       contiguous little-endian inputs directly, with a bounded canonical
       staging fallback on big-endian hosts.
+- [x] Allow a model-owned deterministic output projection to execute on the
+      graph device before bounded host materialization. The caller must bind
+      the projection into its execution identity; Power retains permit,
+      cancellation, same-device, dtype, finite-value, and tensor bounds.
 - [ ] Add benchmark evidence for allocation count and host-copy cost on named
       hardware before claiming a throughput improvement.
 

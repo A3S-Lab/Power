@@ -50,6 +50,27 @@ impl GraphExecutor {
         permit: &ExecutionPermit,
         cancellation: &CancellationToken,
     ) -> Result<TensorOutput> {
+        self.run_with_output_projection(input, permit, cancellation, |output| Ok(output.clone()))
+    }
+
+    /// Executes a graph and applies one model-owned projection before the
+    /// bounded output is copied back to the host.
+    ///
+    /// The projection remains on the graph device and is useful when a model
+    /// consumes a compact deterministic view of a much larger graph output.
+    /// The model crate owns the projection arithmetic and must bind it into
+    /// its execution identity. Power still enforces permit, cancellation,
+    /// device-residency, tensor-element, dtype, and finite-output bounds.
+    pub fn run_with_output_projection<F>(
+        &self,
+        input: TensorInput,
+        permit: &ExecutionPermit,
+        cancellation: &CancellationToken,
+        projection: F,
+    ) -> Result<TensorOutput>
+    where
+        F: FnOnce(&Tensor) -> Result<Tensor>,
+    {
         if !permit.belongs_to(&self.runtime) {
             return Err(PowerError::InvalidRequest(
                 "graph execution permit belongs to a different embedded runtime".to_string(),
@@ -62,7 +83,18 @@ impl GraphExecutor {
         }
         let input = input.into_candle(self.runtime.device().tensor_device())?;
         let output = self.run_tensor(input, cancellation)?;
-        TensorOutput::from_candle(&output, self.runtime.limits())
+        let projected = projection(&output)?;
+        if cancellation.is_cancelled() {
+            return Err(PowerError::InferenceFailed(
+                "static graph execution was cancelled".to_string(),
+            ));
+        }
+        if !projected.device().same_device(output.device()) {
+            return Err(PowerError::InferenceFailed(
+                "static graph output projection changed tensor devices".to_string(),
+            ));
+        }
+        TensorOutput::from_candle(&projected, self.runtime.limits())
     }
 
     fn run_tensor(&self, input: Tensor, cancellation: &CancellationToken) -> Result<Tensor> {
