@@ -10,10 +10,14 @@ use super::super::{EmbeddedRuntime, ExecutionPermit, TensorInput, TensorOutput, 
 use super::plan::{GraphNode, GraphOp, GraphPlan};
 use super::value::GraphValue;
 
+mod depthwise;
+mod liveness;
+
 /// Validated single-input/single-output static graph executor.
 pub struct GraphExecutor {
     plan: GraphPlan,
     constants: HashMap<String, GraphValue>,
+    value_use_counts: HashMap<String, usize>,
     runtime: EmbeddedRuntime,
 }
 
@@ -30,9 +34,11 @@ impl GraphExecutor {
                 GraphValue::load(initializer, &weights, runtime.device().tensor_device())?,
             );
         }
+        let value_use_counts = liveness::value_use_counts(&plan);
         Ok(Self {
             plan,
             constants,
+            value_use_counts,
             runtime,
         })
     }
@@ -63,6 +69,7 @@ impl GraphExecutor {
         let input_name = self.plan.inputs[0].name.clone();
         let output_name = self.plan.outputs[0].name.clone();
         let mut values = self.constants.clone();
+        let mut remaining_uses = self.value_use_counts.clone();
         values.insert(input_name, GraphValue::Tensor(input));
         for node in &self.plan.nodes {
             if cancellation.is_cancelled() {
@@ -76,13 +83,26 @@ impl GraphExecutor {
             let elements = output
                 .shape()
                 .iter()
-                .try_fold(1_usize, |total, value| total.checked_mul(*value));
-            if elements.is_none_or(|value| value > self.runtime.limits().max_tensor_elements) {
+                .try_fold(1_usize, |total, value| total.checked_mul(*value))
+                .ok_or_else(|| {
+                    PowerError::InferenceFailed(format!(
+                        "static graph node '{}' tensor element count overflowed",
+                        node.name
+                    ))
+                })?;
+            let limit = self.runtime.limits().max_tensor_elements;
+            if elements > limit {
                 return Err(PowerError::InferenceFailed(format!(
-                    "static graph node '{}' exceeded the tensor element limit",
-                    node.name
+                    "static graph node '{}' produced {elements} tensor elements, exceeding the {limit}-element limit",
+                    node.name,
                 )));
             }
+            liveness::release_consumed_values(
+                &node.inputs,
+                &output_name,
+                &mut remaining_uses,
+                &mut values,
+            );
             values.insert(node.outputs[0].clone(), output);
         }
         values
@@ -350,15 +370,27 @@ fn conv(node: &GraphNode, inputs: &[&GraphValue], device: &Device) -> Result<Gra
     let dimensions = input
         .dims4()
         .map_err(|error| execution_error(node, error))?;
+    let kernel_dimensions = kernel
+        .dims4()
+        .map_err(|error| execution_error(node, error))?;
     let pads = convolution_pads(node, dimensions, kernel_shape, strides, dilations)?;
     input = pad_spatial(&input, pads, node)?;
     let common_stride = if strides.0 == strides.1 { strides.0 } else { 1 };
-    let mut output = input
-        .conv2d(kernel, 0, common_stride, dilations.0, groups)
-        .map_err(|error| execution_error(node, error))?;
-    if strides.0 != strides.1 {
-        output = subsample_spatial(&output, strides, device, node)?;
+    let cuda_depthwise = device.is_cuda()
+        && groups == dimensions.1
+        && kernel_dimensions.0 == dimensions.1
+        && kernel_dimensions.1 == 1;
+    let output = if cuda_depthwise {
+        depthwise::conv2d(&input, kernel, strides, dilations.0)
+    } else {
+        input.conv2d(kernel, 0, common_stride, dilations.0, groups)
     }
+    .map_err(|error| execution_error(node, error))?;
+    let mut output = if !cuda_depthwise && strides.0 != strides.1 {
+        subsample_spatial(&output, strides, device, node)?
+    } else {
+        output
+    };
     if let Some(bias) = inputs.get(2) {
         let bias = bias.tensor(&node.name)?;
         let channels = bias.dims1().map_err(|error| execution_error(node, error))?;

@@ -242,6 +242,16 @@ only digest-verified files without replacement. Power never persists the
 benefits, plan, destination, or a mirror receipt automatically. It never
 downloads a model, starts another process, or opens a listener.
 
+Static-graph execution releases eager intermediate tensors immediately after
+their last declared consumer while retaining constants and the declared graph
+output. On CUDA, multiplier-one depthwise `Conv` nodes use a generic
+device-wide shift/multiply accumulation whose launch count is bounded by kernel
+area rather than channel count; strided views avoid materializing discarded
+spatial positions. Other convolution layouts retain the existing Candle path.
+These executor choices do not alter graph topology, model-owned preprocessing,
+or execution-receipt semantics, and tensor-limit failures report both the
+observed and configured element counts.
+
 Embedded scheduling uses the same runtime admission primitive at two bounded
 levels. `InferenceLimits::max_queued_requests` caps each model runtime's async
 waiting path (`begin_wait`); zero keeps that path fail-fast. A device-bound

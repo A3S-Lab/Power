@@ -46,6 +46,11 @@ kernels.
       partitions with exact shape/value validation.
 - [x] Keep padding, valid extents, bucketing, and slot failure meaning in the
       model crate. The generic API exposes no OCR vocabulary.
+- [x] Release eager static-graph intermediates after their final declared
+      consumer while retaining constants and the graph output.
+- [x] Lower CUDA multiplier-one depthwise convolution to device-wide,
+      kernel-area-bounded accumulation with padded, dilated, and strided
+      numerical-parity coverage; other layouts retain the generic fallback.
 - [ ] Add benchmark evidence for allocation count and host-copy cost on named
       hardware before claiming a throughput improvement.
 

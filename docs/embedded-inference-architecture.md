@@ -298,6 +298,17 @@ eviction or persistence policy.
   cache budgets before allocation. SafeTensor indexing enforces the per-tensor
   element bound before mmap or materialization. Model-owned KV or recurrent
   state must call `checked_state_bytes` before allocation.
+- The eager static-graph executor counts declared input uses and releases an
+  intermediate tensor after its last consumer. Constants and the declared graph
+  output remain live, graph order is unchanged, and cancellation is checked at
+  the same node boundary. This bounds live activation storage by graph
+  dependencies instead of total node count.
+- CUDA multiplier-one depthwise convolutions are lowered to device-wide
+  shift/multiply accumulation with strided sampling before materialization.
+  Work scales with kernel area instead of one generic grouped convolution per
+  channel; unsupported layouts keep the existing Candle convolution path.
+  CPU numerical-parity tests cover padded, dilated, and strided shapes, while
+  model-owning crates remain responsible for end-to-end output parity.
 - Placement and routing telemetry are controlled by `TelemetryMode`. It is off
   by default. Detailed expert heat can reveal input semantics, is never logged
   or persisted automatically, and must remain inside the TEE unless policy
