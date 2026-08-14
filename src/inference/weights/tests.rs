@@ -40,6 +40,24 @@ fn write_large_weight(root: &Path, file_name: &str, tensor_name: &str, bytes: us
 }
 
 #[test]
+fn tensor_inventory_enforces_the_element_limit_before_materialization() {
+    let root = tempfile::tempdir().unwrap();
+    write_large_weight(root.path(), "model.safetensors", "bounded.weight", 16);
+    let rejected = InferenceLimits {
+        max_tensor_elements: 3,
+        ..InferenceLimits::default()
+    };
+    let error = WeightStore::open(root.path(), &rejected).unwrap_err();
+    assert!(error.to_string().contains("contains 4 elements"));
+
+    let accepted = InferenceLimits {
+        max_tensor_elements: 4,
+        ..InferenceLimits::default()
+    };
+    assert!(WeightStore::open(root.path(), &accepted).is_ok());
+}
+
+#[test]
 fn positional_index_and_exact_bytes_match_the_mmap_default() {
     let root = tempfile::tempdir().unwrap();
     write_weight_file(root.path(), "model.safetensors", "layer.weight", 0, 8, 7);

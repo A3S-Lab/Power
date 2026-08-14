@@ -28,6 +28,7 @@ pub(super) fn index_file(
     reader: &WeightFileReader,
     file_index: usize,
     verified_bytes: u64,
+    max_tensor_elements: usize,
 ) -> Result<IndexedFile> {
     let cancellation = CancellationToken::new();
     let prefix = reader.read_range(
@@ -82,6 +83,25 @@ pub(super) fn index_file(
     let custom_metadata = metadata.metadata().clone().unwrap_or_default();
     let mut locations = BTreeMap::new();
     for (name, info) in metadata.tensors() {
+        let elements = if info.shape.is_empty() {
+            1
+        } else {
+            info.shape
+                .iter()
+                .try_fold(1_usize, |product, dimension| {
+                    product.checked_mul(*dimension)
+                })
+                .ok_or_else(|| {
+                    PowerError::InvalidFormat(format!(
+                        "SafeTensors tensor '{name}' dimensions overflowed"
+                    ))
+                })?
+        };
+        if elements > max_tensor_elements {
+            return Err(PowerError::InvalidFormat(format!(
+                "SafeTensors tensor '{name}' contains {elements} elements, exceeding the {max_tensor_elements} element limit"
+            )));
+        }
         let relative_start = u64::try_from(info.data_offsets.0).map_err(|_| {
             PowerError::InvalidFormat(
                 "SafeTensors tensor offset exceeds the supported range".to_string(),

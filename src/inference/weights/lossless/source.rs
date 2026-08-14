@@ -110,7 +110,8 @@ pub(in crate::inference::weights) fn open_lossless_source(
     {
         let reader = WeightFileReader::open(path, file.bytes, config.read_strategy)?;
         io_block_size = io_block_size.max(reader.io_block_size());
-        let indexed = index::index_file(&reader, file_index, file.bytes)?;
+        let indexed =
+            index::index_file(&reader, file_index, file.bytes, limits.max_tensor_elements)?;
         let table = LosslessRansNibbleTable::from_safetensors_metadata(&indexed.metadata)?;
         if indexed.locations.is_empty() {
             return Err(PowerError::InvalidFormat(

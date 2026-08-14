@@ -302,7 +302,8 @@ pub(super) fn open_seekable_encrypted(
     let mut inventory = BTreeMap::new();
     let mut locations = BTreeMap::new();
     for (file_index, (reader, file)) in readers.iter().zip(files.iter()).enumerate() {
-        let indexed = index::index_file(reader, file_index, file.bytes)?;
+        let indexed =
+            index::index_file(reader, file_index, file.bytes, limits.max_tensor_elements)?;
         for (name, location) in indexed.locations {
             let descriptor = TensorDescriptor {
                 name: name.clone(),

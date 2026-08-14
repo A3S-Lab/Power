@@ -513,7 +513,8 @@ impl WeightStore {
         for (file_index, (path, file)) in paths.iter().zip(files.iter()).enumerate() {
             let reader = WeightFileReader::open(path, file.bytes, config.read_strategy)?;
             io_block_size = io_block_size.max(reader.io_block_size());
-            let indexed = index::index_file(&reader, file_index, file.bytes)?;
+            let indexed =
+                index::index_file(&reader, file_index, file.bytes, limits.max_tensor_elements)?;
             for (name, location) in indexed.locations {
                 let descriptor = TensorDescriptor {
                     name: name.clone(),
