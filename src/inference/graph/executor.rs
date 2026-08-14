@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use candle_core::{Device, Tensor};
+use candle_core::{DType, Device, Tensor};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{PowerError, Result};
@@ -408,12 +408,19 @@ fn conv(node: &GraphNode, inputs: &[&GraphValue], device: &Device) -> Result<Gra
     let pads = convolution_pads(node, dimensions, kernel_shape, strides, dilations)?;
     input = pad_spatial(&input, pads, node)?;
     let common_stride = if strides.0 == strides.1 { strides.0 } else { 1 };
+    let bias = inputs
+        .get(2)
+        .map(|value| value.tensor(&node.name))
+        .transpose()?;
     let cuda_depthwise = device.is_cuda()
         && groups == dimensions.1
         && kernel_dimensions.0 == dimensions.1
-        && kernel_dimensions.1 == 1;
+        && kernel_dimensions.1 == 1
+        && input.dtype() == DType::F32
+        && kernel.dtype() == DType::F32
+        && bias.is_none_or(|value| value.dtype() == DType::F32);
     let output = if cuda_depthwise {
-        depthwise::conv2d(&input, kernel, strides, dilations.0)
+        depthwise::conv2d(&input, kernel, bias, strides, dilations.0)
     } else {
         input.conv2d(kernel, 0, common_stride, dilations.0, groups)
     }
@@ -423,16 +430,17 @@ fn conv(node: &GraphNode, inputs: &[&GraphValue], device: &Device) -> Result<Gra
     } else {
         output
     };
-    if let Some(bias) = inputs.get(2) {
-        let bias = bias.tensor(&node.name)?;
-        let channels = bias.dims1().map_err(|error| execution_error(node, error))?;
-        output = output
-            .broadcast_add(
-                &bias
-                    .reshape((1, channels, 1, 1))
-                    .map_err(|error| execution_error(node, error))?,
-            )
-            .map_err(|error| execution_error(node, error))?;
+    if !cuda_depthwise {
+        if let Some(bias) = bias {
+            let channels = bias.dims1().map_err(|error| execution_error(node, error))?;
+            output = output
+                .broadcast_add(
+                    &bias
+                        .reshape((1, channels, 1, 1))
+                        .map_err(|error| execution_error(node, error))?,
+                )
+                .map_err(|error| execution_error(node, error))?;
+        }
     }
     Ok(GraphValue::Tensor(output))
 }

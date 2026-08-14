@@ -303,12 +303,15 @@ eviction or persistence policy.
   output remain live, graph order is unchanged, and cancellation is checked at
   the same node boundary. This bounds live activation storage by graph
   dependencies instead of total node count.
-- CUDA multiplier-one depthwise convolutions are lowered to device-wide
-  shift/multiply accumulation with strided sampling before materialization.
-  Work scales with kernel area instead of one generic grouped convolution per
-  channel; unsupported layouts keep the existing Candle convolution path.
-  CPU numerical-parity tests cover padded, dilated, and strided shapes, while
-  model-owning crates remain responsible for end-to-end output parity.
+- CUDA multiplier-one F32 depthwise convolutions are lowered to one fused
+  kernel per node. Each output thread retains the reviewed kernel-row/kernel-
+  column accumulation order with explicit round-to-nearest multiply and add;
+  optional bias is applied once after the final term. Independent spatial
+  strides, dilation, and arbitrary rank-four storage strides remain explicit.
+  CPU shape/value tests and a byte-exact CUDA parity gate cover the generic and
+  fused paths. Unsupported devices, dtypes, and layouts keep the existing
+  Candle convolution path, while model-owning crates remain responsible for
+  end-to-end output parity.
 - Placement and routing telemetry are controlled by `TelemetryMode`. It is off
   by default. Detailed expert heat can reveal input semantics, is never logged
   or persisted automatically, and must remain inside the TEE unless policy

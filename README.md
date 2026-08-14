@@ -244,10 +244,13 @@ downloads a model, starts another process, or opens a listener.
 
 Static-graph execution releases eager intermediate tensors immediately after
 their last declared consumer while retaining constants and the declared graph
-output. On CUDA, multiplier-one depthwise `Conv` nodes use a generic
-device-wide shift/multiply accumulation whose launch count is bounded by kernel
-area rather than channel count; strided views avoid materializing discarded
-spatial positions. Other convolution layouts retain the existing Candle path.
+output. On CUDA, multiplier-one F32 depthwise `Conv` nodes execute one fused
+kernel per node instead of materializing one device-wide multiply and add for
+every kernel position. The kernel supports independent spatial strides,
+dilation, arbitrary NCHW storage strides, and optional fused bias. Explicit
+round-to-nearest multiply/add operations preserve the prior accumulation order;
+an RTX 4090 parity gate is byte-exact against the reviewed scalar accumulation.
+Other devices, dtypes, and convolution layouts retain the existing Candle path.
 Canonical F32-tensor and token-ID receipt payloads hash their contiguous
 read-only bytes directly on little-endian hosts; big-endian hosts retain the
 same v1 little-endian byte protocol through bounded staging. Both paths preserve

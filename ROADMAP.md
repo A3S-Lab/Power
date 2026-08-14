@@ -48,9 +48,11 @@ kernels.
       model crate. The generic API exposes no OCR vocabulary.
 - [x] Release eager static-graph intermediates after their final declared
       consumer while retaining constants and the graph output.
-- [x] Lower CUDA multiplier-one depthwise convolution to device-wide,
-      kernel-area-bounded accumulation with padded, dilated, and strided
-      numerical-parity coverage; other layouts retain the generic fallback.
+- [x] Lower CUDA multiplier-one F32 depthwise convolution to one fused kernel
+      per node, with optional fused bias and exact padded, dilated, strided,
+      arbitrary-layout parity coverage. Explicit round-to-nearest arithmetic
+      preserves the prior accumulation order; other layouts retain the generic
+      fallback.
 - [x] Preserve canonical v1 tensor and token receipt bytes while hashing
       contiguous little-endian inputs directly, with a bounded canonical
       staging fallback on big-endian hosts.

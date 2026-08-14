@@ -1,5 +1,8 @@
 use candle_core::{IndexOp, Result, Tensor};
 
+#[cfg(feature = "embedded-cuda")]
+mod cuda;
+
 /// Executes a multiplier-one NCHW depthwise convolution without lowering it
 /// into one independent graph call per channel.
 ///
@@ -12,9 +15,15 @@ use candle_core::{IndexOp, Result, Tensor};
 pub(super) fn conv2d(
     input: &Tensor,
     kernel: &Tensor,
+    bias: Option<&Tensor>,
     strides: (usize, usize),
     dilation: usize,
 ) -> Result<Tensor> {
+    #[cfg(feature = "embedded-cuda")]
+    if input.device().is_cuda() {
+        return cuda::conv2d(input, kernel, bias, strides, dilation);
+    }
+
     let (_, channels, input_height, input_width) = input.dims4()?;
     let (output_channels, kernel_channels, kernel_height, kernel_width) = kernel.dims4()?;
     if channels == 0
@@ -61,7 +70,13 @@ pub(super) fn conv2d(
             });
         }
     }
-    output.ok_or_else(|| candle_core::Error::Msg("depthwise convolution produced no terms".into()))
+    let mut output = output
+        .ok_or_else(|| candle_core::Error::Msg("depthwise convolution produced no terms".into()))?;
+    if let Some(bias) = bias {
+        let channels = bias.dims1()?;
+        output = output.broadcast_add(&bias.reshape((1, channels, 1, 1))?)?;
+    }
+    Ok(output)
 }
 
 fn sampled_axis(
@@ -114,7 +129,7 @@ mod tests {
         .unwrap();
 
         let expected = input.conv2d(&kernel, 0, 1, 1, 3).unwrap();
-        let actual = conv2d(&input, &kernel, (1, 1), 1).unwrap();
+        let actual = conv2d(&input, &kernel, None, (1, 1), 1).unwrap();
         let expected = expected.flatten_all().unwrap().to_vec1::<f32>().unwrap();
         let actual = actual.flatten_all().unwrap().to_vec1::<f32>().unwrap();
 
@@ -141,7 +156,7 @@ mod tests {
         .unwrap();
 
         let expected = input.conv2d(&kernel, 0, 1, 2, 2).unwrap();
-        let actual = conv2d(&input, &kernel, (1, 1), 2).unwrap();
+        let actual = conv2d(&input, &kernel, None, (1, 1), 2).unwrap();
 
         assert_eq!(actual.dims(), expected.dims());
         let expected = expected.flatten_all().unwrap().to_vec1::<f32>().unwrap();
@@ -168,7 +183,7 @@ mod tests {
         .unwrap();
 
         let expected = input.conv2d(&kernel, 0, 2, 1, 2).unwrap();
-        let actual = conv2d(&input, &kernel, (2, 2), 1).unwrap();
+        let actual = conv2d(&input, &kernel, None, (2, 2), 1).unwrap();
 
         assert_eq!(actual.dims(), expected.dims());
         let expected = expected.flatten_all().unwrap().to_vec1::<f32>().unwrap();
@@ -177,5 +192,87 @@ mod tests {
             .iter()
             .zip(expected)
             .all(|(actual, expected)| (actual - expected).abs() <= 0.000_01));
+    }
+
+    #[test]
+    fn shift_accumulation_applies_bias_after_the_final_kernel_term() {
+        let device = Device::Cpu;
+        let input = Tensor::from_iter((0..2 * 3 * 5 * 7).map(|value| value as f32 / 23.0), &device)
+            .unwrap()
+            .reshape((2, 3, 5, 7))
+            .unwrap()
+            .pad_with_zeros(2, 1, 1)
+            .unwrap()
+            .pad_with_zeros(3, 1, 1)
+            .unwrap();
+        let kernel = Tensor::from_iter(
+            (0..3 * 3 * 3).map(|value| (value as f32 - 9.0) / 17.0),
+            &device,
+        )
+        .unwrap()
+        .reshape((3, 1, 3, 3))
+        .unwrap();
+        let bias = Tensor::new(&[-0.25_f32, 0.5, 1.25], &device).unwrap();
+
+        let expected = input
+            .conv2d(&kernel, 0, 1, 1, 3)
+            .unwrap()
+            .broadcast_add(&bias.reshape((1, 3, 1, 1)).unwrap())
+            .unwrap();
+        let actual = conv2d(&input, &kernel, Some(&bias), (1, 1), 1).unwrap();
+        let expected = expected.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let actual = actual.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+
+        assert!(actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| (actual - expected).abs() <= 0.000_01));
+    }
+
+    #[cfg(feature = "embedded-cuda")]
+    #[test]
+    #[ignore = "requires an explicit CUDA device"]
+    fn fused_cuda_kernel_matches_the_reviewed_scalar_accumulation() {
+        let cpu = Device::Cpu;
+        let input = Tensor::from_iter(
+            (0..2 * 3 * 8 * 10).map(|value| (value as f32 - 120.0) / 29.0),
+            &cpu,
+        )
+        .unwrap()
+        .reshape((2, 3, 8, 10))
+        .unwrap()
+        .pad_with_zeros(2, 1, 1)
+        .unwrap()
+        .pad_with_zeros(3, 1, 1)
+        .unwrap();
+        let kernel = Tensor::from_iter(
+            (0..3 * 3 * 3).map(|value| (value as f32 - 8.0) / 13.0),
+            &cpu,
+        )
+        .unwrap()
+        .reshape((3, 1, 3, 3))
+        .unwrap();
+        let bias = Tensor::new(&[-0.75_f32, 0.25, 1.5], &cpu).unwrap();
+        let expected = conv2d(&input, &kernel, Some(&bias), (2, 2), 1)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+
+        let cuda = Device::new_cuda(0).unwrap();
+        let input = input.to_device(&cuda).unwrap();
+        let kernel = kernel.to_device(&cuda).unwrap();
+        let bias = bias.to_device(&cuda).unwrap();
+        let actual = conv2d(&input, &kernel, Some(&bias), (2, 2), 1)
+            .unwrap()
+            .to_device(&cpu)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+
+        assert_eq!(actual, expected);
     }
 }

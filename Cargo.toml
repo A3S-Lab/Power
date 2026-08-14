@@ -208,6 +208,9 @@ tokio-vsock = { version = "0.7", optional = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"], optional = true }
 
+[build-dependencies]
+cudaforge = "0.1.6"
+
 [dev-dependencies]
 tokio-test = "0.4"
 serial_test = "3"
