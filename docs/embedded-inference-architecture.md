@@ -325,6 +325,17 @@ eviction or persistence policy.
   dtype, shape, broadcast form, or layout continue through the ordinary nodes.
   A CPU fallback test, an ignored real-device graph test, and byte-exact CUDA
   tests for equal-shape and channel-gate operands guard this private lowering.
+- The executor also privately lowers an adjacent, single-consumer F32
+  `Div`-`Erf`-`Add`-`Mul`-`Mul` chain with three single-element initializers to
+  one CUDA kernel. F32 scalar values are retained once during the existing
+  initializer load, without a device-to-host read in the execution loop. The
+  kernel keeps the original division, error function, addition, and two
+  multiplication rounding boundaries explicit. Liveness consumes all five
+  admitted nodes in order, then applies limits and non-finite tracing to the
+  final `Mul` output. A graph output, shared intermediate, non-scalar constant,
+  unsupported dtype/device/layout, or cancelled request retains or terminates
+  the ordinary path. Model owners remain responsible for locking the matching
+  graph inventory and end-to-end output parity.
 - Placement and routing telemetry are controlled by `TelemetryMode`. It is off
   by default. Detailed expert heat can reveal input semantics, is never logged
   or persisted automatically, and must remain inside the TEE unless policy

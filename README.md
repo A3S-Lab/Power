@@ -257,11 +257,19 @@ is an exact contiguous `[N, C, 1, 1]` channel gate over `[N, C, H, W]`. The
 specialized path preserves the original two affine stages, ordered clamp, and
 final multiplication with explicit round-to-nearest operations. It removes
 four intermediate activation buffers and four launches per matched pair
-without changing the admitted graph or its public schema.
+without changing the admitted graph or its public schema. Adjacent,
+single-consumer F32 `Div`-`Erf`-`Add`-`Mul`-`Mul` chains with three scalar
+initializers are likewise lowered to one CUDA kernel. Scalar initializer values
+are captured once while the reviewed weights are loaded; explicit
+round-to-nearest division, addition, and both multiplication stages retain the
+five-node result byte-for-byte while avoiding four intermediate buffers and
+four launches per matched chain.
 Other devices, dtypes, and convolution layouts retain the existing Candle path.
 Unsupported gated-activation shapes and layouts likewise retain ordinary
-node-by-node execution. CPU fallback, full graph execution on an RTX 4090, and
-byte-exact CUDA comparisons cover both equal-shape and channel-gate forms.
+node-by-node execution. Unsupported error-function chains, constants, devices,
+dtypes, layouts, graph outputs, and shared intermediates do the same. CPU
+fallback, full graph execution on an RTX 4090, and byte-exact CUDA comparisons
+cover the reviewed fused forms.
 Canonical F32-tensor and token-ID receipt payloads hash their contiguous
 read-only bytes directly on little-endian hosts; big-endian hosts retain the
 same v1 little-endian byte protocol through bounded staging. Both paths preserve

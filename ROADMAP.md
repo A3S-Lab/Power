@@ -58,6 +58,11 @@ kernels.
       the original affine/clamp/multiply arithmetic byte-for-byte, keep the
       graph schema unchanged, and retain node-by-node fallback for every
       unreviewed device, dtype, shape, or layout.
+- [x] Fuse adjacent single-consumer F32
+      `Div`-`Erf`-`Add`-`Mul`-`Mul` CUDA chains with scalar initializers. Capture
+      scalar values once at model load, preserve all five rounding boundaries
+      byte-for-byte, and retain ordinary execution for every unmatched graph,
+      device, dtype, layout, or shared value.
 - [x] Preserve canonical v1 tensor and token receipt bytes while hashing
       contiguous little-endian inputs directly, with a bounded canonical
       staging fallback on big-endian hosts.

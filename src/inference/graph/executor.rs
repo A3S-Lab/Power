@@ -12,12 +12,14 @@ use super::value::GraphValue;
 
 mod depthwise;
 mod gated_hard_sigmoid;
+mod gelu_erf;
 mod liveness;
 
 /// Validated single-input/single-output static graph executor.
 pub struct GraphExecutor {
     plan: GraphPlan,
     constants: HashMap<String, GraphValue>,
+    scalar_constants: HashMap<String, f32>,
     value_use_counts: HashMap<String, usize>,
     runtime: EmbeddedRuntime,
 }
@@ -29,16 +31,20 @@ impl GraphExecutor {
         runtime: EmbeddedRuntime,
     ) -> Result<Self> {
         let mut constants = HashMap::with_capacity(plan.initializers.len());
+        let mut scalar_constants = HashMap::new();
         for initializer in &plan.initializers {
-            constants.insert(
-                initializer.name.clone(),
-                GraphValue::load(initializer, &weights, runtime.device().tensor_device())?,
-            );
+            let (value, scalar) =
+                GraphValue::load(initializer, &weights, runtime.device().tensor_device())?;
+            constants.insert(initializer.name.clone(), value);
+            if let Some(scalar) = scalar {
+                scalar_constants.insert(initializer.name.clone(), scalar);
+            }
         }
         let value_use_counts = liveness::value_use_counts(&plan);
         Ok(Self {
             plan,
             constants,
+            scalar_constants,
             value_use_counts,
             runtime,
         })
@@ -110,6 +116,35 @@ impl GraphExecutor {
                 return Err(PowerError::InferenceFailed(
                     "static graph execution was cancelled".to_string(),
                 ));
+            }
+            if let Some(window) = self.plan.nodes.get(node_index..node_index + 5) {
+                if let Some(output) = gelu_erf::try_execute(
+                    window,
+                    &values,
+                    &self.scalar_constants,
+                    &self.value_use_counts,
+                    &output_name,
+                    cancellation,
+                )? {
+                    for fused_node in &window[..4] {
+                        liveness::release_consumed_values(
+                            &fused_node.inputs,
+                            &output_name,
+                            &mut remaining_uses,
+                            &mut values,
+                        );
+                    }
+                    commit_node_output(
+                        &window[4],
+                        output,
+                        &output_name,
+                        self.runtime.limits().max_tensor_elements,
+                        &mut remaining_uses,
+                        &mut values,
+                    )?;
+                    node_index += 5;
+                    continue;
+                }
             }
             if let Some(next) = self.plan.nodes.get(node_index + 1) {
                 if let Some(output) = gated_hard_sigmoid::try_mul(

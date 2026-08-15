@@ -12,9 +12,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     const DEPTHWISE_SOURCE: &str = "src/inference/graph/executor/depthwise/cuda/depthwise.cu";
     const GATED_HARD_SIGMOID_SOURCE: &str =
         "src/inference/graph/executor/gated_hard_sigmoid/cuda/gated_hard_sigmoid.cu";
+    const GELU_ERF_SOURCE: &str = "src/inference/graph/executor/gelu_erf/cuda/gelu_erf.cu";
 
     println!("cargo::rerun-if-changed={DEPTHWISE_SOURCE}");
     println!("cargo::rerun-if-changed={GATED_HARD_SIGMOID_SOURCE}");
+    println!("cargo::rerun-if-changed={GELU_ERF_SOURCE}");
     println!("cargo::rerun-if-env-changed=CUDA_COMPUTE_CAP");
     println!("cargo::rerun-if-env-changed=NVCC");
     println!("cargo::rerun-if-env-changed=NVCC_CCBIN");
@@ -44,6 +46,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         GATED_HARD_SIGMOID_SOURCE,
         &output_directory,
         "GATED_HARD_SIGMOID",
+    )?;
+    build_kernel(
+        &toolkit,
+        &gpu_arch,
+        GELU_ERF_SOURCE,
+        &output_directory,
+        "GELU_ERF",
     )?;
     Ok(())
 }
