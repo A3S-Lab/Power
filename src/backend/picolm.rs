@@ -495,6 +495,8 @@ struct GenerateParams<'a> {
     response_format: Option<serde_json::Value>,
     /// Speculative-decoding mode (server config).
     spec_mode: super::picolm_ops::speculative::SpecMode,
+    /// Maximum zero-weight draft length (shared speculative config).
+    spec_draft_max: usize,
 }
 
 // ── Forward pass ─────────────────────────────────────────────────────────────
@@ -701,7 +703,9 @@ fn forward_pass_streaming(
     // Speculative decoding state — persists across the decode loop.
     // `Off` yields no drafter; grammar-constrained output also disables it.
     let spec_drafter = params.spec_mode.drafter();
-    let mut adaptive_k = speculative::AdaptiveK::new(speculative::DRAFT_K, 1, 8);
+    let spec_draft_max = params.spec_draft_max.max(1);
+    let mut adaptive_k =
+        speculative::AdaptiveK::new(speculative::DRAFT_K.min(spec_draft_max), 1, spec_draft_max);
 
     for _step in 0..params.max_new_tokens {
         // Speculation can emit several tokens per step; stop once the budget is met.
@@ -1009,12 +1013,13 @@ fn forward_pass_streaming(
         if let (Some(drafter), true) = (spec_drafter.as_deref(), grammar_sampler.is_none()) {
             // Bound draft length by the adaptive controller, the remaining token
             // budget (reserve 1 slot for the correction), and KV capacity.
-            let budget =
-                (params.max_new_tokens.saturating_sub(decode_count) as usize).saturating_sub(1);
-            let k = adaptive_k
-                .current()
-                .min(params.max_seq_len.saturating_sub(gen_pos + 1))
-                .min(budget);
+            let remaining_tokens = params.max_new_tokens.saturating_sub(decode_count) as usize;
+            let remaining_context = params.max_seq_len.saturating_sub(gen_pos.saturating_add(1));
+            let k = crate::speculative::bounded_draft_len(
+                adaptive_k.current(),
+                remaining_tokens,
+                remaining_context,
+            );
             let draft_tokens = if k == 0 {
                 Vec::new()
             } else {
@@ -1362,13 +1367,27 @@ pub struct PicolmBackend {
     max_seq_len: usize,
     #[cfg(feature = "picolm")]
     spec_mode: Option<super::picolm_ops::speculative::SpecMode>,
+    #[cfg(feature = "picolm")]
+    spec_draft_max: usize,
 }
 
 impl PicolmBackend {
     pub fn new(config: Arc<PowerConfig>) -> Self {
         tracing::info!("picolm backend initialized — pure Rust layer-streaming inference");
         #[cfg(feature = "picolm")]
-        let spec_mode = super::picolm_ops::speculative::SpecMode::parse(&config.spec_mode);
+        let spec_mode = crate::speculative::SpeculativeStrategy::parse(&config.spec_mode)
+            .and_then(|strategy| {
+                let capabilities = crate::speculative::SpeculativeCapabilities::none()
+                    .with(crate::speculative::SpeculativeStrategy::PromptLookup)
+                    .with(crate::speculative::SpeculativeStrategy::NgramContext);
+                capabilities
+                    .resolve(
+                        strategy,
+                        crate::speculative::SpeculativeStrategy::PromptLookup,
+                    )
+                    .ok()
+            })
+            .and_then(crate::speculative::SpeculativeStrategy::zero_weight_mode);
         #[cfg(not(feature = "picolm"))]
         let _ = &config;
         Self {
@@ -1378,6 +1397,11 @@ impl PicolmBackend {
             max_seq_len: 32768,
             #[cfg(feature = "picolm")]
             spec_mode,
+            #[cfg(feature = "picolm")]
+            // Preserve picolm's established adaptive range when the shared
+            // option is omitted; model-backed adapters may choose a different
+            // default without changing this backend's behavior.
+            spec_draft_max: config.spec_draft_max.unwrap_or(8) as usize,
         }
     }
 
@@ -1734,10 +1758,11 @@ impl Backend for PicolmBackend {
             let response_format = request.response_format.clone();
             let spec_mode = self.spec_mode.ok_or_else(|| {
                 PowerError::Config(
-                    "unsupported spec_mode; expected one of: off, prompt-lookup, ngram-context"
+                    "picolm spec_mode must be one of: auto, off, prompt-lookup, ngram-context"
                         .to_string(),
                 )
             })?;
+            let spec_draft_max = self.spec_draft_max;
 
             let (tx, rx) = mpsc::channel::<Result<ChatResponseChunk>>(128);
 
@@ -1787,6 +1812,7 @@ impl Backend for PicolmBackend {
                     has_tools,
                     response_format,
                     spec_mode,
+                    spec_draft_max,
                 };
                 forward_pass_streaming(&mut params, &tx);
                 // Put KV cache back into the slot so the return task can pick it up.
@@ -2114,6 +2140,26 @@ mod tests {
         }));
 
         assert_eq!(backend.spec_mode, None);
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_backend_resolves_auto_but_rejects_model_backed_strategy() {
+        let automatic = PicolmBackend::new(Arc::new(PowerConfig {
+            spec_mode: "auto".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            automatic.spec_mode,
+            Some(crate::speculative::SpecMode::PromptLookup)
+        );
+        assert_eq!(automatic.spec_draft_max, 8);
+
+        let dspark = PicolmBackend::new(Arc::new(PowerConfig {
+            spec_mode: "dspark".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(dspark.spec_mode, None);
     }
 
     #[cfg(feature = "picolm")]

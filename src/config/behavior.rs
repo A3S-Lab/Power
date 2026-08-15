@@ -54,8 +54,32 @@ impl PowerConfig {
     pub fn validate(&self) -> Result<()> {
         if !is_valid_spec_mode(&self.spec_mode) {
             return Err(PowerError::Config(format!(
-                "unsupported spec_mode '{}'; expected one of: off, prompt-lookup, ngram-context",
+                "unsupported spec_mode '{}'; expected one of: auto, off, prompt-lookup, ngram-context, draft-model, mtp, dflash, dspark",
                 self.spec_mode
+            )));
+        }
+        if let Some(spec_draft_max) = self.spec_draft_max {
+            if spec_draft_max == 0 || spec_draft_max > 64 {
+                return Err(PowerError::Config(format!(
+                    "spec_draft_max must be between 1 and 64, got {spec_draft_max}"
+                )));
+            }
+            if self.spec_draft_min > spec_draft_max {
+                return Err(PowerError::Config(format!(
+                    "spec_draft_min ({}) must not exceed spec_draft_max ({spec_draft_max})",
+                    self.spec_draft_min
+                )));
+            }
+        } else if self.spec_draft_min > 64 {
+            return Err(PowerError::Config(format!(
+                "spec_draft_min must not exceed 64, got {}",
+                self.spec_draft_min
+            )));
+        }
+        if !self.spec_draft_p_min.is_finite() || !(0.0..=1.0).contains(&self.spec_draft_p_min) {
+            return Err(PowerError::Config(format!(
+                "spec_draft_p_min must be finite and between 0 and 1, got {}",
+                self.spec_draft_p_min
             )));
         }
 
@@ -268,6 +292,23 @@ impl PowerConfig {
 
         if let Ok(spec_mode) = std::env::var("A3S_POWER_SPEC_MODE") {
             self.spec_mode = spec_mode;
+        }
+
+        if let Ok(value) = std::env::var("A3S_POWER_SPEC_DRAFT_MAX") {
+            self.spec_draft_max = Some(parse_required_env_override::<u32>(
+                "A3S_POWER_SPEC_DRAFT_MAX",
+                &value,
+            )?);
+        }
+
+        if let Ok(value) = std::env::var("A3S_POWER_SPEC_DRAFT_MIN") {
+            self.spec_draft_min =
+                parse_required_env_override::<u32>("A3S_POWER_SPEC_DRAFT_MIN", &value)?;
+        }
+
+        if let Ok(value) = std::env::var("A3S_POWER_SPEC_DRAFT_P_MIN") {
+            self.spec_draft_p_min =
+                parse_required_env_override::<f32>("A3S_POWER_SPEC_DRAFT_P_MIN", &value)?;
         }
 
         if let Ok(gpu_str) = std::env::var("A3S_POWER_GPU_LAYERS") {

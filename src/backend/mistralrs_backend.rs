@@ -263,6 +263,8 @@ impl Backend for MistralRsBackend {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
         use mistralrs::RequestBuilder;
 
+        super::ensure_non_speculative_mode(&self.config.spec_mode, self.name())?;
+
         // Check if this is a vision request (has images) and route accordingly.
         let has_images = request.has_image_inputs();
 
@@ -483,6 +485,8 @@ impl Backend for MistralRsBackend {
         model_name: &str,
         request: &ChatRequest,
     ) -> Result<Option<EffectivePromptDigest>> {
+        super::ensure_non_speculative_mode(&self.config.spec_mode, self.name())?;
+
         if request.has_image_inputs() {
             return Ok(None);
         }
@@ -1106,6 +1110,23 @@ mod tests {
             session_id: None,
             images: None,
         }
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[tokio::test]
+    async fn explicit_speculative_mode_fails_before_prompt_setup() {
+        let backend = MistralRsBackend::new(Arc::new(PowerConfig {
+            spec_mode: "mtp".to_string(),
+            ..Default::default()
+        }));
+
+        let error = backend
+            .effective_chat_prompt_digest("not-loaded", &text_chat_request())
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("mistral.rs"));
+        assert!(error.to_string().contains("mtp"));
     }
 
     #[cfg(feature = "mistralrs")]

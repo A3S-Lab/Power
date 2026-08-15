@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dirs;
 use crate::error::{PowerError, Result};
+use crate::speculative::SpeculativeStrategy;
 
 mod acl;
 mod behavior;
@@ -302,10 +303,28 @@ pub struct PowerConfig {
     #[serde(default)]
     pub gpu_attestation: GpuAttestationConfig,
 
-    /// Speculative-decoding mode for the picolm backend: "off", "prompt-lookup",
-    /// or the zero-weight "ngram-context" baseline. Default: "prompt-lookup".
+    /// Model-neutral speculative-decoding strategy.
+    ///
+    /// Backends negotiate support for `prompt-lookup`, `ngram-context`, `mtp`,
+    /// `draft-model`, `dflash`, and `dspark`. An explicit unsupported strategy
+    /// fails at model/request setup instead of silently falling back. Default:
+    /// `auto`, which resolves to prompt lookup in picolm and native MTP in
+    /// llama.cpp when compatible tensors are present.
     #[serde(default = "default_spec_mode")]
     pub spec_mode: String,
+
+    /// Maximum number of draft tokens proposed per target verification pass.
+    /// When omitted, each adapter uses its own documented safe default.
+    #[serde(default)]
+    pub spec_draft_max: Option<u32>,
+
+    /// Minimum number of draft tokens required for a model-backed proposal.
+    #[serde(default)]
+    pub spec_draft_min: u32,
+
+    /// Minimum confidence accepted by a model-backed drafter.
+    #[serde(default)]
+    pub spec_draft_p_min: f32,
 
     /// Default model keep-alive duration (e.g. "5m", "1h", "0", "-1").
     /// "0" = unload immediately after request, "-1" = never unload.
@@ -504,23 +523,11 @@ fn default_keep_alive() -> String {
 }
 
 fn default_spec_mode() -> String {
-    "prompt-lookup".to_string()
+    "auto".to_string()
 }
 
 fn is_valid_spec_mode(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "off"
-            | "none"
-            | "false"
-            | "prompt-lookup"
-            | "prompt_lookup"
-            | "lookup"
-            | "true"
-            | "ngram-context"
-            | "ngram_context"
-            | "context"
-    )
+    SpeculativeStrategy::parse(value).is_some()
 }
 
 fn validate_model_signing_key(value: &str) -> std::result::Result<(), String> {
@@ -643,6 +650,9 @@ impl Default for PowerConfig {
             gpu: GpuConfig::default(),
             gpu_attestation: GpuAttestationConfig::default(),
             spec_mode: default_spec_mode(),
+            spec_draft_max: None,
+            spec_draft_min: 0,
+            spec_draft_p_min: 0.0,
             keep_alive: default_keep_alive(),
             use_mlock: false,
             num_thread: None,

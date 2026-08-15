@@ -177,8 +177,8 @@ The service and verifier surfaces include:
 - **Deep Log Redaction**: Strips inference content from all log output — 10 sensitive JSON keys (`content`, `prompt`, `text`, `arguments`, `input`, `delta`, `system`, `message`, `query`, `instruction`); `sanitize_error()` strips prompt fragments from error messages; `suppress_token_metrics` rounds token counts to nearest 10 to prevent side-channel inference
 - **Memory Zeroing**: `SensitiveString` wrapper auto-zeroizes on drop; all inference buffers cleared via `zeroize` crate — the operator cannot recover prompts or responses from memory dumps
 - **Model Integrity**: SHA-256 hash verification at startup + Ed25519 publisher signatures; fails fast on tampering
-- **Model-neutral speculative decoding**: Public `a3s_power::speculative` proposal, adaptive-length, and exact-acceptance primitives are shared across model backends. Model crates provide trained draft/target adapters and transactional architecture state, so [DSpark](https://arxiv.org/abs/2607.05147) integration through [DeepSpec](https://github.com/deepseek-ai/DeepSpec) is not tied to a model name. picolm currently supplies zero-weight `prompt-lookup` and `ngram-context` baselines with batched layer-streaming verification; these modes are not trained DSpark checkpoints.
-- **picolm Layer-Streaming**: Pure Rust GGUF inference with true O(layer_size) peak RAM via `madvise(DONTNEED)` page release after each layer. Real transformer ops: multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm. FP16 KV cache with fused f16 dot/accumulate (no intermediate buffer). Fused dequant+dot kernels. NEON SIMD (aarch64) + AVX2 (x86_64). Rayon parallel matmul. Pre-computed RoPE tables. Batch prefill, tool calling, grammar-constrained output. Selectable speculative-decoding modes (`spec_mode`: `off` / `prompt-lookup` / `ngram-context`) with **batched layer-streaming verify** — a draft block is verified in one weight-streaming pass instead of one pass per token — adaptive draft length, and lossless acceptance (output matches plain decoding for the same seed). Zero-alloc hot path. 14+ tok/s decode on Apple Silicon. Enables 7B+ models inside 512MB TEE EPC. No C/C++ inference backend, ~4,500 lines of fully auditable Rust.
+- **Model-neutral speculative decoding**: Public `a3s_power::speculative` proposal, adaptive-length, and exact-acceptance primitives are shared across model backends. Model crates provide trained draft/target adapters and transactional architecture state, so [DSpark](https://arxiv.org/abs/2607.05147) integration is not tied to a model name. picolm supplies zero-weight baselines, while compatible llama.cpp models can use native MTP; explicit unsupported strategies fail closed. See [Model-neutral Speculative Decoding](docs/speculative-decoding.md).
+- **picolm Layer-Streaming**: Pure Rust GGUF inference with true O(layer_size) peak RAM via `madvise(DONTNEED)` page release after each layer. Real transformer ops: multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm. FP16 KV cache with fused f16 dot/accumulate (no intermediate buffer). Fused dequant+dot kernels. NEON SIMD (aarch64) + AVX2 (x86_64). Rayon parallel matmul. Pre-computed RoPE tables. Batch prefill, tool calling, grammar-constrained output. Selectable speculative-decoding modes (`spec_mode`: `auto` / `off` / `prompt-lookup` / `ngram-context`; `auto` resolves to prompt lookup) with **batched layer-streaming verify** — a draft block is verified in one weight-streaming pass instead of one pass per token — adaptive draft length, and lossless acceptance (output matches plain decoding for the same seed). Zero-alloc hot path. 14+ tok/s decode on Apple Silicon. Enables 7B+ models inside 512MB TEE EPC. No C/C++ inference backend, ~4,500 lines of fully auditable Rust.
 - **Pure Rust Inference Path**: Default backend via `mistralrs` (candle) — no C++ inference engine in the trusted computing base; the `tee-minimal` build (~1,220 dep tree lines) is the smallest auditable LLM inference stack that exists
 
 ### Server inference
@@ -740,7 +740,7 @@ selected backend explicitly accepts locked plaintext buffers. Today that means
 Three backends are available, each feature-gated:
 
 - **`mistralrs`** (default): Pure Rust inference via candle. GGUF, SafeTensors, HuggingFace, Vision formats. ISQ on-load quantization. No C++ inference toolchain. Ideal for TEE supply-chain auditing.
-- **`llamacpp`** (optional): C++ llama.cpp via `llama-cpp-2` bindings. GGUF only. Session KV cache with prefix matching, LoRA adapters, MTMD multimodal, grammar constraints, mirostat sampling.
+- **`llamacpp`** (optional): C++ llama.cpp via `llama-cpp-2` bindings. GGUF only. Session KV cache with prefix matching, LoRA adapters, MTMD multimodal, grammar constraints, mirostat sampling, and native MTP for compatible models. Enable `llamacpp-cuda` instead when NVIDIA CUDA execution is required.
 - **`picolm`** (optional): Pure Rust layer-streaming. GGUF only. Real transformer inference (multi-head/GQA attention, SwiGLU/GeGLU FFN, RoPE, RMSNorm). Peak RAM = O(layer_size) not O(model_size) via `madvise(DONTNEED)` page release. FP16 KV cache with fused f16 dot/accumulate. Fused dequant+dot kernels (Q4_K, Q6_K, Q8_0). NEON SIMD (aarch64) + AVX2 (x86_64). Rayon parallel matmul. Batch prefill, speculative decoding, tool calling, grammar-constrained output. 14+ tok/s decode on Apple Silicon. Enables 7B+ models in 512MB TEE EPC. No C/C++ inference backend — ~4,500 lines of fully auditable Rust.
 
 The `BackendRegistry` selects backends by priority and exact model manifest.
@@ -857,6 +857,9 @@ cargo install a3s-power
 # With llama.cpp inference backend (requires C++ compiler + CMake)
 cargo install a3s-power --no-default-features --features llamacpp
 
+# With llama.cpp and NVIDIA CUDA
+cargo install a3s-power --no-default-features --features llamacpp-cuda
+
 # Model management only (no inference)
 cargo install a3s-power --no-default-features
 ```
@@ -872,6 +875,9 @@ cargo build --release
 
 # With llama.cpp inference instead
 cargo build --release --no-default-features --features llamacpp
+
+# With llama.cpp and NVIDIA CUDA
+cargo build --release --no-default-features --features llamacpp-cuda
 
 # Binary at target/release/a3s-power
 ```
@@ -980,7 +986,10 @@ semantics digest before handing the standard Service to Runtime and Box.
 | `data_dir` | `~/.a3s/power` | Base directory for model storage |
 | `max_loaded_models` | `1` | Maximum models loaded concurrently |
 | `keep_alive` | `"5m"` | Auto-unload idle models (`"0"` = immediate, `"-1"` = never); invalid config or request values fail closed |
-| `spec_mode` | `"prompt-lookup"` | picolm speculative-decoding mode: `"off"`, `"prompt-lookup"`, or `"ngram-context"`; unknown values fail configuration validation |
+| `spec_mode` | `"auto"` | Model-neutral strategy: `"off"`, `"prompt-lookup"`, `"ngram-context"`, `"draft-model"`, `"mtp"`, `"dflash"`, or `"dspark"`; backends reject unsupported explicit choices |
+| `spec_draft_max` | adapter default | Maximum draft tokens per target verification pass (`1..64`) |
+| `spec_draft_min` | `0` | Minimum draft tokens required from a model-backed adapter |
+| `spec_draft_p_min` | `0.0` | Minimum model-backed draft confidence (`0.0..1.0`) |
 | `use_mlock` | `false` | Lock model weights in memory (prevent swapping) |
 | `num_thread` | auto | Thread count for inference |
 | `flash_attention` | `false` | Enable flash attention |
@@ -1043,7 +1052,10 @@ semantics digest before handing the standard Service to Runtime and Box.
 | `A3S_POWER_DATA_DIR` | Model storage directory |
 | `A3S_POWER_MAX_MODELS` | Max concurrent loaded models; invalid values fail closed |
 | `A3S_POWER_KEEP_ALIVE` | Default keep-alive duration |
-| `A3S_POWER_SPEC_MODE` | picolm speculative-decoding mode (`"off"`, `"prompt-lookup"`, or `"ngram-context"`); invalid values fail closed |
+| `A3S_POWER_SPEC_MODE` | Model-neutral speculative strategy; invalid or backend-unsupported explicit values fail closed |
+| `A3S_POWER_SPEC_DRAFT_MAX` | Maximum draft tokens per verification pass (`1..64`) |
+| `A3S_POWER_SPEC_DRAFT_MIN` | Minimum draft tokens required from a model-backed adapter |
+| `A3S_POWER_SPEC_DRAFT_P_MIN` | Minimum model-backed draft confidence (`0.0..1.0`) |
 | `A3S_POWER_MODEL_SOURCE` | Remote model hub source for pull (`"modelscope"`, `"hf"`, or `"huggingface"`); invalid configured values fail closed |
 | `A3S_POWER_HUB_TOKEN` | Generic bearer token fallback for remote model hub pulls |
 | `A3S_POWER_GPU_LAYERS` | GPU layer offloading; invalid values fail closed |
@@ -1567,7 +1579,8 @@ Model files are stored by SHA-256 hash, enabling deduplication and integrity ver
 | Flag | Default | Description |
 |------|---------|-------------|
 | `mistralrs` | ✅ enabled | Pure Rust inference backend via `mistralrs` (candle-based). No C++ inference toolchain required. Ideal for TEE auditing. |
-| `llamacpp` | ❌ disabled | llama.cpp inference backend via `llama-cpp-2`. Requires C++ compiler + CMake. Full-featured (KV cache, LoRA, grammar, mirostat). |
+| `llamacpp` | ❌ disabled | CPU llama.cpp inference backend via `llama-cpp-2`. Requires C++ compiler + CMake. Includes KV cache, LoRA, grammar, mirostat, and native MTP for compatible GGUF models. |
+| `llamacpp-cuda` | ❌ disabled | Composite `llamacpp` build with the `llama-cpp-2/cuda` backend. Requires a compatible NVIDIA CUDA toolchain. |
 | `picolm` | ❌ disabled | Pure Rust layer-streaming GGUF inference. Real transformer ops (multi-head attention, SwiGLU FFN, RoPE, RMSNorm). Peak RAM = O(layer_size) not O(model_size) via `madvise(DONTNEED)`. FP16 KV cache with fused f16 dot/accumulate. Fused dequant+dot kernels. NEON SIMD (aarch64) + AVX2 (x86_64). Batch prefill, speculative decoding, tool calling, grammar-constrained output. 14+ tok/s decode on Apple Silicon. Enables 7B+ models in 512MB TEE EPC. No C/C++ inference backend. ~4,500 lines of pure Rust. |
 | `hf` | ❌ disabled | Remote model hub pull (`POST /v1/models/pull`). Range resume, SSE progress, source-specific hub token auth. |
 | `tls` | ❌ disabled | RA-TLS transport: TLS server with self-signed cert + optional attestation X.509 extension. Adds `axum-server`, `rcgen`, `time` deps. |
@@ -1893,7 +1906,8 @@ power/
     │   ├── mod.rs               # Backend trait + manifest-aware BackendRegistry (priority, TEE routing)
     │   ├── types.rs             # ChatRequest, ChatResponseChunk, EmbeddingRequest, Tool, ToolCall
     │   ├── mistralrs_backend.rs # Pure Rust: GGUF/SafeTensors/HF/Vision, ISQ (feature: mistralrs) ★
-    │   ├── llamacpp.rs          # C++ bindings: KV cache, LoRA, MTMD vision, grammar (feature: llamacpp)
+    │   ├── llamacpp.rs          # C++ bindings: KV cache, LoRA, MTMD, grammar, native MTP (feature: llamacpp)
+    │   ├── llamacpp/            # llama.cpp backend-specific speculative runtime
     │   ├── picolm.rs            # Pure Rust layer-streaming, O(layer_size) RAM (feature: picolm)
     │   ├── picolm_ops/          # picolm transformer ops (~4,500 lines, pure Rust)
     │   │   ├── attention.rs     # Multi-head / GQA attention with Q/K/V bias support
@@ -2003,6 +2017,7 @@ server and inference product.
 ### Completed
 
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
+- [x] Model-neutral speculative control plane with picolm zero-weight baselines and native llama.cpp MTP capability negotiation, exact verification, rollback, and metrics
 - [x] Bounded embedded model/device session pooling, cancellation-safe waiting queues, current-pressure-aware deterministic microbatch plans, canonical leading-axis tensor stacking/splitting, and digest-only receipt v4 scheduling evidence
 - [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, disjoint multi-root capacity aggregation, bounded continuous/ragged execution lifecycles on shared request admission, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native fixed-state/scratch-aware cache budgets with live pressure revalidation and unified-memory accounting, LFRU hot sets, atomic plans, hysteresis-bounded live hot-tier adaptation, batched expert unions, privacy-gated cross-layer route hints, event-driven current-layer staged batches with shared count/byte admission, attestation-bound accelerator residency declarations, canonical 16-device meshes with bounded peer copies and exact confidential GPU/NVSwitch claim-set binding, fused Candle batches with explicit actual-device/fallback identity, AES-256-GCM sealed warm-state envelopes with authenticated recovery and explicit TEE export authorization, digest-bound AB/BA lossless tuning evidence, canonical self-verifying hardware evidence bundles, complete/partial weighted replicas, optional artifact-pinned and canonical-byte-verified pure-Rust rANS representations, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
 - [x] Pure Rust inference backend — `mistralrs` feature (default): GGUF inference via candle, no C++ dependency; ideal for TEE supply-chain auditing

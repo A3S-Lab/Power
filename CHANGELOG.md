@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added model-neutral speculative-decoding strategy and capability negotiation,
+  shared exact block-verification metrics, configurable draft bounds, and
+  fail-closed backend selection. picolm preserves its zero-weight lookup modes,
+  while llama.cpp 0.1.154 adds native MTP execution for compatible GGUF models
+  with target/draft cache rollback and optional CUDA compilation.
 - Added a seekable AES-256-GCM weight representation for embedded inference.
   Each SafeTensors file is split into independently authenticated chunks under
   a digest-pinned collection manifest; opening verifies the complete logical

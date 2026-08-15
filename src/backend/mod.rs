@@ -24,12 +24,24 @@ use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest};
 use crate::server::request_context::RequestContext;
+use crate::speculative::{SpeculativeCapabilities, SpeculativeStrategy};
 use crate::tee::encrypted_model::{LayerStreamingDecryptedModel, MemoryDecryptedModel};
 
 use types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
     EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse,
 };
+
+/// Reject an explicit speculative strategy for a backend that only implements
+/// ordinary autoregressive decoding. `auto` safely resolves to `off`.
+pub(crate) fn ensure_non_speculative_mode(configured: &str, backend: &str) -> Result<()> {
+    let requested = SpeculativeStrategy::parse(configured)
+        .ok_or_else(|| PowerError::Config(format!("unsupported spec_mode '{configured}'")))?;
+    SpeculativeCapabilities::none()
+        .resolve(requested, SpeculativeStrategy::Off)
+        .map(|_| ())
+        .map_err(|error| PowerError::Config(format!("{backend}: {error}")))
+}
 
 /// Trait for inference backends that can load models and run inference.
 #[async_trait]
@@ -346,6 +358,21 @@ pub fn default_backends(#[allow(unused)] config: Arc<PowerConfig>) -> BackendReg
 mod tests {
     use super::*;
     use crate::backend::test_utils::{sample_manifest, MockBackend};
+
+    #[test]
+    fn non_speculative_backend_accepts_auto_and_off() {
+        ensure_non_speculative_mode("auto", "test").unwrap();
+        ensure_non_speculative_mode("off", "test").unwrap();
+    }
+
+    #[test]
+    fn non_speculative_backend_rejects_explicit_strategy() {
+        let error = ensure_non_speculative_mode("mtp", "test").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("test"));
+        assert!(message.contains("mtp"));
+        assert!(message.contains("not supported"));
+    }
 
     #[cfg(any(feature = "mistralrs", feature = "llamacpp"))]
     fn test_config() -> Arc<PowerConfig> {

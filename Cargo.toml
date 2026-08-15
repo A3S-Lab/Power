@@ -54,6 +54,9 @@ server = [
     "tokio/full",
 ]
 llamacpp = ["server", "dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2?/mtmd"]
+# CUDA execution for the llama.cpp backend. Kept separate so CPU-only and TEE
+# builds do not require a CUDA toolchain.
+llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]
 mistralrs = ["server", "dep:mistralrs"]
 embedded-inference = [
     "dep:candle-core",
@@ -175,7 +178,7 @@ minijinja = { version = "=2.21.0", features = ["fuel"], optional = true }
 nix = { version = "0.29", features = ["ioctl"] }
 
 # llama.cpp backend (optional, requires C++ toolchain)
-llama-cpp-2 = { version = "0.1.135", optional = true, features = ["mtmd"] }
+llama-cpp-2 = { version = "0.1.154", optional = true, features = ["mtmd"] }
 
 # UTF-8 decoding for llama.cpp token_to_piece (re-exported by llama-cpp-2)
 encoding_rs = { version = "0.8", optional = true }

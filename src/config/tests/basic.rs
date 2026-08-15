@@ -55,6 +55,9 @@ fn test_config_roundtrip() {
         gpu: GpuConfig::default(),
         gpu_attestation: GpuAttestationConfig::default(),
         spec_mode: "prompt-lookup".to_string(),
+        spec_draft_max: Some(3),
+        spec_draft_min: 0,
+        spec_draft_p_min: 0.0,
         keep_alive: "5m".to_string(),
         use_mlock: false,
         num_thread: None,
@@ -108,6 +111,7 @@ fn test_gpu_config_defaults() {
     let config = PowerConfig::default();
     assert_eq!(config.gpu.gpu_layers, 0);
     assert_eq!(config.gpu.main_gpu, 0);
+    assert_eq!(config.spec_draft_max, None);
 }
 
 #[test]
@@ -135,6 +139,21 @@ fn test_gpu_config_missing_uses_defaults() {
     let config: PowerConfig = acl::deserialize(acl_str).unwrap();
     assert_eq!(config.gpu.gpu_layers, 0);
     assert_eq!(config.gpu.main_gpu, 0);
+}
+
+#[test]
+fn test_speculative_settings_deserialize_acl() {
+    let acl_str = r#"
+            spec_mode = "dspark"
+            spec_draft_max = 7
+            spec_draft_min = 2
+            spec_draft_p_min = 0.6
+        "#;
+    let config: PowerConfig = acl::deserialize(acl_str).unwrap();
+    assert_eq!(config.spec_mode, "dspark");
+    assert_eq!(config.spec_draft_max, Some(7));
+    assert_eq!(config.spec_draft_min, 2);
+    assert!((config.spec_draft_p_min - 0.6).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -497,6 +516,39 @@ fn test_env_a3s_power_keep_alive() {
     config.apply_env_overrides().unwrap();
     assert_eq!(config.keep_alive, "10m");
     std::env::remove_var("A3S_POWER_KEEP_ALIVE");
+}
+
+#[test]
+#[serial]
+fn test_env_a3s_power_speculative_settings() {
+    std::env::set_var("A3S_POWER_SPEC_MODE", "mtp");
+    std::env::set_var("A3S_POWER_SPEC_DRAFT_MAX", "5");
+    std::env::set_var("A3S_POWER_SPEC_DRAFT_MIN", "1");
+    std::env::set_var("A3S_POWER_SPEC_DRAFT_P_MIN", "0.75");
+
+    let mut config = PowerConfig::default();
+    config.apply_env_overrides().unwrap();
+
+    std::env::remove_var("A3S_POWER_SPEC_MODE");
+    std::env::remove_var("A3S_POWER_SPEC_DRAFT_MAX");
+    std::env::remove_var("A3S_POWER_SPEC_DRAFT_MIN");
+    std::env::remove_var("A3S_POWER_SPEC_DRAFT_P_MIN");
+
+    assert_eq!(config.spec_mode, "mtp");
+    assert_eq!(config.spec_draft_max, Some(5));
+    assert_eq!(config.spec_draft_min, 1);
+    assert!((config.spec_draft_p_min - 0.75).abs() < f32::EPSILON);
+}
+
+#[test]
+#[serial]
+fn test_env_a3s_power_spec_draft_max_invalid_rejected() {
+    std::env::set_var("A3S_POWER_SPEC_DRAFT_MAX", "not-a-number");
+    let mut config = PowerConfig::default();
+    let err = config.apply_env_overrides().unwrap_err();
+    std::env::remove_var("A3S_POWER_SPEC_DRAFT_MAX");
+
+    assert!(err.to_string().contains("A3S_POWER_SPEC_DRAFT_MAX"));
 }
 
 #[test]

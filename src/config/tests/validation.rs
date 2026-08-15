@@ -392,14 +392,58 @@ fn test_validate_rejects_unknown_spec_mode() {
 }
 
 #[test]
-fn test_validate_rejects_untrained_dspark_alias() {
+fn test_validate_accepts_model_neutral_dspark_strategy() {
     let config = PowerConfig {
         spec_mode: "dspark".to_string(),
         ..Default::default()
     };
 
-    let err = config.validate().unwrap_err();
-    assert!(err.to_string().contains("unsupported spec_mode"));
+    config.validate().unwrap();
+}
+
+#[test]
+fn test_validate_rejects_invalid_speculative_draft_bounds() {
+    let zero = PowerConfig {
+        spec_draft_max: Some(0),
+        ..Default::default()
+    };
+    assert!(zero
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("between 1 and 64"));
+
+    let inverted = PowerConfig {
+        spec_draft_max: Some(3),
+        spec_draft_min: 4,
+        ..Default::default()
+    };
+    assert!(inverted
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("must not exceed"));
+
+    let unbounded_min = PowerConfig {
+        spec_draft_max: None,
+        spec_draft_min: 65,
+        ..Default::default()
+    };
+    assert!(unbounded_min
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("must not exceed 64"));
+
+    let probability = PowerConfig {
+        spec_draft_p_min: 1.1,
+        ..Default::default()
+    };
+    assert!(probability
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("between 0 and 1"));
 }
 
 #[test]

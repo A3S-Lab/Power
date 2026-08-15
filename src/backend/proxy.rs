@@ -99,6 +99,8 @@ impl Backend for ProxyBackend {
         model_name: &str,
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
+        super::ensure_non_speculative_mode(&self.config.spec_mode, self.name())?;
+
         let url = proxy_endpoint_url(&self.upstream(model_name)?, &["v1", "chat", "completions"])?;
         let body = build_chat_body(model_name, &request);
         let resp = send_stream(&self.http, &url, body).await?;
@@ -199,6 +201,8 @@ impl Backend for ProxyBackend {
         model_name: &str,
         request: &ChatRequest,
     ) -> Result<Option<EffectivePromptDigest>> {
+        super::ensure_non_speculative_mode(&self.config.spec_mode, self.name())?;
+
         if !self.config.proxy_effective_prompt_digest
             && !self.config.proxy_effective_prompt_digest_required
         {
@@ -236,6 +240,8 @@ impl Backend for ProxyBackend {
         model_name: &str,
         request: CompletionRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<CompletionResponseChunk>> + Send>>> {
+        super::ensure_non_speculative_mode(&self.config.spec_mode, self.name())?;
+
         let url = proxy_endpoint_url(&self.upstream(model_name)?, &["v1", "completions"])?;
         let body = build_completion_body(model_name, &request);
         let resp = send_stream(&self.http, &url, body).await?;
@@ -303,6 +309,8 @@ impl Backend for ProxyBackend {
         model_name: &str,
         request: &CompletionRequest,
     ) -> Result<Option<EffectivePromptDigest>> {
+        super::ensure_non_speculative_mode(&self.config.spec_mode, self.name())?;
+
         if !self.config.proxy_effective_prompt_digest
             && !self.config.proxy_effective_prompt_digest_required
         {
@@ -1484,6 +1492,22 @@ mod tests {
             suffix: None,
             context: None,
         }
+    }
+
+    #[tokio::test]
+    async fn explicit_speculative_mode_fails_before_proxy_request() {
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            spec_mode: "dspark".to_string(),
+            ..Default::default()
+        }));
+
+        let error = backend
+            .effective_chat_prompt_digest("no-upstream", &chat_req())
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("proxy"));
+        assert!(error.to_string().contains("dspark"));
     }
 
     #[test]

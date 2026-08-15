@@ -32,6 +32,14 @@ use super::types::{
 };
 use super::Backend;
 
+#[cfg(feature = "llamacpp")]
+mod speculative_runtime;
+#[cfg(feature = "llamacpp")]
+use speculative_runtime::{
+    build_llamacpp_sampler, llamacpp_speculative_capabilities, run_mtp_completion,
+    LlamaContextSettings, LlamaSamplingSettings, MtpCompletionSettings,
+};
+
 /// Default context size when `num_ctx` is not specified by the user.
 ///
 /// Matches Ollama's default. Using the model's full `n_ctx_train` (e.g. 128K for
@@ -61,6 +69,8 @@ struct LoadedModel {
     load_mode: LoadMode,
     /// Trained context length from the model's GGUF metadata.
     n_ctx_train: u32,
+    /// Speculative strategies supported by this loaded model and backend.
+    speculative_capabilities: crate::speculative::SpeculativeCapabilities,
     /// Per-session KV cache map: session_id → CachedContext.
     ///
     /// Anonymous requests (session_id = None) never touch this map — they always
@@ -408,6 +418,13 @@ impl Backend for LlamaCppBackend {
         // Read trained context length from model metadata
         let n_ctx_train = model_arc.n_ctx_train();
         tracing::info!(model = %manifest.name, n_ctx_train = n_ctx_train, "Model context window detected");
+        let speculative_capabilities = llamacpp_speculative_capabilities(&model_arc);
+        tracing::info!(
+            model = %manifest.name,
+            mtp = speculative_capabilities
+                .supports(crate::speculative::SpeculativeStrategy::Mtp),
+            "Model speculative capabilities detected"
+        );
 
         // Load LoRA adapter if specified in manifest
         let lora_adapter = if let Some(ref adapter_path) = manifest.adapter_path {
@@ -503,6 +520,7 @@ impl Backend for LlamaCppBackend {
                 raw_template: raw_template_str,
                 load_mode: LoadMode::Inference,
                 n_ctx_train,
+                speculative_capabilities,
                 session_cache: Arc::new(Mutex::new(HashMap::new())),
                 lora_adapter,
                 projector_path: manifest.projector_path.clone(),
@@ -736,9 +754,15 @@ impl Backend for LlamaCppBackend {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<CompletionResponseChunk>> + Send>>> {
         use llama_cpp_2::context::params::LlamaContextParams;
         use llama_cpp_2::llama_batch::LlamaBatch;
-        use llama_cpp_2::sampling::LlamaSampler;
 
-        let (model_arc, session_cache, lora_adapter, model_n_ctx_train, mtmd_ctx) = {
+        let (
+            model_arc,
+            session_cache,
+            lora_adapter,
+            model_n_ctx_train,
+            mtmd_ctx,
+            speculative_capabilities,
+        ) = {
             let models = self.models.read().await;
             models
                 .get(model_name)
@@ -749,6 +773,7 @@ impl Backend for LlamaCppBackend {
                         m.lora_adapter.clone(),
                         m.n_ctx_train,
                         m.mtmd_ctx.clone(),
+                        m.speculative_capabilities,
                     )
                 })
                 .ok_or_else(|| {
@@ -805,6 +830,66 @@ impl Backend for LlamaCppBackend {
         let stop_sequences = request.stop.clone().unwrap_or_default();
         let has_images = request.images.as_ref().is_some_and(|v| !v.is_empty());
         ensure_llamacpp_images_supported(model_name, has_images, mtmd_ctx.is_some())?;
+
+        let requested_strategy =
+            crate::speculative::SpeculativeStrategy::parse(&self.config.spec_mode).ok_or_else(
+                || PowerError::Config(format!("unsupported spec_mode '{}'", self.config.spec_mode)),
+            )?;
+        let mtp_request_compatible =
+            !has_images && request.session_id.is_none() && lora_adapter.is_none();
+        let backend_default = if mtp_request_compatible
+            && speculative_capabilities.supports(crate::speculative::SpeculativeStrategy::Mtp)
+        {
+            crate::speculative::SpeculativeStrategy::Mtp
+        } else {
+            crate::speculative::SpeculativeStrategy::Off
+        };
+        let speculative_strategy = speculative_capabilities
+            .resolve(requested_strategy, backend_default)
+            .map_err(|error| PowerError::Config(format!("llama.cpp: {error}")))?;
+        if matches!(
+            speculative_strategy,
+            crate::speculative::SpeculativeStrategy::Mtp
+        ) && !mtp_request_compatible
+        {
+            return Err(PowerError::InvalidRequest(
+                "llama.cpp MTP currently requires text-only inference without session caching or LoRA"
+                    .to_string(),
+            ));
+        }
+
+        let context_settings = LlamaContextSettings {
+            ctx_size,
+            num_batch,
+            num_thread,
+            num_thread_batch,
+            flash_attention,
+        };
+        let sampling_settings = LlamaSamplingSettings {
+            response_format,
+            repeat_penalty,
+            frequency_penalty,
+            presence_penalty,
+            repeat_last_n,
+            mirostat,
+            mirostat_tau,
+            mirostat_eta,
+            temperature,
+            top_k,
+            typical_p,
+            top_p,
+            min_p,
+            seed,
+        };
+        let mtp_settings = MtpCompletionSettings {
+            max_tokens,
+            stop_sequences: stop_sequences.clone(),
+            // llama.cpp's native MTP adapter defaults to three draft tokens.
+            // Other model-backed adapters can resolve a different default.
+            draft_max: self.config.spec_draft_max.unwrap_or(3),
+            draft_min: self.config.spec_draft_min,
+            draft_p_min: self.config.spec_draft_p_min,
+        };
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<CompletionResponseChunk>>(32);
 
@@ -1078,6 +1163,23 @@ impl Backend for LlamaCppBackend {
 
             let prompt_token_count = tokens.len() as u32;
 
+            if matches!(
+                speculative_strategy,
+                crate::speculative::SpeculativeStrategy::Mtp
+            ) {
+                if let Err(error) = run_mtp_completion(
+                    &model_arc,
+                    tokens,
+                    context_settings,
+                    &sampling_settings,
+                    mtp_settings,
+                    &tx,
+                ) {
+                    send_completion_result(&tx, Err(error));
+                }
+                return;
+            }
+
             // Try to reuse cached context with KV cache prefix matching.
             // Only reuse if the request carries a session_id — anonymous requests
             // always get a fresh context to prevent cross-request cache leakage.
@@ -1124,21 +1226,11 @@ impl Backend for LlamaCppBackend {
                 }
                 _ => {
                     // No cached context or size mismatch — create new
-                    let mut ctx_params = LlamaContextParams::default()
-                        .with_n_ctx(Some(nonzero_context_size(ctx_size)));
-                    if let Some(batch) = num_batch {
-                        ctx_params = ctx_params.with_n_batch(batch);
-                    }
-                    if let Some(threads) = num_thread {
-                        ctx_params = ctx_params.with_n_threads(threads as i32);
-                    }
-                    if let Some(threads_batch) = num_thread_batch {
-                        ctx_params = ctx_params.with_n_threads_batch(threads_batch as i32);
-                    }
-                    if flash_attention {
-                        // LLAMA_FLASH_ATTN_TYPE_ENABLED = 1
-                        ctx_params = ctx_params.with_flash_attention_policy(1);
-                    }
+                    let ctx_params = context_settings.params(
+                        llama_cpp_2::context::params::LlamaContextType::Default,
+                        0,
+                        1,
+                    );
                     match model_arc.new_context(backend_ref(), ctx_params) {
                         Ok(c) => {
                             // Safety: model_arc is an Arc kept alive in LoadedModel for the
@@ -1214,94 +1306,13 @@ impl Backend for LlamaCppBackend {
             }
             let prompt_eval_duration_ns = prompt_eval_start.elapsed().as_nanos() as u64;
 
-            // Build sampler chain based on request parameters
-            let mut samplers: Vec<LlamaSampler> = Vec::new();
-
-            // JSON grammar constraint (supports "json" string or JSON Schema object)
-            if let Some(ref fmt) = response_format {
-                match super::json_schema::format_to_gbnf(fmt) {
-                    Ok(Some(grammar)) => {
-                        match LlamaSampler::grammar(&model_arc, &grammar, "root") {
-                            Ok(s) => samplers.push(s),
-                            Err(e) => {
-                                send_completion_result(
-                                    &tx,
-                                    Err(PowerError::InferenceFailed(format!(
-                                        "Failed to create grammar sampler: {e}"
-                                    ))),
-                                );
-                                return;
-                            }
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        send_completion_result(
-                            &tx,
-                            Err(PowerError::InvalidRequest(format!(
-                                "unsupported response_format grammar: {e}"
-                            ))),
-                        );
-                        return;
-                    }
+            let mut sampler = match build_llamacpp_sampler(&model_arc, &sampling_settings) {
+                Ok(sampler) => sampler,
+                Err(error) => {
+                    send_completion_result(&tx, Err(error));
+                    return;
                 }
-            }
-
-            // Repetition penalties (must come before other samplers)
-            if repeat_penalty.is_some() || frequency_penalty.is_some() || presence_penalty.is_some()
-            {
-                samplers.push(LlamaSampler::penalties(
-                    repeat_last_n,
-                    repeat_penalty.unwrap_or(1.0),
-                    frequency_penalty.unwrap_or(0.0),
-                    presence_penalty.unwrap_or(0.0),
-                ));
-            }
-
-            // Mirostat replaces the standard sampling chain
-            match mirostat {
-                Some(1) => {
-                    let tau = mirostat_tau.unwrap_or(5.0);
-                    let eta = mirostat_eta.unwrap_or(0.1);
-                    samplers.push(LlamaSampler::temp(temperature));
-                    samplers.push(LlamaSampler::mirostat(
-                        model_arc.n_vocab(),
-                        seed,
-                        tau,
-                        eta,
-                        100,
-                    ));
-                }
-                Some(2) => {
-                    let tau = mirostat_tau.unwrap_or(5.0);
-                    let eta = mirostat_eta.unwrap_or(0.1);
-                    samplers.push(LlamaSampler::temp(temperature));
-                    samplers.push(LlamaSampler::mirostat_v2(seed, tau, eta));
-                }
-                _ => {
-                    // Standard sampling chain
-                    if let Some(k) = top_k {
-                        samplers.push(LlamaSampler::top_k(k));
-                    }
-
-                    // NOTE: tail_free sampling (tfs_z) was removed in llama-cpp-2 v0.1.133
-
-                    if let Some(p) = typical_p {
-                        samplers.push(LlamaSampler::typical(p, 1));
-                    }
-
-                    samplers.push(LlamaSampler::top_p(top_p, 1));
-
-                    if let Some(p) = min_p {
-                        samplers.push(LlamaSampler::min_p(p, 1));
-                    }
-
-                    samplers.push(LlamaSampler::temp(temperature));
-                    samplers.push(LlamaSampler::dist(seed));
-                }
-            }
-
-            let mut sampler = LlamaSampler::chain_simple(samplers);
+            };
 
             let eos_token = model_arc.token_eos();
             let mut generated_text = String::new();
@@ -1530,6 +1541,7 @@ impl Backend for LlamaCppBackend {
 
             let model_arc = Arc::new(model);
             let n_ctx_train = model_arc.n_ctx_train();
+            let speculative_capabilities = llamacpp_speculative_capabilities(&model_arc);
             let name = model_name.to_string();
             self.models.write().await.insert(
                 name.clone(),
@@ -1541,6 +1553,7 @@ impl Backend for LlamaCppBackend {
                     raw_template,
                     load_mode: LoadMode::Embedding,
                     n_ctx_train,
+                    speculative_capabilities,
                     session_cache: Arc::new(Mutex::new(HashMap::new())),
                     lora_adapter,
                     projector_path,
@@ -1674,6 +1687,7 @@ impl Backend for LlamaCppBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::backend::types::{ChatMessage, ContentPart, ImageUrl, MessageContent};
     use crate::backend::Backend;
     use crate::model::manifest::ModelFormat;
