@@ -20,6 +20,7 @@ pub mod runtime_service;
 pub mod sae;
 #[cfg(feature = "server")]
 pub mod server;
+pub mod speculative;
 pub mod tee;
 #[cfg(feature = "server")]
 pub mod verify;

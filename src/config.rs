@@ -303,7 +303,7 @@ pub struct PowerConfig {
     pub gpu_attestation: GpuAttestationConfig,
 
     /// Speculative-decoding mode for the picolm backend: "off", "prompt-lookup",
-    /// or "ngram-context" (DSpark-like self-speculation). Default: "prompt-lookup".
+    /// or the zero-weight "ngram-context" baseline. Default: "prompt-lookup".
     #[serde(default = "default_spec_mode")]
     pub spec_mode: String,
 
@@ -520,7 +520,6 @@ fn is_valid_spec_mode(value: &str) -> bool {
             | "ngram-context"
             | "ngram_context"
             | "context"
-            | "dspark"
     )
 }
 

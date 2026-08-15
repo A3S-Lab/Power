@@ -392,6 +392,17 @@ fn test_validate_rejects_unknown_spec_mode() {
 }
 
 #[test]
+fn test_validate_rejects_untrained_dspark_alias() {
+    let config = PowerConfig {
+        spec_mode: "dspark".to_string(),
+        ..Default::default()
+    };
+
+    let err = config.validate().unwrap_err();
+    assert!(err.to_string().contains("unsupported spec_mode"));
+}
+
+#[test]
 #[serial]
 fn test_load_from_rejects_unknown_spec_mode() {
     std::env::remove_var("A3S_POWER_SPEC_MODE");

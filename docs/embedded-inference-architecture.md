@@ -978,7 +978,7 @@ authority over export.
 | Persistent warm conversations | Implemented as model-neutral opaque AES-256-GCM envelopes bound to exact weights, model-owned layout, hashed state identity, generation, bounds, and export scope; synchronized primary/backup recovery adapts commit-last durability without adopting plaintext `.coli_kv` or moving KV topology into Power |
 | Routing-history sidecar | Plaintext automatic persistence is intentionally not adopted; TEE policy owns sealed storage |
 | Cache-aware expert substitution | Not enabled because it changes model semantics; exact routing is the default invariant |
-| Speculative decoding and KV policy | Model control flow remains in the model crate; Power supplies shared state bounds and receipts |
+| Speculative decoding and state policy | Power owns shared proposal, adaptive-length, exact-acceptance, scheduling, and transaction orchestration primitives; model crates own draft/verify math and KV, recurrent, convolution, sampler, and decoder state representations |
 | Web dashboard | Not part of embedded inference; an explicit external consumer may receive policy-approved aggregate telemetry |
 
 ## Deep Colibri Adoption Sequence
@@ -1004,8 +1004,10 @@ The current sequence is:
 | 13 | Cross-session device sharing and memory-shaped request batches | **Power substrate complete:** exact model sessions share one bounded resolved-device gate, finite cancellation-aware model/device queues, and deterministic contiguous microbatch plans that are revalidated against live memory before execution; receipt v4 binds scheduling digests without slot identities or snapshots | Power tests cover count/byte limits, concurrent load deduplication, cancellation and future-drop cleanup, model/device queue evidence, CPU/discrete/unified-memory planning, stale pressure/topology, tamper/wrong-session refusal, serde compatibility, privacy-safe debug, and `Send + Sync`; OCR and parser integrations must still publish stage parity, partial-failure, bounded-memory, and named-hardware throughput evidence |
 
 Cache-aware expert substitution remains outside the default path because it
-changes model semantics. Grammar drafts, MTP/speculative control flow,
-tokenizers, and model-specific KV layouts remain with the owning model crate.
+changes model semantics. Grammar state, draft and target tensor layouts,
+tokenizers, and model-specific KV or recurrent layouts remain with the owning
+model crate. Power provides model-neutral speculative execution mechanics and
+does not branch on Qwen, OLMoE, or any other architecture name.
 Power will not add a Web dashboard or embed model assets to imitate Colibri's
 product surface.
 
