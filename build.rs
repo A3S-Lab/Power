@@ -9,11 +9,14 @@ use std::process::Command;
 use cudaforge::{detect_compute_cap, CudaToolkit, GpuArch};
 
 fn main() -> Result<(), Box<dyn Error>> {
+    const BIASED_ACTIVATION_SOURCE: &str =
+        "src/inference/graph/executor/biased_activation/cuda/biased_activation.cu";
     const DEPTHWISE_SOURCE: &str = "src/inference/graph/executor/depthwise/cuda/depthwise.cu";
     const GATED_HARD_SIGMOID_SOURCE: &str =
         "src/inference/graph/executor/gated_hard_sigmoid/cuda/gated_hard_sigmoid.cu";
     const GELU_ERF_SOURCE: &str = "src/inference/graph/executor/gelu_erf/cuda/gelu_erf.cu";
 
+    println!("cargo::rerun-if-changed={BIASED_ACTIVATION_SOURCE}");
     println!("cargo::rerun-if-changed={DEPTHWISE_SOURCE}");
     println!("cargo::rerun-if-changed={GATED_HARD_SIGMOID_SOURCE}");
     println!("cargo::rerun-if-changed={GELU_ERF_SOURCE}");
@@ -33,6 +36,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         toolkit.include_dir.display()
     );
 
+    build_kernel(
+        &toolkit,
+        &gpu_arch,
+        BIASED_ACTIVATION_SOURCE,
+        &output_directory,
+        "BIASED_ACTIVATION",
+    )?;
     build_kernel(
         &toolkit,
         &gpu_arch,

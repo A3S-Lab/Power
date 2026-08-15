@@ -10,6 +10,7 @@ use super::super::{EmbeddedRuntime, ExecutionPermit, TensorInput, TensorOutput, 
 use super::plan::{GraphNode, GraphOp, GraphPlan};
 use super::value::GraphValue;
 
+mod biased_activation;
 mod depthwise;
 mod gated_hard_sigmoid;
 mod gelu_erf;
@@ -116,6 +117,36 @@ impl GraphExecutor {
                 return Err(PowerError::InferenceFailed(
                     "static graph execution was cancelled".to_string(),
                 ));
+            }
+            if let Some(fused) = biased_activation::try_execute(
+                &self.plan.nodes[node_index..],
+                &values,
+                &self.scalar_constants,
+                &self.value_use_counts,
+                &output_name,
+                self.runtime.device().tensor_device(),
+                self.runtime.limits().max_tensor_elements,
+                cancellation,
+            )? {
+                let window = &self.plan.nodes[node_index..node_index + fused.consumed_nodes];
+                for fused_node in &window[..window.len() - 1] {
+                    liveness::release_consumed_values(
+                        &fused_node.inputs,
+                        &output_name,
+                        &mut remaining_uses,
+                        &mut values,
+                    );
+                }
+                commit_node_output(
+                    &window[window.len() - 1],
+                    fused.value,
+                    &output_name,
+                    self.runtime.limits().max_tensor_elements,
+                    &mut remaining_uses,
+                    &mut values,
+                )?;
+                node_index += fused.consumed_nodes;
+                continue;
             }
             if let Some(window) = self.plan.nodes.get(node_index..node_index + 5) {
                 if let Some(output) = gelu_erf::try_execute(

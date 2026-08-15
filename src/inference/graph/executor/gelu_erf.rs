@@ -61,14 +61,14 @@ pub(super) fn try_execute(
     Ok(None)
 }
 
-struct MatchedInputs<'a> {
-    input: &'a str,
-    divisor: &'a str,
-    offset: &'a str,
-    scale: &'a str,
+pub(super) struct MatchedInputs<'a> {
+    pub(super) input: &'a str,
+    pub(super) divisor: &'a str,
+    pub(super) offset: &'a str,
+    pub(super) scale: &'a str,
 }
 
-fn matched_inputs<'a>(
+pub(super) fn matched_inputs<'a>(
     nodes: &'a [GraphNode],
     use_counts: &HashMap<String, usize>,
     retained_output: &str,

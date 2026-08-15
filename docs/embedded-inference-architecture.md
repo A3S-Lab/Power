@@ -336,6 +336,20 @@ eviction or persistence policy.
   unsupported dtype/device/layout, or cancelled request retains or terminates
   the ordinary path. Model owners remain responsible for locking the matching
   graph inventory and end-to-end output parity.
+- A two-input `Conv` followed by an exact contiguous `[1, C, 1, 1]` bias
+  `Add`, zero through two private `Identity` nodes, and ReLU, the reviewed
+  error-function activation, or a gated HardSigmoid multiply can retain the
+  ordinary convolution and fold the channel addition into the existing
+  activation launch. Every skipped output must be private, and the
+  error-function root must have exactly its two in-window consumers. The
+  convolution result is independently checked against the tensor-element
+  bound before launch. The fused kernel uses 32-bit channel/spatial indexing
+  only after the element count has passed the existing `u32` launch bound and
+  retains explicit F32 addition, affine, clamp, error-function, and
+  multiplication boundaries. Unsupported bias shapes, identity depths,
+  devices, dtypes, layouts, graph outputs, or shared consumers execute the
+  original nodes. Model crates lock eligible graph counts and complete-output
+  parity.
 - Placement and routing telemetry are controlled by `TelemetryMode`. It is off
   by default. Detailed expert heat can reveal input semantics, is never logged
   or persisted automatically, and must remain inside the TEE unless policy

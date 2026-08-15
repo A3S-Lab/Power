@@ -263,13 +263,20 @@ initializers are likewise lowered to one CUDA kernel. Scalar initializer values
 are captured once while the reviewed weights are loaded; explicit
 round-to-nearest division, addition, and both multiplication stages retain the
 five-node result byte-for-byte while avoiding four intermediate buffers and
-four launches per matched chain.
+four launches per matched chain. When a two-input `Conv` feeds an exact
+`[1, C, 1, 1]` channel-bias `Add` through at most two private identities into
+ReLU, the reviewed error-function activation, or a gated HardSigmoid multiply,
+the executor keeps the convolution on its ordinary backend and folds the bias
+into the activation kernel. This removes one additional full-tensor buffer and
+launch. The CUDA kernel uses bounded 32-bit channel indexing under Power's
+existing `u32` element-count gate and preserves the original F32 addition and
+activation rounding boundaries byte-for-byte.
 Other devices, dtypes, and convolution layouts retain the existing Candle path.
 Unsupported gated-activation shapes and layouts likewise retain ordinary
 node-by-node execution. Unsupported error-function chains, constants, devices,
-dtypes, layouts, graph outputs, and shared intermediates do the same. CPU
-fallback, full graph execution on an RTX 4090, and byte-exact CUDA comparisons
-cover the reviewed fused forms.
+dtypes, layouts, graph outputs, channel biases, identity depths, and shared
+intermediates do the same. CPU fallback, full graph execution on an RTX 4090,
+and byte-exact CUDA comparisons cover the reviewed fused forms.
 Canonical F32-tensor and token-ID receipt payloads hash their contiguous
 read-only bytes directly on little-endian hosts; big-endian hosts retain the
 same v1 little-endian byte protocol through bounded staging. Both paths preserve

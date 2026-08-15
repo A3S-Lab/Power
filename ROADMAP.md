@@ -63,6 +63,11 @@ kernels.
       scalar values once at model load, preserve all five rounding boundaries
       byte-for-byte, and retain ordinary execution for every unmatched graph,
       device, dtype, layout, or shared value.
+- [x] Fold exact contiguous NCHW channel-bias `Add` nodes into reviewed CUDA
+      ReLU, error-function GELU, and gated HardSigmoid activation windows after
+      two-input convolutions. Keep the convolution backend unchanged, require
+      private bounded intermediates, use launch-bounded 32-bit indexing, and
+      retain byte-exact arithmetic plus node-by-node fallback.
 - [x] Preserve canonical v1 tensor and token receipt bytes while hashing
       contiguous little-endian inputs directly, with a bounded canonical
       staging fallback on big-endian hosts.
