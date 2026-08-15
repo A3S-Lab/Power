@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail-closed backend selection. picolm preserves its zero-weight lookup modes,
   while llama.cpp 0.1.154 adds native MTP execution for compatible GGUF models
   with target/draft cache rollback and optional CUDA compilation.
+- Added `a3s-power-speculative-bench` for controlled baseline/candidate runs
+  through Power's streaming completion API. Reports verify the registered GGUF
+  SHA-256 and inference receipt, bind non-secret runtime and hardware settings,
+  omit request paths/content, require deterministic output parity, and enforce
+  an explicit median decode-throughput threshold.
 - Added a seekable AES-256-GCM weight representation for embedded inference.
   Each SafeTensors file is split into independently authenticated chunks under
   a digest-pinned collection manifest; opening verifies the complete logical

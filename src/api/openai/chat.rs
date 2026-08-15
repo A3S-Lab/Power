@@ -430,7 +430,8 @@ pub async fn handler(
     };
 
     let is_stream = request.stream.unwrap_or(false);
-    let include_usage_chunk = state.suppress_token_metrics()
+    let suppress_token_metrics = state.suppress_token_metrics();
+    let include_usage_chunk = suppress_token_metrics
         || request
             .stream_options
             .as_ref()
@@ -559,8 +560,14 @@ pub async fn handler(
                     let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
                     let prompt_tokens2 =
                         prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
-                    let rp = super::round_tokens(prompt_tokens2);
-                    let rc = super::round_tokens(eval_count2);
+                    let (rp, rc) = if suppress_token_metrics {
+                        (
+                            super::round_tokens(prompt_tokens2),
+                            super::round_tokens(eval_count2),
+                        )
+                    } else {
+                        (prompt_tokens2, eval_count2)
+                    };
                     let usage_chunk = ChatCompletionChunk {
                         id: id_for_done,
                         object: "chat.completion.chunk".to_string(),
@@ -2755,6 +2762,10 @@ mod tests {
         assert!(
             body_str.contains("\"usage\""),
             "expected usage chunk in SSE stream"
+        );
+        assert!(
+            body_str.contains("\"completion_tokens\":1"),
+            "explicit include_usage must return the exact token count"
         );
         assert!(
             body_str.contains("\"attestation_receipt_sha256\""),

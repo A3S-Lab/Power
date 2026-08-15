@@ -29,6 +29,11 @@ name = "a3s-power-storage-bench"
 path = "src/bin/a3s-power-storage-bench.rs"
 required-features = ["embedded-inference"]
 
+[[bin]]
+name = "a3s-power-speculative-bench"
+path = "src/bin/a3s-power-speculative-bench.rs"
+required-features = ["server"]
+
 [features]
 default = ["server", "mistralrs"]
 server = [

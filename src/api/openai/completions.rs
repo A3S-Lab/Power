@@ -8,7 +8,9 @@ use std::time::Instant;
 use zeroize::Zeroize;
 
 use super::openai_error;
-use crate::api::types::{CompletionChoice, CompletionRequest, CompletionResponse, Usage};
+use crate::api::types::{
+    CompletionChoice, CompletionRequest, CompletionResponse, StreamingPerformance, Usage,
+};
 use crate::backend::types::CompletionResponseChunk;
 use crate::server::audit::AuditEvent;
 use crate::server::auth::AuthId;
@@ -31,7 +33,8 @@ pub async fn handler(
     if let Some(message) = request.unsupported_fields_message() {
         return openai_error("unsupported_request_fields", &message).into_response();
     }
-    let include_usage_chunk = state.suppress_token_metrics()
+    let suppress_token_metrics = state.suppress_token_metrics();
+    let include_usage_chunk = suppress_token_metrics
         || request
             .stream_options
             .as_ref()
@@ -321,6 +324,13 @@ pub async fn handler(
                 let prompt_tokens_shared2 = prompt_tokens_shared.clone();
                 let ttft_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let ttft_clone = ttft_recorded.clone();
+                let first_token_ns =
+                    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+                let first_token_ns_clone = first_token_ns.clone();
+                let first_token_ns_for_usage = first_token_ns.clone();
+                let last_token_ns = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let last_token_ns_clone = last_token_ns.clone();
+                let last_token_ns_for_usage = last_token_ns.clone();
                 let metrics = state.metrics.clone();
                 let metrics_done = state.metrics.clone();
                 let metrics_cleanup = state.metrics.clone();
@@ -342,6 +352,16 @@ pub async fn handler(
                     let data = match chunk {
                         Ok(c) => {
                             if chunk_emits_token(&c) {
+                                let elapsed_ns =
+                                    u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                                let _ = first_token_ns_clone.compare_exchange(
+                                    u64::MAX,
+                                    elapsed_ns,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                                last_token_ns_clone
+                                    .store(elapsed_ns, std::sync::atomic::Ordering::Relaxed);
                                 counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 if !ttft_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
                                     metrics.record_ttft(
@@ -433,15 +453,18 @@ pub async fn handler(
                     Ok(Event::default().data("[DONE]"))
                 });
 
-                // Emit a final receipt chunk before [DONE]. It also carries rounded token
-                // counts when suppress_token_metrics is active or stream_options.include_usage is set.
+                // Emit a final receipt chunk before [DONE]. Explicit include_usage receives
+                // exact counts unless the server's side-channel suppression policy is active.
                 // Reads are deferred into an async closure so they execute after sse_stream
                 // is fully consumed (counters have final values at that point).
                 let receipt_event = futures::stream::once(async move {
                     let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
                     let pt2 = prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
-                    let rp = super::round_tokens(pt2);
-                    let rc = super::round_tokens(eval_count2);
+                    let (rp, rc) = if suppress_token_metrics {
+                        (super::round_tokens(pt2), super::round_tokens(eval_count2))
+                    } else {
+                        (pt2, eval_count2)
+                    };
                     let mut val = serde_json::json!({
                         "id": id_for_receipt,
                         "object": "text_completion",
@@ -457,6 +480,19 @@ pub async fn handler(
                             "completion_tokens": rc,
                             "total_tokens": rp + rc
                         });
+                        if !suppress_token_metrics {
+                            let first =
+                                first_token_ns_for_usage.load(std::sync::atomic::Ordering::Relaxed);
+                            let last =
+                                last_token_ns_for_usage.load(std::sync::atomic::Ordering::Relaxed);
+                            if first != u64::MAX && last >= first {
+                                val["a3s_performance"] = serde_json::json!(StreamingPerformance {
+                                    time_to_first_token_ns: first,
+                                    inter_token_duration_ns: last.saturating_sub(first),
+                                    completion_token_intervals: eval_count2.saturating_sub(1),
+                                });
+                            }
+                        }
                     }
                     Ok::<_, Infallible>(super::sse_json_event(&val))
                 });
@@ -1236,6 +1272,14 @@ mod tests {
         assert!(
             body_str.contains("\"usage\""),
             "expected usage chunk in SSE stream"
+        );
+        assert!(
+            body_str.contains("\"completion_tokens\":1"),
+            "explicit include_usage must return the exact token count"
+        );
+        assert!(
+            body_str.contains("\"a3s_performance\""),
+            "expected server-side streaming timing evidence"
         );
         let captured = completion_request_capture
             .lock()

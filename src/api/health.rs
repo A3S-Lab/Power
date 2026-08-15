@@ -18,6 +18,33 @@ pub struct TeeStatus {
     pub attestation_available: bool,
 }
 
+/// Non-secret speculative-decoding configuration used by this server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpeculativeStatus {
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft_max: Option<u32>,
+    pub draft_min: u32,
+    pub draft_p_min: f32,
+}
+
+/// Non-secret inference settings that materially affect benchmark results.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InferenceStatus {
+    pub gpu_layers: i32,
+    pub main_gpu: i32,
+    pub tensor_split: Vec<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_thread: Option<u32>,
+    pub flash_attention: bool,
+    pub num_parallel: usize,
+    pub use_mlock: bool,
+    pub tee_mode: bool,
+    pub suppress_token_metrics: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing_padding_ms: Option<u64>,
+}
+
 /// Response body for GET /health.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HealthResponse {
@@ -25,6 +52,8 @@ pub struct HealthResponse {
     pub version: String,
     pub uptime_seconds: u64,
     pub loaded_models: usize,
+    pub speculative: SpeculativeStatus,
+    pub inference: InferenceStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tee: Option<TeeStatus>,
 }
@@ -47,6 +76,24 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: state.uptime().as_secs(),
         loaded_models: state.loaded_model_count(),
+        speculative: SpeculativeStatus {
+            mode: state.config.spec_mode.clone(),
+            draft_max: state.config.spec_draft_max,
+            draft_min: state.config.spec_draft_min,
+            draft_p_min: state.config.spec_draft_p_min,
+        },
+        inference: InferenceStatus {
+            gpu_layers: state.config.gpu.gpu_layers,
+            main_gpu: state.config.gpu.main_gpu,
+            tensor_split: state.config.gpu.tensor_split.clone(),
+            num_thread: state.config.num_thread,
+            flash_attention: state.config.flash_attention,
+            num_parallel: state.config.num_parallel,
+            use_mlock: state.config.use_mlock,
+            tee_mode: state.config.tee_mode,
+            suppress_token_metrics: state.config.suppress_token_metrics,
+            timing_padding_ms: state.config.timing_padding_ms,
+        },
         tee,
     };
     (StatusCode::OK, Json(resp))
@@ -85,6 +132,21 @@ mod tests {
         .with_tee_provider(Arc::new(provider))
     }
 
+    fn inference_status() -> InferenceStatus {
+        InferenceStatus {
+            gpu_layers: -1,
+            main_gpu: 0,
+            tensor_split: Vec::new(),
+            num_thread: Some(16),
+            flash_attention: true,
+            num_parallel: 1,
+            use_mlock: false,
+            tee_mode: false,
+            suppress_token_metrics: false,
+            timing_padding_ms: None,
+        }
+    }
+
     #[tokio::test]
     async fn test_health_handler_returns_ok() {
         let state = test_state();
@@ -101,6 +163,8 @@ mod tests {
             .unwrap();
         let health: HealthResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(health.speculative.mode, "auto");
+        assert!(!health.inference.suppress_token_metrics);
     }
 
     #[tokio::test]
@@ -157,12 +221,21 @@ mod tests {
             version: "0.1.0".to_string(),
             uptime_seconds: 42,
             loaded_models: 3,
+            speculative: SpeculativeStatus {
+                mode: "mtp".to_string(),
+                draft_max: Some(3),
+                draft_min: 1,
+                draft_p_min: 0.25,
+            },
+            inference: inference_status(),
             tee: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"uptime_seconds\":42"));
         assert!(json.contains("\"loaded_models\":3"));
+        assert!(json.contains("\"mode\":\"mtp\""));
+        assert!(json.contains("\"gpu_layers\":-1"));
         assert!(!json.contains("\"tee\""));
 
         let deser: HealthResponse = serde_json::from_str(&json).unwrap();
@@ -177,6 +250,13 @@ mod tests {
             version: "0.2.0".to_string(),
             uptime_seconds: 10,
             loaded_models: 1,
+            speculative: SpeculativeStatus {
+                mode: "off".to_string(),
+                draft_max: None,
+                draft_min: 0,
+                draft_p_min: 0.0,
+            },
+            inference: inference_status(),
             tee: Some(TeeStatus {
                 enabled: true,
                 tee_type: TeeType::Simulated,

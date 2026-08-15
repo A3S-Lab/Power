@@ -872,6 +872,15 @@ pub struct ModelInfo {
     /// model authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
+    /// Registered model format. This Power extension is omitted when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// Registered artifact size. This Power extension is omitted when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    /// Registered artifact identity. Empty hashes (for remote models) are omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 // ============================================================================
@@ -884,6 +893,18 @@ pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+}
+
+/// Power-specific server-side timing attached to an opted-in final SSE usage event.
+///
+/// The interval covers token events after the first token. Clients should divide
+/// `completion_token_intervals` by `inter_token_duration_ns` to measure decode
+/// throughput without including prompt evaluation or the first-token latency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamingPerformance {
+    pub time_to_first_token_ns: u64,
+    pub inter_token_duration_ns: u64,
+    pub completion_token_intervals: u32,
 }
 
 /// Standard error response.
@@ -1310,12 +1331,17 @@ mod tests {
                 root: None,
                 parent: None,
                 context_length: Some(131072),
+                format: Some("gguf".to_string()),
+                size_bytes: Some(24_000_000_000),
+                sha256: Some("a".repeat(64)),
             }],
         };
         let json = serde_json::to_string(&list).unwrap();
         assert!(json.contains("llama3"));
         assert!(json.contains("\"object\":\"list\""));
         assert!(json.contains("\"context_length\":131072"));
+        assert!(json.contains("\"format\":\"gguf\""));
+        assert!(json.contains("\"size_bytes\":24000000000"));
     }
 
     #[test]
@@ -1328,10 +1354,14 @@ mod tests {
             root: None,
             parent: None,
             context_length: None,
+            format: None,
+            size_bytes: None,
+            sha256: None,
         };
 
         let json = serde_json::to_value(model).unwrap();
         assert!(json.get("context_length").is_none());
+        assert!(json.get("sha256").is_none());
     }
 
     #[test]

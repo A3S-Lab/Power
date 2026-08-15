@@ -1,9 +1,9 @@
 # Model-neutral Speculative Decoding
 
 Speculative decoding is a Power runtime capability. It is not owned by Qwen,
-DeepSeek, Llama, or any other model family. Qwen3.8-27B is the first dense
-hybrid acceptance target for the CUDA path, not a special case in the shared
-runtime.
+DeepSeek, Llama, or any other model family. [Qwen3.5-27B](https://huggingface.co/Qwen/Qwen3.5-27B)
+is the first dense hybrid acceptance target for the CUDA path, not a special
+case in the shared runtime.
 
 The design follows the separation used by
 [DSpark](https://arxiv.org/abs/2607.05147): proposal generation is advisory,
@@ -92,13 +92,101 @@ contracts, not by branches in the Power scheduler.
    adaptive draft-length default.
 3. llama.cpp provides native MTP execution with transactional target and draft
    rollback for compatible models.
-4. Qwen3.8-27B Q6_K is the first CUDA performance gate. Baseline and MTP runs
+4. Qwen3.5-27B Q6_K is the first CUDA performance gate. Baseline and MTP runs
    use the same model digest, prompts, sampling settings, context, and hardware.
 5. A separate DSpark artifact is admitted only after its target/tokenizer
    compatibility, provenance, peak memory, exactness, and speedup are measured.
 6. At least one non-Qwen adapter must pass the same transaction and exactness
    suite before DSpark support is considered cross-architecture complete.
 
-The Qwen3.8 performance gate is at least 100 generated tokens per second on the
+The Qwen3.5 performance gate is at least 100 generated tokens per second on the
 acceptance host through Power's streaming API. Native-tool measurements are
 diagnostic evidence; they do not replace the Power end-to-end result.
+
+## Reproducible Power API benchmark
+
+`a3s-power-speculative-bench` captures the acceptance evidence through
+`POST /v1/completions`; it does not call llama.cpp directly. Build the server
+and client from one clean revision:
+
+```console
+cargo build --release --no-default-features --features llamacpp-cuda \
+  --bin a3s-power --bin a3s-power-speculative-bench
+```
+
+Use one reviewed Q6_K GGUF that retains the Qwen3.5 native prediction metadata
+and tensors (`qwen35.nextn_predict_layers > 0`). Record its lowercase SHA-256,
+register that exact file once, and use the same registry entry for both runs.
+Do not substitute an unreviewed conversion merely because its filename says
+Q6_K. Keep every performance-affecting ACL setting fixed across server
+restarts, including `gpu`, `num_thread`, `flash_attention`, `num_parallel`,
+`use_mlock`, TEE mode, timing padding, and these draft settings:
+
+```acl
+spec_draft_max = 3
+spec_draft_min = 0
+spec_draft_p_min = 0.0
+suppress_token_metrics = false
+
+gpu {
+  gpu_layers = -1
+  main_gpu = 0
+}
+```
+
+Start Power with explicit `spec_mode = "off"`, capture the baseline, stop the
+server, then restart the same binary and ACL with only
+`spec_mode = "mtp"` changed. `GET /health` exposes the effective speculative
+and non-secret inference settings; the benchmark records them and comparison
+rejects configuration drift. `GET /v1/models/:name` supplies the registered
+format, byte length, and SHA-256 checked by the client.
+
+Use a fixed UTF-8 prompt that reliably reaches the output limit. Every warmup
+and measured request uses greedy sampling (`temperature = 0`, `top_p = 1`), a
+fixed seed and context, `keep_alive = -1`, streaming, and exact opted-in usage.
+An early EOS or stop result fails the run instead of silently producing a
+shorter, faster sample.
+
+```console
+a3s-power-speculative-bench run \
+  --url http://127.0.0.1:11434 \
+  --model qwen3.5-27b-q6-k \
+  --model-sha256 <64-lowercase-hex> \
+  --mode off \
+  --power-commit <40-or-64-lowercase-git-revision> \
+  --hardware-label rtx-4090-cuda \
+  --prompt-file benchmark-prompt.txt \
+  --max-tokens 256 --num-ctx 4096 --seed 42 \
+  --warmup-runs 1 --samples 5 \
+  --min-tokens-per-second 0 > baseline.json
+
+a3s-power-speculative-bench run \
+  --url http://127.0.0.1:11434 \
+  --model qwen3.5-27b-q6-k \
+  --model-sha256 <same-64-lowercase-hex> \
+  --mode mtp \
+  --power-commit <same-git-revision> \
+  --hardware-label rtx-4090-cuda \
+  --prompt-file benchmark-prompt.txt \
+  --max-tokens 256 --num-ctx 4096 --seed 42 \
+  --warmup-runs 1 --samples 5 \
+  --min-tokens-per-second 100 > mtp.json
+
+a3s-power-speculative-bench compare baseline.json mtp.json > comparison.json
+```
+
+For authenticated servers, put the bearer token in an environment variable and
+add `--api-key-env <VARIABLE>`; the key is never accepted as a command-line
+value. Plain HTTP is restricted to loopback hosts. Prompt content, prompt path,
+server URL, model path, and API key are omitted from reports. The client hashes
+the streamed UTF-8 output, verifies every inference receipt digest, and requires
+output parity across samples and modes.
+
+The threshold uses the median server-side steady-state decode rate:
+`(completion_tokens - 1) / (last_token_time - first_token_time)`. Reports also
+retain time to first token and client-observed end-to-end throughput. Power
+emits these exact timings only in the final opted-in SSE usage event when token
+metric suppression is disabled. A comparison passes only when the candidate's
+declared threshold passes and its output digest matches the autoregressive
+baseline. Until a real digest-pinned Qwen3.5-27B Q6_K capture is attached, the
+100 token/s performance gate remains open.

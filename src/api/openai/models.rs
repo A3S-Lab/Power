@@ -29,6 +29,9 @@ pub async fn list_handler(State(state): State<AppState>) -> impl IntoResponse {
                     root: None,
                     parent: None,
                     context_length: m.parameters.as_ref().and_then(|p| p.context_length),
+                    format: Some(model_format_name(&m.format).to_string()),
+                    size_bytes: Some(m.size),
+                    sha256: (!m.sha256.is_empty()).then(|| m.sha256.clone()),
                 })
                 .collect();
 
@@ -66,6 +69,9 @@ pub async fn get_handler(
             root: None,
             parent: None,
             context_length: m.parameters.as_ref().and_then(|p| p.context_length),
+            format: Some(model_format_name(&m.format).to_string()),
+            size_bytes: Some(m.size),
+            sha256: (!m.sha256.is_empty()).then(|| m.sha256.clone()),
         })
         .into_response(),
         Err(_) => (
@@ -79,6 +85,16 @@ pub async fn get_handler(
             })),
         )
             .into_response(),
+    }
+}
+
+fn model_format_name(format: &ModelFormat) -> &'static str {
+    match format {
+        ModelFormat::Gguf => "gguf",
+        ModelFormat::SafeTensors => "safetensors",
+        ModelFormat::HuggingFace => "huggingface",
+        ModelFormat::Vision => "vision",
+        ModelFormat::Remote => "remote",
     }
 }
 
@@ -758,6 +774,18 @@ mod tests {
             .unwrap()
             .iter()
             .all(|model| model["context_length"] == 4096));
+        assert!(json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|model| model["format"] == "gguf" && model["size_bytes"] == 1_000_000));
+        assert!(json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|model| model["sha256"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("sha256-"))));
 
         std::env::remove_var("A3S_POWER_HOME");
     }
@@ -802,6 +830,9 @@ mod tests {
         assert_eq!(json["id"], "llama3");
         assert_eq!(json["object"], "model");
         assert_eq!(json["context_length"], 4096);
+        assert_eq!(json["format"], "gguf");
+        assert_eq!(json["size_bytes"], 1_000_000);
+        assert_eq!(json["sha256"], "sha256-llama3");
 
         std::env::remove_var("A3S_POWER_HOME");
     }

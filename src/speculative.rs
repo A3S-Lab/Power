@@ -36,12 +36,16 @@
 /// Default number of draft tokens to propose per speculation round.
 pub const DRAFT_K: usize = 4;
 
+#[cfg(feature = "server")]
+pub mod benchmark;
+
 /// Model-neutral speculative-decoding strategy selected by configuration.
 ///
 /// A strategy being parseable does not mean that every backend or model can
 /// execute it. The backend must resolve it through [`SpeculativeCapabilities`]
 /// and fail closed when the required adapter or model tensors are absent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SpeculativeStrategy {
     /// Let the backend select its documented safe default.
     #[default]
