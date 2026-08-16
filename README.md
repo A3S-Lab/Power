@@ -271,12 +271,21 @@ into the activation kernel. This removes one additional full-tensor buffer and
 launch. The CUDA kernel uses bounded 32-bit channel indexing under Power's
 existing `u32` element-count gate and preserves the original F32 addition and
 activation rounding boundaries byte-for-byte.
+The pointwise tail of a decomposed last-axis LayerNorm can also execute as one
+CUDA kernel when its private topology is exactly
+`Add(epsilon)`-`Sqrt`-`Div`-`Mul(scale)`-`Add(bias)`, epsilon is one positive
+F32 scalar initializer, and scale/bias are exact contiguous feature vectors.
+Both mean reductions, centering, and squaring stay on the ordinary graph path,
+so reduction order is unchanged. Explicit round-to-nearest arithmetic retains
+all five pointwise rounding boundaries byte-for-byte while removing four
+intermediate buffers and four launches per matched tail.
 Other devices, dtypes, and convolution layouts retain the existing Candle path.
 Unsupported gated-activation shapes and layouts likewise retain ordinary
 node-by-node execution. Unsupported error-function chains, constants, devices,
-dtypes, layouts, graph outputs, channel biases, identity depths, and shared
-intermediates do the same. CPU fallback, full graph execution on an RTX 4090,
-and byte-exact CUDA comparisons cover the reviewed fused forms.
+dtypes, layouts, graph outputs, channel biases, identity depths, LayerNorm
+broadcast shapes, and shared intermediates do the same. CPU fallback, full
+graph execution on an RTX 4090, and byte-exact CUDA comparisons cover the
+reviewed fused forms.
 Canonical F32-tensor and token-ID receipt payloads hash their contiguous
 read-only bytes directly on little-endian hosts; big-endian hosts retain the
 same v1 little-endian byte protocol through bounded staging. Both paths preserve

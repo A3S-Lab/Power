@@ -68,6 +68,12 @@ kernels.
       two-input convolutions. Keep the convolution backend unchanged, require
       private bounded intermediates, use launch-bounded 32-bit indexing, and
       retain byte-exact arithmetic plus node-by-node fallback.
+- [x] Fuse exact private decomposed LayerNorm
+      `Add(epsilon)`-`Sqrt`-`Div`-`Mul(scale)`-`Add(bias)` CUDA tails while
+      retaining the original reductions, centering, and squaring. Require
+      exact last-axis broadcast shapes, preserve every pointwise F32 rounding
+      boundary byte-for-byte, and keep node-by-node fallback for all
+      unreviewed topology, devices, dtypes, or layouts.
 - [x] Preserve canonical v1 tensor and token receipt bytes while hashing
       contiguous little-endian inputs directly, with a bounded canonical
       staging fallback on big-endian hosts.

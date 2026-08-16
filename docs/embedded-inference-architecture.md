@@ -350,6 +350,18 @@ eviction or persistence policy.
   devices, dtypes, layouts, graph outputs, or shared consumers execute the
   original nodes. Model crates lock eligible graph counts and complete-output
   parity.
+- A decomposed last-axis LayerNorm retains its ordinary mean, centering,
+  square, and variance-reduction nodes, while an exact private
+  `Add(epsilon)`-`Sqrt`-`Div`-`Mul(scale)`-`Add(bias)` tail can be lowered to
+  one CUDA kernel. Matching requires a positive F32 scalar epsilon, contiguous
+  F32 tensors, variance shape equal to the centered prefix plus a trailing
+  singleton, and one-dimensional scale/bias equal to the last feature count.
+  Explicit round-to-nearest addition, division, multiplication, and final
+  addition preserve the five pointwise rounding boundaries byte-for-byte.
+  Unsupported topology, consumers, devices, dtypes, layouts, or broadcast
+  shapes retain ordinary node execution. Cancellation is checked before the
+  fused launch and the final output remains subject to the existing element
+  limit, liveness, and non-finite tracing boundaries.
 - Placement and routing telemetry are controlled by `TelemetryMode`. It is off
   by default. Detailed expert heat can reveal input semantics, is never logged
   or persisted automatically, and must remain inside the TEE unless policy

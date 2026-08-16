@@ -19,6 +19,16 @@ pub(super) struct FusedOutput {
     pub(super) consumed_nodes: usize,
 }
 
+pub(super) struct ExecutionContext<'a> {
+    pub(super) values: &'a HashMap<String, GraphValue>,
+    pub(super) scalar_constants: &'a HashMap<String, f32>,
+    pub(super) use_counts: &'a HashMap<String, usize>,
+    pub(super) retained_output: &'a str,
+    pub(super) device: &'a Device,
+    pub(super) element_limit: usize,
+    pub(super) cancellation: &'a CancellationToken,
+}
+
 /// Executes a reviewed Conv-to-channel-bias-to-activation window while keeping
 /// the convolution itself on Candle's ordinary backend path.
 ///
@@ -27,14 +37,17 @@ pub(super) struct FusedOutput {
 /// shapes return `None` so the executor retains its node-by-node behavior.
 pub(super) fn try_execute(
     nodes: &[GraphNode],
-    values: &HashMap<String, GraphValue>,
-    scalar_constants: &HashMap<String, f32>,
-    use_counts: &HashMap<String, usize>,
-    retained_output: &str,
-    device: &Device,
-    element_limit: usize,
-    cancellation: &CancellationToken,
+    context: ExecutionContext<'_>,
 ) -> Result<Option<FusedOutput>> {
+    let ExecutionContext {
+        values,
+        scalar_constants,
+        use_counts,
+        retained_output,
+        device,
+        element_limit,
+        cancellation,
+    } = context;
     let Some(matched) = matched_window(nodes, use_counts, retained_output) else {
         return Ok(None);
     };

@@ -15,11 +15,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     const GATED_HARD_SIGMOID_SOURCE: &str =
         "src/inference/graph/executor/gated_hard_sigmoid/cuda/gated_hard_sigmoid.cu";
     const GELU_ERF_SOURCE: &str = "src/inference/graph/executor/gelu_erf/cuda/gelu_erf.cu";
+    const LAYER_NORM_AFFINE_SOURCE: &str =
+        "src/inference/graph/executor/layer_norm_affine/cuda/layer_norm_affine.cu";
 
     println!("cargo::rerun-if-changed={BIASED_ACTIVATION_SOURCE}");
     println!("cargo::rerun-if-changed={DEPTHWISE_SOURCE}");
     println!("cargo::rerun-if-changed={GATED_HARD_SIGMOID_SOURCE}");
     println!("cargo::rerun-if-changed={GELU_ERF_SOURCE}");
+    println!("cargo::rerun-if-changed={LAYER_NORM_AFFINE_SOURCE}");
     println!("cargo::rerun-if-env-changed=CUDA_COMPUTE_CAP");
     println!("cargo::rerun-if-env-changed=NVCC");
     println!("cargo::rerun-if-env-changed=NVCC_CCBIN");
@@ -63,6 +66,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         GELU_ERF_SOURCE,
         &output_directory,
         "GELU_ERF",
+    )?;
+    build_kernel(
+        &toolkit,
+        &gpu_arch,
+        LAYER_NORM_AFFINE_SOURCE,
+        &output_directory,
+        "LAYER_NORM_AFFINE",
     )?;
     Ok(())
 }
