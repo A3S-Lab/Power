@@ -20,6 +20,8 @@ pub mod matmul;
 #[cfg(feature = "picolm")]
 pub mod norm;
 #[cfg(feature = "picolm")]
+pub mod qwen35;
+#[cfg(feature = "picolm")]
 pub mod rope;
 #[cfg(feature = "picolm")]
 pub mod speculative;

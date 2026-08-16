@@ -40,7 +40,7 @@ use crate::server::request_context::RequestContext;
 use crate::tee::encrypted_model::{LayerStreamingDecryptedModel, MemoryDecryptedModel};
 
 #[cfg(feature = "picolm")]
-use super::gguf_stream::{GgufFile, GgufMeta};
+use super::gguf_stream::{GgufArchitecture, GgufFile, GgufMeta};
 #[cfg(feature = "picolm")]
 use super::picolm_ops::attention::ModelConfig;
 #[cfg(feature = "picolm")]
@@ -49,6 +49,8 @@ use super::picolm_ops::buffers::ForwardBuffers;
 use super::picolm_ops::ffn::FfnActivation;
 #[cfg(feature = "picolm")]
 use super::picolm_ops::kv_cache::KvCache;
+#[cfg(feature = "picolm")]
+use super::picolm_ops::qwen35::Qwen35TensorLayout;
 #[cfg(feature = "picolm")]
 use super::picolm_ops::rope::RopeTable;
 #[cfg(feature = "picolm")]
@@ -1359,6 +1361,24 @@ fn forward_pass_streaming(
 
 // ── Backend implementation ────────────────────────────────────────────────────
 
+#[cfg(feature = "picolm")]
+fn validate_legacy_architecture(arch: &str) -> Result<()> {
+    if arch.starts_with("qwen35") {
+        return Err(PowerError::BackendNotAvailable(format!(
+            "picolm does not implement the native execution graph for Qwen3.5 variant '{arch}'"
+        )));
+    }
+
+    let supported = ["llama", "mistral", "phi", "gemma", "qwen"];
+    if supported.iter().any(|candidate| arch.contains(candidate)) {
+        Ok(())
+    } else {
+        Err(PowerError::InvalidFormat(format!(
+            "picolm only supports LLaMA-compatible architectures, got '{arch}'."
+        )))
+    }
+}
+
 /// picolm inference backend — pure Rust, layer-streaming, zero C dependencies.
 pub struct PicolmBackend {
     #[cfg(feature = "picolm")]
@@ -1410,13 +1430,20 @@ impl PicolmBackend {
         let max_seq_cap = self.max_seq_len;
 
         let meta = &gguf.meta;
-        let arch = &meta.arch;
-        let supported = ["llama", "mistral", "phi", "gemma", "qwen"];
-        if !supported.iter().any(|a| arch.contains(a)) {
-            return Err(PowerError::InvalidFormat(format!(
-                "picolm only supports LLaMA-compatible architectures, got '{arch}'."
-            )));
+        let arch = meta.architecture.name();
+        if matches!(meta.architecture, GgufArchitecture::Qwen35(_)) {
+            let layout = Qwen35TensorLayout::validate(meta)?;
+            return Err(PowerError::BackendNotAvailable(
+                format!(
+                    "picolm validated qwen35 tensor layout ({} trunk, {} recurrent, {} full-attention, {} MTP blocks), but the native execution graph is not implemented yet",
+                    layout.trunk_layers,
+                    layout.recurrent_layers,
+                    layout.full_attention_layers,
+                    layout.mtp_layers
+                ),
+            ));
         }
+        validate_legacy_architecture(arch)?;
 
         let shape = build_picolm_model_shape(meta, max_seq_cap)?;
         let cfg = shape.cfg;
@@ -1480,7 +1507,7 @@ impl PicolmBackend {
 
         // Clone metadata fields before moving gguf into Arc.
         let model_chat_template = meta.chat_template.clone();
-        let log_arch = meta.arch.clone();
+        let log_arch = meta.architecture.name().to_string();
         let log_n_layers = meta.n_layers;
         let log_n_embd = meta.n_embd;
         let log_n_ff = meta.n_ff;
@@ -2251,7 +2278,7 @@ mod tests {
     #[cfg(feature = "picolm")]
     fn test_meta() -> GgufMeta {
         GgufMeta {
-            arch: "llama".to_string(),
+            architecture: GgufArchitecture::Named("llama".to_string()),
             n_layers: 2,
             n_embd: 16,
             n_heads: 4,
@@ -2271,6 +2298,15 @@ mod tests {
             tensor_data_offset: 0,
             tensors: std::collections::HashMap::new(),
         }
+    }
+
+    #[cfg(feature = "picolm")]
+    #[test]
+    fn test_qwen35_variants_fail_closed_before_legacy_graph_construction() {
+        let err = validate_legacy_architecture("qwen35moe").unwrap_err();
+
+        assert!(matches!(err, PowerError::BackendNotAvailable(_)));
+        assert!(err.to_string().contains("Qwen3.5"));
     }
 
     #[cfg(feature = "picolm")]
