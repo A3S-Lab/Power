@@ -6,7 +6,7 @@
 //! than O(model_size), enabling 7B+ models inside a 512MB TEE EPC budget.
 //!
 //! Supported: GGUF v2/v3, LLaMA-architecture models.
-//! Quantization: Q4_K_M, Q4_0, Q8_0, F16, F32 (others skipped gracefully).
+//! Quantization: Q4_K_M, Q4_0, Q8_0, BF16, F16, and F32.
 
 #[cfg(feature = "picolm")]
 use std::collections::HashMap;
@@ -1065,6 +1065,7 @@ fn read_meta_value_typed(
 /// - Q4_K (12): 144 bytes per 256 elements
 /// - Q5_K (13): 176 bytes per 256 elements
 /// - Q6_K (14): 210 bytes per 256 elements
+/// - BF16 (30): 2 bytes/element
 pub fn ggml_type_size(ggml_type: u32, n_elements: u64) -> usize {
     let (block_size, bytes_per_block) = ggml_type_size_factor(ggml_type);
     let blocks = n_elements / block_size;
@@ -1088,6 +1089,7 @@ fn ggml_type_size_factor(ggml_type: u32) -> (u64, u64) {
         12 => (256, 144), // Q4_K
         13 => (256, 176), // Q5_K
         14 => (256, 210), // Q6_K
+        30 => (1, 2),     // BF16
         _ => (1, 4),      // fallback: F32
     }
 }

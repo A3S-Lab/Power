@@ -104,6 +104,26 @@ pub async fn handler(
         )
         .into_response();
     }
+    if let Some(num_batch) = request.num_batch {
+        if num_batch == 0 {
+            return openai_error(
+                "invalid_num_batch",
+                "text completion num_batch must be greater than zero",
+            )
+            .into_response();
+        }
+        if let Some(num_ctx) = request.num_ctx {
+            if num_batch > num_ctx {
+                return openai_error(
+                    "invalid_num_batch",
+                    &format!(
+                        "text completion num_batch ({num_batch}) must not exceed num_ctx ({num_ctx})"
+                    ),
+                )
+                .into_response();
+            }
+        }
+    }
     if let Some((code, message)) = request
         .response_format
         .as_ref()
@@ -223,7 +243,7 @@ pub async fn handler(
         projector_path: None,
         repeat_last_n: request.repeat_last_n,
         penalize_newline: request.penalize_newline,
-        num_batch: None,
+        num_batch: request.num_batch,
         num_thread: state.config.num_thread,
         num_thread_batch: None,
         flash_attention: if state.config.flash_attention {
@@ -734,6 +754,40 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("only n=1 is supported"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_completions_rejects_invalid_num_batch() {
+        for (request_body, expected_message) in [
+            (
+                r#"{"model":"missing","prompt":"hi","num_batch":0}"#,
+                "must be greater than zero",
+            ),
+            (
+                r#"{"model":"missing","prompt":"hi","num_ctx":4,"num_batch":5}"#,
+                "must not exceed num_ctx",
+            ),
+        ] {
+            let state = test_state_with_mock(MockBackend::success());
+            let app = router::build(state);
+            let req = Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(request_body))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"]["code"], "invalid_num_batch");
+            assert!(json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(expected_message));
+        }
     }
 
     #[tokio::test]
@@ -1384,6 +1438,7 @@ mod tests {
                     "repeat_last_n":64,
                     "penalize_newline":false,
                     "num_ctx":2048,
+                    "num_batch":4,
                     "mirostat":1,
                     "mirostat_tau":4.0,
                     "mirostat_eta":0.25,
@@ -1410,6 +1465,7 @@ mod tests {
         assert_eq!(captured.repeat_last_n, Some(64));
         assert_eq!(captured.penalize_newline, Some(false));
         assert_eq!(captured.num_ctx, Some(2048));
+        assert_eq!(captured.num_batch, Some(4));
         assert_eq!(captured.mirostat, Some(1));
         assert_eq!(captured.mirostat_tau, Some(4.0));
         assert_eq!(captured.mirostat_eta, Some(0.25));
@@ -1422,6 +1478,10 @@ mod tests {
         assert_eq!(
             json["attestation_receipt"]["decoding"]["parameters"]["penalize_newline"],
             serde_json::json!(false)
+        );
+        assert_eq!(
+            json["attestation_receipt"]["decoding"]["parameters"]["num_batch"],
+            serde_json::json!(4)
         );
 
         std::env::remove_var("A3S_POWER_HOME");

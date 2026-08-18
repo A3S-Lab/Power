@@ -24,6 +24,10 @@ pub struct SpeculativeStatus {
     pub mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft_max: Option<u32>,
+    #[serde(default = "crate::config::default_spec_mtp_recurrent_snapshots")]
+    pub mtp_recurrent_snapshots: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtp_fr_vocab_size: Option<u32>,
     pub draft_min: u32,
     pub draft_p_min: f32,
 }
@@ -34,15 +38,23 @@ pub struct InferenceStatus {
     pub gpu_layers: i32,
     pub main_gpu: i32,
     pub tensor_split: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cpu_tensors: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_thread: Option<u32>,
     pub flash_attention: bool,
     pub num_parallel: usize,
     pub use_mlock: bool,
+    #[serde(default = "default_use_mmap_status")]
+    pub use_mmap: bool,
     pub tee_mode: bool,
     pub suppress_token_metrics: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing_padding_ms: Option<u64>,
+}
+
+const fn default_use_mmap_status() -> bool {
+    true
 }
 
 /// Response body for GET /health.
@@ -79,6 +91,8 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
         speculative: SpeculativeStatus {
             mode: state.config.spec_mode.clone(),
             draft_max: state.config.spec_draft_max,
+            mtp_recurrent_snapshots: state.config.spec_mtp_recurrent_snapshots,
+            mtp_fr_vocab_size: state.config.spec_mtp_fr_vocab_size,
             draft_min: state.config.spec_draft_min,
             draft_p_min: state.config.spec_draft_p_min,
         },
@@ -86,10 +100,12 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
             gpu_layers: state.config.gpu.gpu_layers,
             main_gpu: state.config.gpu.main_gpu,
             tensor_split: state.config.gpu.tensor_split.clone(),
+            cpu_tensors: state.config.gpu.cpu_tensors.clone(),
             num_thread: state.config.num_thread,
             flash_attention: state.config.flash_attention,
             num_parallel: state.config.num_parallel,
             use_mlock: state.config.use_mlock,
+            use_mmap: state.config.use_mmap,
             tee_mode: state.config.tee_mode,
             suppress_token_metrics: state.config.suppress_token_metrics,
             timing_padding_ms: state.config.timing_padding_ms,
@@ -137,10 +153,12 @@ mod tests {
             gpu_layers: -1,
             main_gpu: 0,
             tensor_split: Vec::new(),
+            cpu_tensors: Vec::new(),
             num_thread: Some(16),
             flash_attention: true,
             num_parallel: 1,
             use_mlock: false,
+            use_mmap: true,
             tee_mode: false,
             suppress_token_metrics: false,
             timing_padding_ms: None,
@@ -164,6 +182,7 @@ mod tests {
         let health: HealthResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(health.speculative.mode, "auto");
+        assert_eq!(health.speculative.mtp_recurrent_snapshots, 7);
         assert!(!health.inference.suppress_token_metrics);
     }
 
@@ -224,6 +243,8 @@ mod tests {
             speculative: SpeculativeStatus {
                 mode: "mtp".to_string(),
                 draft_max: Some(3),
+                mtp_recurrent_snapshots: 7,
+                mtp_fr_vocab_size: Some(8192),
                 draft_min: 1,
                 draft_p_min: 0.25,
             },
@@ -235,6 +256,7 @@ mod tests {
         assert!(json.contains("\"uptime_seconds\":42"));
         assert!(json.contains("\"loaded_models\":3"));
         assert!(json.contains("\"mode\":\"mtp\""));
+        assert!(json.contains("\"mtp_fr_vocab_size\":8192"));
         assert!(json.contains("\"gpu_layers\":-1"));
         assert!(!json.contains("\"tee\""));
 
@@ -253,6 +275,8 @@ mod tests {
             speculative: SpeculativeStatus {
                 mode: "off".to_string(),
                 draft_max: None,
+                mtp_recurrent_snapshots: 7,
+                mtp_fr_vocab_size: None,
                 draft_min: 0,
                 draft_p_min: 0.0,
             },

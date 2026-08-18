@@ -290,6 +290,17 @@ pub fn bounded_draft_len(
         .min(remaining_context)
 }
 
+/// Minimum logical batch size needed to execute an MTP proposal safely.
+///
+/// The target evaluates the current anchor plus at most `draft_max` proposed
+/// tokens in one batch. llama.cpp's recurrent allocator also requires the
+/// physical batch to be strictly larger than its anchor-plus-snapshot tail.
+/// Power caps resident snapshots at `draft_max`, so one additional staging row
+/// covers both constraints without coupling request validation to that cap.
+pub const fn minimum_mtp_batch(draft_max: u32) -> u32 {
+    draft_max.saturating_add(2)
+}
+
 /// Minimum n-gram size for prompt lookup matching.
 const MIN_NGRAM: usize = 2;
 
@@ -716,6 +727,13 @@ mod tests {
         assert_eq!(bounded_draft_len(4, 5, 2), 2);
         assert_eq!(bounded_draft_len(4, 1, 8), 0);
         assert_eq!(bounded_draft_len(4, 0, 8), 0);
+    }
+
+    #[test]
+    fn test_minimum_mtp_batch_covers_verification_and_recurrent_tail() {
+        assert_eq!(minimum_mtp_batch(0), 2);
+        assert_eq!(minimum_mtp_batch(3), 5);
+        assert_eq!(minimum_mtp_batch(u32::MAX), u32::MAX);
     }
 
     #[test]

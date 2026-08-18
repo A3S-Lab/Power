@@ -16,10 +16,13 @@ const NORMAL_FIELDS: &[&str] = &[
     "max_loaded_models",
     "spec_mode",
     "spec_draft_max",
+    "spec_mtp_recurrent_snapshots",
+    "spec_mtp_fr_vocab_size",
     "spec_draft_min",
     "spec_draft_p_min",
     "keep_alive",
     "use_mlock",
+    "use_mmap",
     "num_thread",
     "flash_attention",
     "num_parallel",
@@ -56,6 +59,7 @@ const ALWAYS_GENERATED_FIELDS: &[&str] = &[
     "spec_mode",
     "keep_alive",
     "use_mlock",
+    "use_mmap",
     "flash_attention",
     "num_parallel",
     "tee_mode",
@@ -182,6 +186,8 @@ fn power_schema() -> Schema {
         "port",
         "max_loaded_models",
         "spec_draft_max",
+        "spec_mtp_recurrent_snapshots",
+        "spec_mtp_fr_vocab_size",
         "spec_draft_min",
         "spec_draft_p_min",
         "num_thread",
@@ -196,6 +202,7 @@ fn power_schema() -> Schema {
     }
     for name in [
         "use_mlock",
+        "use_mmap",
         "flash_attention",
         "tee_mode",
         "redact_logs",
@@ -252,6 +259,10 @@ fn gpu_schema() -> Schema {
         .attribute(
             "tensor_split",
             AttributeSchema::optional(ValueSchema::list(ValueSchema::number())),
+        )
+        .attribute(
+            "cpu_tensors",
+            AttributeSchema::optional(ValueSchema::list(ValueSchema::string())),
         )
 }
 

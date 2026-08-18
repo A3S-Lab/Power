@@ -6,6 +6,7 @@ use serial_test::serial;
 fn test_config_new_fields_defaults() {
     let config = PowerConfig::default();
     assert!(!config.use_mlock);
+    assert!(config.use_mmap);
     assert!(config.num_thread.is_none());
     assert!(!config.flash_attention);
     assert_eq!(config.num_parallel, 1);
@@ -36,6 +37,13 @@ fn test_config_tee_fields_from_acl() {
 fn test_gpu_config_tensor_split_default_empty() {
     let config = GpuConfig::default();
     assert!(config.tensor_split.is_empty());
+    assert!(config.cpu_tensors.is_empty());
+}
+
+#[test]
+fn test_config_use_mmap_from_acl() {
+    let config: PowerConfig = acl::deserialize("use_mmap = false").unwrap();
+    assert!(!config.use_mmap);
 }
 
 #[test]
@@ -54,10 +62,26 @@ fn test_gpu_config_tensor_split_from_acl() {
 }
 
 #[test]
+fn test_gpu_config_cpu_tensors_from_acl() {
+    let acl_str = r#"
+            gpu {
+                gpu_layers = -1
+                cpu_tensors = ["output.weight", "blk.3.attn_q.weight"]
+            }
+        "#;
+    let config: PowerConfig = acl::deserialize(acl_str).unwrap();
+    assert_eq!(
+        config.gpu.cpu_tensors,
+        vec!["output.weight", "blk.3.attn_q.weight"]
+    );
+}
+
+#[test]
 fn test_gpu_config_tensor_split_serialization_skips_empty() {
     let config = PowerConfig::default();
     let serialized = config.to_acl().unwrap();
     assert!(!serialized.contains("tensor_split"));
+    assert!(!serialized.contains("cpu_tensors"));
 }
 
 #[test]

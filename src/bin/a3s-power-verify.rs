@@ -443,6 +443,8 @@ struct CliOpts {
     digest_main_gpu: i32,
     /// Tensor split used by --print-gpu-execution-digest.
     digest_tensor_split: Vec<f32>,
+    /// Exact CPU tensor names used by --print-gpu-execution-digest.
+    digest_cpu_tensors: Vec<String>,
     /// Require a v2 runtime policy claim and expected runtime digest verification.
     require_runtime_policy: bool,
     /// Expected SHA-256 digest of the canonical attestation receipt.
@@ -705,6 +707,7 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
         digest_gpu_layers: None,
         digest_main_gpu: 0,
         digest_tensor_split: Vec::new(),
+        digest_cpu_tensors: Vec::new(),
         require_runtime_policy: false,
         receipt_digest: None,
         receipt_model: None,
@@ -904,6 +907,10 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
                 let value = next_arg(args, &mut i, "--tensor-split")?;
                 opts.digest_tensor_split = parse_tensor_split_arg(&value)?;
             }
+            "--cpu-tensor" => {
+                opts.digest_cpu_tensors
+                    .push(next_arg(args, &mut i, "--cpu-tensor")?);
+            }
             "--require-runtime-policy" => {
                 opts.require_runtime_policy = true;
             }
@@ -1102,6 +1109,7 @@ fn gpu_execution_digest_from_opts(opts: &CliOpts) -> anyhow::Result<String> {
         gpu_layers,
         main_gpu: opts.digest_main_gpu,
         tensor_split: opts.digest_tensor_split.clone(),
+        cpu_tensors: opts.digest_cpu_tensors.clone(),
     })
     .map_err(|e| anyhow::anyhow!("failed to compute GPU execution digest: {e}"))?;
     Ok(hex::encode(digest))
@@ -1192,6 +1200,7 @@ OPTIONS:
     --gpu-layers <N>               GPU layer offload value for --print-gpu-execution-digest
     --main-gpu <N>                 Main GPU index for --print-gpu-execution-digest (default: 0)
     --tensor-split <CSV>           Tensor split floats for --print-gpu-execution-digest
+    --cpu-tensor <NAME>            Exact CPU tensor name for the digest; repeat as needed
     --require-runtime-policy       Require a v2 runtime policy claim and digest verification
     --receipt-digest <HEX>         Expected SHA-256 digest of the canonical receipt; requires --receipt-file
     --receipt-model <NAME>         Expected model name in the receipt; requires --receipt-file
@@ -1282,7 +1291,8 @@ EXAMPLES:
     a3s-power-verify --print-gpu-execution-digest \
         --gpu-layers -1 \
         --main-gpu 0 \
-        --tensor-split 0.5,0.5
+        --tensor-split 0.5,0.5 \
+        --cpu-tensor output.weight
 
     # Verify an inference receipt against the saved attestation report
     a3s-power-verify --file report.json \
@@ -1568,6 +1578,7 @@ mod tests {
             repeat_last_n: None,
             penalize_newline: None,
             num_ctx: None,
+            num_batch: None,
             mirostat: None,
             mirostat_tau: None,
             mirostat_eta: None,
@@ -2336,6 +2347,8 @@ mod tests {
             "1".to_string(),
             "--tensor-split".to_string(),
             "0.25,0.75".to_string(),
+            "--cpu-tensor".to_string(),
+            "output.weight".to_string(),
         ];
 
         let opts = parse_args(&args).unwrap();
@@ -2344,6 +2357,7 @@ mod tests {
         assert_eq!(opts.digest_gpu_layers, Some(-1));
         assert_eq!(opts.digest_main_gpu, 1);
         assert_eq!(opts.digest_tensor_split, vec![0.25, 0.75]);
+        assert_eq!(opts.digest_cpu_tensors, vec!["output.weight"]);
     }
 
     #[test]
@@ -2356,6 +2370,8 @@ mod tests {
             "0".to_string(),
             "--tensor-split".to_string(),
             "0.5,0.5".to_string(),
+            "--cpu-tensor".to_string(),
+            "output.weight".to_string(),
         ];
         let opts = parse_args(&args).unwrap();
         let expected = hex::encode(
@@ -2363,6 +2379,7 @@ mod tests {
                 gpu_layers: -1,
                 main_gpu: 0,
                 tensor_split: vec![0.5, 0.5],
+                cpu_tensors: vec!["output.weight".to_string()],
             })
             .unwrap(),
         );

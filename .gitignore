@@ -1,8 +1,13 @@
 # Rust
 /target/
+/target-*/
 **/*.rs.bk
 *.pdb
 Cargo.lock
+
+# Python tooling
+__pycache__/
+*.py[cod]
 
 # Coverage
 *.lcov

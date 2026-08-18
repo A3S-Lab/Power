@@ -444,6 +444,89 @@ fn test_validate_rejects_invalid_speculative_draft_bounds() {
         .unwrap_err()
         .to_string()
         .contains("between 0 and 1"));
+
+    for recurrent_snapshots in [0, 65] {
+        let snapshots = PowerConfig {
+            spec_mtp_recurrent_snapshots: recurrent_snapshots,
+            ..Default::default()
+        };
+        assert!(snapshots
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("spec_mtp_recurrent_snapshots"));
+    }
+
+    for vocab_size in [1, 1_048_577] {
+        let config = PowerConfig {
+            spec_mtp_fr_vocab_size: Some(vocab_size),
+            ..Default::default()
+        };
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("spec_mtp_fr_vocab_size"));
+    }
+}
+
+#[test]
+fn test_validate_rejects_duplicate_cpu_tensor_names() {
+    let config = PowerConfig {
+        gpu: GpuConfig {
+            cpu_tensors: vec!["output.weight".to_string(), "output.weight".to_string()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let err = config.validate().unwrap_err();
+    assert!(err.to_string().contains("gpu.cpu_tensors"));
+    assert!(err.to_string().contains("duplicate"));
+}
+
+#[test]
+fn test_validate_rejects_invalid_cpu_tensor_names() {
+    for name in ["", " output.weight", "bad\0name"] {
+        let config = PowerConfig {
+            gpu: GpuConfig {
+                cpu_tensors: vec![name.to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("gpu.cpu_tensors"));
+    }
+}
+
+#[test]
+fn test_validate_bounds_cpu_tensor_name_count() {
+    let names = (0..crate::config::MAX_CPU_TENSOR_OVERRIDES)
+        .map(|index| format!("blk.{index}.weight"))
+        .collect::<Vec<_>>();
+    let accepted = PowerConfig {
+        gpu: GpuConfig {
+            cpu_tensors: names.clone(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    accepted.validate().unwrap();
+
+    let rejected = PowerConfig {
+        gpu: GpuConfig {
+            cpu_tensors: names
+                .into_iter()
+                .chain(std::iter::once("overflow.weight".to_string()))
+                .collect(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let err = rejected.validate().unwrap_err();
+    assert!(err.to_string().contains("accepts at most 256"));
 }
 
 #[test]

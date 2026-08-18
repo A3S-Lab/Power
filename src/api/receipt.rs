@@ -356,6 +356,7 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
         request.penalize_newline,
     );
     insert_optional_u32(&mut parameters, "num_ctx", request.num_ctx);
+    insert_optional_u32(&mut parameters, "num_batch", request.num_batch);
     insert_optional_u32(&mut parameters, "mirostat", request.mirostat);
     insert_optional_f32(&mut parameters, "mirostat_tau", request.mirostat_tau);
     insert_optional_f32(&mut parameters, "mirostat_eta", request.mirostat_eta);
@@ -646,6 +647,7 @@ mod tests {
             repeat_last_n: None,
             penalize_newline: None,
             num_ctx: None,
+            num_batch: None,
             mirostat: None,
             mirostat_tau: None,
             mirostat_eta: None,
@@ -1083,6 +1085,7 @@ mod tests {
             repeat_last_n: None,
             penalize_newline: None,
             num_ctx: None,
+            num_batch: None,
             mirostat: None,
             mirostat_tau: None,
             mirostat_eta: None,
@@ -1141,6 +1144,7 @@ mod tests {
             repeat_last_n: Some(64),
             penalize_newline: Some(false),
             num_ctx: Some(2048),
+            num_batch: Some(4),
             mirostat: Some(1),
             mirostat_tau: Some(4.0),
             mirostat_eta: Some(0.25),
@@ -1169,6 +1173,16 @@ mod tests {
             receipt.decoding.parameters["typical_p"],
             serde_json::json!(0.5)
         );
+        assert_eq!(
+            receipt.decoding.parameters["num_batch"],
+            serde_json::json!(4)
+        );
+        let mut without_batch = request.clone();
+        without_batch.num_batch = None;
+        assert_ne!(
+            receipt_digest(&receipt).unwrap(),
+            receipt_digest(&completion_receipt(&without_batch).unwrap()).unwrap()
+        );
     }
 
     #[test]
@@ -1190,6 +1204,7 @@ mod tests {
             repeat_last_n: None,
             penalize_newline: None,
             num_ctx: None,
+            num_batch: None,
             mirostat: None,
             mirostat_tau: None,
             mirostat_eta: None,
@@ -1234,6 +1249,7 @@ mod tests {
             repeat_last_n: None,
             penalize_newline: None,
             num_ctx: None,
+            num_batch: None,
             mirostat: None,
             mirostat_tau: None,
             mirostat_eta: None,
@@ -1280,6 +1296,7 @@ mod tests {
             repeat_last_n: None,
             penalize_newline: None,
             num_ctx: None,
+            num_batch: None,
             mirostat: None,
             mirostat_tau: None,
             mirostat_eta: None,
@@ -1329,6 +1346,7 @@ mod tests {
             repeat_last_n: None,
             penalize_newline: None,
             num_ctx: None,
+            num_batch: None,
             mirostat: None,
             mirostat_tau: None,
             mirostat_eta: None,
@@ -1380,6 +1398,7 @@ mod tests {
             repeat_last_n: None,
             penalize_newline: None,
             num_ctx: None,
+            num_batch: None,
             mirostat: None,
             mirostat_tau: None,
             mirostat_eta: None,

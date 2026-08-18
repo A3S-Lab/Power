@@ -987,6 +987,8 @@ model_hash "qwen2.5:7b" {
 gpu {
   gpu_layers = -1    # -1 = offload all layers, 0 = CPU only
   main_gpu   = 0
+  # Exact tensor names may remain on CPU when full-layer offload would exceed VRAM.
+  # cpu_tensors = ["output.weight", "blk.3.attn_q.weight"]
 }
 
 # NVIDIA GPU confidential-computing evidence binding
@@ -1052,9 +1054,12 @@ semantics digest before handing the standard Service to Runtime and Box.
 | `keep_alive` | `"5m"` | Auto-unload idle models (`"0"` = immediate, `"-1"` = never); invalid config or request values fail closed |
 | `spec_mode` | `"auto"` | Model-neutral strategy: `"off"`, `"prompt-lookup"`, `"ngram-context"`, `"draft-model"`, `"mtp"`, `"dflash"`, or `"dspark"`; backends reject unsupported explicit choices |
 | `spec_draft_max` | adapter default | Maximum draft tokens per target verification pass (`1..64`) |
+| `spec_mtp_recurrent_snapshots` | `7` | Maximum resident llama.cpp MTP recurrent rollback snapshots (`1..64`, capped by `spec_draft_max`); a longer rejected suffix is recovered by exact target-prefix replay |
+| `spec_mtp_fr_vocab_size` | `null` | Experimental llama.cpp MTP-only FR-Spec-inspired draft LM-head prefix (`1024..1048576` rows); the full target still verifies every proposal, and other workloads must retune acceptance |
 | `spec_draft_min` | `0` | Minimum draft tokens required from a model-backed adapter |
 | `spec_draft_p_min` | `0.0` | Minimum model-backed draft confidence (`0.0..1.0`) |
 | `use_mlock` | `false` | Lock model weights in memory (prevent swapping) |
+| `use_mmap` | `true` | Memory-map model weights; set `false` only after benchmarking dedicated loaded buffers, especially with llama.cpp CPU tensor overrides |
 | `num_thread` | auto | Thread count for inference |
 | `flash_attention` | `false` | Enable flash attention |
 | `num_parallel` | `1` | Concurrent inference slots |
@@ -1070,6 +1075,8 @@ semantics digest before handing the standard Service to Runtime and Box.
 | `model_signing_key` | `null` | Valid 32-byte Ed25519 public key (hex) for verifying model `.sig` signatures; invalid values fail configuration validation; `/v1/attestation?model=...` re-verifies the current runtime digest signature when no explicit `model_hashes` pin is configured |
 | `gpu.gpu_layers` | `0` | GPU layer offloading (`-1` = all) |
 | `gpu.main_gpu` | `0` | Primary GPU index |
+| `gpu.tensor_split` | `[]` | Multi-GPU layer split proportions |
+| `gpu.cpu_tensors` | `[]` | Exact GGUF tensor names forced to the llama.cpp CPU buffer (maximum 256; each name maximum 256 bytes); useful for selective placement when full offload exceeds VRAM |
 | `gpu_attestation.source` | `"configured"` | GPU CC evidence source: `"configured"` for file/hex bytes, `"nvattest-cli"` for live NVIDIA `nvattest`, or `"nras-rest"` for direct NVIDIA NRAS REST attestation |
 | `gpu_attestation.provider` | `"nvidia-nras"` | Provider label for NVIDIA GPU confidential-computing evidence claims; `gpu-confidential` production policy requires `"nvidia-nras"` |
 | `gpu_attestation.evidence_path` | `null` | Path to raw NVIDIA GPU CC evidence bytes; mutually exclusive with `evidence_hex` and fails configuration validation if both are set; required when `source = "nras-rest"`; `gpu-confidential` production policy requires an absolute path to an existing non-empty regular file when file-backed evidence is configured; configured evidence sources are capped at 64 MiB |
@@ -1118,6 +1125,8 @@ semantics digest before handing the standard Service to Runtime and Box.
 | `A3S_POWER_KEEP_ALIVE` | Default keep-alive duration |
 | `A3S_POWER_SPEC_MODE` | Model-neutral speculative strategy; invalid or backend-unsupported explicit values fail closed |
 | `A3S_POWER_SPEC_DRAFT_MAX` | Maximum draft tokens per verification pass (`1..64`) |
+| `A3S_POWER_SPEC_MTP_RECURRENT_SNAPSHOTS` | Maximum resident llama.cpp MTP recurrent rollback snapshots (`1..64`) |
+| `A3S_POWER_SPEC_MTP_FR_VOCAB_SIZE` | Experimental llama.cpp MTP draft LM-head vocabulary-prefix row count (`1024..1048576`) |
 | `A3S_POWER_SPEC_DRAFT_MIN` | Minimum draft tokens required from a model-backed adapter |
 | `A3S_POWER_SPEC_DRAFT_P_MIN` | Minimum model-backed draft confidence (`0.0..1.0`) |
 | `A3S_POWER_MODEL_SOURCE` | Remote model hub source for pull (`"modelscope"`, `"hf"`, or `"huggingface"`); invalid configured values fail closed |
@@ -1251,14 +1260,15 @@ least one of `--nvswitch-hwmodel` or `--nvswitch-firmware-version`.
 Verifiers can also pin the model execution/offload policy with
 `--require-runtime-policy --gpu-execution-digest <64-char-hex>`, which checks
 the attested `runtime.execution.gpu_sha256` digest over canonical
-`gpu_layers`, `main_gpu`, and `tensor_split` values. To compute that value
+`gpu_layers`, `main_gpu`, `tensor_split`, and exact `cpu_tensors` values. To compute that value
 without reimplementing Power's canonical JSON semantics, use:
 
 ```bash
 a3s-power-verify --print-gpu-execution-digest \
   --gpu-layers <N> \
   --main-gpu <N> \
-  --tensor-split <CSV>
+  --tensor-split <CSV> \
+  --cpu-tensor <EXACT_NAME>
 ```
 
 For CPU TEE hardware-signature operations, including `hw-verify` builds,
@@ -1450,7 +1460,8 @@ Use this command to calculate the GPU execution pin with Power's own canonicaliz
 a3s-power-verify --print-gpu-execution-digest \
   --gpu-layers <N> \
   --main-gpu <N> \
-  --tensor-split <CSV>
+  --tensor-split <CSV> \
+  --cpu-tensor <EXACT_NAME>
 ```
 
 ### Examples
@@ -2085,7 +2096,8 @@ server and inference product.
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
 - [x] Model-neutral speculative control plane with picolm zero-weight baselines and native llama.cpp MTP capability negotiation, exact verification, rollback, and metrics
 - [x] Path-free speculative benchmark harness with exact opted-in SSE usage/timings, registered GGUF digest checks, receipt verification, deterministic output parity, and controlled baseline/candidate comparison
-- [ ] Capture and publish the real Qwen3.5-27B Q6_K CUDA result at or above 100 generated token/s through Power's streaming API
+- [x] Capture and publish the [Qwen3.8-27B Q6_K CUDA boundary](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md): the untouched Q6_K same-artifact result reached 140.1600 generated token/s median; the Q6_K-derived TBQ4 mixed artifact plus reduced-vocabulary MTP passed the 175 token/s median gate in four five-sample captures, with a final hot-repeat median of 184.3665 token/s, a 182.5627 minimum, and exact greedy output parity through Power's streaming API
+- [x] Run and publish the [Qwen3.8-27B UD-Q8_K_XL RTX 4090 boundary capture](docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md): exact tensor placement makes the 31.46 GB artifact resident across CUDA and host memory; long-generation MTP reached 9.7577 token/s median (9.9561 peak), 1.5370x over explicit-off, with the observed cross-mode greedy hash difference recorded rather than treated as parity
 - [x] Bounded embedded model/device session pooling, cancellation-safe waiting queues, current-pressure-aware deterministic microbatch plans, canonical leading-axis tensor stacking/splitting, and digest-only receipt v4 scheduling evidence
 - [x] Model-neutral embedded inference substrate — exact SafeTensors integrity, disjoint multi-root capacity aggregation, bounded continuous/ragged execution lifecycles on shared request admission, mmap-default and opt-in bounded positional/direct tensor reads, storage/host/device residency, native fixed-state/scratch-aware cache budgets with live pressure revalidation and unified-memory accounting, LFRU hot sets, atomic plans, hysteresis-bounded live hot-tier adaptation, batched expert unions, privacy-gated cross-layer route hints, event-driven current-layer staged batches with shared count/byte admission, attestation-bound accelerator residency declarations, canonical 16-device meshes with bounded peer copies and exact confidential GPU/NVSwitch claim-set binding, fused Candle batches with explicit actual-device/fallback identity, AES-256-GCM sealed warm-state envelopes with authenticated recovery and explicit TEE export authorization, digest-bound AB/BA lossless tuning evidence, canonical self-verifying hardware evidence bundles, complete/partial weighted replicas, optional artifact-pinned and canonical-byte-verified pure-Rust rANS representations, usage-ranked verified partial-mirror staging, integrity-read throughput weighting, private telemetry, canonical receipts, a standalone storage benchmark, and a manual Linux/Windows hosted-runner evidence workflow without an embedded Web listener
 - [x] Pure Rust inference backend — `mistralrs` feature (default): GGUF inference via candle, no C++ dependency; ideal for TEE supply-chain auditing

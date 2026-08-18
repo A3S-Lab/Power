@@ -1,5 +1,35 @@
 use super::*;
 
+impl GpuConfig {
+    /// Validate bounded exact tensor-placement names shared by config and
+    /// execution-policy digest callers.
+    pub fn validate(&self) -> Result<()> {
+        if self.cpu_tensors.len() > MAX_CPU_TENSOR_OVERRIDES {
+            return Err(PowerError::Config(format!(
+                "gpu.cpu_tensors accepts at most {MAX_CPU_TENSOR_OVERRIDES} exact tensor names"
+            )));
+        }
+        let mut cpu_tensor_names = std::collections::HashSet::new();
+        for (index, name) in self.cpu_tensors.iter().enumerate() {
+            if name.is_empty()
+                || name.len() > MAX_CPU_TENSOR_NAME_BYTES
+                || name.trim() != name
+                || name.chars().any(char::is_control)
+            {
+                return Err(PowerError::Config(format!(
+                    "gpu.cpu_tensors[{index}] must be a non-empty tensor name of at most {MAX_CPU_TENSOR_NAME_BYTES} bytes without surrounding whitespace or control characters"
+                )));
+            }
+            if !cpu_tensor_names.insert(name) {
+                return Err(PowerError::Config(format!(
+                    "gpu.cpu_tensors contains duplicate exact tensor name {name:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl PowerConfig {
     /// Load configuration from a specific file path (A3S ACL format).
     ///
@@ -52,6 +82,8 @@ impl PowerConfig {
     /// Some legacy operational warnings remain non-fatal, but policy-bearing
     /// settings that would otherwise be silently ignored return an error.
     pub fn validate(&self) -> Result<()> {
+        self.gpu.validate()?;
+
         if !is_valid_spec_mode(&self.spec_mode) {
             return Err(PowerError::Config(format!(
                 "unsupported spec_mode '{}'; expected one of: auto, off, prompt-lookup, ngram-context, draft-model, mtp, dflash, dspark",
@@ -75,6 +107,19 @@ impl PowerConfig {
                 "spec_draft_min must not exceed 64, got {}",
                 self.spec_draft_min
             )));
+        }
+        if self.spec_mtp_recurrent_snapshots == 0 || self.spec_mtp_recurrent_snapshots > 64 {
+            return Err(PowerError::Config(format!(
+                "spec_mtp_recurrent_snapshots must be between 1 and 64, got {}",
+                self.spec_mtp_recurrent_snapshots
+            )));
+        }
+        if let Some(vocab_size) = self.spec_mtp_fr_vocab_size {
+            if !(1024..=1_048_576).contains(&vocab_size) {
+                return Err(PowerError::Config(format!(
+                    "spec_mtp_fr_vocab_size must be between 1024 and 1048576, got {vocab_size}"
+                )));
+            }
         }
         if !self.spec_draft_p_min.is_finite() || !(0.0..=1.0).contains(&self.spec_draft_p_min) {
             return Err(PowerError::Config(format!(
@@ -297,6 +342,20 @@ impl PowerConfig {
         if let Ok(value) = std::env::var("A3S_POWER_SPEC_DRAFT_MAX") {
             self.spec_draft_max = Some(parse_required_env_override::<u32>(
                 "A3S_POWER_SPEC_DRAFT_MAX",
+                &value,
+            )?);
+        }
+
+        if let Ok(value) = std::env::var("A3S_POWER_SPEC_MTP_RECURRENT_SNAPSHOTS") {
+            self.spec_mtp_recurrent_snapshots = parse_required_env_override::<u32>(
+                "A3S_POWER_SPEC_MTP_RECURRENT_SNAPSHOTS",
+                &value,
+            )?;
+        }
+
+        if let Ok(value) = std::env::var("A3S_POWER_SPEC_MTP_FR_VOCAB_SIZE") {
+            self.spec_mtp_fr_vocab_size = Some(parse_required_env_override::<u32>(
+                "A3S_POWER_SPEC_MTP_FR_VOCAB_SIZE",
                 &value,
             )?);
         }

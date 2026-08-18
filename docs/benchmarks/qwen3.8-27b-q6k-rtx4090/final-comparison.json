@@ -1,0 +1,14 @@
+{
+  "schema": "a3s.power.speculative-benchmark-comparison.v1",
+  "baseline_report_sha256": "0896e8a89864b47ab593a0ef4d39989176b83a5b44f0333466afe1352ceca6bb",
+  "candidate_report_sha256": "e3cd151deb1e15a8dc6ce3813b9f9135145299e662e321843fdb817ea953614f",
+  "baseline_mode": "off",
+  "candidate_mode": "mtp",
+  "baseline_median_tokens_per_second": 35.579319998827415,
+  "candidate_median_tokens_per_second": 140.16003197627458,
+  "candidate_min_required_tokens_per_second": 100.0,
+  "speedup": 3.9393679244261506,
+  "output_parity": true,
+  "candidate_threshold_passed": true,
+  "passed": true
+}

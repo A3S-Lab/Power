@@ -1,0 +1,88 @@
+{
+  "schema": "a3s.power.qwen38-q8-boundary.v1",
+  "artifact": {
+    "name": "qwen3.8-27b-ud-q8-k-xl",
+    "source": "unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q8_K_XL.gguf",
+    "bytes": 31457991680,
+    "sha256": "af36ecb6b5db1407953345b746c14ac93f0657dda413910b4348683a2d990377"
+  },
+  "build": {
+    "power_base_commit": "491184ada54699ddfc4b40246cd6aee92d7550dd",
+    "server_sha256": "8a10bac67b783da4403e9c6651e165ee77fdac08a1ed04576c5f37479facc680",
+    "benchmark_sha256": "885e077d5f8d56447109ea232337443c48ddcb97945540c58d4540198982f9ae",
+    "llama_cpp_rs_revision": "dfd12e4d334846367e4284a2a7763fe92c1bf676",
+    "rust": "1.97.1",
+    "cuda": "12.6",
+    "cuda_architecture": 89,
+    "dirty_worktree": true
+  },
+  "hardware": {
+    "os": "windows",
+    "architecture": "x86_64",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "gpu_vram_bytes": 25757220864,
+    "gpu_driver": "610.74",
+    "cpu": "Intel(R) Xeon(R) w5-2445",
+    "cpu_cores": 10,
+    "cpu_logical_processors": 20,
+    "system_ram_bytes": 137071693824
+  },
+  "workload": {
+    "prompt_sha256": "d95a5e4dad822ba9c84138f7a120017318bcb3a6a90e77246a8ec4ede0e65d89",
+    "request_sha256": "064f18fffc656a6fe417ce0b5de74a5e3a85d04f687f17117a79240c3ce66157",
+    "max_tokens": 256,
+    "num_ctx": 512,
+    "num_batch": 24,
+    "seed": 42,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "warmup_runs": 1,
+    "samples": 3
+  },
+  "inference": {
+    "gpu_layers": -1,
+    "main_gpu": 0,
+    "num_thread": 8,
+    "flash_attention": true,
+    "num_parallel": 1,
+    "use_mmap": false,
+    "use_mlock": false,
+    "unified_memory": false,
+    "cpu_tensor_blocks": [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51, 55, 59, 63],
+    "cpu_tensor_suffixes": ["attn_q.weight", "ffn_down.weight", "ffn_gate.weight", "ffn_up.weight"],
+    "cuda_model_buffer_mib": 22446.92,
+    "cuda_host_model_buffer_mib": 7543.28,
+    "cuda_recurrent_state_buffer_mib": 748.12,
+    "cuda_attention_kv_buffer_mib": 32.0,
+    "target_graph_splits": 66
+  },
+  "baseline": {
+    "mode": "off",
+    "decode_tokens_per_second": [6.362936826218014, 6.286102752073534, 6.34843574829464],
+    "median_decode_tokens_per_second": 6.34843574829464,
+    "minimum_decode_tokens_per_second": 6.286102752073534,
+    "end_to_end_tokens_per_second": [5.859121376823763, 5.782018342152236, 5.851764242000954],
+    "time_to_first_token_ns": [3450944100, 3540923100, 3415088200],
+    "output_sha256": "e60d9e6f255af911ef21c4db43321dea00473ffdf6e10729668b7f477fdc2d0e"
+  },
+  "candidate": {
+    "mode": "mtp",
+    "draft_max": 4,
+    "recurrent_snapshots": 4,
+    "decode_tokens_per_second": [9.308823199415594, 9.956140001710192, 9.75771886359647],
+    "median_decode_tokens_per_second": 9.75771886359647,
+    "minimum_decode_tokens_per_second": 9.308823199415594,
+    "end_to_end_tokens_per_second": [8.21503614431386, 8.721826065828608, 8.573764577794408],
+    "time_to_first_token_ns": [3738223600, 3703836800, 3664583200],
+    "rounds": 55,
+    "drafted_tokens": 220,
+    "accepted_tokens": 200,
+    "acceptance_rate": 0.9090909090909091,
+    "tokens_per_target_pass": 4.636363636363637,
+    "fallback_replays": 0,
+    "max_rejected_suffix": 4,
+    "output_sha256": "f059369f44d22c0d81350cd1ded4a17c138f8947c53c5d4fe886ea9f5d1e77a2"
+  },
+  "median_speedup": 1.53702726946833,
+  "cross_mode_output_parity": false
+}

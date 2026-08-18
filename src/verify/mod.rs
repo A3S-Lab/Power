@@ -2875,6 +2875,7 @@ mod tests {
             repeat_last_n: None,
             penalize_newline: None,
             num_ctx: None,
+            num_batch: None,
             mirostat: None,
             mirostat_tau: None,
             mirostat_eta: None,

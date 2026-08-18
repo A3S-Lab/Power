@@ -56,10 +56,13 @@ fn test_config_roundtrip() {
         gpu_attestation: GpuAttestationConfig::default(),
         spec_mode: "prompt-lookup".to_string(),
         spec_draft_max: Some(3),
+        spec_mtp_recurrent_snapshots: 7,
+        spec_mtp_fr_vocab_size: Some(8192),
         spec_draft_min: 0,
         spec_draft_p_min: 0.0,
         keep_alive: "5m".to_string(),
         use_mlock: false,
+        use_mmap: false,
         num_thread: None,
         flash_attention: false,
         num_parallel: 4,
@@ -100,6 +103,8 @@ fn test_config_roundtrip() {
     assert_eq!(loaded.port, 9999);
     assert_eq!(loaded.max_loaded_models, 5);
     assert_eq!(loaded.num_parallel, 4);
+    assert_eq!(loaded.spec_mtp_fr_vocab_size, Some(8192));
+    assert!(!loaded.use_mmap);
     assert!(loaded.tee_mode);
     assert!(loaded.redact_logs);
 
@@ -112,6 +117,8 @@ fn test_gpu_config_defaults() {
     assert_eq!(config.gpu.gpu_layers, 0);
     assert_eq!(config.gpu.main_gpu, 0);
     assert_eq!(config.spec_draft_max, None);
+    assert_eq!(config.spec_mtp_recurrent_snapshots, 7);
+    assert_eq!(config.spec_mtp_fr_vocab_size, None);
 }
 
 #[test]
@@ -146,12 +153,16 @@ fn test_speculative_settings_deserialize_acl() {
     let acl_str = r#"
             spec_mode = "dspark"
             spec_draft_max = 7
+            spec_mtp_recurrent_snapshots = 5
+            spec_mtp_fr_vocab_size = 8192
             spec_draft_min = 2
             spec_draft_p_min = 0.6
         "#;
     let config: PowerConfig = acl::deserialize(acl_str).unwrap();
     assert_eq!(config.spec_mode, "dspark");
     assert_eq!(config.spec_draft_max, Some(7));
+    assert_eq!(config.spec_mtp_recurrent_snapshots, 5);
+    assert_eq!(config.spec_mtp_fr_vocab_size, Some(8192));
     assert_eq!(config.spec_draft_min, 2);
     assert!((config.spec_draft_p_min - 0.6).abs() < f32::EPSILON);
 }
@@ -523,6 +534,8 @@ fn test_env_a3s_power_keep_alive() {
 fn test_env_a3s_power_speculative_settings() {
     std::env::set_var("A3S_POWER_SPEC_MODE", "mtp");
     std::env::set_var("A3S_POWER_SPEC_DRAFT_MAX", "5");
+    std::env::set_var("A3S_POWER_SPEC_MTP_RECURRENT_SNAPSHOTS", "4");
+    std::env::set_var("A3S_POWER_SPEC_MTP_FR_VOCAB_SIZE", "8192");
     std::env::set_var("A3S_POWER_SPEC_DRAFT_MIN", "1");
     std::env::set_var("A3S_POWER_SPEC_DRAFT_P_MIN", "0.75");
 
@@ -531,11 +544,15 @@ fn test_env_a3s_power_speculative_settings() {
 
     std::env::remove_var("A3S_POWER_SPEC_MODE");
     std::env::remove_var("A3S_POWER_SPEC_DRAFT_MAX");
+    std::env::remove_var("A3S_POWER_SPEC_MTP_RECURRENT_SNAPSHOTS");
+    std::env::remove_var("A3S_POWER_SPEC_MTP_FR_VOCAB_SIZE");
     std::env::remove_var("A3S_POWER_SPEC_DRAFT_MIN");
     std::env::remove_var("A3S_POWER_SPEC_DRAFT_P_MIN");
 
     assert_eq!(config.spec_mode, "mtp");
     assert_eq!(config.spec_draft_max, Some(5));
+    assert_eq!(config.spec_mtp_recurrent_snapshots, 4);
+    assert_eq!(config.spec_mtp_fr_vocab_size, Some(8192));
     assert_eq!(config.spec_draft_min, 1);
     assert!((config.spec_draft_p_min - 0.75).abs() < f32::EPSILON);
 }

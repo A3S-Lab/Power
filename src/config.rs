@@ -9,6 +9,15 @@ use crate::dirs;
 use crate::error::{PowerError, Result};
 use crate::speculative::SpeculativeStrategy;
 
+/// Default maximum number of resident llama.cpp MTP recurrent-state snapshots.
+pub const DEFAULT_SPEC_MTP_RECURRENT_SNAPSHOTS: u32 = 7;
+
+/// Maximum number of exact tensor names that may be forced onto CPU memory.
+pub const MAX_CPU_TENSOR_OVERRIDES: usize = 256;
+
+/// Maximum UTF-8 byte length of one exact CPU tensor name.
+pub const MAX_CPU_TENSOR_NAME_BYTES: usize = 256;
+
 mod acl;
 mod behavior;
 
@@ -110,6 +119,12 @@ pub struct GpuConfig {
     /// Empty means use a single GPU (default behavior).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tensor_split: Vec<f32>,
+
+    /// Exact GGUF tensor names to keep in the CPU buffer type even when their
+    /// containing layers are offloaded. Backends without tensor-level placement
+    /// support ignore this list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cpu_tensors: Vec<String>,
 }
 
 fn default_gpu_attestation_provider() -> String {
@@ -318,6 +333,21 @@ pub struct PowerConfig {
     #[serde(default)]
     pub spec_draft_max: Option<u32>,
 
+    /// Maximum resident recurrent-state rollback snapshots for llama.cpp MTP.
+    ///
+    /// The effective count is capped by `spec_draft_max`. Smaller values reduce
+    /// GPU memory pressure at the cost of exact target-prefix replay when a
+    /// rejected suffix is longer than the resident snapshot window.
+    #[serde(default = "default_spec_mtp_recurrent_snapshots")]
+    pub spec_mtp_recurrent_snapshots: u32,
+
+    /// Number of leading vocabulary rows projected by the experimental
+    /// FR-Spec-inspired llama.cpp MTP draft head. `None` keeps the full
+    /// vocabulary. The target model still verifies every proposal, so this can
+    /// affect acceptance and throughput but not the committed token sequence.
+    #[serde(default)]
+    pub spec_mtp_fr_vocab_size: Option<u32>,
+
     /// Minimum number of draft tokens required for a model-backed proposal.
     #[serde(default)]
     pub spec_draft_min: u32,
@@ -335,6 +365,12 @@ pub struct PowerConfig {
     /// Lock model weights in memory to prevent swapping (default: false).
     #[serde(default)]
     pub use_mlock: bool,
+
+    /// Memory-map model weights when the backend supports it (default: true).
+    /// Disable this for llama.cpp CPU tensor overrides when dedicated loaded
+    /// buffers benchmark faster than mapped file pages.
+    #[serde(default = "default_use_mmap")]
+    pub use_mmap: bool,
 
     /// Number of threads for generation (default: auto-detect).
     #[serde(default)]
@@ -640,6 +676,14 @@ fn default_max_loaded_models() -> usize {
     1
 }
 
+const fn default_use_mmap() -> bool {
+    true
+}
+
+pub(crate) const fn default_spec_mtp_recurrent_snapshots() -> u32 {
+    DEFAULT_SPEC_MTP_RECURRENT_SNAPSHOTS
+}
+
 impl Default for PowerConfig {
     fn default() -> Self {
         Self {
@@ -651,10 +695,13 @@ impl Default for PowerConfig {
             gpu_attestation: GpuAttestationConfig::default(),
             spec_mode: default_spec_mode(),
             spec_draft_max: None,
+            spec_mtp_recurrent_snapshots: default_spec_mtp_recurrent_snapshots(),
+            spec_mtp_fr_vocab_size: None,
             spec_draft_min: 0,
             spec_draft_p_min: 0.0,
             keep_alive: default_keep_alive(),
             use_mlock: false,
+            use_mmap: default_use_mmap(),
             num_thread: None,
             flash_attention: false,
             num_parallel: default_num_parallel(),

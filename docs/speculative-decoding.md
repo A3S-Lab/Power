@@ -1,7 +1,7 @@
 # Model-neutral Speculative Decoding
 
 Speculative decoding is a Power runtime capability. It is not owned by Qwen,
-DeepSeek, Llama, or any other model family. [Qwen3.5-27B](https://huggingface.co/Qwen/Qwen3.5-27B)
+DeepSeek, Llama, or any other model family. [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B)
 is the first dense hybrid acceptance target for the CUDA path, not a special
 case in the shared runtime.
 
@@ -92,38 +92,58 @@ contracts, not by branches in the Power scheduler.
    adaptive draft-length default.
 3. llama.cpp provides native MTP execution with transactional target and draft
    rollback for compatible models.
-4. Qwen3.5-27B Q6_K is the first CUDA performance gate. Baseline and MTP runs
+4. Qwen3.8-27B Q6_K is the first CUDA performance gate. Baseline and MTP runs
    use the same model digest, prompts, sampling settings, context, and hardware.
 5. A separate DSpark artifact is admitted only after its target/tokenizer
    compatibility, provenance, peak memory, exactness, and speedup are measured.
 6. At least one non-Qwen adapter must pass the same transaction and exactness
    suite before DSpark support is considered cross-architecture complete.
 
-The Qwen3.5 performance gate is at least 100 generated tokens per second on the
-acceptance host through Power's streaming API. Native-tool measurements are
-diagnostic evidence; they do not replace the Power end-to-end result.
+The Qwen3.8 performance gate is at least 100 generated tokens per second on the
+acceptance host through Power's streaming API. This is an acceptance floor,
+not a tuning ceiling. Native-tool measurements are diagnostic evidence; they
+do not replace the Power end-to-end result.
 
 ## Reproducible Power API benchmark
 
 `a3s-power-speculative-bench` captures the acceptance evidence through
 `POST /v1/completions`; it does not call llama.cpp directly. Build the server
-and client from one clean revision:
+and client from one source state. Release captures must use a clean revision;
+development captures must disclose the dirty state and record the executable
+digest in companion evidence. The pinned llama-cpp-rs revision does not expose
+Power's context extensions, so fetch it and apply the reviewed patch before a
+CUDA build:
+
+```powershell
+cargo fetch
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\apply-llamacpp-power-patches.ps1
+```
+
+On non-Windows hosts, apply
+`patches/llama-cpp-rs-dfd12e4-mtp-fr-spec.patch` with `git apply` to the fetched
+`llama-cpp-sys-2/llama.cpp` checkout. Then build both executables:
 
 ```console
-cargo build --release --no-default-features --features llamacpp-cuda \
+cargo build --release --no-default-features --features llamacpp-cuda,llamacpp-mtp-fr \
   --bin a3s-power --bin a3s-power-speculative-bench
 ```
 
-Use one reviewed Q6_K GGUF that retains the Qwen3.5 native prediction metadata
-and tensors (`qwen35.nextn_predict_layers > 0`). Record its lowercase SHA-256,
+Use one reviewed Q6_K GGUF that retains the Qwen3.8 native prediction metadata
+and tensors (`qwen35.nextn_predict_layers > 0`; `qwen35` is the GGUF
+architecture identifier retained by Qwen3.8). Record its lowercase SHA-256,
 register that exact file once, and use the same registry entry for both runs.
 Do not substitute an unreviewed conversion merely because its filename says
 Q6_K. Keep every performance-affecting ACL setting fixed across server
 restarts, including `gpu`, `num_thread`, `flash_attention`, `num_parallel`,
-`use_mlock`, TEE mode, timing padding, and these draft settings:
+`use_mlock`, `use_mmap`, TEE mode, timing padding, and these draft settings:
 
 ```acl
-spec_draft_max = 3
+spec_draft_max = 7
+spec_mtp_recurrent_snapshots = 7
+# Optional, experimental MTP draft-only vocabulary prefix.
+# Omit this line to project the full vocabulary.
+# spec_mtp_fr_vocab_size = 8192
 spec_draft_min = 0
 spec_draft_p_min = 0.0
 suppress_token_metrics = false
@@ -131,6 +151,8 @@ suppress_token_metrics = false
 gpu {
   gpu_layers = -1
   main_gpu = 0
+  # Any exact tensor-level CPU placement must remain identical across A/B runs.
+  # cpu_tensors = ["output.weight"]
 }
 ```
 
@@ -147,28 +169,54 @@ fixed seed and context, `keep_alive = -1`, streaming, and exact opted-in usage.
 An early EOS or stop result fails the run instead of silently producing a
 shorter, faster sample.
 
+The correctness minimum is `num_batch >= spec_draft_max + 2`: one target
+anchor plus the proposal rows and one staging slot required because
+llama.cpp's recurrent splitter requires the physical batch to be strictly
+larger than its anchor-plus-snapshot tail. The conservative `draft_max=6`
+capture used `--num-batch 8`; the tuned RTX 4090 capture used `draft_max=7`
+and `--num-batch 24`. Batch size is also a CUDA graph shape, so benchmark it
+rather than assuming the minimum is fastest. Always use the identical value
+for the baseline and candidate.
+
+`spec_mtp_recurrent_snapshots` bounds resident target rollback state separately
+from draft width. The effective value is capped by `spec_draft_max`. When a
+rejected suffix exceeds that window, Power restores exactness by replaying the
+committed target prefix. Record the same explicit value in both A/B configs;
+reducing it can avoid a GPU-memory allocation cliff, while replay frequency can
+reduce throughput. The tuned capture retained the default of seven snapshots;
+its maximum rejected suffix was five and it required no fallback replays.
+
+`spec_mtp_fr_vocab_size` is an experimental FR-Spec-inspired optimization for
+the llama.cpp MTP context only. It projects the first configured number of
+draft-head vocabulary rows, pads the remaining draft logits with negative
+infinity, and leaves the target context at the full vocabulary. Target
+verification therefore preserves the committed greedy sequence, but draft
+acceptance can change. This implementation uses a contiguous prefix rather
+than a corpus-derived frequency map; tune it on representative languages and
+domains, and keep the explicit value identical in controlled A/B configs.
+
 ```console
 a3s-power-speculative-bench run \
   --url http://127.0.0.1:11434 \
-  --model qwen3.5-27b-q6-k \
+  --model qwen3.8-27b-q6-k \
   --model-sha256 <64-lowercase-hex> \
   --mode off \
   --power-commit <40-or-64-lowercase-git-revision> \
-  --hardware-label rtx-4090-cuda \
+  --hardware-label rtx-4090-qwen38-q6k \
   --prompt-file benchmark-prompt.txt \
-  --max-tokens 256 --num-ctx 4096 --seed 42 \
+  --max-tokens 256 --num-ctx 4096 --num-batch 24 --seed 42 \
   --warmup-runs 1 --samples 5 \
   --min-tokens-per-second 0 > baseline.json
 
 a3s-power-speculative-bench run \
   --url http://127.0.0.1:11434 \
-  --model qwen3.5-27b-q6-k \
+  --model qwen3.8-27b-q6-k \
   --model-sha256 <same-64-lowercase-hex> \
   --mode mtp \
   --power-commit <same-git-revision> \
-  --hardware-label rtx-4090-cuda \
+  --hardware-label rtx-4090-qwen38-q6k \
   --prompt-file benchmark-prompt.txt \
-  --max-tokens 256 --num-ctx 4096 --seed 42 \
+  --max-tokens 256 --num-ctx 4096 --num-batch 24 --seed 42 \
   --warmup-runs 1 --samples 5 \
   --min-tokens-per-second 100 > mtp.json
 
@@ -188,5 +236,25 @@ retain time to first token and client-observed end-to-end throughput. Power
 emits these exact timings only in the final opted-in SSE usage event when token
 metric suppression is disabled. A comparison passes only when the candidate's
 declared threshold passes and its output digest matches the autoregressive
-baseline. Until a real digest-pinned Qwen3.5-27B Q6_K capture is attached, the
-100 token/s performance gate remains open.
+baseline.
+
+The [RTX 4090 acceptance capture](benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
+pins the 22,884,408,288-byte GGUF by SHA-256 and records five measured samples
+per mode. The final MTP configuration reached a 140.1600 token/s median and a
+139.4793 token/s minimum, versus a 35.5793 token/s same-shape baseline median
+(3.9394x speedup). Every sample produced the same output digest, so the
+100 token/s gate and greedy parity both pass. A post-safety rebuild repeated
+the A/B after the recurrent-batch validation fix and retained a 129.7065
+token/s MTP median, 125.8369 token/s minimum, 4.0318x speedup, and identical
+greedy output under an active Windows desktop; those companion reports are
+kept beside the best capture rather than replacing it. A later Q6_K-derived
+mixed-precision development artifact combined selective TBQ4-style FFN
+requantization, an 8,192-row draft vocabulary prefix, backend CUDA sampling,
+Flash Attention, and unused output-reorder elimination. Two consecutive
+pre-validation captures reached 185.4103 and 182.1038 token/s medians. The
+final rebuilt binary then reached 176.6444 and 184.3665 token/s medians; the
+hot repeat had a 182.5627 token/s minimum. Across all four reports, nineteen of
+twenty samples exceeded 175 token/s, every median passed the 175 token/s gate,
+and every output retained the canonical greedy digest. Because the runtime
+artifact selectively requantizes Q6_K source tensors, it is reported separately
+from the untouched-Q6_K same-artifact comparison.

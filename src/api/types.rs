@@ -665,6 +665,11 @@ pub struct CompletionRequest {
     pub penalize_newline: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_ctx: Option<u32>,
+    /// Maximum number of tokens submitted to a backend decode call. Keeping
+    /// this close to the speculative verification width avoids allocating a
+    /// full-vocabulary output row for every slot in a large default batch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_batch: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirostat: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1438,6 +1443,7 @@ mod tests {
             "repeat_last_n": 64,
             "penalize_newline": false,
             "num_ctx": 2048,
+            "num_batch": 4,
             "mirostat": 1,
             "mirostat_tau": 4.0,
             "mirostat_eta": 0.2,
@@ -1451,6 +1457,8 @@ mod tests {
         assert_eq!(req.repeat_last_n, Some(64));
         assert_eq!(req.penalize_newline, Some(false));
         assert_eq!(req.num_ctx, Some(2048));
+        assert_eq!(req.num_batch, Some(4));
+        assert!(req.unsupported.is_empty());
         assert_eq!(req.mirostat, Some(1));
         assert_eq!(req.mirostat_tau, Some(4.0));
         assert_eq!(req.mirostat_eta, Some(0.2));

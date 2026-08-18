@@ -59,10 +59,19 @@ server = [
     "tokio/full",
 ]
 artifact-provisioning = ["dep:fs2", "dep:reqwest", "tokio/fs", "tokio/io-util"]
-llamacpp = ["server", "dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2?/mtmd"]
+llamacpp = [
+    "server",
+    "dep:llama-cpp-2",
+    "dep:llama-cpp-sys-2",
+    "dep:encoding_rs",
+    "llama-cpp-2?/mtmd",
+]
+# Experimental reduced-vocabulary MTP projection. The pinned llama.cpp source
+# must first receive patches/llama-cpp-rs-dfd12e4-mtp-fr-spec.patch.
+llamacpp-mtp-fr = ["llamacpp"]
 # CUDA execution for the llama.cpp backend. Kept separate so CPU-only and TEE
 # builds do not require a CUDA toolchain.
-llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]
+llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda", "llama-cpp-sys-2/cuda"]
 mistralrs = ["server", "dep:mistralrs"]
 embedded-inference = [
     "dep:candle-core",
@@ -185,7 +194,13 @@ minijinja = { version = "=2.21.0", features = ["fuel"], optional = true }
 nix = { version = "0.29", features = ["ioctl"] }
 
 # llama.cpp backend (optional, requires C++ toolchain)
-llama-cpp-2 = { version = "0.1.154", optional = true, features = ["mtmd"] }
+# Pin the reviewed b10405 compatibility update until llama-cpp-rs publishes it.
+# It includes the CUDA RMSNorm/Mul/RoPE fusion used by Qwen3.8's hot path.
+llama-cpp-2 = { git = "https://github.com/bogdanr/llama-cpp-rs.git", rev = "dfd12e4d334846367e4284a2a7763fe92c1bf676", optional = true, features = ["mtmd"] }
+# The safe wrapper does not yet expose llama_model_params.load_mtp or the
+# speculative context output limits. Power uses the matching raw package from
+# the same reviewed revision for those fields and keeps the bridges local.
+llama-cpp-sys-2 = { git = "https://github.com/bogdanr/llama-cpp-rs.git", rev = "dfd12e4d334846367e4284a2a7763fe92c1bf676", optional = true, features = ["mtmd"] }
 
 # UTF-8 decoding for llama.cpp token_to_piece (re-exported by llama-cpp-2)
 encoding_rs = { version = "0.8", optional = true }

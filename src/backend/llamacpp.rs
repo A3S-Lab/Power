@@ -14,6 +14,8 @@ use std::collections::HashMap;
 #[cfg(feature = "llamacpp")]
 use std::num::NonZeroU32;
 #[cfg(feature = "llamacpp")]
+use std::ptr::NonNull;
+#[cfg(feature = "llamacpp")]
 use std::sync::{Mutex, MutexGuard};
 #[cfg(feature = "llamacpp")]
 use tokio::sync::RwLock;
@@ -36,8 +38,9 @@ use super::Backend;
 mod speculative_runtime;
 #[cfg(feature = "llamacpp")]
 use speculative_runtime::{
-    build_llamacpp_sampler, llamacpp_speculative_capabilities, run_mtp_completion,
-    LlamaContextSettings, LlamaSamplingSettings, MtpCompletionSettings,
+    build_llamacpp_sampler, ensure_mtp_fr_available, llamacpp_speculative_capabilities,
+    run_mtp_completion, sample_target_token, use_backend_greedy, LlamaContextSettings,
+    LlamaSamplingSettings, MtpCompletionSettings,
 };
 
 /// Default context size when `num_ctx` is not specified by the user.
@@ -47,6 +50,185 @@ use speculative_runtime::{
 /// limited memory. Users can override with `--num-ctx` or the `num_ctx` API field.
 #[allow(dead_code)]
 const DEFAULT_CTX_SIZE: u32 = 2048;
+
+/// Translate Power's GPU layer convention to llama-cpp-2's unsigned setter.
+///
+/// Power exposes `-1` as "offload every layer" while llama-cpp-2 represents
+/// that request by saturating `u32::MAX` to `i32::MAX`. Passing zero explicitly
+/// is important because llama.cpp's default model parameters offload all layers.
+#[cfg(feature = "llamacpp")]
+fn llamacpp_gpu_layers(gpu_layers: i32) -> Result<u32> {
+    match gpu_layers {
+        -1 => Ok(u32::MAX),
+        0.. => Ok(gpu_layers as u32),
+        _ => Err(PowerError::Config(format!(
+            "gpu.gpu_layers must be -1 or a non-negative integer, got {gpu_layers}"
+        ))),
+    }
+}
+
+#[cfg(feature = "llamacpp")]
+fn validated_llamacpp_batch(num_batch: Option<u32>, ctx_size: u32) -> Result<Option<u32>> {
+    if let Some(batch) = num_batch {
+        if batch == 0 {
+            return Err(PowerError::InvalidRequest(
+                "llama.cpp num_batch must be greater than zero".to_string(),
+            ));
+        }
+        if batch > ctx_size {
+            return Err(PowerError::InvalidRequest(format!(
+                "llama.cpp num_batch ({batch}) must not exceed the effective context size ({ctx_size})"
+            )));
+        }
+    }
+    Ok(num_batch)
+}
+
+/// Whether the configured runtime may execute an embedded MTP draft head.
+///
+/// llama.cpp skips MTP tensors at model-load time unless `load_mtp` is set.
+/// `auto` must load them too because capability negotiation happens only after
+/// the model metadata is available.
+#[cfg(feature = "llamacpp")]
+fn llamacpp_loads_mtp_weights(spec_mode: &str) -> bool {
+    matches!(
+        crate::speculative::SpeculativeStrategy::parse(spec_mode),
+        Some(
+            crate::speculative::SpeculativeStrategy::Auto
+                | crate::speculative::SpeculativeStrategy::Mtp
+        )
+    )
+}
+
+#[cfg(feature = "llamacpp")]
+fn llamacpp_model_params(
+    gpu_layers: u32,
+    main_gpu: i32,
+    use_mmap: bool,
+    use_mlock: bool,
+    has_tensor_split: bool,
+    load_mtp: bool,
+) -> llama_cpp_sys_2::llama_model_params {
+    let mut params = unsafe { llama_cpp_sys_2::llama_model_default_params() };
+    params.n_gpu_layers = i32::try_from(gpu_layers).unwrap_or(i32::MAX);
+    params.main_gpu = main_gpu;
+    params.load_mode = match (use_mmap, use_mlock) {
+        (false, false) => llama_cpp_sys_2::LLAMA_LOAD_MODE_NONE,
+        (true, false) => llama_cpp_sys_2::LLAMA_LOAD_MODE_MMAP,
+        (false, true) => llama_cpp_sys_2::LLAMA_LOAD_MODE_MLOCK,
+        (true, true) => llama_cpp_sys_2::LLAMA_LOAD_MODE_MMAP_MLOCK,
+    };
+    if has_tensor_split {
+        params.split_mode = llama_cpp_sys_2::LLAMA_SPLIT_MODE_LAYER;
+    }
+    params.load_mtp = load_mtp;
+    params
+}
+
+/// Build an anchored C++ regular expression for one exact GGUF tensor name.
+#[cfg(feature = "llamacpp")]
+fn exact_tensor_pattern(name: &str) -> String {
+    let mut pattern = String::with_capacity(name.len().saturating_mul(2).saturating_add(2));
+    pattern.push('^');
+    for character in name.chars() {
+        if matches!(
+            character,
+            '\\' | '.' | '^' | '$' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}'
+        ) {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern.push('$');
+    pattern
+}
+
+/// Own the C strings and null-terminated raw override array for one model load.
+///
+/// llama.cpp only borrows these pointers while `llama_load_model_from_file`
+/// runs, so this owner is kept in the same blocking closure until load returns.
+#[cfg(feature = "llamacpp")]
+struct LlamaCpuTensorOverrides {
+    _patterns: Vec<std::ffi::CString>,
+    entries: Vec<llama_cpp_sys_2::llama_model_tensor_buft_override>,
+}
+
+#[cfg(feature = "llamacpp")]
+impl LlamaCpuTensorOverrides {
+    fn new(names: &[String]) -> Result<Self> {
+        let cpu_buffer_type = unsafe { llama_cpp_sys_2::ggml_backend_cpu_buffer_type() };
+        if cpu_buffer_type.is_null() {
+            return Err(PowerError::InferenceFailed(
+                "llama.cpp CPU buffer type is unavailable".to_string(),
+            ));
+        }
+
+        let patterns = names
+            .iter()
+            .map(|name| {
+                std::ffi::CString::new(exact_tensor_pattern(name)).map_err(|error| {
+                    PowerError::Config(format!(
+                        "gpu.cpu_tensors contains an invalid tensor name {name:?}: {error}"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut entries = patterns
+            .iter()
+            .map(
+                |pattern| llama_cpp_sys_2::llama_model_tensor_buft_override {
+                    pattern: pattern.as_ptr(),
+                    buft: cpu_buffer_type,
+                },
+            )
+            .collect::<Vec<_>>();
+        entries.push(llama_cpp_sys_2::llama_model_tensor_buft_override {
+            pattern: std::ptr::null(),
+            buft: std::ptr::null_mut(),
+        });
+
+        Ok(Self {
+            _patterns: patterns,
+            entries,
+        })
+    }
+
+    fn apply(&self, params: &mut llama_cpp_sys_2::llama_model_params) {
+        params.tensor_buft_overrides = self.entries.as_ptr();
+    }
+}
+
+/// Load a model with the reviewed raw `load_mtp` flag that llama-cpp-2 does
+/// not currently expose in its safe parameter builder.
+#[cfg(feature = "llamacpp")]
+fn load_llamacpp_model(
+    path: &std::path::Path,
+    params: llama_cpp_sys_2::llama_model_params,
+) -> Result<llama_cpp_2::model::LlamaModel> {
+    let path_str = path.to_str().ok_or_else(|| {
+        PowerError::InferenceFailed(format!("Model path is not valid UTF-8: {}", path.display()))
+    })?;
+    let path_c = std::ffi::CString::new(path_str).map_err(|error| {
+        PowerError::InferenceFailed(format!(
+            "Model path contains an interior NUL byte ({}): {error}",
+            path.display()
+        ))
+    })?;
+    let raw = unsafe { llama_cpp_sys_2::llama_load_model_from_file(path_c.as_ptr(), params) };
+    let raw = NonNull::new(raw).ok_or_else(|| {
+        PowerError::InferenceFailed(format!("Failed to load model: {}", path.display()))
+    })?;
+
+    // Safety: at the pinned llama-cpp-rs revision, LlamaModel is
+    // `#[repr(transparent)]` over this exact NonNull<llama_model>. Ownership of
+    // the successful raw load transfers to LlamaModel, whose Drop calls the
+    // matching llama_model_free function from the same sys crate revision.
+    Ok(unsafe {
+        std::mem::transmute::<NonNull<llama_cpp_sys_2::llama_model>, llama_cpp_2::model::LlamaModel>(
+            raw,
+        )
+    })
+}
 
 /// Whether a model was loaded for inference or embedding.
 #[cfg(feature = "llamacpp")]
@@ -354,8 +536,6 @@ impl Backend for LlamaCppBackend {
 
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {
         use llama_cpp_2::llama_backend::LlamaBackend;
-        use llama_cpp_2::model::params::LlamaModelParams;
-        use llama_cpp_2::model::LlamaModel;
 
         tracing::info!(model = %manifest.name, path = %manifest.path.display(), "Loading model");
 
@@ -365,39 +545,55 @@ impl Backend for LlamaCppBackend {
             let backend = LlamaBackend::init().map_err(|e| {
                 PowerError::InferenceFailed(format!("Failed to initialize llama.cpp backend: {e}"))
             })?;
+            // Route native logs through Power's tracing filter. CUDA graph
+            // reuse and backend-sampler DEBUG messages must not perform
+            // synchronous stderr I/O in the token hot path of a release server.
+            llama_cpp_2::send_logs_to_tracing(llama_cpp_2::LogOptions::default());
             let _ = self.llama_backend.set(backend); // Ignore if another thread won the race
         }
 
-        let gpu_layers = self.config.gpu.gpu_layers;
+        let gpu_layers = llamacpp_gpu_layers(self.config.gpu.gpu_layers)?;
         let main_gpu = self.config.gpu.main_gpu;
+        let use_mmap = self.config.use_mmap;
         let use_mlock = self.config.use_mlock;
         let has_tensor_split = !self.config.gpu.tensor_split.is_empty();
+        let cpu_tensors = self.config.gpu.cpu_tensors.clone();
+        let load_mtp = llamacpp_loads_mtp_weights(&self.config.spec_mode);
 
         let path = manifest.path.clone();
         let model_name = manifest.name.clone();
 
-        // Load model in a blocking task since it's CPU-intensive.
-        // LlamaModelParams contains raw pointers (not Send), so we build everything
-        // inside the blocking task and use backend_ref() for the ZST marker.
+        // Load the model in a blocking task since it is CPU-intensive. The raw
+        // parameter value contains pointers and is built inside the task rather
+        // than crossing the async scheduler boundary.
         let model = tokio::task::spawn_blocking(move || {
-            let mut p = LlamaModelParams::default();
-            if gpu_layers != 0 {
-                p = p.with_n_gpu_layers(gpu_layers.max(0) as u32);
-            }
-            if main_gpu != 0 {
-                p = p.with_main_gpu(main_gpu);
-            }
-            if use_mlock {
-                p = p.with_use_mlock(true);
-            }
+            let mut p = llamacpp_model_params(
+                gpu_layers,
+                main_gpu,
+                use_mmap,
+                use_mlock,
+                has_tensor_split,
+                load_mtp,
+            );
+            let cpu_tensor_overrides = if cpu_tensors.is_empty() {
+                None
+            } else {
+                let overrides = LlamaCpuTensorOverrides::new(&cpu_tensors)?;
+                overrides.apply(&mut p);
+                Some(overrides)
+            };
             if has_tensor_split {
-                use llama_cpp_2::model::params::LlamaSplitMode;
-                p = p.with_split_mode(LlamaSplitMode::Layer);
                 tracing::info!("Multi-GPU layer splitting enabled");
             }
+            tracing::info!(
+                load_mtp,
+                cpu_tensors = cpu_tensor_overrides
+                    .as_ref()
+                    .map_or(0, |_| cpu_tensors.len()),
+                "Configured llama.cpp model tensor loading"
+            );
 
-            LlamaModel::load_from_file(backend_ref(), &path, &p)
-                .map_err(|e| PowerError::InferenceFailed(format!("Failed to load model: {e}")))
+            load_llamacpp_model(&path, p)
         })
         .await
         .map_err(|e| PowerError::InferenceFailed(format!("Task join error: {e}")))??;
@@ -755,6 +951,16 @@ impl Backend for LlamaCppBackend {
         use llama_cpp_2::context::params::LlamaContextParams;
         use llama_cpp_2::llama_batch::LlamaBatch;
 
+        if request
+            .use_mmap
+            .is_some_and(|use_mmap| use_mmap != self.config.use_mmap)
+        {
+            return Err(PowerError::InvalidRequest(format!(
+                "llama.cpp use_mmap is fixed at model load ({}) and must be configured globally",
+                self.config.use_mmap
+            )));
+        }
+
         let (
             model_arc,
             session_cache,
@@ -813,7 +1019,7 @@ impl Backend for LlamaCppBackend {
                 effective
             }
         };
-        let num_batch = request.num_batch;
+        let num_batch = validated_llamacpp_batch(request.num_batch, ctx_size)?;
         // Per-request num_thread overrides config default; fall back to config if not set
         let num_thread = request.num_thread.or(self.config.num_thread);
         let num_thread_batch = request.num_thread_batch;
@@ -847,6 +1053,7 @@ impl Backend for LlamaCppBackend {
         let speculative_strategy = speculative_capabilities
             .resolve(requested_strategy, backend_default)
             .map_err(|error| PowerError::Config(format!("llama.cpp: {error}")))?;
+        ensure_mtp_fr_available(self.config.spec_mtp_fr_vocab_size)?;
         if matches!(
             speculative_strategy,
             crate::speculative::SpeculativeStrategy::Mtp
@@ -854,8 +1061,20 @@ impl Backend for LlamaCppBackend {
         {
             return Err(PowerError::InvalidRequest(
                 "llama.cpp MTP currently requires text-only inference without session caching or LoRA"
-                    .to_string(),
+                .to_string(),
             ));
+        }
+        if matches!(
+            speculative_strategy,
+            crate::speculative::SpeculativeStrategy::Mtp
+        ) {
+            let draft_max = self.config.spec_draft_max.unwrap_or(3);
+            let minimum_batch = crate::speculative::minimum_mtp_batch(draft_max);
+            if num_batch.is_some_and(|batch| batch < minimum_batch) {
+                return Err(PowerError::InvalidRequest(format!(
+                    "llama.cpp MTP num_batch must be at least draft_max + 2 ({minimum_batch})"
+                )));
+            }
         }
 
         let context_settings = LlamaContextSettings {
@@ -864,6 +1083,7 @@ impl Backend for LlamaCppBackend {
             num_thread,
             num_thread_batch,
             flash_attention,
+            mtp_fr_vocab_size: self.config.spec_mtp_fr_vocab_size,
         };
         let sampling_settings = LlamaSamplingSettings {
             response_format,
@@ -887,6 +1107,7 @@ impl Backend for LlamaCppBackend {
             // llama.cpp's native MTP adapter defaults to three draft tokens.
             // Other model-backed adapters can resolve a different default.
             draft_max: self.config.spec_draft_max.unwrap_or(3),
+            recurrent_snapshots: self.config.spec_mtp_recurrent_snapshots,
             draft_min: self.config.spec_draft_min,
             draft_p_min: self.config.spec_draft_p_min,
         };
@@ -900,6 +1121,11 @@ impl Backend for LlamaCppBackend {
         }
 
         let session_id = request.session_id.clone();
+        // Anonymous greedy requests receive a fresh context, so their stateless
+        // sampler can be owned by that context and executed in the CUDA graph.
+        // Session contexts may outlive this request and therefore cannot retain
+        // a request-specific backend sampler.
+        let plain_backend_greedy = session_id.is_none() && use_backend_greedy(&sampling_settings);
         let session_cache_for_return = session_cache.clone();
 
         // Run inference in a blocking task
@@ -1230,8 +1456,26 @@ impl Backend for LlamaCppBackend {
                         llama_cpp_2::context::params::LlamaContextType::Default,
                         0,
                         1,
+                        1,
                     );
-                    match model_arc.new_context(backend_ref(), ctx_params) {
+                    let context_result = if plain_backend_greedy {
+                        let backend_sampler =
+                            match build_llamacpp_sampler(&model_arc, &sampling_settings) {
+                                Ok(sampler) => sampler,
+                                Err(error) => {
+                                    send_completion_result(&tx, Err(error));
+                                    return;
+                                }
+                            };
+                        model_arc.new_context_with_samplers(
+                            backend_ref(),
+                            ctx_params,
+                            [(0, backend_sampler)],
+                        )
+                    } else {
+                        model_arc.new_context(backend_ref(), ctx_params)
+                    };
+                    match context_result {
                         Ok(c) => {
                             // Safety: model_arc is an Arc kept alive in LoadedModel for the
                             // entire duration the context exists. The context is returned to
@@ -1279,29 +1523,53 @@ impl Backend for LlamaCppBackend {
             }
 
             if !tokens_to_eval.is_empty() {
-                // Allocate batch only for the tokens we need to evaluate, not the full context.
-                let batch_size = tokens_to_eval.len().max(1);
-                let mut batch = LlamaBatch::new(batch_size, 1);
-                for (i, &token) in tokens_to_eval.iter().enumerate() {
-                    let pos = (skip_tokens + i) as i32;
-                    let is_last = i == tokens_to_eval.len() - 1;
-                    if batch.add(token, pos, &[0], is_last).is_err() {
+                // Respect the context's bounded decode batch during prompt
+                // prefill. In particular, speculative A/B runs intentionally
+                // use a small n_batch so llama.cpp allocates only the target
+                // verification logits rows instead of its much larger default.
+                let prompt_batch_size = usize::try_from(ctx.n_batch()).unwrap_or(usize::MAX).max(1);
+                for (chunk_index, chunk) in tokens_to_eval.chunks(prompt_batch_size).enumerate() {
+                    let chunk_offset = chunk_index.saturating_mul(prompt_batch_size);
+                    let mut batch = LlamaBatch::new(chunk.len().max(1), 1);
+                    for (index, &token) in chunk.iter().enumerate() {
+                        let absolute = skip_tokens
+                            .saturating_add(chunk_offset)
+                            .saturating_add(index);
+                        let position = match i32::try_from(absolute) {
+                            Ok(position) => position,
+                            Err(_) => {
+                                send_completion_result(
+                                    &tx,
+                                    Err(PowerError::InferenceFailed(
+                                        "Prompt position exceeds llama.cpp limits".to_string(),
+                                    )),
+                                );
+                                return;
+                            }
+                        };
+                        if batch
+                            .add(token, position, &[0], absolute + 1 == tokens.len())
+                            .is_err()
+                        {
+                            send_completion_result(
+                                &tx,
+                                Err(PowerError::InferenceFailed(
+                                    "Failed to add token to prompt batch".to_string(),
+                                )),
+                            );
+                            return;
+                        }
+                    }
+
+                    if let Err(error) = ctx.decode(&mut batch) {
                         send_completion_result(
                             &tx,
-                            Err(PowerError::InferenceFailed(
-                                "Failed to add token to batch".to_string(),
-                            )),
+                            Err(PowerError::InferenceFailed(format!(
+                                "Prompt decode failed: {error}"
+                            ))),
                         );
                         return;
                     }
-                }
-
-                if let Err(e) = ctx.decode(&mut batch) {
-                    send_completion_result(
-                        &tx,
-                        Err(PowerError::InferenceFailed(format!("Decode failed: {e}"))),
-                    );
-                    return;
                 }
             }
             let prompt_eval_duration_ns = prompt_eval_start.elapsed().as_nanos() as u64;
@@ -1320,7 +1588,7 @@ impl Backend for LlamaCppBackend {
 
             // Generate tokens
             for generated_count in 0..max_tokens {
-                let new_token = sampler.sample(&ctx, -1);
+                let new_token = sample_target_token(&mut sampler, &ctx, -1, plain_backend_greedy);
 
                 if new_token == eos_token {
                     send_completion_result(
@@ -1486,9 +1754,6 @@ impl Backend for LlamaCppBackend {
     ) -> Result<EmbeddingResponse> {
         use llama_cpp_2::context::params::LlamaContextParams;
         use llama_cpp_2::llama_batch::LlamaBatch;
-        use llama_cpp_2::model::params::LlamaModelParams;
-        use llama_cpp_2::model::LlamaModel;
-
         // Check if model needs to be reloaded with embedding mode
         let needs_reload = {
             let models = self.models.read().await;
@@ -1521,18 +1786,33 @@ impl Backend for LlamaCppBackend {
 
             tracing::info!(model = model_name, "Reloading model with embedding mode");
 
-            let gpu_layers = self.config.gpu.gpu_layers;
+            let gpu_layers = llamacpp_gpu_layers(self.config.gpu.gpu_layers)?;
+            let main_gpu = self.config.gpu.main_gpu;
+            let use_mmap = self.config.use_mmap;
+            let use_mlock = self.config.use_mlock;
+            let has_tensor_split = !self.config.gpu.tensor_split.is_empty();
+            let cpu_tensors = self.config.gpu.cpu_tensors.clone();
 
             let path_clone = path.clone();
             let model = tokio::task::spawn_blocking(move || {
-                let params = if gpu_layers != 0 {
-                    LlamaModelParams::default().with_n_gpu_layers(gpu_layers.max(0) as u32)
+                let mut params = llamacpp_model_params(
+                    gpu_layers,
+                    main_gpu,
+                    use_mmap,
+                    use_mlock,
+                    has_tensor_split,
+                    false,
+                );
+                let _cpu_tensor_overrides = if cpu_tensors.is_empty() {
+                    None
                 } else {
-                    LlamaModelParams::default()
+                    let overrides = LlamaCpuTensorOverrides::new(&cpu_tensors)?;
+                    overrides.apply(&mut params);
+                    Some(overrides)
                 };
-                LlamaModel::load_from_file(backend_ref(), &path_clone, &params).map_err(|e| {
+                load_llamacpp_model(&path_clone, params).map_err(|error| {
                     PowerError::InferenceFailed(format!(
-                        "Failed to reload model for embedding: {e}"
+                        "Failed to reload model for embedding: {error}"
                     ))
                 })
             })
@@ -1769,6 +2049,77 @@ mod tests {
         let config = Arc::new(config);
         let backend = LlamaCppBackend::new(config.clone());
         assert_eq!(backend.config.gpu.gpu_layers, -1);
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_llamacpp_gpu_layers_preserves_power_semantics() {
+        use llama_cpp_2::model::params::LlamaModelParams;
+
+        let cpu_only = LlamaModelParams::default()
+            .with_n_gpu_layers(llamacpp_gpu_layers(0).expect("zero should select CPU only"));
+        assert_eq!(cpu_only.n_gpu_layers(), 0);
+
+        let all_layers = LlamaModelParams::default().with_n_gpu_layers(
+            llamacpp_gpu_layers(-1).expect("minus one should offload all layers"),
+        );
+        assert_eq!(all_layers.n_gpu_layers(), i32::MAX);
+
+        let partial = LlamaModelParams::default()
+            .with_n_gpu_layers(llamacpp_gpu_layers(17).expect("positive values should be exact"));
+        assert_eq!(partial.n_gpu_layers(), 17);
+
+        let error = llamacpp_gpu_layers(-2).expect_err("values below minus one are invalid");
+        assert!(error.to_string().contains("gpu_layers"));
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_llamacpp_batch_is_bounded_by_the_effective_context() {
+        assert_eq!(validated_llamacpp_batch(None, 2048).unwrap(), None);
+        assert_eq!(validated_llamacpp_batch(Some(24), 4096).unwrap(), Some(24));
+        assert!(validated_llamacpp_batch(Some(0), 4096).is_err());
+        assert!(validated_llamacpp_batch(Some(4097), 4096).is_err());
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_llamacpp_mtp_weights_follow_runtime_mode() {
+        assert!(llamacpp_loads_mtp_weights("mtp"));
+        assert!(llamacpp_loads_mtp_weights("auto"));
+        assert!(!llamacpp_loads_mtp_weights("off"));
+        assert!(!llamacpp_loads_mtp_weights("prompt-lookup"));
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_exact_tensor_pattern_escapes_regex_metacharacters() {
+        assert_eq!(
+            exact_tensor_pattern("blk.3.attn_q.weight"),
+            r"^blk\.3\.attn_q\.weight$"
+        );
+        assert_eq!(
+            exact_tensor_pattern(r"tensor[0]+(draft)\\path"),
+            r"^tensor\[0\]\+\(draft\)\\\\path$"
+        );
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_llamacpp_raw_model_params_preserve_load_controls() {
+        let params = llamacpp_model_params(u32::MAX, 2, true, true, true, true);
+
+        assert_eq!(params.n_gpu_layers, i32::MAX);
+        assert_eq!(params.main_gpu, 2);
+        assert_eq!(
+            params.load_mode,
+            llama_cpp_sys_2::LLAMA_LOAD_MODE_MMAP_MLOCK
+        );
+        assert_eq!(params.split_mode, llama_cpp_sys_2::LLAMA_SPLIT_MODE_LAYER);
+        assert!(params.load_mtp);
+
+        let copied = llamacpp_model_params(u32::MAX, 0, false, false, false, false);
+        assert_eq!(copied.load_mode, llama_cpp_sys_2::LLAMA_LOAD_MODE_NONE);
     }
 
     #[test]

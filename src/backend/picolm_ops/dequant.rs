@@ -6,19 +6,19 @@
 //! Design: block-at-a-time dequantization. Never materializes full weight
 //! matrices — peak buffer = 256 floats = 1 KB.
 
-use half::f16;
+use half::{bf16, f16};
 
 // ── Block sizes ──────────────────────────────────────────────────────────────
 
 /// Number of elements per quantization block.
 pub fn block_size(ggml_type: u32) -> usize {
     match ggml_type {
-        0 | 1 => 1,     // F32, F16: element-wise
-        2 | 3 => 32,    // Q4_0, Q4_1
-        6 | 7 => 32,    // Q5_0, Q5_1
-        8 => 32,        // Q8_0
-        10..=14 => 256, // Q2_K..Q6_K
-        _ => 1,         // fallback
+        0 | 1 | 30 => 1, // F32, F16, BF16: element-wise
+        2 | 3 => 32,     // Q4_0, Q4_1
+        6 | 7 => 32,     // Q5_0, Q5_1
+        8 => 32,         // Q8_0
+        10..=14 => 256,  // Q2_K..Q6_K
+        _ => 1,          // fallback
     }
 }
 
@@ -37,6 +37,7 @@ pub fn block_bytes(ggml_type: u32) -> usize {
         12 => 144, // Q4_K
         13 => 176, // Q5_K
         14 => 210, // Q6_K
+        30 => 2,   // BF16
         _ => 4,    // fallback: F32
     }
 }
@@ -57,6 +58,7 @@ pub fn dequantize_block(block: &[u8], ggml_type: u32, out: &mut [f32]) {
         12 => dequant_q4_k(block, out),
         13 => dequant_q5_k(block, out),
         14 => dequant_q6_k(block, out),
+        30 => dequant_bf16(block, out),
         _ => {
             // Unknown type: zero-fill
             for v in out.iter_mut() {
@@ -77,6 +79,12 @@ fn dequant_f32(block: &[u8], out: &mut [f32]) {
 
 fn dequant_f16(block: &[u8], out: &mut [f32]) {
     out[0] = f16::from_le_bytes([block[0], block[1]]).to_f32();
+}
+
+// ── BF16 (type 30) ───────────────────────────────────────────────────────────────────
+
+fn dequant_bf16(block: &[u8], out: &mut [f32]) {
+    out[0] = bf16::from_le_bytes([block[0], block[1]]).to_f32();
 }
 
 // ── Q4_0 (type 2): 32 elements, 18 bytes ────────────────────────────────────
@@ -315,6 +323,8 @@ mod tests {
         assert_eq!(block_size(2), 32); // Q4_0
         assert_eq!(block_size(8), 32); // Q8_0
         assert_eq!(block_size(12), 256); // Q4_K
+        assert_eq!(block_size(30), 1); // BF16
+        assert_eq!(block_bytes(30), 2); // BF16
     }
 
     #[test]
@@ -333,6 +343,15 @@ mod tests {
         let mut out = [0.0f32; 1];
         dequant_f16(&bytes, &mut out);
         assert!((out[0] - 2.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_bf16_roundtrip() {
+        let val = bf16::from_f32(-3.25);
+        let bytes = val.to_le_bytes();
+        let mut out = [0.0f32; 1];
+        dequant_bf16(&bytes, &mut out);
+        assert_eq!(out[0], -3.25);
     }
 
     #[test]

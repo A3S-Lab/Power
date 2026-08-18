@@ -74,6 +74,10 @@ struct RunArgs {
     #[arg(long, default_value_t = 4096)]
     num_ctx: u32,
 
+    /// Logical batch size sent with every request; MTP requires draft_max + 2 or more.
+    #[arg(long)]
+    num_batch: Option<u32>,
+
     /// Deterministic greedy-decoding seed.
     #[arg(long, default_value_t = 42)]
     seed: i64,
@@ -134,6 +138,7 @@ async fn execute_run(args: RunArgs) -> Result<()> {
         prompt,
         max_tokens: args.max_tokens,
         num_ctx: args.num_ctx,
+        num_batch: args.num_batch,
         seed: args.seed,
         warmup_runs: args.warmup_runs,
         samples: args.samples,

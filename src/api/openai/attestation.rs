@@ -992,6 +992,7 @@ mod tests {
                     gpu_layers: -1,
                     main_gpu: 0,
                     tensor_split: vec![0.5, 0.5],
+                    cpu_tensors: Vec::new(),
                 },
                 ..Default::default()
             },

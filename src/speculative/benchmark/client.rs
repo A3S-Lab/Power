@@ -39,6 +39,7 @@ pub struct SpeculativeBenchmarkRunConfig {
     pub prompt: Zeroizing<String>,
     pub max_tokens: u32,
     pub num_ctx: u32,
+    pub num_batch: Option<u32>,
     pub seed: i64,
     pub warmup_runs: u32,
     pub samples: usize,
@@ -58,6 +59,10 @@ struct HealthDocument {
 struct HealthSpeculativeConfig {
     mode: String,
     draft_max: Option<u32>,
+    #[serde(default = "crate::config::default_spec_mtp_recurrent_snapshots")]
+    mtp_recurrent_snapshots: u32,
+    #[serde(default)]
+    mtp_fr_vocab_size: Option<u32>,
     draft_min: u32,
     draft_p_min: f32,
 }
@@ -103,6 +108,8 @@ struct BenchmarkCompletionRequest<'a> {
     top_p: f32,
     max_tokens: u32,
     num_ctx: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_batch: Option<u32>,
     seed: i64,
     keep_alive: &'static str,
 }
@@ -150,9 +157,12 @@ pub async fn run_benchmark(
     let speculative = SpeculativeServerConfig {
         mode: observed_mode,
         draft_max: health.speculative.draft_max,
+        mtp_recurrent_snapshots: health.speculative.mtp_recurrent_snapshots,
+        mtp_fr_vocab_size: health.speculative.mtp_fr_vocab_size,
         draft_min: health.speculative.draft_min,
         draft_p_min: health.speculative.draft_p_min,
     };
+    validate_speculative_batch(config.num_batch, &speculative)?;
 
     let model_url = endpoint(&config.base_url, &["v1", "models", &config.model])?;
     let model_info: ModelInfo = get_json(
@@ -193,6 +203,7 @@ pub async fn run_benchmark(
         top_p: 1.0,
         max_tokens: config.max_tokens,
         num_ctx: config.num_ctx,
+        num_batch: config.num_batch,
         seed: config.seed,
         keep_alive: "-1",
     };
@@ -206,6 +217,7 @@ pub async fn run_benchmark(
         request_sha256: hex::encode(Sha256::digest(request_bytes.as_slice())),
         max_tokens: config.max_tokens,
         num_ctx: config.num_ctx,
+        num_batch: config.num_batch,
         seed: config.seed,
         temperature: 0.0,
         top_p: 1.0,
@@ -511,6 +523,9 @@ fn validate_run_config(config: &SpeculativeBenchmarkRunConfig) -> Result<()> {
     }
     if !(2..=MAX_COMPLETION_TOKENS).contains(&config.max_tokens)
         || config.num_ctx < config.max_tokens
+        || config
+            .num_batch
+            .is_some_and(|batch| batch == 0 || batch > config.num_ctx)
         || config.warmup_runs > MAX_BENCHMARK_WARMUP_RUNS
         || config.samples == 0
         || config.samples > MAX_BENCHMARK_SAMPLES
@@ -521,6 +536,22 @@ fn validate_run_config(config: &SpeculativeBenchmarkRunConfig) -> Result<()> {
         return Err(invalid(
             "speculative benchmark numeric settings are out of bounds",
         ));
+    }
+    Ok(())
+}
+
+fn validate_speculative_batch(
+    num_batch: Option<u32>,
+    speculative: &SpeculativeServerConfig,
+) -> Result<()> {
+    if speculative.mode != SpeculativeStrategy::Mtp {
+        return Ok(());
+    }
+    let minimum_batch = crate::speculative::minimum_mtp_batch(speculative.draft_max.unwrap_or(3));
+    if num_batch.is_some_and(|batch| batch < minimum_batch) {
+        return Err(invalid(format!(
+            "MTP benchmark num_batch must be at least draft_max + 2 ({minimum_batch})"
+        )));
     }
     Ok(())
 }
@@ -650,6 +681,7 @@ mod tests {
             "speculative": {
                 "mode": "none",
                 "draft_max": 3,
+                "mtp_recurrent_snapshots": 5,
                 "draft_min": 0,
                 "draft_p_min": 0.0
             },
@@ -684,6 +716,7 @@ mod tests {
         assert_eq!(request.max_tokens, Some(2));
         assert_eq!(request.temperature, Some(0.0));
         assert_eq!(request.top_p, Some(1.0));
+        assert_eq!(request.num_batch, Some(4));
         assert_eq!(request.stream, Some(true));
         let receipt = completion_receipt(&request).unwrap();
         let digest = receipt_digest(&receipt).unwrap();
@@ -784,6 +817,7 @@ mod tests {
             prompt: Zeroizing::new("prompt".to_string()),
             max_tokens: 16,
             num_ctx: 2048,
+            num_batch: Some(4),
             seed: 42,
             warmup_runs: 0,
             samples: 1,
@@ -808,6 +842,7 @@ mod tests {
             prompt: Zeroizing::new(prompt.to_string()),
             max_tokens: 2,
             num_ctx: 2048,
+            num_batch: Some(4),
             seed: 42,
             warmup_runs: 0,
             samples: 2,
@@ -820,6 +855,8 @@ mod tests {
         task.await.unwrap();
 
         assert_eq!(report.identity.speculative.mode, SpeculativeStrategy::Off);
+        assert_eq!(report.identity.speculative.mtp_recurrent_snapshots, 5);
+        assert_eq!(report.workload.num_batch, Some(4));
         assert_eq!(report.samples.len(), 2);
         assert_eq!(report.median_decode_tokens_per_second, 1_000_000_000.0);
         assert!(report.threshold_passed);
@@ -827,5 +864,21 @@ mod tests {
         assert!(!json.contains(prompt));
         assert!(!json.contains("127.0.0.1"));
         assert!(!json.contains("secret"));
+    }
+
+    #[test]
+    fn mtp_batch_must_cover_verification_rows_and_recurrent_tail() {
+        let speculative = SpeculativeServerConfig {
+            mode: SpeculativeStrategy::Mtp,
+            draft_max: Some(3),
+            mtp_recurrent_snapshots: 7,
+            mtp_fr_vocab_size: Some(8192),
+            draft_min: 0,
+            draft_p_min: 0.0,
+        };
+        assert!(validate_speculative_batch(Some(3), &speculative).is_err());
+        assert!(validate_speculative_batch(Some(4), &speculative).is_err());
+        validate_speculative_batch(Some(5), &speculative).unwrap();
+        validate_speculative_batch(None, &speculative).unwrap();
     }
 }

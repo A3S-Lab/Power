@@ -11,6 +11,11 @@ fn test_ggml_type_size_f16() {
 }
 
 #[test]
+fn test_ggml_type_size_bf16() {
+    assert_eq!(ggml_type_size(30, 1024), 2048);
+}
+
+#[test]
 fn test_ggml_type_size_q4_0() {
     // 32 elements → 18 bytes
     assert_eq!(ggml_type_size(2, 32), 18);

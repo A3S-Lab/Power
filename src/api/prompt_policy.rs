@@ -91,6 +91,7 @@ fn effective_chat_template(manifest: &ModelManifest) -> Option<(&'static str, St
 /// This digest is emitted in `claims.runtime.execution.gpu_sha256` and can be
 /// pinned by verifiers that require an exact execution/offload configuration.
 pub fn canonical_gpu_execution_digest(gpu: &GpuConfig) -> Result<Vec<u8>> {
+    gpu.validate()?;
     let mut canonical = serde_json::Map::new();
     canonical.insert(
         "gpu_layers".to_string(),
@@ -99,6 +100,16 @@ pub fn canonical_gpu_execution_digest(gpu: &GpuConfig) -> Result<Vec<u8>> {
     canonical.insert(
         "main_gpu".to_string(),
         serde_json::Value::Number(gpu.main_gpu.into()),
+    );
+    canonical.insert(
+        "cpu_tensors".to_string(),
+        serde_json::Value::Array(
+            gpu.cpu_tensors
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
     );
     canonical.insert(
         "tensor_split".to_string(),
@@ -218,6 +229,7 @@ mod tests {
             gpu_layers: -1,
             main_gpu: 0,
             tensor_split: vec![0.5, 0.5],
+            cpu_tensors: Vec::new(),
         };
         let runtime = runtime_policy_claim_with_gpu_config(&manifest(), Some(&gpu))
             .unwrap()
@@ -235,16 +247,35 @@ mod tests {
             gpu_layers: -1,
             main_gpu: 0,
             tensor_split: Vec::new(),
+            cpu_tensors: Vec::new(),
         };
         let b = GpuConfig {
             gpu_layers: 0,
             main_gpu: 0,
             tensor_split: Vec::new(),
+            cpu_tensors: Vec::new(),
         };
 
         assert_ne!(
             canonical_gpu_execution_digest(&a).unwrap(),
             canonical_gpu_execution_digest(&b).unwrap()
+        );
+    }
+
+    #[test]
+    fn runtime_policy_gpu_execution_digest_changes_with_cpu_tensor_placement() {
+        let base = GpuConfig {
+            gpu_layers: -1,
+            ..Default::default()
+        };
+        let placed = GpuConfig {
+            cpu_tensors: vec!["output.weight".to_string()],
+            ..base.clone()
+        };
+
+        assert_ne!(
+            canonical_gpu_execution_digest(&base).unwrap(),
+            canonical_gpu_execution_digest(&placed).unwrap()
         );
     }
 }

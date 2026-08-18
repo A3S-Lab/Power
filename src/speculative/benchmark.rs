@@ -25,6 +25,10 @@ pub struct SpeculativeServerConfig {
     pub mode: SpeculativeStrategy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft_max: Option<u32>,
+    #[serde(default = "crate::config::default_spec_mtp_recurrent_snapshots")]
+    pub mtp_recurrent_snapshots: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtp_fr_vocab_size: Option<u32>,
     pub draft_min: u32,
     pub draft_p_min: f32,
 }
@@ -62,6 +66,8 @@ pub struct SpeculativeBenchmarkWorkload {
     pub request_sha256: String,
     pub max_tokens: u32,
     pub num_ctx: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_batch: Option<u32>,
     pub seed: i64,
     pub temperature: f32,
     pub top_p: f32,
@@ -265,8 +271,7 @@ pub fn compare_reports(
             "the candidate report must use an explicit speculative strategy",
         ));
     }
-    if identity_without_strategy(&baseline.identity)
-        != identity_without_strategy(&candidate.identity)
+    if !identities_match_except_strategy(&baseline.identity, &candidate.identity)
         || baseline.workload != candidate.workload
         || baseline.warmup_runs != candidate.warmup_runs
         || baseline.samples.len() != candidate.samples.len()
@@ -321,11 +326,17 @@ fn validate_identity(identity: &SpeculativeBenchmarkIdentity) -> Result<()> {
         .speculative
         .draft_max
         .is_some_and(|value| value == 0 || value > 64)
+        || identity.speculative.mtp_recurrent_snapshots == 0
+        || identity.speculative.mtp_recurrent_snapshots > 64
+        || identity
+            .speculative
+            .mtp_fr_vocab_size
+            .is_some_and(|value| !(1024..=1_048_576).contains(&value))
         || identity.speculative.draft_min > 64
         || !identity.speculative.draft_p_min.is_finite()
         || !(0.0..=1.0).contains(&identity.speculative.draft_p_min)
     {
-        return Err(invalid("server speculative draft settings are invalid"));
+        return Err(invalid("server speculative settings are invalid"));
     }
     if identity
         .speculative
@@ -350,6 +361,10 @@ fn validate_identity(identity: &SpeculativeBenchmarkIdentity) -> Result<()> {
 
 fn validate_inference_status(status: &InferenceStatus) -> Result<()> {
     let split_sum = status.tensor_split.iter().copied().sum::<f32>();
+    let cpu_tensor_names = status
+        .cpu_tensors
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
     if status.gpu_layers < -1
         || status.main_gpu < 0
         || status.num_thread.is_some_and(|threads| threads == 0)
@@ -360,6 +375,14 @@ fn validate_inference_status(status: &InferenceStatus) -> Result<()> {
             .iter()
             .any(|value| !value.is_finite() || *value < 0.0)
         || (!status.tensor_split.is_empty() && (!split_sum.is_finite() || split_sum <= 0.0))
+        || status.cpu_tensors.len() > crate::config::MAX_CPU_TENSOR_OVERRIDES
+        || cpu_tensor_names.len() != status.cpu_tensors.len()
+        || status.cpu_tensors.iter().any(|name| {
+            name.is_empty()
+                || name.len() > crate::config::MAX_CPU_TENSOR_NAME_BYTES
+                || name.trim() != name
+                || name.chars().any(char::is_control)
+        })
         || status.suppress_token_metrics
     {
         return Err(invalid(
@@ -374,13 +397,16 @@ fn validate_workload(workload: &SpeculativeBenchmarkWorkload) -> Result<()> {
     validate_digest("request", &workload.request_sha256)?;
     if !(2..=MAX_COMPLETION_TOKENS).contains(&workload.max_tokens)
         || workload.num_ctx < workload.max_tokens
+        || workload
+            .num_batch
+            .is_some_and(|batch| batch == 0 || batch > workload.num_ctx)
         || !workload.temperature.is_finite()
         || workload.temperature != 0.0
         || !workload.top_p.is_finite()
         || workload.top_p != 1.0
     {
         return Err(invalid(
-            "benchmark workload requires max_tokens 2..=4096, sufficient context, temperature=0, and top_p=1",
+            "benchmark workload requires max_tokens 2..=4096, a positive batch no larger than the context, sufficient context, temperature=0, and top_p=1",
         ));
     }
     Ok(())
@@ -416,32 +442,22 @@ fn validate_sample(sample: &SpeculativeBenchmarkSample) -> Result<()> {
     Ok(())
 }
 
-fn identity_without_strategy(
-    identity: &SpeculativeBenchmarkIdentity,
-) -> (
-    &str,
-    &str,
-    &str,
-    &str,
-    u64,
-    Option<u32>,
-    u32,
-    f32,
-    &InferenceStatus,
-    &SpeculativeBenchmarkSystem,
-) {
-    (
-        &identity.power_commit,
-        &identity.server_version,
-        &identity.model,
-        &identity.model_sha256,
-        identity.model_bytes,
-        identity.speculative.draft_max,
-        identity.speculative.draft_min,
-        identity.speculative.draft_p_min,
-        &identity.inference,
-        &identity.system,
-    )
+fn identities_match_except_strategy(
+    left: &SpeculativeBenchmarkIdentity,
+    right: &SpeculativeBenchmarkIdentity,
+) -> bool {
+    left.power_commit == right.power_commit
+        && left.server_version == right.server_version
+        && left.model == right.model
+        && left.model_sha256 == right.model_sha256
+        && left.model_bytes == right.model_bytes
+        && left.speculative.draft_max == right.speculative.draft_max
+        && left.speculative.mtp_recurrent_snapshots == right.speculative.mtp_recurrent_snapshots
+        && left.speculative.mtp_fr_vocab_size == right.speculative.mtp_fr_vocab_size
+        && left.speculative.draft_min == right.speculative.draft_min
+        && left.speculative.draft_p_min == right.speculative.draft_p_min
+        && left.inference == right.inference
+        && left.system == right.system
 }
 
 fn rate(tokens: u32, duration_ns: u64) -> f64 {
@@ -508,12 +524,14 @@ mod tests {
         SpeculativeBenchmarkIdentity {
             power_commit: "a".repeat(40),
             server_version: "0.8.0".to_string(),
-            model: "qwen3.5-27b-q6-k".to_string(),
+            model: "qwen3.8-27b-q6-k".to_string(),
             model_sha256: "b".repeat(64),
             model_bytes: 23_000_000_000,
             speculative: SpeculativeServerConfig {
                 mode,
                 draft_max: Some(3),
+                mtp_recurrent_snapshots: 7,
+                mtp_fr_vocab_size: Some(8192),
                 draft_min: 0,
                 draft_p_min: 0.0,
             },
@@ -521,10 +539,12 @@ mod tests {
                 gpu_layers: -1,
                 main_gpu: 0,
                 tensor_split: Vec::new(),
+                cpu_tensors: Vec::new(),
                 num_thread: Some(16),
                 flash_attention: true,
                 num_parallel: 1,
                 use_mlock: false,
+                use_mmap: true,
                 tee_mode: false,
                 suppress_token_metrics: false,
                 timing_padding_ms: None,
@@ -547,6 +567,7 @@ mod tests {
             request_sha256: "d".repeat(64),
             max_tokens: 4,
             num_ctx: 2048,
+            num_batch: Some(4),
             seed: 42,
             temperature: 0.0,
             top_p: 1.0,
@@ -617,11 +638,27 @@ mod tests {
         assert!(compare_reports(&baseline, &candidate).is_err());
 
         let mut candidate = report(SpeculativeStrategy::Mtp, 'f', 100.0);
+        candidate.identity.inference.cpu_tensors = vec!["output.weight".to_string()];
+        assert!(compare_reports(&baseline, &candidate).is_err());
+
+        let mut candidate = report(SpeculativeStrategy::Mtp, 'f', 100.0);
         candidate.identity.speculative.draft_max = Some(4);
         assert!(compare_reports(&baseline, &candidate).is_err());
 
         let mut candidate = report(SpeculativeStrategy::Mtp, 'f', 100.0);
+        candidate.identity.speculative.mtp_recurrent_snapshots = 6;
+        assert!(compare_reports(&baseline, &candidate).is_err());
+
+        let mut candidate = report(SpeculativeStrategy::Mtp, 'f', 100.0);
+        candidate.identity.speculative.mtp_fr_vocab_size = Some(16_384);
+        assert!(compare_reports(&baseline, &candidate).is_err());
+
+        let mut candidate = report(SpeculativeStrategy::Mtp, 'f', 100.0);
         candidate.warmup_runs = 2;
+        assert!(compare_reports(&baseline, &candidate).is_err());
+
+        let mut candidate = report(SpeculativeStrategy::Mtp, 'f', 100.0);
+        candidate.workload.num_batch = Some(8);
         assert!(compare_reports(&baseline, &candidate).is_err());
     }
 
@@ -630,5 +667,43 @@ mod tests {
         let mut report = report(SpeculativeStrategy::Mtp, 'f', 100.0);
         report.median_decode_tokens_per_second += 1.0;
         assert!(validate_report(&report).is_err());
+    }
+
+    #[test]
+    fn validation_rejects_invalid_request_batch() {
+        for batch in [0, 2049] {
+            let mut report = report(SpeculativeStrategy::Mtp, 'f', 100.0);
+            report.workload.num_batch = Some(batch);
+            assert!(validate_report(&report).is_err());
+        }
+    }
+
+    #[test]
+    fn validation_rejects_invalid_mtp_fr_vocabulary_size() {
+        for vocab_size in [1, 1_048_577] {
+            let mut report = report(SpeculativeStrategy::Mtp, 'f', 100.0);
+            report.identity.speculative.mtp_fr_vocab_size = Some(vocab_size);
+            assert!(validate_report(&report).is_err());
+        }
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_cpu_tensor_placement() {
+        let mut report = report(SpeculativeStrategy::Mtp, 'f', 100.0);
+        report.identity.inference.cpu_tensors =
+            vec!["output.weight".to_string(), "output.weight".to_string()];
+        assert!(validate_report(&report).is_err());
+    }
+
+    #[test]
+    fn legacy_report_defaults_to_the_original_snapshot_bound() {
+        let report = report(SpeculativeStrategy::Mtp, 'f', 100.0);
+        let mut json = serde_json::to_value(report).unwrap();
+        json["identity"]["speculative"]
+            .as_object_mut()
+            .unwrap()
+            .remove("mtp_recurrent_snapshots");
+        let decoded: SpeculativeBenchmarkReport = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.identity.speculative.mtp_recurrent_snapshots, 7);
     }
 }
