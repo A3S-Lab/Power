@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-19
+
 ### Added
 
+- Added an independent `artifact-provisioning` feature for consumer-owned,
+  revision-locked model bundles. It provides bounded HTTPS downloads,
+  per-file and whole-bundle size admission, SHA-256 verification,
+  cross-process locking, atomic commits, deterministic URL-free receipts,
+  tamper detection, and strict offline reuse without enabling a Power server
+  or inference backend.
 - Added model-neutral speculative-decoding strategy and capability negotiation,
   shared exact block-verification metrics, configurable draft bounds, and
   fail-closed backend selection. picolm preserves its zero-weight lookup modes,
