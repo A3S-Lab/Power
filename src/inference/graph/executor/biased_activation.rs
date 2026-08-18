@@ -1,13 +1,17 @@
 use std::collections::HashMap;
 
-use candle_core::{DType, Device, Tensor};
+#[cfg(feature = "embedded-cuda")]
+use candle_core::DType;
+use candle_core::{Device, Tensor};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{PowerError, Result};
 
 use super::super::plan::{GraphNode, GraphOp};
 use super::super::value::GraphValue;
-use super::{execute, gelu_erf};
+#[cfg(feature = "embedded-cuda")]
+use super::execute;
+use super::gelu_erf;
 
 #[cfg(feature = "embedded-cuda")]
 mod cuda;
