@@ -43,6 +43,8 @@ jobs:
             native_deps: true
           - label: embedded-inference
             features: "--no-default-features --features embedded-inference"
+          - label: artifact-provisioning
+            features: "--no-default-features --features artifact-provisioning"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -109,6 +111,8 @@ jobs:
             native_deps: true
           - label: embedded-inference
             args: "--no-default-features --features embedded-inference --lib"
+          - label: artifact-provisioning
+            args: "--no-default-features --features artifact-provisioning --lib"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

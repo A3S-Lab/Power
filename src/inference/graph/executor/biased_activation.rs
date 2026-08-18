@@ -1,13 +1,17 @@
 use std::collections::HashMap;
 
-use candle_core::{DType, Device, Tensor};
+#[cfg(feature = "embedded-cuda")]
+use candle_core::DType;
+use candle_core::{Device, Tensor};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{PowerError, Result};
 
 use super::super::plan::{GraphNode, GraphOp};
 use super::super::value::GraphValue;
-use super::{execute, gelu_erf};
+#[cfg(feature = "embedded-cuda")]
+use super::execute;
+use super::gelu_erf;
 
 #[cfg(feature = "embedded-cuda")]
 mod cuda;
@@ -189,6 +193,7 @@ fn execute_cuda(
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "embedded-cuda"), allow(dead_code))]
 struct MatchedWindow<'a> {
     convolution: &'a GraphNode,
     add: &'a GraphNode,
@@ -198,6 +203,7 @@ struct MatchedWindow<'a> {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "embedded-cuda"), allow(dead_code))]
 enum MatchedActivation<'a> {
     Relu,
     Gelu {
@@ -369,6 +375,7 @@ fn private_intermediate(
     output != retained_output && use_counts.get(output).copied() == Some(expected_uses)
 }
 
+#[cfg_attr(not(feature = "embedded-cuda"), allow(dead_code))]
 fn gated_nchw_shapes(gate: &[usize], multiplicand: &[usize]) -> bool {
     let ([gate_batch, gate_channels, gate_height, gate_width], [batch, channels, _, _]) =
         (gate, multiplicand)
@@ -382,6 +389,7 @@ fn gated_nchw_shapes(gate: &[usize], multiplicand: &[usize]) -> bool {
             && *gate_width == 1)
 }
 
+#[cfg_attr(not(feature = "embedded-cuda"), allow(dead_code))]
 fn tensor<'a>(
     values: &'a HashMap<String, GraphValue>,
     input: &str,
@@ -398,6 +406,7 @@ fn tensor<'a>(
         .tensor(&node.name)
 }
 
+#[cfg_attr(not(feature = "embedded-cuda"), allow(dead_code))]
 fn fused_error(matched: MatchedWindow<'_>, error: impl std::fmt::Display) -> PowerError {
     PowerError::InferenceFailed(format!(
         "static graph nodes '{}' through node offset {} fused channel-bias activation failed: {error}",

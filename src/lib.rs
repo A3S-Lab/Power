@@ -1,6 +1,8 @@
 pub mod admission;
 #[cfg(feature = "server")]
 pub mod api;
+#[cfg(feature = "artifact-provisioning")]
+pub mod artifact_bundle;
 #[cfg(feature = "server")]
 pub mod backend;
 #[cfg(feature = "server")]
