@@ -47,13 +47,14 @@ impl OneShotServer {
                 }
                 request.extend_from_slice(&buffer[..read]);
             }
-            write!(
+            let response_header = write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
-            )
-            .unwrap();
-            stream.write_all(&body).unwrap();
+            );
+            if response_header.is_ok() {
+                let _ = stream.write_all(&body);
+            }
         });
         Self {
             url: format!("http://{address}/artifact"),
@@ -230,7 +231,7 @@ async fn concurrent_first_use_downloads_once_then_reuses_offline() {
 
 #[tokio::test]
 async fn digest_failure_never_commits_downloaded_bytes() {
-    let server = OneShotServer::start(b"substituted".to_vec());
+    let server = OneShotServer::start(b"replaced".to_vec());
     let bundle = remote_bundle(&server.url, b"expected");
     let temp = tempfile::tempdir().unwrap();
     let destination = temp.path().join("bundle");
