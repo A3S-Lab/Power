@@ -78,7 +78,7 @@ Embed only the model-neutral runtime:
 
 ```toml
 [dependencies]
-a3s-power = { version = "0.8.0", default-features = false, features = ["embedded-inference"] }
+a3s-power = { version = "0.9.0", default-features = false, features = ["embedded-inference"] }
 ```
 
 ```rust
@@ -105,7 +105,7 @@ inference backends:
 
 ```toml
 [dependencies]
-a3s-power = { version = "0.8.0", default-features = false, features = ["artifact-provisioning"] }
+a3s-power = { version = "0.9.0", default-features = false, features = ["artifact-provisioning"] }
 ```
 
 ```rust
