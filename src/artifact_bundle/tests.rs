@@ -281,7 +281,7 @@ async fn installed_digest_mismatch_is_not_silently_replaced() {
     let bundle = inline_bundle(b"trusted");
     let policy = BundleProvisionPolicy::new(&destination).with_network(false);
     provision_artifact_bundle(&bundle, &policy).await.unwrap();
-    std::fs::write(destination.join("model.bin"), b"tampered").unwrap();
+    std::fs::write(destination.join("model.bin"), b"changed").unwrap();
 
     let error = provision_artifact_bundle(&bundle, &policy)
         .await
@@ -289,6 +289,6 @@ async fn installed_digest_mismatch_is_not_silently_replaced() {
     assert!(matches!(error, ArtifactBundleError::Integrity { .. }));
     assert_eq!(
         std::fs::read(destination.join("model.bin")).unwrap(),
-        b"tampered"
+        b"changed"
     );
 }
