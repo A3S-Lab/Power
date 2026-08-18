@@ -31,9 +31,11 @@
 ---
 
 A3S Power is one model-neutral inference foundation with two deliberately
-separate delivery surfaces: a listener-free embedded Rust library for
+separate inference surfaces: a listener-free embedded Rust library for
 model-owning crates, and an optional OpenAI-compatible service for hosted LLM
-inference. Both reuse the same typed devices, admission, weight integrity and
+inference. A small, independent artifact-provisioning surface lets consumers
+materialize their own revision-locked model bundles on first use. The inference
+surfaces reuse the same typed devices, admission, weight integrity and
 residency, cancellation, privacy controls, and execution evidence.
 
 TEE deployment adds hardware-backed confidentiality and remote attestation.
@@ -44,6 +46,7 @@ hardware report instead of relying only on an operator promise.
 
 | Surface | Enable | Use it when | Network behavior |
 | --- | --- | --- | --- |
+| Verified artifact provisioner | `default-features = false`, `artifact-provisioning` | A product such as A3S Code owns a small revision-locked model bundle and wants safe first-use installation | Downloads only when the host policy allows it; verifies every file and reuses the bundle offline |
 | Embedded library | `default-features = false`, `embedded-inference` | An OCR, vision, language, or other model crate owns the graph and needs Power's shared runtime | Opens no listener; excludes Power's server and model hub |
 | OpenAI-compatible service | Default `server` + `mistralrs` features | You need hosted chat, completions, embeddings, model lifecycle, metrics, attestation, TLS, or vsock | Explicit server process and configured transports |
 | Minimal TEE service | `tee-minimal` | A small auditable GGUF layer-streaming deployment inside a constrained enclave | Server/TLS/vsock are explicit feature choices |
@@ -61,6 +64,7 @@ semantics.
 | Typed CPU/CUDA/Metal devices and bounded execution | Architecture, graph topology, layers, kernels, and exact arithmetic |
 | Admission, cancellation, tensor and batch limits | Tokenizer, preprocessing, postprocessing, and generation policy |
 | SafeTensors identity, replicas, mirrors, multi-root placement, and residency | Model assets, revision pins, tensor-name/shape contracts, and conversion |
+| Bounded download, cross-process installation, SHA-256 admission, and offline reuse | Artifact URLs, expected digests, filenames, and product-level first-use policy |
 | TEE integrity/privacy primitives, attestation binding, sealed state, and receipts | KV/recurrent state layout and any semantic interpretation of opaque state |
 | Privacy-reviewed telemetry and hardware evidence envelopes | Product-level quality, parity, and named-hardware acceptance policy |
 
@@ -95,6 +99,50 @@ Or inspect the service surface:
 cargo install a3s-power
 a3s-power --help
 ```
+
+Or provision a consumer-owned model bundle without enabling Power's server or
+inference backends:
+
+```toml
+[dependencies]
+a3s-power = { version = "0.8.0", default-features = false, features = ["artifact-provisioning"] }
+```
+
+```rust
+use a3s_power::artifact_bundle::{
+    provision_artifact_bundle, ArtifactBundle, BundleArtifact,
+    BundleProvisionPolicy,
+};
+
+async fn install() -> Result<(), Box<dyn std::error::Error>> {
+    let bundle = ArtifactBundle::new(
+        "example/embedding-model",
+        "locked-revision",
+        vec![BundleArtifact::remote(
+            "model.onnx",
+            "https://models.example/model.onnx",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            32 * 1024 * 1024,
+        )?],
+    )?;
+    let policy = BundleProvisionPolicy::new(".a3s/power/artifacts/example")
+        .with_network(true);
+    let ready = provision_artifact_bundle(&bundle, &policy).await?;
+    assert_eq!(
+        ready.root(),
+        std::path::Path::new(".a3s/power/artifacts/example")
+    );
+    Ok(())
+}
+```
+
+The consumer, not Power, pins model semantics and expected digests. Power never
+trusts bytes merely because they came from HTTPS: each file has a hard size
+limit, is streamed into a private staging file, admitted by SHA-256, and then
+committed atomically under a cross-process lock. A subsequent call re-hashes
+the installed files and needs no network. Passing `with_network(false)` fails
+closed when any remote artifact is missing. Source URLs are omitted from
+receipts, debug output, and provisioning errors.
 
 ## Trust model
 
@@ -1594,6 +1642,7 @@ Model files are stored by SHA-256 hash, enabling deduplication and integrity ver
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `artifact-provisioning` | ❌ disabled | Minimal verified first-use bundle installer for consumer-owned model assets. Provides bounded downloads, SHA-256 admission, cross-process locking, atomic file commits, and offline reuse without enabling a server or inference backend. |
 | `mistralrs` | ✅ enabled | Pure Rust inference backend via `mistralrs` (candle-based). No C++ inference toolchain required. Ideal for TEE auditing. |
 | `llamacpp` | ❌ disabled | CPU llama.cpp inference backend via `llama-cpp-2`. Requires C++ compiler + CMake. Includes KV cache, LoRA, grammar, mirostat, and native MTP for compatible GGUF models. |
 | `llamacpp-cuda` | ❌ disabled | Composite `llamacpp` build with the `llama-cpp-2/cuda` backend. Requires a compatible NVIDIA CUDA toolchain. |
@@ -2032,6 +2081,7 @@ server and inference product.
 
 ### Completed
 
+- [x] Consumer-owned artifact provisioning — minimal independent feature with bounded HTTPS downloads, per-file SHA-256 admission, cross-process locking, atomic commits, deterministic URL-free receipts, tamper detection, and offline reuse
 - [x] Core inference engine (llama.cpp, chat templates, tool calling, structured output, thinking)
 - [x] Model-neutral speculative control plane with picolm zero-weight baselines and native llama.cpp MTP capability negotiation, exact verification, rollback, and metrics
 - [x] Path-free speculative benchmark harness with exact opted-in SSE usage/timings, registered GGUF digest checks, receipt verification, deterministic output parity, and controlled baseline/candidate comparison

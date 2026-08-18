@@ -37,6 +37,7 @@ required-features = ["server"]
 [features]
 default = ["server", "mistralrs"]
 server = [
+    "artifact-provisioning",
     "dep:a3s-acl",
     "dep:a3s-runtime",
     "dep:anyhow",
@@ -49,7 +50,6 @@ server = [
     "dep:futures",
     "dep:image",
     "dep:minijinja",
-    "dep:reqwest",
     "dep:tokio-stream",
     "dep:tower",
     "dep:tower-http",
@@ -58,6 +58,7 @@ server = [
     "dep:uuid",
     "tokio/full",
 ]
+artifact-provisioning = ["dep:fs2", "dep:reqwest", "tokio/fs", "tokio/io-util"]
 llamacpp = ["server", "dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2?/mtmd"]
 # CUDA execution for the llama.cpp backend. Kept separate so CPU-only and TEE
 # builds do not require a CUDA toolchain.
@@ -111,6 +112,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 # Async utilities
 async-trait = "0.1"
 futures = { version = "0.3", optional = true }
+fs2 = { version = "0.4", optional = true }
 
 # HTTP server
 axum = { version = "0.7", features = ["macros"], optional = true }
