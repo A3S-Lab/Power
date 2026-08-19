@@ -34,6 +34,11 @@ the merged clean commit is a new capture. Its Git revision, executable hashes,
 timestamps, and report hash will differ even when the measured behavior is the
 same.
 
+The evidence JSON, ACL, and prompt files are marked `-text` in
+`.gitattributes`. Git therefore preserves their captured bytes instead of
+applying platform line-ending conversion, so the published SHA-256 values are
+stable across clones.
+
 ## 1. Build the CUDA profile
 
 Install Rust 1.97.1, CUDA 12.6, CMake, Ninja, a supported MSVC toolchain, and
@@ -193,9 +198,9 @@ following checks on 2026-08-20:
 | Python harness tests | 26 passed, 0 failed |
 | Rust formatting | Passed |
 | PowerShell syntax | 6 runner/profile scripts parsed |
-| Benchmark evidence | 63 JSON files parsed; final report and 4 pinned input/evidence hashes verified |
+| Benchmark evidence | 64 JSON files parsed; final report and 4 pinned input/evidence hashes verified |
 | Quality archive | 9 reports, 900 task results, manifest hash, and ACL hash verified |
-| Documentation links | 90 local links resolved, 0 missing |
+| Documentation links | 93 local links resolved, 0 missing |
 
 Re-run the same checks with:
 

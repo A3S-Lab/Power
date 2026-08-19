@@ -40,12 +40,24 @@ quality policy.
 The repository publishes raw, machine-readable captures from Power's real
 streaming API, not a standalone llama.cpp microbenchmark.
 
-| Qwen3.8-27B mode | Median decode | Acceptance evidence |
-| --- | ---: | --- |
-| Autoregressive, untouched Q6_K | 35.5793 token/s | 35.4812 minimum; same-artifact baseline |
-| Native MTP, untouched Q6_K | 140.1600 token/s | 139.4793 minimum; 3.9394x; exact greedy parity |
-| TBQ4 + MTP, full vocabulary, physical-core affinity | **177.3062 token/s** | 175.5958 minimum; 9 / 9 captured-binary samples passed 175 |
-| TBQ4 + MTP, historical shared-WDDM range | **159.8593–188.2972 token/s** | Exposes quiet and contended display-GPU boundaries |
+| Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Mean request-wide throughput | Median steady decode |
+| --- | --- | ---: | ---: |
+| Untouched Q6_K, autoregressive | 66/100 lenient; 59/100 strict (100 tasks, 3x) | 34.551 token/s | 35.5793 token/s |
+| Untouched Q6_K, native MTP | Matrix not run; fixed peak prompt has exact greedy parity | -- | 140.1600 token/s |
+| TBQ4 mixed, autoregressive | 72/100 lenient; 64/100 strict (100 tasks, 3x) | **41.745 token/s** | -- |
+| TBQ4 mixed + MTP + prefix FR | 72/100 lenient; 60/100 strict (100 tasks, 3x) | 27.951 token/s | 184.3665 token/s |
+| TBQ4 mixed + full-vocabulary fixed MTP, K7/S7 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | **68.211 token/s** | -- |
+| TBQ4 mixed + full-vocabulary fixed MTP, host-staged K7/S6 with affinity | Matrix not run | -- | **177.3062 token/s** |
+| UD-Q8_K_XL, autoregressive heterogeneous placement | Matrix not run | -- | 6.3484 token/s |
+| UD-Q8_K_XL, native MTP K4/S4 heterogeneous placement | Matrix not run; cross-mode output hashes differ | -- | 9.7577 token/s |
+
+The quality column is a task-accuracy proxy rather than a general intelligence
+or IQ measurement. The 100-task release matrix and 12-task rollback calibration
+have different denominators and must not be compared directly. Request-wide
+throughput includes prefill, generation, and request overhead, while steady
+decode is a warmed-up repetitive long-output measurement. See the
+[consolidated mode table](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md#quality-and-speed-by-mode)
+for the omitted calibration modes, limitations, and evidence links.
 
 The current captured binary reached a 177.3062 token/s median and 175.5958 minimum
 across nine 1,024-token samples. All nine passed 175 token/s. An order-balanced

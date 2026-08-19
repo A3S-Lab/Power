@@ -1,1 +1,11 @@
 *.patch text eol=lf whitespace=-blank-at-eol
+
+# Benchmark evidence carries byte-level SHA-256 identities. Preserve captured
+# JSON, ACL, and prompt bytes across clones instead of applying autocrlf. Treat
+# the immutable captures as evidence artifacts so line endings do not create
+# misleading content diffs.
+docs/benchmarks/qwen3.8-27b-q6k-rtx4090/*.json -text -diff
+docs/benchmarks/qwen3.8-27b-q6k-rtx4090/*.acl -text -diff
+docs/benchmarks/qwen3.8-27b-q6k-rtx4090/**/*.json -text -diff
+docs/benchmarks/qwen3.8-27b-q6k-rtx4090/**/*.acl -text -diff
+docs/benchmarks/qwen3.8-27b-q6k-rtx4090/prompt.txt -text

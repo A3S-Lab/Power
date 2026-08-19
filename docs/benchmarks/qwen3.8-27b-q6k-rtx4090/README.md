@@ -5,6 +5,33 @@ boundary tuning. Every accepted result was measured through Power's streaming
 `POST /v1/completions` API. No native llama.cpp timing is used as an acceptance
 result.
 
+## Quality and speed by mode
+
+`Quality proxy` below is fixed-task answer accuracy, not a claim about general
+intelligence or an IQ score. The 100-task matrix and 12-task calibration have
+different purposes and denominators, so their scores must not be compared
+directly. `Request-wide` throughput includes prompt processing, generation,
+and HTTP overhead; `steady decode` isolates a long repetitive generation after
+warm-up. A dash means that no defensible apples-to-apples capture exists for
+that cell.
+
+| Artifact and runtime mode | Quality proxy | Request-wide throughput | Median steady decode | Interpretation |
+| --- | --- | ---: | ---: | --- |
+| Untouched Q6_K, autoregressive | 66/100 lenient; 59/100 strict (100 tasks, 3x) | 34.551 token/s | 35.5793 token/s | Same-artifact quality and speed baseline |
+| Untouched Q6_K, native MTP | Quality matrix not run; exact parity on the fixed peak prompt | -- | 140.1600 token/s | Same-artifact MTP ceiling, not a broad quality result |
+| TBQ4 mixed artifact, autoregressive | 72/100 lenient; 64/100 strict (100 tasks, 3x) | **41.745 token/s** | -- | Representative-workload winner in the 100-task matrix |
+| TBQ4 mixed + MTP + prefix FR, K7/S6 | 72/100 lenient; 60/100 strict (100 tasks, 3x) | 27.951 token/s | 184.3665 token/s | High repetitive-prompt peak, but low 25.55% mixed-workload acceptance |
+| TBQ4 mixed + full-vocabulary fixed MTP, K7/S6 | 4/12 lenient; 3/12 strict (12 tasks, 3x) | 28.226 token/s | -- | Rejected default: 46 exact prefix replays per run |
+| TBQ4 mixed + full-vocabulary adaptive MTP, K7/S6 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | 60.031 token/s | -- | Rollback-safe, but slower than fixed K7/S7 on the calibration |
+| TBQ4 mixed + full-vocabulary fixed MTP, K7/S7 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | **68.211 token/s** | -- | Rollback-safe calibration winner; the 100-task matrix is still pending |
+| TBQ4 mixed + full-vocabulary fixed MTP, host-staged K7/S6 with physical-core affinity | Quality matrix not run | -- | **177.3062 token/s** | Current controlled 9x peak gate; 175.5958 token/s minimum |
+| UD-Q8_K_XL, autoregressive heterogeneous placement | Quality matrix not run | -- | 6.3484 token/s | Fits through exact CPU/GPU tensor placement, but is bandwidth-bound |
+| UD-Q8_K_XL, native MTP K4/S4 heterogeneous placement | Quality matrix not run; cross-mode output hashes differ | -- | 9.7577 token/s | Performance boundary only; not a parity or quality acceptance result |
+
+The complete protocols and raw evidence are in the
+[100-task and 12-task quality report](quality/README.md), the sections below,
+and the sibling [UD-Q8_K_XL boundary capture](../qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md).
+
 ## Representative workload, repeated three times
 
 The peak gate below is intentionally complemented by a fixed 100-task quality
