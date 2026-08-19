@@ -38,7 +38,7 @@
        font-size="16" font-weight="700">
       <rect width="124" height="36" rx="7" fill="#10232a" stroke="#2c7180"/>
       <circle cx="18" cy="18" r="4" fill="#67e8f9"/>
-      <text x="31" y="23" fill="#cffafe">PURE RUST</text>
+      <text x="31" y="23" fill="#cffafe">RUST CORE</text>
 
       <rect x="136" width="112" height="36" rx="7" fill="#201d12" stroke="#806b2c"/>
       <circle cx="154" cy="18" r="4" fill="#fbbf24"/>
@@ -85,14 +85,14 @@
 
     <g id="proof" transform="translate(24 310)"
        font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-       font-size="18" font-weight="700">
-      <text x="0" y="0" fill="#67e8f9">model SHA-256</text>
-      <path d="M145 -5H202" stroke="#38bdf8"/>
-      <text x="216" y="0" fill="#93c5fd">claims</text>
-      <path d="M284 -5H341" stroke="#60a5fa"/>
-      <text x="355" y="0" fill="#fcd34d">hardware report</text>
-      <path d="M505 -5H546" stroke="#f59e0b"/>
-      <text x="558" y="0" text-anchor="end" fill="#e2e8f0">verify</text>
+       font-size="17" font-weight="700">
+      <text x="0" y="0" fill="#67e8f9">artifact digest</text>
+      <path d="M148 -5H190" stroke="#38bdf8"/>
+      <text x="204" y="0" fill="#93c5fd">claims</text>
+      <path d="M266 -5H308" stroke="#60a5fa"/>
+      <text x="322" y="0" fill="#fcd34d">TEE report</text>
+      <path d="M421 -5H463" stroke="#f59e0b"/>
+      <text x="477" y="0" fill="#e2e8f0">verify</text>
     </g>
 
     <text x="24" y="350" fill="#94a3b8"
