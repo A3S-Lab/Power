@@ -44,14 +44,46 @@ streaming API, not a standalone llama.cpp microbenchmark.
 | --- | ---: | --- |
 | Autoregressive, untouched Q6_K | 35.5793 token/s | 35.4812 minimum; same-artifact baseline |
 | Native MTP, untouched Q6_K | 140.1600 token/s | 139.4793 minimum; 3.9394x; exact greedy parity |
-| TBQ4 + MTP + FR, Q6_K-derived mixed artifact | **184.3665 token/s** | **182.5627 minimum**; 5/5 above 175 token/s; matching output digest |
+| TBQ4 + MTP, full vocabulary, physical-core affinity | **177.3062 token/s** | 175.5958 minimum; 9 / 9 captured-binary samples passed 175 |
+| TBQ4 + MTP, historical shared-WDDM range | **159.8593–188.2972 token/s** | Exposes quiet and contended display-GPU boundaries |
 
-The 184.3665 token/s result used an RTX 4090, Flash Attention, full CUDA layer
+The current captured binary reached a 177.3062 token/s median and 175.5958 minimum
+across nine 1,024-token samples. All nine passed 175 token/s. An order-balanced
+A/B pinned ten worker threads to one logical processor per physical Xeon
+W5-2445 core and raised the combined median from 173.0114 to 176.8276 token/s
+(2.21%). The topology-specific mask is recorded by the benchmark runner and is
+not a portable product default. Earlier quiet-WDDM captures reached 187.6094
+and 188.2972 token/s, while a contended 256-token run fell to 159.8593, so 175
+remains an observed boundary rather than a guaranteed floor on this shared
+display GPU. These results used an RTX 4090, Flash Attention, full CUDA layer
 offload, a high-performance host power plan, and a Q6_K-derived artifact whose
 main FFN tensors were requantized to Q4_0. It is **not** an untouched 6-bit
-result. The target still verified proposals against its full vocabulary, and
-the recorded greedy output digest matched the published comparison workload.
-Broader quality claims require separate evaluation.
+result. The full target output and MTP block remain Q6_K, the separate draft
+head retains all vocabulary rows in Q4_K, the target verifies every proposal,
+and every archived sample produced its expected deterministic output digest.
+
+A separate representative matrix fixes 100 MMLU, GSM8K, and C-Eval tasks,
+rotates mode order, and repeats every mode three times. Its throughput includes
+prompt processing, generation, and request overhead rather than measuring only
+steady-state decode:
+
+| Qwen3.8-27B mode | Lenient score | Strict score | Mean workload throughput |
+| --- | ---: | ---: | ---: |
+| Autoregressive, untouched Q6_K | 66/100 | 59/100 | 34.551 token/s |
+| Autoregressive, TBQ4 mixed artifact | 72/100 | 64/100 | **41.745 token/s** |
+| TBQ4 + MTP + prefix FR (earlier build) | 72/100 | 60/100 | 27.951 token/s |
+
+TBQ4 without speculation was 20.8% faster than untouched Q6_K on that
+workload. The earlier prefix-FR MTP build was 33.0% slower than TBQ4-off
+overall: it improved GSM8K throughput by 6.9%, but C-Eval draft acceptance fell
+to 14.21%. The repeated matrix therefore selects TBQ4-off for that
+representative workload. A newer three-run, 12-task calibration of the
+full-vocabulary path reached 68.211 token/s with fixed K7/S7 versus 35.048
+token/s with TBQ4-off, with zero fallback replays and the same 5/12 lenient and
+3/12 strict scores. Fixed K7/S6 instead triggered 46 exact prefix replays per
+run and fell to 28.226 token/s. This establishes the rollback-safe
+configuration but remains too small to replace the 100-task release matrix;
+the 188.2972 token/s long-window result is still a workload-sensitive peak.
 
 The larger 31.46 GB UD-Q8_K_XL artifact also ran through exact CPU/GPU tensor
 placement, reaching 9.7577 token/s with MTP. Its cross-mode output hashes
@@ -59,6 +91,7 @@ differed, so that capture is documented as a boundary result rather than a
 parity acceptance.
 
 - [Q6_K and TBQ4/MTP/FR benchmark, protocol, artifacts, and raw samples](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
+- [Repeated quality/workload matrix and reproducible environment](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [UD-Q8_K_XL heterogeneous-placement boundary](docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 - [Model-neutral speculative decoding design](docs/speculative-decoding.md)
 
@@ -252,19 +285,21 @@ spec_mode = "mtp"
 spec_draft_max = 7
 spec_mtp_recurrent_snapshots = 6
 
-# Experimental; requires the patched llamacpp-mtp-fr build.
-# The target model still verifies against the full vocabulary.
-spec_mtp_fr_vocab_size = 8192
+# Optional and experimental; requires the patched llamacpp-mtp-fr build.
+# A compact d2t head uses ranked rows; omit this key for the full draft head.
+# spec_mtp_fr_vocab_size = 8192
 ```
 
 Recurrent snapshots trade memory for rollback cost. When a rejected suffix is
 longer than the resident snapshot window, Power replays the exact accepted
 target prefix. Reduced-vocabulary projection affects only the MTP draft head;
 it is workload-sensitive and must be retuned across languages and domains.
+The current 175 token/s gate keeps the full draft vocabulary.
 
 TBQ4 is an artifact construction choice, not a generic runtime switch. The
-published 184 token/s capture combines that mixed artifact with native MTP,
-reduced-vocabulary drafting, Flash Attention, and host/GPU tuning.
+current long-window 188.2972 token/s capture combines that mixed artifact with
+native MTP, full-vocabulary drafting, batched target/draft greedy CUDA sampling, Flash
+Attention, and host/GPU tuning.
 
 ## Configuration
 
@@ -401,7 +436,9 @@ production certificate caching, KDS/PCS behavior, and failure policy.
 | --- | --- |
 | [Embedded Inference Architecture](docs/embedded-inference-architecture.md) | Ownership, graph execution, placement, scheduling, state, and receipts |
 | [Model-neutral Speculative Decoding](docs/speculative-decoding.md) | Strategies, native MTP, patching, benchmark protocol, and acceptance |
-| [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | 35.58 to 184.37 token/s evidence and artifact identity |
+| [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | Peak gates, artifact identity, and representative-workload boundary |
+| [Qwen3.8-27B reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) | CUDA build, pinned inputs, performance replay, evidence audit, and validation commands |
+| [Qwen3.8-27B repeated quality matrix](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md) | Three-mode quality, workload throughput, evidence, and replay protocol |
 | [Qwen3.8-27B Q8 boundary](docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md) | Heterogeneous placement and parity limitation |
 | [Hardware Verifier Operations](docs/hardware-verifier-operations.md) | Production hardware-signature verification |
 | [Supply-chain Audit](docs/supply-chain.md) | Feature profiles, native code, and threat model |

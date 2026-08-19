@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "captured_at_utc": "2026-08-19T13:36:44.8791076Z",
+  "profiler": {
+    "name": "NVIDIA Nsight Systems",
+    "version": "2024.4.2",
+    "trace": [
+      "cuda",
+      "nvtx"
+    ],
+    "sampling": false,
+    "context_switch_trace": false,
+    "raw_report_retained": false,
+    "sample_window": {
+      "start_ns": 54582757312,
+      "end_ns": 56386244308,
+      "duration_ns": 1803486996
+    }
+  },
+  "workload": {
+    "model": "qwen3.8-27b-q6-k",
+    "model_sha256": "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+    "config": "mtp7-snap6-full-vocab.acl",
+    "config_sha256": "fc90461b5b08b8a137c4666db5b4113128906638e2f2d03b630dd897133dbcc2",
+    "max_tokens": 256,
+    "num_ctx": 4096,
+    "num_batch": 20,
+    "warmup_runs": 1,
+    "samples": 1,
+    "seed": 42,
+    "decode_tokens_per_second_under_profiler": 145.69,
+    "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb"
+  },
+  "identity": {
+    "power_base_commit": "955b4552ca091af07818573e803f9369488a63f9",
+    "server_sha256": "e982060fac97947839212d26f301dedcbf1935d7702dc8f7c7b0aa14b03a93f7",
+    "benchmark_sha256": "0d19efb01cecdae3107fe29c9ce0ebc684fd56ae4d05498b8b925eb68d8af2f1",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "operating_system": "Windows x86_64"
+  },
+  "sample_window_observations": {
+    "cuda_graph_launches": 236,
+    "cuda_graph_launch_total_ns": 69882438,
+    "cuda_stream_synchronize_calls": 6050,
+    "cuda_stream_synchronize_total_ns": 1329654408,
+    "cuda_memcpy_async_total_ns": 57676546,
+    "gpu_kernel_and_memcpy_union_ns": 164914683,
+    "backend_argmax": {
+      "instances": 38,
+      "total_ns": 2813773
+    },
+    "copies_by_direction_and_size": {
+      "device_to_host": {
+        "20480_bytes": 236,
+        "4_bytes": 236
+      },
+      "host_to_device": {
+        "20480_bytes": 473,
+        "16_bytes": 237,
+        "8_bytes": 474,
+        "4_bytes": 273
+      }
+    }
+  },
+  "interpretation": {
+    "hidden_row_bytes": 20480,
+    "hidden_row_formula": "5120 FP32 elements * 4 bytes",
+    "dominant_boundary": "Per-step NextN hidden-state and sampled-token host staging plus stream synchronization",
+    "timing_caveat": "Profiler overhead and WDDM/CUPTI CUDA-graph accounting make the kernel-union value unsuitable as raw GPU-utilization evidence. API call and transfer counts remain useful structural evidence."
+  }
+}

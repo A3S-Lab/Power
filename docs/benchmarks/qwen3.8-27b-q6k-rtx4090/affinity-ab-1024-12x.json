@@ -1,0 +1,113 @@
+{
+  "schema": "a3s.power.optimization-ab.v1",
+  "feature": "physical_core_affinity",
+  "created_at": "2026-08-19T20:48:21.8513273+00:00",
+  "identity": {
+    "power_commit": "955b4552ca091af07818573e803f9369488a63f9",
+    "server_sha256": "3e7b990c511934a35e2886e73742846901e9dcdefa02a7324592a78aa4a5b24f",
+    "benchmark_client_sha256": "6665ae6a0fd7a14245445161cc1468d4b092a96691d496388db46917c8b041e0",
+    "model_sha256": "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+    "config_sha256": "2f348cca96282a22650d9766cffa81251ea10a5e34a089bcc91b0822ab5c1d0e",
+    "cpu": "Intel(R) Xeon(R) w5-2445",
+    "logical_processor_count": 20,
+    "physical_core_count": 10
+  },
+  "workload": {
+    "max_tokens": 1024,
+    "num_batch": 14,
+    "warmup_runs_per_block": 1,
+    "gpu_clock_lock_mhz": 2745,
+    "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523"
+  },
+  "blocks": [
+    {
+      "order": 1,
+      "requested_affinity_mask": "0x55555",
+      "effective_affinity_mask": "0x55555",
+      "report": "affinity-55555-1024-3x-r1.json",
+      "report_sha256": "4694a076b50bb69a25c7ee52dfee2cc6685214ac0447a1b3d6ccc43203b612f2",
+      "environment": "affinity-55555-1024-3x-r1.environment.json",
+      "environment_sha256": "c164b97b5d3a1aa1f932e4cd1b1ae5b55fc59d786f99a92c27d1ef4c9f8a4a0c",
+      "decode_tokens_per_second": [
+        176.0159708942881,
+        176.5843430344364,
+        176.05733183960533
+      ],
+      "median": 176.05733183960533
+    },
+    {
+      "order": 2,
+      "requested_affinity_mask": null,
+      "effective_affinity_mask": "0xfffff",
+      "report": "affinity-all-1024-3x-r1.json",
+      "report_sha256": "3907d1d025994651a31040461597420f45b2919935878286935f5f031a2a21d9",
+      "environment": "affinity-all-1024-3x-r1.environment.json",
+      "environment_sha256": "b4cd7898545b73a71b5637dc499cd27c2b3d5357c01b6bbf0f27d6d5ea6c386d",
+      "decode_tokens_per_second": [
+        171.9190224768409,
+        174.63549066376135,
+        170.97889764405954
+      ],
+      "median": 171.9190224768409
+    },
+    {
+      "order": 3,
+      "requested_affinity_mask": null,
+      "effective_affinity_mask": "0xfffff",
+      "report": "affinity-all-1024-3x-r2.json",
+      "report_sha256": "ee406658fb632ddba854c3f01f471f40ed3d40d8113432a22a55143bb70b17d6",
+      "environment": "affinity-all-1024-3x-r2.environment.json",
+      "environment_sha256": "69a621d45ecf4ce02e0b2f214c877688cb1b3cf84a5605c12c207fe8772a493f",
+      "decode_tokens_per_second": [
+        174.91992027550143,
+        173.94944651598644,
+        172.07328323595465
+      ],
+      "median": 173.94944651598644
+    },
+    {
+      "order": 4,
+      "requested_affinity_mask": "0x55555",
+      "effective_affinity_mask": "0x55555",
+      "report": "affinity-55555-1024-3x-r2.json",
+      "report_sha256": "cf745f0a54369500679be88e27f96a96e9fca4873293f286e519da328535d1aa",
+      "environment": "affinity-55555-1024-3x-r2.environment.json",
+      "environment_sha256": "822e467c5a010c6b9531bf91e3412d470ee32d74f94059d6c28d134e0b95a796",
+      "decode_tokens_per_second": [
+        179.6427879549212,
+        177.07091575936863,
+        178.4624159722013
+      ],
+      "median": 178.4624159722013
+    }
+  ],
+  "combined": {
+    "physical_cores": {
+      "samples": 6,
+      "mean": 177.30562757580353,
+      "median": 176.82762939690252,
+      "minimum": 176.0159708942881,
+      "maximum": 179.6427879549212
+    },
+    "all_logical_processors": {
+      "samples": 6,
+      "mean": 173.07934346868407,
+      "median": 173.01136487597055,
+      "minimum": 170.97889764405954,
+      "maximum": 174.91992027550145
+    },
+    "median_delta_percent": 2.2057883444060437,
+    "mean_delta_percent": 2.44181889208757
+  },
+  "confirmation": {
+    "report": "final-affinity-1024-9x.json",
+    "environment": "final-affinity-1024-9x.environment.json",
+    "samples": 9,
+    "median_decode_tokens_per_second": 177.30624292681546,
+    "minimum_decode_tokens_per_second": 175.59583804564133,
+    "threshold_tokens_per_second": 175.0,
+    "threshold_passed": true
+  },
+  "decision": "retain_runner_option",
+  "reason": "The order-balanced A/B improved combined median throughput by 2.21% and the independent nine-sample confirmation kept every deterministic sample above 175 token/s. The mask is machine-topology-specific and is therefore an explicit benchmark option rather than a product default."
+}

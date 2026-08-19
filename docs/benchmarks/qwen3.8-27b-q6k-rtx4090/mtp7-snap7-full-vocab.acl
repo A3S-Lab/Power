@@ -1,0 +1,23 @@
+host = "127.0.0.1"
+port = 11434
+data_dir = "D:/models/a3s-power/qwen38/power-home-tbq4-0-ffn"
+max_loaded_models = 1
+spec_mode = "mtp"
+spec_draft_max = 7
+spec_mtp_recurrent_snapshots = 7
+spec_draft_min = 0
+spec_draft_p_min = 0.0
+keep_alive = "-1"
+use_mlock = false
+use_mmap = true
+num_thread = 10
+flash_attention = true
+num_parallel = 1
+tee_mode = false
+redact_logs = false
+suppress_token_metrics = false
+
+gpu {
+  gpu_layers = -1
+  main_gpu = 0
+}

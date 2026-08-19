@@ -1,0 +1,48 @@
+{
+  "schema": "a3s.power.quality-eval.task-manifest.v1",
+  "expected_tasks_sha256": "5798257e18b81188749196d34359278dfadf7986776eb2bd66d629cbfc33813c",
+  "sources": [
+    {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "config": "all",
+      "split": "test",
+      "windows": [
+        { "offset": 0, "length": 10 },
+        { "offset": 2800, "length": 10 },
+        { "offset": 5600, "length": 10 },
+        { "offset": 8400, "length": 10 },
+        { "offset": 11200, "length": 10 }
+      ]
+    },
+    {
+      "benchmark": "gsm8k",
+      "dataset": "openai/gsm8k",
+      "config": "main",
+      "split": "test",
+      "windows": [
+        { "offset": 0, "length": 20 }
+      ]
+    },
+    {
+      "benchmark": "ceval",
+      "dataset": "ceval/ceval-exam",
+      "configs": [
+        "advanced_mathematics",
+        "chinese_language_and_literature",
+        "civil_servant",
+        "clinical_medicine",
+        "college_physics",
+        "college_programming",
+        "computer_network",
+        "high_school_history",
+        "law",
+        "teacher_qualification"
+      ],
+      "split": "val",
+      "windows": [
+        { "offset": 0, "length": 3 }
+      ]
+    }
+  ]
+}

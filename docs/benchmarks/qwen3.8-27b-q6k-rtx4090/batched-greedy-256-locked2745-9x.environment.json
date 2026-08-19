@@ -1,0 +1,63 @@
+{
+    "schema":  "a3s.power.speculative-benchmark.environment.v1",
+    "created_at":  "2026-08-19T11:03:13.2983689+00:00",
+    "power_commit":  "955b4552ca091af07818573e803f9369488a63f9",
+    "dirty_worktree":  true,
+    "git_status":  [
+                       " M README.md",
+                       " M docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md",
+                       " M docs/speculative-decoding.md",
+                       " M patches/llama-cpp-rs-dfd12e4-mtp-fr-spec.patch",
+                       " M src/api/health.rs",
+                       " M src/backend/llamacpp.rs",
+                       " M src/backend/llamacpp/speculative_runtime.rs",
+                       " M src/backend/llamacpp/speculative_runtime/tests.rs",
+                       " M src/config.rs",
+                       " M src/config/acl.rs",
+                       " M src/config/behavior.rs",
+                       " M src/config/tests/basic.rs",
+                       " M src/speculative.rs",
+                       " M tools/add-gguf-mtp-head.py",
+                       " M tools/apply-llamacpp-power-patches.ps1",
+                       " M tools/run-qwen38-q6k-benchmark.ps1",
+                       "?? docs/benchmarks/qwen3.8-27b-q6k-rtx4090/batched-greedy-1024-5x.environment.json",
+                       "?? docs/benchmarks/qwen3.8-27b-q6k-rtx4090/batched-greedy-1024-5x.json",
+                       "?? docs/benchmarks/qwen3.8-27b-q6k-rtx4090/batched-greedy-256-5x.environment.json",
+                       "?? docs/benchmarks/qwen3.8-27b-q6k-rtx4090/batched-greedy-256-5x.json",
+                       "?? docs/benchmarks/qwen3.8-27b-q6k-rtx4090/mtp7-snap6-full-vocab.acl",
+                       "?? docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/",
+                       "?? patches/llama-cpp-rs-dfd12e4-mtp-dynamic-k.patch",
+                       "?? src/backend/llamacpp/speculative_runtime/metrics.rs",
+                       "?? tools/build-fr-vocabulary.py",
+                       "?? tools/qwen38_quality_eval.py",
+                       "?? tools/run-qwen38-mtp-sweep.ps1",
+                       "?? tools/run-qwen38-quality-matrix.ps1",
+                       "?? tools/test_add_gguf_mtp_head.py",
+                       "?? tools/test_build_fr_vocabulary.py",
+                       "?? tools/test_qwen38_quality_eval.py"
+                   ],
+    "server":  {
+                   "path":  "D:\\code\\a3s\\crates\\power\\target-native-sm89-ninja\\release\\a3s-power.exe",
+                   "sha256":  "d7e6fa2e883f140096c4ab930519535363224eee662d7eb30956873128c324d1"
+               },
+    "benchmark_client":  {
+                             "path":  "D:\\code\\a3s\\crates\\power\\target-native-sm89-ninja\\release\\a3s-power-speculative-bench.exe",
+                             "sha256":  "6b1b650b73fd738bddacd5a85acef7cd7708dc6b39987c4f75210bcacdf2f8a7"
+                         },
+    "config":  {
+                   "path":  "D:\\code\\a3s\\crates\\power\\docs\\benchmarks\\qwen3.8-27b-q6k-rtx4090\\mtp7-snap6-full-vocab.acl",
+                   "sha256":  "fc90461b5b08b8a137c4666db5b4113128906638e2f2d03b630dd897133dbcc2"
+               },
+    "model_sha256":  "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+    "active_power_scheme":  "电源方案 GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (高性能)",
+    "process_priority":  "High",
+    "capture_annotation":  {
+                                "gpu_clock_lock_mhz":  2745,
+                                "gpu_clock_reset_after_capture":  true,
+                                "provenance":  "The capture wrapper locked 2745 MHz before starting the runner and reset clocks in its finally block. The runner gained native clock-control fields after this capture."
+                            },
+    "report":  {
+                   "path":  "D:\\models\\a3s-power\\qwen38\\benchmark\\final-batched-greedy-k7-b20-256-9x-locked2745.json",
+                   "sha256":  "ed90021e5deff21a143b6bcab6a07564db41c86774498d284845ac20c87d3243"
+               }
+}
