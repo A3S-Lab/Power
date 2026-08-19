@@ -52,11 +52,16 @@ fn test_config_roundtrip() {
         port: 9999,
         data_dir: dir.path().to_path_buf(),
         max_loaded_models: 5,
-        gpu: GpuConfig::default(),
+        gpu: GpuConfig {
+            gpu_tensors: vec!["token_embd.weight".to_string()],
+            ..Default::default()
+        },
         gpu_attestation: GpuAttestationConfig::default(),
         spec_mode: "prompt-lookup".to_string(),
         spec_draft_max: Some(3),
         spec_mtp_recurrent_snapshots: 7,
+        spec_mtp_recurrent_chain: false,
+        spec_mtp_adaptive: false,
         spec_mtp_fr_vocab_size: Some(8192),
         spec_draft_min: 0,
         spec_draft_p_min: 0.0,
@@ -104,6 +109,8 @@ fn test_config_roundtrip() {
     assert_eq!(loaded.max_loaded_models, 5);
     assert_eq!(loaded.num_parallel, 4);
     assert_eq!(loaded.spec_mtp_fr_vocab_size, Some(8192));
+    assert!(!loaded.spec_mtp_recurrent_chain);
+    assert_eq!(loaded.gpu.gpu_tensors, ["token_embd.weight"]);
     assert!(!loaded.use_mmap);
     assert!(loaded.tee_mode);
     assert!(loaded.redact_logs);
@@ -116,8 +123,12 @@ fn test_gpu_config_defaults() {
     let config = PowerConfig::default();
     assert_eq!(config.gpu.gpu_layers, 0);
     assert_eq!(config.gpu.main_gpu, 0);
+    assert!(config.gpu.cpu_tensors.is_empty());
+    assert!(config.gpu.gpu_tensors.is_empty());
     assert_eq!(config.spec_draft_max, None);
     assert_eq!(config.spec_mtp_recurrent_snapshots, 7);
+    assert!(config.spec_mtp_recurrent_chain);
+    assert!(!config.spec_mtp_adaptive);
     assert_eq!(config.spec_mtp_fr_vocab_size, None);
 }
 
@@ -130,11 +141,13 @@ fn test_gpu_config_deserialize_acl() {
             gpu {
                 gpu_layers = -1
                 main_gpu = 1
+                gpu_tensors = ["token_embd.weight"]
             }
         "#;
     let config: PowerConfig = acl::deserialize(acl_str).unwrap();
     assert_eq!(config.gpu.gpu_layers, -1);
     assert_eq!(config.gpu.main_gpu, 1);
+    assert_eq!(config.gpu.gpu_tensors, ["token_embd.weight"]);
 }
 
 #[test]
@@ -154,6 +167,8 @@ fn test_speculative_settings_deserialize_acl() {
             spec_mode = "dspark"
             spec_draft_max = 7
             spec_mtp_recurrent_snapshots = 5
+            spec_mtp_recurrent_chain = false
+            spec_mtp_adaptive = false
             spec_mtp_fr_vocab_size = 8192
             spec_draft_min = 2
             spec_draft_p_min = 0.6
@@ -162,6 +177,8 @@ fn test_speculative_settings_deserialize_acl() {
     assert_eq!(config.spec_mode, "dspark");
     assert_eq!(config.spec_draft_max, Some(7));
     assert_eq!(config.spec_mtp_recurrent_snapshots, 5);
+    assert!(!config.spec_mtp_recurrent_chain);
+    assert!(!config.spec_mtp_adaptive);
     assert_eq!(config.spec_mtp_fr_vocab_size, Some(8192));
     assert_eq!(config.spec_draft_min, 2);
     assert!((config.spec_draft_p_min - 0.6).abs() < f32::EPSILON);
@@ -535,6 +552,8 @@ fn test_env_a3s_power_speculative_settings() {
     std::env::set_var("A3S_POWER_SPEC_MODE", "mtp");
     std::env::set_var("A3S_POWER_SPEC_DRAFT_MAX", "5");
     std::env::set_var("A3S_POWER_SPEC_MTP_RECURRENT_SNAPSHOTS", "4");
+    std::env::set_var("A3S_POWER_SPEC_MTP_RECURRENT_CHAIN", "false");
+    std::env::set_var("A3S_POWER_SPEC_MTP_ADAPTIVE", "false");
     std::env::set_var("A3S_POWER_SPEC_MTP_FR_VOCAB_SIZE", "8192");
     std::env::set_var("A3S_POWER_SPEC_DRAFT_MIN", "1");
     std::env::set_var("A3S_POWER_SPEC_DRAFT_P_MIN", "0.75");
@@ -545,6 +564,8 @@ fn test_env_a3s_power_speculative_settings() {
     std::env::remove_var("A3S_POWER_SPEC_MODE");
     std::env::remove_var("A3S_POWER_SPEC_DRAFT_MAX");
     std::env::remove_var("A3S_POWER_SPEC_MTP_RECURRENT_SNAPSHOTS");
+    std::env::remove_var("A3S_POWER_SPEC_MTP_RECURRENT_CHAIN");
+    std::env::remove_var("A3S_POWER_SPEC_MTP_ADAPTIVE");
     std::env::remove_var("A3S_POWER_SPEC_MTP_FR_VOCAB_SIZE");
     std::env::remove_var("A3S_POWER_SPEC_DRAFT_MIN");
     std::env::remove_var("A3S_POWER_SPEC_DRAFT_P_MIN");
@@ -552,6 +573,8 @@ fn test_env_a3s_power_speculative_settings() {
     assert_eq!(config.spec_mode, "mtp");
     assert_eq!(config.spec_draft_max, Some(5));
     assert_eq!(config.spec_mtp_recurrent_snapshots, 4);
+    assert!(!config.spec_mtp_recurrent_chain);
+    assert!(!config.spec_mtp_adaptive);
     assert_eq!(config.spec_mtp_fr_vocab_size, Some(8192));
     assert_eq!(config.spec_draft_min, 1);
     assert!((config.spec_draft_p_min - 0.75).abs() < f32::EPSILON);

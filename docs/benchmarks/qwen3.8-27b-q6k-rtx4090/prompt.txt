@@ -1,0 +1,7 @@
+Continue the integer sequence from 1 through 10000, writing exactly one integer per line. Do not add explanations, headings, commentary, or a conclusion. Do not stop before 10000.
+
+1
+2
+3
+4
+5

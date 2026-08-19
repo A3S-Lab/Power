@@ -121,7 +121,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 ```
 
 On non-Windows hosts, apply
-`patches/llama-cpp-rs-dfd12e4-mtp-fr-spec.patch` with `git apply` to the fetched
+`patches/llama-cpp-rs-dfd12e4-mtp-dynamic-k.patch` to the fetched
+`llama-cpp-rs` checkout, then apply
+`patches/llama-cpp-rs-dfd12e4-mtp-fr-spec.patch` to its nested
 `llama-cpp-sys-2/llama.cpp` checkout. Then build both executables:
 
 ```console
@@ -141,8 +143,9 @@ restarts, including `gpu`, `num_thread`, `flash_attention`, `num_parallel`,
 ```acl
 spec_draft_max = 7
 spec_mtp_recurrent_snapshots = 7
-# Optional, experimental MTP draft-only vocabulary prefix.
-# Omit this line to project the full vocabulary.
+# Optional, experimental MTP draft-head row limit. Compact d2t heads use
+# frequency-rank order; legacy full heads use target token-ID order.
+# Omit this line to project every available draft-head row.
 # spec_mtp_fr_vocab_size = 8192
 spec_draft_min = 0
 spec_draft_p_min = 0.0
@@ -183,17 +186,22 @@ from draft width. The effective value is capped by `spec_draft_max`. When a
 rejected suffix exceeds that window, Power restores exactness by replaying the
 committed target prefix. Record the same explicit value in both A/B configs;
 reducing it can avoid a GPU-memory allocation cliff, while replay frequency can
-reduce throughput. The tuned capture retained the default of seven snapshots;
-its maximum rejected suffix was five and it required no fallback replays.
+reduce throughput. A three-run mixed-workload calibration made the boundary
+explicit: fixed K7/S6 incurred 46 fallback replays per run and reached only
+28.226 token/s, while fixed K7/S7 incurred none and reached 68.211 token/s.
+Adaptive K7/S6 also incurred no replay because its proposal width is capped by
+the rollback window, but reached 60.031 token/s. Use a complete K-sized window
+for fixed general workloads; a narrower window is a measured peak-only tuning.
 
 `spec_mtp_fr_vocab_size` is an experimental FR-Spec-inspired optimization for
-the llama.cpp MTP context only. It projects the first configured number of
-draft-head vocabulary rows, pads the remaining draft logits with negative
-infinity, and leaves the target context at the full vocabulary. Target
-verification therefore preserves the committed greedy sequence, but draft
-acceptance can change. This implementation uses a contiguous prefix rather
-than a corpus-derived frequency map; tune it on representative languages and
-domains, and keep the explicit value identical in controlled A/B configs.
+the llama.cpp MTP context only. A full draft head selects rows in target
+token-ID order. A compact head can instead carry an I64 `d2t` tensor whose rows
+are ordered by a reproducible corpus-frequency ranking; draft logits are
+scattered back into the full target vocabulary and every absent row remains
+negative infinity. The target still verifies every proposal, so a draft-only
+token is never committed. Draft acceptance, block-vs-serial numerical effects,
+and output parity remain workload gates. Keep the artifact hash and explicit
+row limit identical in controlled A/B configs.
 
 ```console
 a3s-power-speculative-bench run \
@@ -249,12 +257,30 @@ token/s MTP median, 125.8369 token/s minimum, 4.0318x speedup, and identical
 greedy output under an active Windows desktop; those companion reports are
 kept beside the best capture rather than replacing it. A later Q6_K-derived
 mixed-precision development artifact combined selective TBQ4-style FFN
-requantization, an 8,192-row draft vocabulary prefix, backend CUDA sampling,
-Flash Attention, and unused output-reorder elimination. Two consecutive
-pre-validation captures reached 185.4103 and 182.1038 token/s medians. The
-final rebuilt binary then reached 176.6444 and 184.3665 token/s medians; the
-hot repeat had a 182.5627 token/s minimum. Across all four reports, nineteen of
-twenty samples exceeded 175 token/s, every median passed the 175 token/s gate,
-and every output retained the canonical greedy digest. Because the runtime
-artifact selectively requantizes Q6_K source tensors, it is reported separately
-from the untouched-Q6_K same-artifact comparison.
+requantization, backend CUDA sampling, Flash Attention, and output-reorder
+elimination. The current path keeps the full draft vocabulary and batches all
+dense pure-greedy verification rows into one matrix argmax plus one contiguous
+device-to-host token copy. Pure-greedy MTP drafting with a zero probability
+threshold also reads the backend-selected draft token directly, avoiding its
+former Top-K probability and CPU-sampler path; positive `spec_draft_p_min`
+values and non-greedy requests retain the general implementation. Two
+independent nine-sample 1,024-token captures of the probability-guarded build
+reach 187.6094 and 188.2972 token/s medians, with an 183.7360 token/s combined
+minimum. An earlier 256-token capture fell to 159.8593 under heavy WDDM
+contention. The current captured binary adds a benchmark-only physical-core
+affinity control: an order-balanced 12-sample A/B improved the combined median
+from 173.0114 to 176.8276 token/s, and an independent nine-sample confirmation
+reached a 177.3062 median and 175.5958 minimum with every sample above 175.
+The runner records both requested and effective masks; the accepted `0x55555`
+mask is specific to the 10-core, 20-thread Xeon W5-2445 and is not a portable
+runtime default. The shared WDDM display GPU can still erase this margin, so
+175 is an observed boundary rather than a guaranteed service floor. Because
+the runtime artifact selectively requantizes Q6_K source tensors, it is
+reported separately from the untouched-Q6_K same-artifact comparison. Earlier
+8,192-row prefix-FR
+captures remain archived as historical, workload-sensitive experiments. A
+backend-resident hidden-row carry prototype was also removed after an
+order-reversed eight-sample A/B produced a 0.09% median gain but a 0.38% mean
+regression. It reduced transfer staging without reducing target or draft graph
+work, so the result stayed within WDDM noise and did not justify an additional
+cross-context state contract.

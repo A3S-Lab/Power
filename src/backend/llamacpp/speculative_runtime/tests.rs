@@ -1,5 +1,6 @@
 #[cfg(feature = "llamacpp-mtp-fr")]
 use super::llamacpp_context_mtp_fr_vocab;
+use super::metrics::FrCoverageMetrics;
 use super::{
     ensure_mtp_fr_available, llamacpp_context_output_limits, metadata_entry_enables_mtp,
     mtp_speculative_params, use_backend_greedy, use_greedy_fast_path, LlamaContextSettings,
@@ -13,6 +14,8 @@ fn settings() -> MtpCompletionSettings {
         stop_sequences: Vec::new(),
         draft_max: 3,
         recurrent_snapshots: 7,
+        recurrent_chain: true,
+        adaptive: true,
         draft_min: 0,
         draft_p_min: 0.0,
     }
@@ -35,6 +38,21 @@ fn sampling_settings() -> LlamaSamplingSettings {
         min_p: None,
         seed: 42,
     }
+}
+
+#[test]
+fn fr_prefix_metrics_do_not_claim_ranked_vocabulary_membership() {
+    let mut metrics = FrCoverageMetrics::default();
+    metrics.observe_target_sample(100, Some(8192));
+    metrics.observe_target_sample(9000, Some(8192));
+    metrics.observe_rejection(100, Some(8192));
+    metrics.observe_rejection(9000, Some(8192));
+    metrics.observe_target_sample(9000, None);
+
+    assert_eq!(metrics.target_samples, 2);
+    assert_eq!(metrics.target_samples_in_token_id_prefix, 1);
+    assert_eq!(metrics.rejected_rounds, 2);
+    assert_eq!(metrics.corrections_outside_token_id_prefix, 1);
 }
 
 #[test]
@@ -127,10 +145,36 @@ fn mtp_metadata_detection_is_architecture_neutral() {
 
 #[test]
 fn mtp_parameters_accept_adapter_defaults() {
-    let params = mtp_speculative_params(&settings()).unwrap();
+    let params = mtp_speculative_params(&settings(), true).unwrap();
     assert_eq!(params.n_max, 3);
     assert_eq!(params.n_min, 0);
     assert_eq!(params.p_min, 0.0);
+    assert!(params.greedy_draft);
+    assert!(params.recurrent_draft);
+
+    let non_greedy = mtp_speculative_params(&settings(), false).unwrap();
+    assert!(!non_greedy.greedy_draft);
+
+    let thresholded = mtp_speculative_params(
+        &MtpCompletionSettings {
+            draft_p_min: 0.1,
+            ..settings()
+        },
+        true,
+    )
+    .unwrap();
+    assert!(!thresholded.greedy_draft);
+
+    let host_staged = mtp_speculative_params(
+        &MtpCompletionSettings {
+            recurrent_chain: false,
+            ..settings()
+        },
+        true,
+    )
+    .unwrap();
+    assert!(host_staged.greedy_draft);
+    assert!(!host_staged.recurrent_draft);
 }
 
 #[test]
@@ -194,10 +238,13 @@ fn mtp_context_applies_reduced_vocabulary_only_to_the_draft() {
 
 #[test]
 fn mtp_parameters_reject_minimum_above_adapter_default() {
-    let error = mtp_speculative_params(&MtpCompletionSettings {
-        draft_min: 4,
-        ..settings()
-    })
+    let error = mtp_speculative_params(
+        &MtpCompletionSettings {
+            draft_min: 4,
+            ..settings()
+        },
+        false,
+    )
     .unwrap_err();
     assert!(error.to_string().contains("must not exceed"));
 }
@@ -205,26 +252,35 @@ fn mtp_parameters_reject_minimum_above_adapter_default() {
 #[test]
 fn mtp_parameters_reject_invalid_programmatic_values() {
     for draft_max in [0, 65] {
-        let error = mtp_speculative_params(&MtpCompletionSettings {
-            draft_max,
-            ..settings()
-        })
+        let error = mtp_speculative_params(
+            &MtpCompletionSettings {
+                draft_max,
+                ..settings()
+            },
+            false,
+        )
         .unwrap_err();
         assert!(error.to_string().contains("between 1 and 64"));
     }
 
-    let error = mtp_speculative_params(&MtpCompletionSettings {
-        draft_p_min: f32::NAN,
-        ..settings()
-    })
+    let error = mtp_speculative_params(
+        &MtpCompletionSettings {
+            draft_p_min: f32::NAN,
+            ..settings()
+        },
+        false,
+    )
     .unwrap_err();
     assert!(error.to_string().contains("finite"));
 
     for recurrent_snapshots in [0, 65] {
-        let error = mtp_speculative_params(&MtpCompletionSettings {
-            recurrent_snapshots,
-            ..settings()
-        })
+        let error = mtp_speculative_params(
+            &MtpCompletionSettings {
+                recurrent_snapshots,
+                ..settings()
+            },
+            false,
+        )
         .unwrap_err();
         assert!(error.to_string().contains("recurrent_snapshots"));
     }

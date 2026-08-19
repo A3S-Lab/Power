@@ -1,0 +1,86 @@
+{
+  "schema": "a3s.power.optimization-ab.v1",
+  "feature": "mtp_device_carry",
+  "created_at": "2026-08-19T15:31:22.6640268+00:00",
+  "identity": {
+    "power_commit": "955b4552ca091af07818573e803f9369488a63f9",
+    "server_sha256": "98df76e73bfa8e4f4c19fb20ec010395a355ba5f0b3db8b53b8b2602994c38f0",
+    "benchmark_client_sha256": "e3632c588ba7349ca250cfafc065680de00dd9ce72075b63ce21505ef8a1075b",
+    "model_sha256": "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+    "on_config_sha256": "26111b63a36d15aac98767d16ac57544d55f3e19cd66a878e94a43389ce65c81",
+    "off_config_sha256": "60a00919ef9e0052eaa7863baab50c33d9f51e684079bff8c21595de8f2f7a7a"
+  },
+  "workload": {
+    "max_tokens": 256,
+    "num_batch": 14,
+    "warmup_runs_per_block": 1,
+    "gpu_clock_lock_mhz": 2745,
+    "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb"
+  },
+  "blocks": [
+    {
+      "order": 1,
+      "device_carry": true,
+      "decode_tokens_per_second": [
+        166.00116474229003,
+        163.8728488073752,
+        158.36362063454376
+      ],
+      "median": 163.8728488073752
+    },
+    {
+      "order": 2,
+      "device_carry": false,
+      "decode_tokens_per_second": [
+        167.11714020236772,
+        166.22603729447374,
+        164.67183421950458
+      ],
+      "median": 166.22603729447374
+    },
+    {
+      "order": 3,
+      "device_carry": true,
+      "decode_tokens_per_second": [
+        165.19059691071558,
+        167.40716435700583,
+        166.47482890794274,
+        166.84484169074412,
+        159.61080501305617
+      ],
+      "median": 166.47482890794274
+    },
+    {
+      "order": 4,
+      "device_carry": false,
+      "decode_tokens_per_second": [
+        161.57536359684246,
+        167.6961015194056,
+        167.27316856379585,
+        162.56724147680671,
+        161.61269953860526
+      ],
+      "median": 162.56724147680671
+    }
+  ],
+  "combined": {
+    "device_carry_on": {
+      "samples": 8,
+      "mean": 164.22073388295917,
+      "median": 165.59588082650282,
+      "minimum": 158.36362063454376,
+      "maximum": 167.40716435700583
+    },
+    "device_carry_off": {
+      "samples": 8,
+      "mean": 164.84244830147526,
+      "median": 165.44893575698916,
+      "minimum": 161.57536359684246,
+      "maximum": 167.6961015194056
+    },
+    "median_delta_percent": 0.0888161630868438,
+    "mean_delta_percent": -0.3771555775865424
+  },
+  "decision": "remove",
+  "reason": "The order-reversed A/B showed no reproducible throughput gain, while the feature added cross-context state and maintenance cost."
+}

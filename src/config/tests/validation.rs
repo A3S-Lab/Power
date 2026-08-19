@@ -530,6 +530,38 @@ fn test_validate_bounds_cpu_tensor_name_count() {
 }
 
 #[test]
+fn test_validate_rejects_duplicate_gpu_tensor_names() {
+    let config = PowerConfig {
+        gpu: GpuConfig {
+            gpu_tensors: vec!["token_embd.weight".to_string(); 2],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let err = config.validate().unwrap_err();
+    assert!(err.to_string().contains("gpu.gpu_tensors"));
+    assert!(err.to_string().contains("duplicate"));
+}
+
+#[test]
+fn test_validate_rejects_conflicting_tensor_placement() {
+    let config = PowerConfig {
+        gpu: GpuConfig {
+            cpu_tensors: vec!["token_embd.weight".to_string()],
+            gpu_tensors: vec!["token_embd.weight".to_string()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let err = config.validate().unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("both gpu.cpu_tensors and gpu.gpu_tensors"));
+}
+
+#[test]
 #[serial]
 fn test_load_from_rejects_unknown_spec_mode() {
     std::env::remove_var("A3S_POWER_SPEC_MODE");

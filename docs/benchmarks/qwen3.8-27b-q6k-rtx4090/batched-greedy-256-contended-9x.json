@@ -1,0 +1,155 @@
+{
+  "schema": "a3s.power.speculative-benchmark.v1",
+  "identity": {
+    "power_commit": "955b4552ca091af07818573e803f9369488a63f9",
+    "server_version": "0.9.0",
+    "model": "qwen3.8-27b-q6-k",
+    "model_sha256": "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+    "model_bytes": 19187686464,
+    "speculative": {
+      "mode": "mtp",
+      "draft_max": 7,
+      "mtp_recurrent_snapshots": 6,
+      "draft_min": 0,
+      "draft_p_min": 0.0
+    },
+    "inference": {
+      "gpu_layers": -1,
+      "main_gpu": 0,
+      "tensor_split": [],
+      "num_thread": 10,
+      "flash_attention": true,
+      "num_parallel": 1,
+      "use_mlock": false,
+      "use_mmap": true,
+      "tee_mode": false,
+      "suppress_token_metrics": false
+    },
+    "system": {
+      "label": "rtx4090-qwen38-q6k-batched-greedy-k7-s6-b20-256-gate-9x",
+      "os": "windows",
+      "architecture": "x86_64",
+      "gpu_backend": "cuda",
+      "gpu_name": "NVIDIA GeForce RTX 4090",
+      "gpu_vram_bytes": 25757220864,
+      "gpu_driver": "610.74"
+    }
+  },
+  "workload": {
+    "prompt_sha256": "d95a5e4dad822ba9c84138f7a120017318bcb3a6a90e77246a8ec4ede0e65d89",
+    "request_sha256": "0ff33b2db1fc2c8054672635797d0a3e2d8325d97e72c2fc15528648e2f7f964",
+    "max_tokens": 256,
+    "num_ctx": 4096,
+    "num_batch": 20,
+    "seed": 42,
+    "temperature": 0.0,
+    "top_p": 1.0
+  },
+  "warmup_runs": 1,
+  "samples": [
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 228142800,
+      "inter_token_duration_ns": 1605543300,
+      "total_duration_ns": 1855891400,
+      "decode_tokens_per_second": 158.8247417556412,
+      "end_to_end_tokens_per_second": 137.93910570413763,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "dd9b4ef5684040e736c8024946334d0aa2ffb212876507c15c8ca7405cdc5577"
+    },
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 213914800,
+      "inter_token_duration_ns": 1617706600,
+      "total_duration_ns": 1858575900,
+      "decode_tokens_per_second": 157.63056168528954,
+      "end_to_end_tokens_per_second": 137.73986846595827,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "dd9b4ef5684040e736c8024946334d0aa2ffb212876507c15c8ca7405cdc5577"
+    },
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 240563200,
+      "inter_token_duration_ns": 1672290300,
+      "total_duration_ns": 1938435300,
+      "decode_tokens_per_second": 152.48548652109028,
+      "end_to_end_tokens_per_second": 132.06527966138464,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "dd9b4ef5684040e736c8024946334d0aa2ffb212876507c15c8ca7405cdc5577"
+    },
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 231281300,
+      "inter_token_duration_ns": 1574891600,
+      "total_duration_ns": 1827671300,
+      "decode_tokens_per_second": 161.9159058312331,
+      "end_to_end_tokens_per_second": 140.06895003494338,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "dd9b4ef5684040e736c8024946334d0aa2ffb212876507c15c8ca7405cdc5577"
+    },
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 217733200,
+      "inter_token_duration_ns": 1561437400,
+      "total_duration_ns": 1800291500,
+      "decode_tokens_per_second": 163.31106197405032,
+      "end_to_end_tokens_per_second": 142.19919385277328,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "dd9b4ef5684040e736c8024946334d0aa2ffb212876507c15c8ca7405cdc5577"
+    },
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 214232100,
+      "inter_token_duration_ns": 1595152600,
+      "total_duration_ns": 1830455000,
+      "decode_tokens_per_second": 159.859313773491,
+      "end_to_end_tokens_per_second": 139.85593745817297,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "dd9b4ef5684040e736c8024946334d0aa2ffb212876507c15c8ca7405cdc5577"
+    },
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 216217400,
+      "inter_token_duration_ns": 1583752700,
+      "total_duration_ns": 1823165500,
+      "decode_tokens_per_second": 161.00998596561192,
+      "end_to_end_tokens_per_second": 140.415118649404,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "dd9b4ef5684040e736c8024946334d0aa2ffb212876507c15c8ca7405cdc5577"
+    },
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 216386800,
+      "inter_token_duration_ns": 1554783000,
+      "total_duration_ns": 1791983700,
+      "decode_tokens_per_second": 164.0100258364029,
+      "end_to_end_tokens_per_second": 142.85844229498292,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "dd9b4ef5684040e736c8024946334d0aa2ffb212876507c15c8ca7405cdc5577"
+    },
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 222616200,
+      "inter_token_duration_ns": 1614481200,
+      "total_duration_ns": 1863240300,
+      "decode_tokens_per_second": 157.94547499221423,
+      "end_to_end_tokens_per_second": 137.39505312331426,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "dd9b4ef5684040e736c8024946334d0aa2ffb212876507c15c8ca7405cdc5577"
+    }
+  ],
+  "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+  "median_decode_tokens_per_second": 159.859313773491,
+  "minimum_decode_tokens_per_second": 152.48548652109028,
+  "min_required_tokens_per_second": 175.0,
+  "threshold_passed": false
+}

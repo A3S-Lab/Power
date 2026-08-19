@@ -4,30 +4,62 @@ impl GpuConfig {
     /// Validate bounded exact tensor-placement names shared by config and
     /// execution-policy digest callers.
     pub fn validate(&self) -> Result<()> {
-        if self.cpu_tensors.len() > MAX_CPU_TENSOR_OVERRIDES {
+        let cpu_tensor_names = validate_exact_tensor_names(
+            "gpu.cpu_tensors",
+            &self.cpu_tensors,
+            MAX_CPU_TENSOR_OVERRIDES,
+            MAX_CPU_TENSOR_NAME_BYTES,
+        )?;
+        let gpu_tensor_names = validate_exact_tensor_names(
+            "gpu.gpu_tensors",
+            &self.gpu_tensors,
+            MAX_GPU_TENSOR_OVERRIDES,
+            MAX_GPU_TENSOR_NAME_BYTES,
+        )?;
+        if let Some(name) = self
+            .gpu_tensors
+            .iter()
+            .find(|name| cpu_tensor_names.contains(name.as_str()))
+        {
             return Err(PowerError::Config(format!(
-                "gpu.cpu_tensors accepts at most {MAX_CPU_TENSOR_OVERRIDES} exact tensor names"
+                "exact tensor name {name:?} cannot appear in both gpu.cpu_tensors and gpu.gpu_tensors"
             )));
         }
-        let mut cpu_tensor_names = std::collections::HashSet::new();
-        for (index, name) in self.cpu_tensors.iter().enumerate() {
-            if name.is_empty()
-                || name.len() > MAX_CPU_TENSOR_NAME_BYTES
-                || name.trim() != name
-                || name.chars().any(char::is_control)
-            {
-                return Err(PowerError::Config(format!(
-                    "gpu.cpu_tensors[{index}] must be a non-empty tensor name of at most {MAX_CPU_TENSOR_NAME_BYTES} bytes without surrounding whitespace or control characters"
-                )));
-            }
-            if !cpu_tensor_names.insert(name) {
-                return Err(PowerError::Config(format!(
-                    "gpu.cpu_tensors contains duplicate exact tensor name {name:?}"
-                )));
-            }
-        }
+        debug_assert_eq!(gpu_tensor_names.len(), self.gpu_tensors.len());
         Ok(())
     }
+}
+
+fn validate_exact_tensor_names<'a>(
+    field: &str,
+    names: &'a [String],
+    maximum_count: usize,
+    maximum_name_bytes: usize,
+) -> Result<std::collections::HashSet<&'a str>> {
+    if names.len() > maximum_count {
+        return Err(PowerError::Config(format!(
+            "{field} accepts at most {maximum_count} exact tensor names"
+        )));
+    }
+
+    let mut unique = std::collections::HashSet::with_capacity(names.len());
+    for (index, name) in names.iter().enumerate() {
+        if name.is_empty()
+            || name.len() > maximum_name_bytes
+            || name.trim() != name
+            || name.chars().any(char::is_control)
+        {
+            return Err(PowerError::Config(format!(
+                "{field}[{index}] must be a non-empty tensor name of at most {maximum_name_bytes} bytes without surrounding whitespace or control characters"
+            )));
+        }
+        if !unique.insert(name.as_str()) {
+            return Err(PowerError::Config(format!(
+                "{field} contains duplicate exact tensor name {name:?}"
+            )));
+        }
+    }
+    Ok(unique)
 }
 
 impl PowerConfig {
@@ -351,6 +383,16 @@ impl PowerConfig {
                 "A3S_POWER_SPEC_MTP_RECURRENT_SNAPSHOTS",
                 &value,
             )?;
+        }
+
+        if let Ok(value) = std::env::var("A3S_POWER_SPEC_MTP_RECURRENT_CHAIN") {
+            self.spec_mtp_recurrent_chain =
+                parse_required_bool_env_override("A3S_POWER_SPEC_MTP_RECURRENT_CHAIN", &value)?;
+        }
+
+        if let Ok(value) = std::env::var("A3S_POWER_SPEC_MTP_ADAPTIVE") {
+            self.spec_mtp_adaptive =
+                parse_required_bool_env_override("A3S_POWER_SPEC_MTP_ADAPTIVE", &value)?;
         }
 
         if let Ok(value) = std::env::var("A3S_POWER_SPEC_MTP_FR_VOCAB_SIZE") {

@@ -148,39 +148,66 @@ fn exact_tensor_pattern(name: &str) -> String {
 /// llama.cpp only borrows these pointers while `llama_load_model_from_file`
 /// runs, so this owner is kept in the same blocking closure until load returns.
 #[cfg(feature = "llamacpp")]
-struct LlamaCpuTensorOverrides {
+struct LlamaTensorOverrides {
     _patterns: Vec<std::ffi::CString>,
     entries: Vec<llama_cpp_sys_2::llama_model_tensor_buft_override>,
 }
 
 #[cfg(feature = "llamacpp")]
-impl LlamaCpuTensorOverrides {
-    fn new(names: &[String]) -> Result<Self> {
-        let cpu_buffer_type = unsafe { llama_cpp_sys_2::ggml_backend_cpu_buffer_type() };
-        if cpu_buffer_type.is_null() {
-            return Err(PowerError::InferenceFailed(
-                "llama.cpp CPU buffer type is unavailable".to_string(),
-            ));
+impl LlamaTensorOverrides {
+    fn new(cpu_names: &[String], gpu_names: &[String], main_gpu: i32) -> Result<Self> {
+        let cpu_buffer_type = if cpu_names.is_empty() {
+            None
+        } else {
+            let buffer_type = unsafe { llama_cpp_sys_2::ggml_backend_cpu_buffer_type() };
+            if buffer_type.is_null() {
+                return Err(PowerError::InferenceFailed(
+                    "llama.cpp CPU buffer type is unavailable".to_string(),
+                ));
+            }
+            Some(buffer_type)
+        };
+        let gpu_buffer_type = if gpu_names.is_empty() {
+            None
+        } else {
+            Some(llamacpp_primary_gpu_buffer_type(main_gpu)?)
+        };
+
+        let mut names_and_buffers = Vec::with_capacity(cpu_names.len() + gpu_names.len());
+        if let Some(buffer_type) = cpu_buffer_type {
+            names_and_buffers.extend(
+                cpu_names
+                    .iter()
+                    .map(|name| (name, buffer_type, "gpu.cpu_tensors")),
+            );
+        }
+        if let Some(buffer_type) = gpu_buffer_type {
+            names_and_buffers.extend(
+                gpu_names
+                    .iter()
+                    .map(|name| (name, buffer_type, "gpu.gpu_tensors")),
+            );
         }
 
-        let patterns = names
+        let patterns = names_and_buffers
             .iter()
-            .map(|name| {
+            .map(|(name, _, field)| {
                 std::ffi::CString::new(exact_tensor_pattern(name)).map_err(|error| {
                     PowerError::Config(format!(
-                        "gpu.cpu_tensors contains an invalid tensor name {name:?}: {error}"
+                        "{field} contains an invalid tensor name {name:?}: {error}"
                     ))
                 })
             })
             .collect::<Result<Vec<_>>>()?;
         let mut entries = patterns
             .iter()
-            .map(
-                |pattern| llama_cpp_sys_2::llama_model_tensor_buft_override {
+            .zip(names_and_buffers.iter())
+            .map(|(pattern, (_, buffer_type, _))| {
+                llama_cpp_sys_2::llama_model_tensor_buft_override {
                     pattern: pattern.as_ptr(),
-                    buft: cpu_buffer_type,
-                },
-            )
+                    buft: *buffer_type,
+                }
+            })
             .collect::<Vec<_>>();
         entries.push(llama_cpp_sys_2::llama_model_tensor_buft_override {
             pattern: std::ptr::null(),
@@ -196,6 +223,47 @@ impl LlamaCpuTensorOverrides {
     fn apply(&self, params: &mut llama_cpp_sys_2::llama_model_params) {
         params.tensor_buft_overrides = self.entries.as_ptr();
     }
+}
+
+#[cfg(feature = "llamacpp")]
+fn llamacpp_primary_gpu_buffer_type(
+    main_gpu: i32,
+) -> Result<llama_cpp_sys_2::ggml_backend_buffer_type_t> {
+    let main_gpu = usize::try_from(main_gpu).map_err(|_| {
+        PowerError::Config("gpu.main_gpu must be non-negative for gpu_tensors".to_string())
+    })?;
+    let mut discrete = Vec::new();
+    let mut integrated = Vec::new();
+    let count = unsafe { llama_cpp_sys_2::ggml_backend_dev_count() };
+    for index in 0..count {
+        let device = unsafe { llama_cpp_sys_2::ggml_backend_dev_get(index) };
+        if device.is_null() {
+            continue;
+        }
+        match unsafe { llama_cpp_sys_2::ggml_backend_dev_type(device) } {
+            llama_cpp_sys_2::GGML_BACKEND_DEVICE_TYPE_GPU => discrete.push(device),
+            llama_cpp_sys_2::GGML_BACKEND_DEVICE_TYPE_IGPU => integrated.push(device),
+            _ => {}
+        }
+    }
+    let devices = if discrete.is_empty() {
+        &integrated
+    } else {
+        &discrete
+    };
+    let device = devices.get(main_gpu).copied().ok_or_else(|| {
+        PowerError::Config(format!(
+            "gpu.main_gpu index {main_gpu} is unavailable for gpu_tensors (detected {} compatible GPU device(s))",
+            devices.len()
+        ))
+    })?;
+    let buffer_type = unsafe { llama_cpp_sys_2::ggml_backend_dev_buffer_type(device) };
+    if buffer_type.is_null() {
+        return Err(PowerError::InferenceFailed(format!(
+            "llama.cpp GPU device {main_gpu} has no default buffer type"
+        )));
+    }
+    Ok(buffer_type)
 }
 
 /// Load a model with the reviewed raw `load_mtp` flag that llama-cpp-2 does
@@ -558,6 +626,7 @@ impl Backend for LlamaCppBackend {
         let use_mlock = self.config.use_mlock;
         let has_tensor_split = !self.config.gpu.tensor_split.is_empty();
         let cpu_tensors = self.config.gpu.cpu_tensors.clone();
+        let gpu_tensors = self.config.gpu.gpu_tensors.clone();
         let load_mtp = llamacpp_loads_mtp_weights(&self.config.spec_mode);
 
         let path = manifest.path.clone();
@@ -575,10 +644,10 @@ impl Backend for LlamaCppBackend {
                 has_tensor_split,
                 load_mtp,
             );
-            let cpu_tensor_overrides = if cpu_tensors.is_empty() {
+            let tensor_overrides = if cpu_tensors.is_empty() && gpu_tensors.is_empty() {
                 None
             } else {
-                let overrides = LlamaCpuTensorOverrides::new(&cpu_tensors)?;
+                let overrides = LlamaTensorOverrides::new(&cpu_tensors, &gpu_tensors, main_gpu)?;
                 overrides.apply(&mut p);
                 Some(overrides)
             };
@@ -587,9 +656,8 @@ impl Backend for LlamaCppBackend {
             }
             tracing::info!(
                 load_mtp,
-                cpu_tensors = cpu_tensor_overrides
-                    .as_ref()
-                    .map_or(0, |_| cpu_tensors.len()),
+                cpu_tensors = tensor_overrides.as_ref().map_or(0, |_| cpu_tensors.len()),
+                gpu_tensors = tensor_overrides.as_ref().map_or(0, |_| gpu_tensors.len()),
                 "Configured llama.cpp model tensor loading"
             );
 
@@ -1108,6 +1176,8 @@ impl Backend for LlamaCppBackend {
             // Other model-backed adapters can resolve a different default.
             draft_max: self.config.spec_draft_max.unwrap_or(3),
             recurrent_snapshots: self.config.spec_mtp_recurrent_snapshots,
+            recurrent_chain: self.config.spec_mtp_recurrent_chain,
+            adaptive: self.config.spec_mtp_adaptive,
             draft_min: self.config.spec_draft_min,
             draft_p_min: self.config.spec_draft_p_min,
         };
@@ -1792,6 +1862,7 @@ impl Backend for LlamaCppBackend {
             let use_mlock = self.config.use_mlock;
             let has_tensor_split = !self.config.gpu.tensor_split.is_empty();
             let cpu_tensors = self.config.gpu.cpu_tensors.clone();
+            let gpu_tensors = self.config.gpu.gpu_tensors.clone();
 
             let path_clone = path.clone();
             let model = tokio::task::spawn_blocking(move || {
@@ -1803,10 +1874,11 @@ impl Backend for LlamaCppBackend {
                     has_tensor_split,
                     false,
                 );
-                let _cpu_tensor_overrides = if cpu_tensors.is_empty() {
+                let _tensor_overrides = if cpu_tensors.is_empty() && gpu_tensors.is_empty() {
                     None
                 } else {
-                    let overrides = LlamaCpuTensorOverrides::new(&cpu_tensors)?;
+                    let overrides =
+                        LlamaTensorOverrides::new(&cpu_tensors, &gpu_tensors, main_gpu)?;
                     overrides.apply(&mut params);
                     Some(overrides)
                 };

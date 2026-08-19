@@ -1,0 +1,19 @@
+{
+  "schema": "a3s.power.quality-eval.selection.v1",
+  "description": "Twelve-task balanced calibration subset: four MMLU, four GSM8K, and four C-Eval tasks in reviewed execution order.",
+  "task_ids": [
+    "mmlu:0",
+    "mmlu:2809",
+    "mmlu:8409",
+    "mmlu:11209",
+    "gsm8k:0",
+    "gsm8k:6",
+    "gsm8k:13",
+    "gsm8k:19",
+    "ceval:advanced_mathematics:0",
+    "ceval:clinical_medicine:0",
+    "ceval:computer_network:1",
+    "ceval:teacher_qualification:2"
+  ],
+  "expected_tasks_sha256": "bf8e3c044fe21863361ca2d8be6cf47483290042bc93d53663a7a59cefb2d8c7"
+}

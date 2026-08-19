@@ -993,6 +993,7 @@ mod tests {
                     main_gpu: 0,
                     tensor_split: vec![0.5, 0.5],
                     cpu_tensors: Vec::new(),
+                    gpu_tensors: Vec::new(),
                 },
                 ..Default::default()
             },

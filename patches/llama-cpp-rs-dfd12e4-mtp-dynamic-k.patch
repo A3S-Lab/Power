@@ -1,0 +1,217 @@
+diff --git a/llama-cpp-2/src/speculative.rs b/llama-cpp-2/src/speculative.rs
+index 555c26d..198f2be 100644
+--- a/llama-cpp-2/src/speculative.rs
++++ b/llama-cpp-2/src/speculative.rs
+@@ -16,6 +16,15 @@ pub struct MtpSpeculativeParams {
+     pub n_min: i32,
+     /// Minimum draft probability accepted by llama.cpp's MTP drafter.
+     pub p_min: f32,
++    /// Use deterministic greedy sampling for MTP draft tokens.
++    ///
++    /// This requires `p_min == 0.0` because backend greedy sampling does not
++    /// materialize a probability for thresholding.
++    pub greedy_draft: bool,
++    /// Chain compatible greedy MTP steps on the accelerator queue.
++    ///
++    /// Unsupported graph layouts fall back to the exact host-staged path.
++    pub recurrent_draft: bool,
+ }
+ 
+ impl Default for MtpSpeculativeParams {
+@@ -24,6 +33,8 @@ impl Default for MtpSpeculativeParams {
+             n_max: 3,
+             n_min: 0,
+             p_min: 0.0,
++            greedy_draft: false,
++            recurrent_draft: true,
+         }
+     }
+ }
+@@ -83,6 +94,8 @@ impl<'model> MtpSpeculative<'model> {
+                 params.n_max,
+                 params.n_min,
+                 params.p_min,
++                params.greedy_draft,
++                params.recurrent_draft,
+             )
+         };
+         let raw = NonNull::new(raw).ok_or(MtpSpeculativeError::InitFailed)?;
+@@ -157,18 +170,35 @@ impl<'model> MtpSpeculative<'model> {
+         id_last: LlamaToken,
+         prompt_tokens: &[LlamaToken],
+     ) -> Result<Vec<LlamaToken>, MtpSpeculativeError> {
+-        if n_past < 0 {
++        self.draft_with_max(n_past, id_last, prompt_tokens, self.n_max)
++    }
++
++    /// Generate at most `max_draft` tokens after `id_last`.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the requested bound is zero, exceeds the maximum
++    /// configured at construction, or llama.cpp rejects the draft operation.
++    pub fn draft_with_max(
++        &mut self,
++        n_past: i32,
++        id_last: LlamaToken,
++        prompt_tokens: &[LlamaToken],
++        max_draft: usize,
++    ) -> Result<Vec<LlamaToken>, MtpSpeculativeError> {
++        if n_past < 0 || max_draft == 0 || max_draft > self.n_max {
+             return Err(MtpSpeculativeError::InvalidParams);
+         }
+ 
+         let prompt = tokens_to_raw(prompt_tokens);
+-        let mut raw_out = vec![0; self.n_max];
++        let mut raw_out = vec![0; max_draft];
+         let mut out_len = 0_usize;
+         let status = unsafe {
+             llama_cpp_sys_2::llama_rs_mtp_speculative_draft(
+                 self.raw.as_ptr(),
+                 n_past,
+                 id_last.0,
++                max_draft,
+                 prompt.as_ptr(),
+                 prompt.len(),
+                 raw_out.as_mut_ptr(),
+@@ -184,6 +214,13 @@ impl<'model> MtpSpeculative<'model> {
+         Ok(raw_out.into_iter().map(LlamaToken).collect())
+     }
+ 
++    /// Number of draft graph steps queued by the recurrent fast path during
++    /// the latest draft call.
++    #[must_use]
++    pub fn last_recurrent_steps(&self) -> usize {
++        unsafe { llama_cpp_sys_2::llama_rs_mtp_speculative_last_recurrent_steps(self.raw.as_ptr()) }
++    }
++
+     /// Notify llama.cpp how many draft tokens the target context accepted.
+     ///
+     /// # Errors
+diff --git a/llama-cpp-sys-2/wrapper_common.cpp b/llama-cpp-sys-2/wrapper_common.cpp
+index 6ec81c7..605a307 100644
+--- a/llama-cpp-sys-2/wrapper_common.cpp
++++ b/llama-cpp-sys-2/wrapper_common.cpp
+@@ -156,6 +156,7 @@ struct llama_rs_mtp_speculative {
+     std::vector<llama_token> prompt;
+     std::vector<llama_token> draft;
+     size_t last_draft_len = 0;
++    size_t last_recurrent_steps = 0;
+     bool draft_pending = false;
+ };
+ 
+@@ -191,8 +192,11 @@ extern "C" struct llama_rs_mtp_speculative * llama_rs_mtp_speculative_init(
+     struct llama_context * ctx_dft,
+     int32_t n_max,
+     int32_t n_min,
+-    float p_min) {
+-    if (!ctx_tgt || !ctx_dft || n_max <= 0 || n_min < 0 || n_min > n_max) {
++    float p_min,
++    bool greedy_draft,
++    bool recurrent_draft) {
++    if (!ctx_tgt || !ctx_dft || n_max <= 0 || n_min < 0 || n_min > n_max ||
++        (greedy_draft && p_min != 0.0f)) {
+         return nullptr;
+     }
+ 
+@@ -204,6 +208,8 @@ extern "C" struct llama_rs_mtp_speculative * llama_rs_mtp_speculative_init(
+         wrapper->params.draft.n_max = n_max;
+         wrapper->params.draft.n_min = n_min;
+         wrapper->params.draft.p_min = p_min;
++        wrapper->params.draft.greedy = greedy_draft;
++        wrapper->params.draft.recurrent = recurrent_draft;
+ 
+         wrapper->spec = common_speculative_init(wrapper->params, 1);
+         if (!wrapper->spec) {
+@@ -238,6 +244,7 @@ extern "C" llama_rs_status llama_rs_mtp_speculative_begin(
+     try {
+         llama_rs_assign_tokens(spec->prompt, prompt_tokens, prompt_tokens_count);
+         spec->last_draft_len = 0;
++        spec->last_recurrent_steps = 0;
+         spec->draft_pending = false;
+         common_speculative_begin(spec->spec, LLAMA_RS_MTP_SEQ_ID, spec->prompt);
+         return LLAMA_RS_STATUS_OK;
+@@ -269,13 +276,15 @@ extern "C" llama_rs_status llama_rs_mtp_speculative_draft(
+     struct llama_rs_mtp_speculative * spec,
+     llama_pos n_past,
+     llama_token id_last,
++    size_t max_draft_tokens,
+     const llama_token * prompt_tokens,
+     size_t prompt_tokens_count,
+     llama_token * out_tokens,
+     size_t out_tokens_capacity,
+     size_t * out_tokens_count) {
+-    if (!spec || !spec->spec || (!prompt_tokens && prompt_tokens_count > 0) ||
+-        !out_tokens_count || n_past < 0) {
++    if (!spec || !spec->spec || max_draft_tokens == 0 ||
++        max_draft_tokens > static_cast<size_t>(spec->params.draft.n_max) ||
++        (!prompt_tokens && prompt_tokens_count > 0) || !out_tokens_count || n_past < 0) {
+         return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+     }
+ 
+@@ -286,11 +295,12 @@ extern "C" llama_rs_status llama_rs_mtp_speculative_draft(
+         llama_rs_assign_tokens(spec->prompt, prompt_tokens, prompt_tokens_count);
+         spec->draft.clear();
+         spec->last_draft_len = 0;
++        spec->last_recurrent_steps = 0;
+ 
+         auto & params = common_speculative_get_draft_params(spec->spec, LLAMA_RS_MTP_SEQ_ID);
+         params = {
+             true,
+-            spec->params.draft.n_max,
++            static_cast<int32_t>(max_draft_tokens),
+             n_past,
+             id_last,
+             &spec->prompt,
+@@ -298,6 +308,7 @@ extern "C" llama_rs_status llama_rs_mtp_speculative_draft(
+         };
+ 
+         common_speculative_draft(spec->spec);
++        spec->last_recurrent_steps = common_speculative_last_recurrent_steps(spec->spec);
+ 
+         *out_tokens_count = spec->draft.size();
+         if (spec->draft.size() > out_tokens_capacity) {
+@@ -317,6 +328,11 @@ extern "C" llama_rs_status llama_rs_mtp_speculative_draft(
+     }
+ }
+ 
++extern "C" size_t llama_rs_mtp_speculative_last_recurrent_steps(
++    const struct llama_rs_mtp_speculative * spec) {
++    return spec ? spec->last_recurrent_steps : 0;
++}
++
+ extern "C" llama_rs_status llama_rs_mtp_speculative_accept(
+     struct llama_rs_mtp_speculative * spec,
+     uint16_t n_accepted) {
+diff --git a/llama-cpp-sys-2/wrapper_common.h b/llama-cpp-sys-2/wrapper_common.h
+index 675e6b0..b208203 100644
+--- a/llama-cpp-sys-2/wrapper_common.h
++++ b/llama-cpp-sys-2/wrapper_common.h
+@@ -65,7 +65,9 @@ struct llama_rs_mtp_speculative * llama_rs_mtp_speculative_init(
+     struct llama_context * ctx_dft,
+     int32_t n_max,
+     int32_t n_min,
+-    float p_min);
++    float p_min,
++    bool greedy_draft,
++    bool recurrent_draft);
+ 
+ void llama_rs_mtp_speculative_free(struct llama_rs_mtp_speculative * spec);
+ 
+@@ -82,12 +84,16 @@ llama_rs_status llama_rs_mtp_speculative_draft(
+     struct llama_rs_mtp_speculative * spec,
+     llama_pos n_past,
+     llama_token id_last,
++    size_t max_draft_tokens,
+     const llama_token * prompt_tokens,
+     size_t prompt_tokens_count,
+     llama_token * out_tokens,
+     size_t out_tokens_capacity,
+     size_t * out_tokens_count);
+ 
++size_t llama_rs_mtp_speculative_last_recurrent_steps(
++    const struct llama_rs_mtp_speculative * spec);
++
+ llama_rs_status llama_rs_mtp_speculative_accept(
+     struct llama_rs_mtp_speculative * spec,
+     uint16_t n_accepted);

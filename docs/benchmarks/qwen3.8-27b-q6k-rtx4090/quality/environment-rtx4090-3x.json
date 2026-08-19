@@ -1,0 +1,52 @@
+﻿{
+    "schema":  "a3s.power.quality-eval.environment.v1",
+    "created_at":  "2026-08-19T03:17:12.2567946+00:00",
+    "power_commit":  "955b4552ca091af07818573e803f9369488a63f9",
+    "dirty_worktree":  true,
+    "git_status":  [
+                       "?? docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/",
+                       "?? tools/qwen38_quality_eval.py",
+                       "?? tools/run-qwen38-quality-matrix.ps1",
+                       "?? tools/test_qwen38_quality_eval.py"
+                   ],
+    "server":  {
+                   "path":  "D:\\code\\a3s\\crates\\power\\target-native-sm89-ninja\\release\\a3s-power.exe",
+                   "sha256":  "a2bc32b6be65bc79cc757716e27ac64c03b7bc05d0c96a1f91aabe6dfb0acbde"
+               },
+    "q6_model":  {
+                     "power_home":  "D:\\models\\a3s-power\\qwen38\\power-home",
+                     "manifest":  "D:\\models\\a3s-power\\qwen38\\power-home\\models\\manifests\\qwen3.8-27b-q6-k.json",
+                     "path":  "D:\\models\\a3s-power\\qwen38\\full\\Qwen3.8-27B-Q6_K.gguf",
+                     "size":  22884408288,
+                     "sha256":  "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+                     "file_hash_verified":  true
+                 },
+    "tbq4_model":  {
+                       "power_home":  "D:\\models\\a3s-power\\qwen38\\power-home-tbq4-0-ffn",
+                       "manifest":  "D:\\models\\a3s-power\\qwen38\\power-home-tbq4-0-ffn\\models\\manifests\\qwen3.8-27b-q6-k.json",
+                       "path":  "D:\\models\\a3s-power\\qwen38\\experimental\\Qwen3.8-27B-Q6_K-TBQ4_0-FFN-MTP-head-Q4_K.gguf",
+                       "size":  19187686464,
+                       "sha256":  "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+                       "file_hash_verified":  true
+                   },
+    "gpu":  [
+                "NVIDIA GeForce RTX 4090, 610.74, 24564, 8.9, P8, 450.00"
+            ],
+    "cpu":  {
+                "Name":  "Intel(R) Xeon(R) w5-2445",
+                "NumberOfCores":  10,
+                "NumberOfLogicalProcessors":  20
+            },
+    "os":  {
+               "Caption":  "Microsoft Windows 11 专业版",
+               "Version":  "10.0.22631",
+               "BuildNumber":  "22631",
+               "TotalVisibleMemorySize":  133859076
+           },
+    "active_power_scheme":  "电源方案 GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (高性能)",
+    "process_priority":  "High",
+    "repetitions":  3,
+    "order":  "three-mode cyclic Latin rotation",
+    "task_manifest_sha256":  "e254af009fbee304bb574515aece7630cfb6ea91fd0fece6c0d9b9f02de44a9d",
+    "config_sha256":  "9f3cd4d36c8d141c9b3c2f5961f90a87561a1807f299a2b7a799f24706df9fc3"
+}
