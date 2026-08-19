@@ -61,6 +61,10 @@ struct HealthSpeculativeConfig {
     draft_max: Option<u32>,
     #[serde(default = "crate::config::default_spec_mtp_recurrent_snapshots")]
     mtp_recurrent_snapshots: u32,
+    #[serde(default = "crate::config::default_spec_mtp_recurrent_chain")]
+    mtp_recurrent_chain: bool,
+    #[serde(default = "crate::config::default_spec_mtp_adaptive")]
+    mtp_adaptive: bool,
     #[serde(default)]
     mtp_fr_vocab_size: Option<u32>,
     draft_min: u32,
@@ -158,6 +162,8 @@ pub async fn run_benchmark(
         mode: observed_mode,
         draft_max: health.speculative.draft_max,
         mtp_recurrent_snapshots: health.speculative.mtp_recurrent_snapshots,
+        mtp_recurrent_chain: health.speculative.mtp_recurrent_chain,
+        mtp_adaptive: health.speculative.mtp_adaptive,
         mtp_fr_vocab_size: health.speculative.mtp_fr_vocab_size,
         draft_min: health.speculative.draft_min,
         draft_p_min: health.speculative.draft_p_min,
@@ -682,6 +688,7 @@ mod tests {
                 "mode": "none",
                 "draft_max": 3,
                 "mtp_recurrent_snapshots": 5,
+                "mtp_recurrent_chain": false,
                 "draft_min": 0,
                 "draft_p_min": 0.0
             },
@@ -856,6 +863,7 @@ mod tests {
 
         assert_eq!(report.identity.speculative.mode, SpeculativeStrategy::Off);
         assert_eq!(report.identity.speculative.mtp_recurrent_snapshots, 5);
+        assert!(!report.identity.speculative.mtp_recurrent_chain);
         assert_eq!(report.workload.num_batch, Some(4));
         assert_eq!(report.samples.len(), 2);
         assert_eq!(report.median_decode_tokens_per_second, 1_000_000_000.0);
@@ -872,6 +880,8 @@ mod tests {
             mode: SpeculativeStrategy::Mtp,
             draft_max: Some(3),
             mtp_recurrent_snapshots: 7,
+            mtp_recurrent_chain: true,
+            mtp_adaptive: false,
             mtp_fr_vocab_size: Some(8192),
             draft_min: 0,
             draft_p_min: 0.0,

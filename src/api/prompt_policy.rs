@@ -111,6 +111,18 @@ pub fn canonical_gpu_execution_digest(gpu: &GpuConfig) -> Result<Vec<u8>> {
                 .collect(),
         ),
     );
+    if !gpu.gpu_tensors.is_empty() {
+        canonical.insert(
+            "gpu_tensors".to_string(),
+            serde_json::Value::Array(
+                gpu.gpu_tensors
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+    }
     canonical.insert(
         "tensor_split".to_string(),
         serde_json::Value::Array(
@@ -230,6 +242,7 @@ mod tests {
             main_gpu: 0,
             tensor_split: vec![0.5, 0.5],
             cpu_tensors: Vec::new(),
+            gpu_tensors: Vec::new(),
         };
         let runtime = runtime_policy_claim_with_gpu_config(&manifest(), Some(&gpu))
             .unwrap()
@@ -248,12 +261,14 @@ mod tests {
             main_gpu: 0,
             tensor_split: Vec::new(),
             cpu_tensors: Vec::new(),
+            gpu_tensors: Vec::new(),
         };
         let b = GpuConfig {
             gpu_layers: 0,
             main_gpu: 0,
             tensor_split: Vec::new(),
             cpu_tensors: Vec::new(),
+            gpu_tensors: Vec::new(),
         };
 
         assert_ne!(
@@ -270,6 +285,23 @@ mod tests {
         };
         let placed = GpuConfig {
             cpu_tensors: vec!["output.weight".to_string()],
+            ..base.clone()
+        };
+
+        assert_ne!(
+            canonical_gpu_execution_digest(&base).unwrap(),
+            canonical_gpu_execution_digest(&placed).unwrap()
+        );
+    }
+
+    #[test]
+    fn runtime_policy_gpu_execution_digest_changes_with_gpu_tensor_placement() {
+        let base = GpuConfig {
+            gpu_layers: -1,
+            ..Default::default()
+        };
+        let placed = GpuConfig {
+            gpu_tensors: vec!["token_embd.weight".to_string()],
             ..base.clone()
         };
 

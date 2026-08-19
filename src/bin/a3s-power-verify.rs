@@ -445,6 +445,8 @@ struct CliOpts {
     digest_tensor_split: Vec<f32>,
     /// Exact CPU tensor names used by --print-gpu-execution-digest.
     digest_cpu_tensors: Vec<String>,
+    /// Exact GPU tensor names used by --print-gpu-execution-digest.
+    digest_gpu_tensors: Vec<String>,
     /// Require a v2 runtime policy claim and expected runtime digest verification.
     require_runtime_policy: bool,
     /// Expected SHA-256 digest of the canonical attestation receipt.
@@ -708,6 +710,7 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
         digest_main_gpu: 0,
         digest_tensor_split: Vec::new(),
         digest_cpu_tensors: Vec::new(),
+        digest_gpu_tensors: Vec::new(),
         require_runtime_policy: false,
         receipt_digest: None,
         receipt_model: None,
@@ -911,6 +914,10 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
                 opts.digest_cpu_tensors
                     .push(next_arg(args, &mut i, "--cpu-tensor")?);
             }
+            "--gpu-tensor" => {
+                opts.digest_gpu_tensors
+                    .push(next_arg(args, &mut i, "--gpu-tensor")?);
+            }
             "--require-runtime-policy" => {
                 opts.require_runtime_policy = true;
             }
@@ -1110,6 +1117,7 @@ fn gpu_execution_digest_from_opts(opts: &CliOpts) -> anyhow::Result<String> {
         main_gpu: opts.digest_main_gpu,
         tensor_split: opts.digest_tensor_split.clone(),
         cpu_tensors: opts.digest_cpu_tensors.clone(),
+        gpu_tensors: opts.digest_gpu_tensors.clone(),
     })
     .map_err(|e| anyhow::anyhow!("failed to compute GPU execution digest: {e}"))?;
     Ok(hex::encode(digest))
@@ -1201,6 +1209,7 @@ OPTIONS:
     --main-gpu <N>                 Main GPU index for --print-gpu-execution-digest (default: 0)
     --tensor-split <CSV>           Tensor split floats for --print-gpu-execution-digest
     --cpu-tensor <NAME>            Exact CPU tensor name for the digest; repeat as needed
+    --gpu-tensor <NAME>            Exact GPU tensor name for the digest; repeat as needed
     --require-runtime-policy       Require a v2 runtime policy claim and digest verification
     --receipt-digest <HEX>         Expected SHA-256 digest of the canonical receipt; requires --receipt-file
     --receipt-model <NAME>         Expected model name in the receipt; requires --receipt-file
@@ -1292,7 +1301,8 @@ EXAMPLES:
         --gpu-layers -1 \
         --main-gpu 0 \
         --tensor-split 0.5,0.5 \
-        --cpu-tensor output.weight
+        --cpu-tensor output.weight \
+        --gpu-tensor token_embd.weight
 
     # Verify an inference receipt against the saved attestation report
     a3s-power-verify --file report.json \
@@ -2349,6 +2359,8 @@ mod tests {
             "0.25,0.75".to_string(),
             "--cpu-tensor".to_string(),
             "output.weight".to_string(),
+            "--gpu-tensor".to_string(),
+            "token_embd.weight".to_string(),
         ];
 
         let opts = parse_args(&args).unwrap();
@@ -2358,6 +2370,7 @@ mod tests {
         assert_eq!(opts.digest_main_gpu, 1);
         assert_eq!(opts.digest_tensor_split, vec![0.25, 0.75]);
         assert_eq!(opts.digest_cpu_tensors, vec!["output.weight"]);
+        assert_eq!(opts.digest_gpu_tensors, vec!["token_embd.weight"]);
     }
 
     #[test]
@@ -2372,6 +2385,8 @@ mod tests {
             "0.5,0.5".to_string(),
             "--cpu-tensor".to_string(),
             "output.weight".to_string(),
+            "--gpu-tensor".to_string(),
+            "token_embd.weight".to_string(),
         ];
         let opts = parse_args(&args).unwrap();
         let expected = hex::encode(
@@ -2380,6 +2395,7 @@ mod tests {
                 main_gpu: 0,
                 tensor_split: vec![0.5, 0.5],
                 cpu_tensors: vec!["output.weight".to_string()],
+                gpu_tensors: vec!["token_embd.weight".to_string()],
             })
             .unwrap(),
         );

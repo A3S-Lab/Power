@@ -361,6 +361,7 @@ mod tests {
             main_gpu: 0,
             tensor_split: vec![],
             cpu_tensors: vec![],
+            gpu_tensors: vec![],
         };
         auto_configure(&mut config);
         // Should NOT change explicitly set value
@@ -446,6 +447,7 @@ mod tests {
             main_gpu: 0,
             tensor_split: vec![],
             cpu_tensors: vec![],
+            gpu_tensors: vec![],
         };
         auto_configure(&mut config);
         // On macOS with Metal, should auto-set to -1

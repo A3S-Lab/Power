@@ -27,6 +27,10 @@ pub struct SpeculativeServerConfig {
     pub draft_max: Option<u32>,
     #[serde(default = "crate::config::default_spec_mtp_recurrent_snapshots")]
     pub mtp_recurrent_snapshots: u32,
+    #[serde(default = "crate::config::default_spec_mtp_recurrent_chain")]
+    pub mtp_recurrent_chain: bool,
+    #[serde(default = "crate::config::default_spec_mtp_adaptive")]
+    pub mtp_adaptive: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtp_fr_vocab_size: Option<u32>,
     pub draft_min: u32,
@@ -365,6 +369,10 @@ fn validate_inference_status(status: &InferenceStatus) -> Result<()> {
         .cpu_tensors
         .iter()
         .collect::<std::collections::HashSet<_>>();
+    let gpu_tensor_names = status
+        .gpu_tensors
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
     if status.gpu_layers < -1
         || status.main_gpu < 0
         || status.num_thread.is_some_and(|threads| threads == 0)
@@ -382,6 +390,15 @@ fn validate_inference_status(status: &InferenceStatus) -> Result<()> {
                 || name.len() > crate::config::MAX_CPU_TENSOR_NAME_BYTES
                 || name.trim() != name
                 || name.chars().any(char::is_control)
+        })
+        || status.gpu_tensors.len() > crate::config::MAX_GPU_TENSOR_OVERRIDES
+        || gpu_tensor_names.len() != status.gpu_tensors.len()
+        || status.gpu_tensors.iter().any(|name| {
+            name.is_empty()
+                || name.len() > crate::config::MAX_GPU_TENSOR_NAME_BYTES
+                || name.trim() != name
+                || name.chars().any(char::is_control)
+                || cpu_tensor_names.contains(name)
         })
         || status.suppress_token_metrics
     {
@@ -453,6 +470,8 @@ fn identities_match_except_strategy(
         && left.model_bytes == right.model_bytes
         && left.speculative.draft_max == right.speculative.draft_max
         && left.speculative.mtp_recurrent_snapshots == right.speculative.mtp_recurrent_snapshots
+        && left.speculative.mtp_recurrent_chain == right.speculative.mtp_recurrent_chain
+        && left.speculative.mtp_adaptive == right.speculative.mtp_adaptive
         && left.speculative.mtp_fr_vocab_size == right.speculative.mtp_fr_vocab_size
         && left.speculative.draft_min == right.speculative.draft_min
         && left.speculative.draft_p_min == right.speculative.draft_p_min
@@ -531,6 +550,8 @@ mod tests {
                 mode,
                 draft_max: Some(3),
                 mtp_recurrent_snapshots: 7,
+                mtp_recurrent_chain: true,
+                mtp_adaptive: false,
                 mtp_fr_vocab_size: Some(8192),
                 draft_min: 0,
                 draft_p_min: 0.0,
@@ -540,6 +561,7 @@ mod tests {
                 main_gpu: 0,
                 tensor_split: Vec::new(),
                 cpu_tensors: Vec::new(),
+                gpu_tensors: Vec::new(),
                 num_thread: Some(16),
                 flash_attention: true,
                 num_parallel: 1,
@@ -650,6 +672,10 @@ mod tests {
         assert!(compare_reports(&baseline, &candidate).is_err());
 
         let mut candidate = report(SpeculativeStrategy::Mtp, 'f', 100.0);
+        candidate.identity.speculative.mtp_recurrent_chain = false;
+        assert!(compare_reports(&baseline, &candidate).is_err());
+
+        let mut candidate = report(SpeculativeStrategy::Mtp, 'f', 100.0);
         candidate.identity.speculative.mtp_fr_vocab_size = Some(16_384);
         assert!(compare_reports(&baseline, &candidate).is_err());
 
@@ -705,5 +731,6 @@ mod tests {
             .remove("mtp_recurrent_snapshots");
         let decoded: SpeculativeBenchmarkReport = serde_json::from_value(json).unwrap();
         assert_eq!(decoded.identity.speculative.mtp_recurrent_snapshots, 7);
+        assert!(decoded.identity.speculative.mtp_recurrent_chain);
     }
 }

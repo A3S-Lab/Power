@@ -7,12 +7,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $powerRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$patchPath = Join-Path $powerRoot "patches\llama-cpp-rs-dfd12e4-mtp-fr-spec.patch"
+$llamaPatchPath = Join-Path $powerRoot "patches\llama-cpp-rs-dfd12e4-mtp-fr-spec.patch"
+$bindingPatchPath = Join-Path $powerRoot "patches\llama-cpp-rs-dfd12e4-mtp-dynamic-k.patch"
 $expectedBindingRevision = "dfd12e4d334846367e4284a2a7763fe92c1bf676"
 $expectedLlamaRevision = "e79e4bf660e19f2ad851e06c6913f7a8c5852621"
 
-if (-not (Test-Path -LiteralPath $patchPath -PathType Leaf)) {
-    throw "Power llama.cpp patch is missing: $patchPath"
+foreach ($patchPath in @($llamaPatchPath, $bindingPatchPath)) {
+    if (-not (Test-Path -LiteralPath $patchPath -PathType Leaf)) {
+        throw "Power llama.cpp patch is missing: $patchPath"
+    }
 }
 
 if (-not $LlamaCppRoot) {
@@ -48,20 +51,31 @@ if ($LASTEXITCODE -ne 0 -or $llamaRevision -ne $expectedLlamaRevision) {
     throw "Expected llama.cpp revision $expectedLlamaRevision, found '$llamaRevision'."
 }
 
-& git -C $LlamaCppRoot apply --check --reverse $patchPath 2>$null
-if ($LASTEXITCODE -eq 0) {
-    Write-Output "Power llama.cpp patches are already applied."
-    exit 0
+function Apply-ReviewedPatch {
+    param(
+        [string]$Root,
+        [string]$Patch,
+        [string]$Label
+    )
+
+    & git -C $Root apply --check --reverse $Patch 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Output "Power $Label patch is already applied."
+        return
+    }
+
+    & git -C $Root apply --check $Patch
+    if ($LASTEXITCODE -ne 0) {
+        throw "Power $Label patch does not apply cleanly to $Root."
+    }
+
+    & git -C $Root apply $Patch
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to apply the Power $Label patch."
+    }
+
+    Write-Output "Applied Power $Label patch to $Root."
 }
 
-& git -C $LlamaCppRoot apply --check $patchPath
-if ($LASTEXITCODE -ne 0) {
-    throw "Power llama.cpp patch does not apply cleanly to $LlamaCppRoot."
-}
-
-& git -C $LlamaCppRoot apply $patchPath
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to apply the Power llama.cpp patch."
-}
-
-Write-Output "Applied Power llama.cpp patches to $LlamaCppRoot."
+Apply-ReviewedPatch -Root $bindingRoot -Patch $bindingPatchPath -Label 'binding'
+Apply-ReviewedPatch -Root $LlamaCppRoot -Patch $llamaPatchPath -Label 'llama.cpp'

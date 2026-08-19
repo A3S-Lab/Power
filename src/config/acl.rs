@@ -17,6 +17,8 @@ const NORMAL_FIELDS: &[&str] = &[
     "spec_mode",
     "spec_draft_max",
     "spec_mtp_recurrent_snapshots",
+    "spec_mtp_recurrent_chain",
+    "spec_mtp_adaptive",
     "spec_mtp_fr_vocab_size",
     "spec_draft_min",
     "spec_draft_p_min",
@@ -57,6 +59,8 @@ const ALWAYS_GENERATED_FIELDS: &[&str] = &[
     "data_dir",
     "max_loaded_models",
     "spec_mode",
+    "spec_mtp_recurrent_chain",
+    "spec_mtp_adaptive",
     "keep_alive",
     "use_mlock",
     "use_mmap",
@@ -203,6 +207,8 @@ fn power_schema() -> Schema {
     for name in [
         "use_mlock",
         "use_mmap",
+        "spec_mtp_recurrent_chain",
+        "spec_mtp_adaptive",
         "flash_attention",
         "tee_mode",
         "redact_logs",
@@ -262,6 +268,10 @@ fn gpu_schema() -> Schema {
         )
         .attribute(
             "cpu_tensors",
+            AttributeSchema::optional(ValueSchema::list(ValueSchema::string())),
+        )
+        .attribute(
+            "gpu_tensors",
             AttributeSchema::optional(ValueSchema::list(ValueSchema::string())),
         )
 }

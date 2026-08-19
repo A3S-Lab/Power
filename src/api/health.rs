@@ -26,6 +26,10 @@ pub struct SpeculativeStatus {
     pub draft_max: Option<u32>,
     #[serde(default = "crate::config::default_spec_mtp_recurrent_snapshots")]
     pub mtp_recurrent_snapshots: u32,
+    #[serde(default = "crate::config::default_spec_mtp_recurrent_chain")]
+    pub mtp_recurrent_chain: bool,
+    #[serde(default = "crate::config::default_spec_mtp_adaptive")]
+    pub mtp_adaptive: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtp_fr_vocab_size: Option<u32>,
     pub draft_min: u32,
@@ -40,6 +44,8 @@ pub struct InferenceStatus {
     pub tensor_split: Vec<f32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cpu_tensors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_tensors: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_thread: Option<u32>,
     pub flash_attention: bool,
@@ -92,6 +98,8 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
             mode: state.config.spec_mode.clone(),
             draft_max: state.config.spec_draft_max,
             mtp_recurrent_snapshots: state.config.spec_mtp_recurrent_snapshots,
+            mtp_recurrent_chain: state.config.spec_mtp_recurrent_chain,
+            mtp_adaptive: state.config.spec_mtp_adaptive,
             mtp_fr_vocab_size: state.config.spec_mtp_fr_vocab_size,
             draft_min: state.config.spec_draft_min,
             draft_p_min: state.config.spec_draft_p_min,
@@ -101,6 +109,7 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
             main_gpu: state.config.gpu.main_gpu,
             tensor_split: state.config.gpu.tensor_split.clone(),
             cpu_tensors: state.config.gpu.cpu_tensors.clone(),
+            gpu_tensors: state.config.gpu.gpu_tensors.clone(),
             num_thread: state.config.num_thread,
             flash_attention: state.config.flash_attention,
             num_parallel: state.config.num_parallel,
@@ -154,6 +163,7 @@ mod tests {
             main_gpu: 0,
             tensor_split: Vec::new(),
             cpu_tensors: Vec::new(),
+            gpu_tensors: Vec::new(),
             num_thread: Some(16),
             flash_attention: true,
             num_parallel: 1,
@@ -183,6 +193,7 @@ mod tests {
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(health.speculative.mode, "auto");
         assert_eq!(health.speculative.mtp_recurrent_snapshots, 7);
+        assert!(health.speculative.mtp_recurrent_chain);
         assert!(!health.inference.suppress_token_metrics);
     }
 
@@ -244,6 +255,8 @@ mod tests {
                 mode: "mtp".to_string(),
                 draft_max: Some(3),
                 mtp_recurrent_snapshots: 7,
+                mtp_recurrent_chain: true,
+                mtp_adaptive: true,
                 mtp_fr_vocab_size: Some(8192),
                 draft_min: 1,
                 draft_p_min: 0.25,
@@ -276,6 +289,8 @@ mod tests {
                 mode: "off".to_string(),
                 draft_max: None,
                 mtp_recurrent_snapshots: 7,
+                mtp_recurrent_chain: false,
+                mtp_adaptive: true,
                 mtp_fr_vocab_size: None,
                 draft_min: 0,
                 draft_p_min: 0.0,

@@ -18,6 +18,12 @@ pub const MAX_CPU_TENSOR_OVERRIDES: usize = 256;
 /// Maximum UTF-8 byte length of one exact CPU tensor name.
 pub const MAX_CPU_TENSOR_NAME_BYTES: usize = 256;
 
+/// Maximum number of exact tensor names that may be forced onto GPU memory.
+pub const MAX_GPU_TENSOR_OVERRIDES: usize = 256;
+
+/// Maximum UTF-8 byte length of one exact GPU tensor name.
+pub const MAX_GPU_TENSOR_NAME_BYTES: usize = 256;
+
 mod acl;
 mod behavior;
 
@@ -125,6 +131,12 @@ pub struct GpuConfig {
     /// support ignore this list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cpu_tensors: Vec<String>,
+
+    /// Exact GGUF tensor names to force into the primary GPU buffer type even
+    /// when llama.cpp normally keeps their logical layer on the CPU. Backends
+    /// without tensor-level placement support ignore this list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_tensors: Vec<String>,
 }
 
 fn default_gpu_attestation_provider() -> String {
@@ -341,10 +353,27 @@ pub struct PowerConfig {
     #[serde(default = "default_spec_mtp_recurrent_snapshots")]
     pub spec_mtp_recurrent_snapshots: u32,
 
-    /// Number of leading vocabulary rows projected by the experimental
-    /// FR-Spec-inspired llama.cpp MTP draft head. `None` keeps the full
-    /// vocabulary. The target model still verifies every proposal, so this can
-    /// affect acceptance and throughput but not the committed token sequence.
+    /// Keep compatible greedy MTP draft steps on the accelerator queue instead
+    /// of synchronizing and staging every intermediate token through the host.
+    /// Unsupported models and graph layouts fall back to the exact host-staged
+    /// path without changing generated tokens.
+    #[serde(default = "default_spec_mtp_recurrent_chain")]
+    pub spec_mtp_recurrent_chain: bool,
+
+    /// Adapt MTP proposal width to the observed accepted prefix and switch a
+    /// persistently low-yield request to exact target-only decoding.
+    ///
+    /// This is an opt-in protection policy for low-yield draft heads. A fixed
+    /// width is the default because it provides higher throughput when the MTP
+    /// head already has healthy acceptance.
+    #[serde(default = "default_spec_mtp_adaptive")]
+    pub spec_mtp_adaptive: bool,
+
+    /// Maximum number of rows projected by the experimental FR-Spec-inspired
+    /// llama.cpp MTP draft head. A compact `d2t` head uses frequency-rank order;
+    /// a legacy full head uses target token-ID order. `None` keeps every row.
+    /// The target model still verifies every proposal, so no draft-only token
+    /// is committed; deterministic parity remains a separate evaluation gate.
     #[serde(default)]
     pub spec_mtp_fr_vocab_size: Option<u32>,
 
@@ -684,6 +713,14 @@ pub(crate) const fn default_spec_mtp_recurrent_snapshots() -> u32 {
     DEFAULT_SPEC_MTP_RECURRENT_SNAPSHOTS
 }
 
+pub(crate) const fn default_spec_mtp_recurrent_chain() -> bool {
+    true
+}
+
+pub(crate) const fn default_spec_mtp_adaptive() -> bool {
+    false
+}
+
 impl Default for PowerConfig {
     fn default() -> Self {
         Self {
@@ -696,6 +733,8 @@ impl Default for PowerConfig {
             spec_mode: default_spec_mode(),
             spec_draft_max: None,
             spec_mtp_recurrent_snapshots: default_spec_mtp_recurrent_snapshots(),
+            spec_mtp_recurrent_chain: default_spec_mtp_recurrent_chain(),
+            spec_mtp_adaptive: default_spec_mtp_adaptive(),
             spec_mtp_fr_vocab_size: None,
             spec_draft_min: 0,
             spec_draft_p_min: 0.0,

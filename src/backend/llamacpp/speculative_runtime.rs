@@ -3,6 +3,8 @@
 //! This module contains backend mechanics only. Strategy selection, capability
 //! negotiation, block verification, and metrics remain in `crate::speculative`.
 
+mod metrics;
+
 use llama_cpp_2::context::{
     params::{LlamaContextParams, LlamaContextType},
     LlamaContext,
@@ -16,9 +18,11 @@ use super::{backend_ref, nonzero_context_size, send_completion_result};
 use crate::backend::types::CompletionResponseChunk;
 use crate::error::{PowerError, Result};
 use crate::speculative::{
-    bounded_draft_len, minimum_mtp_batch, verify_token_block_until, SpeculativeCapabilities,
-    SpeculativeMetrics, SpeculativeStrategy,
+    bounded_draft_len, minimum_mtp_batch, verify_token_block_until, AdaptiveSpeculationController,
+    SpeculativeCapabilities, SpeculativeMetrics, SpeculativeStrategy,
 };
+
+use self::metrics::{elapsed_ns, log_metrics, MtpPhaseTimings};
 
 fn metadata_entry_enables_mtp(key: &str, value: &str) -> bool {
     key.ends_with(".nextn_predict_layers")
@@ -300,11 +304,16 @@ pub(super) struct MtpCompletionSettings {
     pub(super) stop_sequences: Vec<String>,
     pub(super) draft_max: u32,
     pub(super) recurrent_snapshots: u32,
+    pub(super) recurrent_chain: bool,
+    pub(super) adaptive: bool,
     pub(super) draft_min: u32,
     pub(super) draft_p_min: f32,
 }
 
-fn mtp_speculative_params(settings: &MtpCompletionSettings) -> Result<MtpSpeculativeParams> {
+fn mtp_speculative_params(
+    settings: &MtpCompletionSettings,
+    greedy_draft: bool,
+) -> Result<MtpSpeculativeParams> {
     if settings.draft_max == 0 || settings.draft_max > 64 {
         return Err(PowerError::Config(format!(
             "spec_draft_max must be between 1 and 64 for llama.cpp MTP, got {}",
@@ -323,6 +332,13 @@ fn mtp_speculative_params(settings: &MtpCompletionSettings) -> Result<MtpSpecula
             settings.recurrent_snapshots
         )));
     }
+    if settings.adaptive && settings.recurrent_snapshots < settings.draft_min.max(1) {
+        return Err(PowerError::Config(format!(
+            "spec_mtp_recurrent_snapshots ({}) must cover spec_draft_min ({}) when adaptive MTP is enabled",
+            settings.recurrent_snapshots,
+            settings.draft_min.max(1)
+        )));
+    }
     if !settings.draft_p_min.is_finite() || !(0.0..=1.0).contains(&settings.draft_p_min) {
         return Err(PowerError::Config(format!(
             "spec_draft_p_min must be finite and between 0 and 1 for llama.cpp MTP, got {}",
@@ -330,92 +346,14 @@ fn mtp_speculative_params(settings: &MtpCompletionSettings) -> Result<MtpSpecula
         )));
     }
 
+    let use_greedy_draft = greedy_draft && settings.draft_p_min == 0.0;
     Ok(MtpSpeculativeParams {
         n_max: settings.draft_max as i32,
         n_min: settings.draft_min as i32,
         p_min: settings.draft_p_min,
+        greedy_draft: use_greedy_draft,
+        recurrent_draft: settings.recurrent_chain,
     })
-}
-
-#[derive(Debug, Clone, Copy)]
-struct MtpPhaseTimings {
-    draft_ns: u64,
-    target_decode_ns: u64,
-    accepted_prefix_sync_ns: u64,
-    sampling_ns: u64,
-    state_management_ns: u64,
-    streaming_ns: u64,
-    fallback_replays: u32,
-    max_rejected_suffix: usize,
-    accepted_prefix_histogram: [u32; 65],
-}
-
-impl Default for MtpPhaseTimings {
-    fn default() -> Self {
-        Self {
-            draft_ns: 0,
-            target_decode_ns: 0,
-            accepted_prefix_sync_ns: 0,
-            sampling_ns: 0,
-            state_management_ns: 0,
-            streaming_ns: 0,
-            fallback_replays: 0,
-            max_rejected_suffix: 0,
-            accepted_prefix_histogram: [0; 65],
-        }
-    }
-}
-
-impl MtpPhaseTimings {
-    fn instrumented_ns(self) -> u64 {
-        self.draft_ns
-            .saturating_add(self.target_decode_ns)
-            .saturating_add(self.accepted_prefix_sync_ns)
-            .saturating_add(self.sampling_ns)
-            .saturating_add(self.state_management_ns)
-            .saturating_add(self.streaming_ns)
-    }
-}
-
-fn elapsed_ns(started: std::time::Instant) -> u64 {
-    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
-}
-
-fn log_metrics(
-    metrics: SpeculativeMetrics,
-    timings: MtpPhaseTimings,
-    emitted_tokens: usize,
-    decode_started: std::time::Instant,
-) {
-    let elapsed_duration_ns = elapsed_ns(decode_started);
-    let elapsed = elapsed_duration_ns as f64 / 1_000_000_000.0;
-    let tokens_per_second = if elapsed > 0.0 {
-        emitted_tokens as f64 / elapsed
-    } else {
-        0.0
-    };
-    tracing::info!(
-        strategy = "mtp",
-        rounds = metrics.rounds,
-        drafted_tokens = metrics.drafted_tokens,
-        accepted_tokens = metrics.accepted_tokens,
-        emitted_tokens,
-        verified_emitted_tokens = metrics.emitted_tokens,
-        acceptance_rate = metrics.acceptance_rate(),
-        tokens_per_target_pass = metrics.tokens_per_target_pass(),
-        tokens_per_second,
-        draft_duration_ns = timings.draft_ns,
-        target_decode_duration_ns = timings.target_decode_ns,
-        accepted_prefix_sync_duration_ns = timings.accepted_prefix_sync_ns,
-        sampling_duration_ns = timings.sampling_ns,
-        state_management_duration_ns = timings.state_management_ns,
-        streaming_duration_ns = timings.streaming_ns,
-        runtime_overhead_ns = elapsed_duration_ns.saturating_sub(timings.instrumented_ns()),
-        fallback_replays = timings.fallback_replays,
-        max_rejected_suffix = timings.max_rejected_suffix,
-        accepted_prefix_histogram = ?timings.accepted_prefix_histogram,
-        "llama.cpp speculative completion finished"
-    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -521,7 +459,8 @@ pub(super) fn run_mtp_completion(
     settings: MtpCompletionSettings,
     tx: &tokio::sync::mpsc::Sender<Result<CompletionResponseChunk>>,
 ) -> Result<()> {
-    let speculative_params = mtp_speculative_params(&settings)?;
+    let backend_greedy = use_backend_greedy(sampling_settings);
+    let speculative_params = mtp_speculative_params(&settings, backend_greedy)?;
     if tokens.is_empty() {
         return Err(PowerError::InferenceFailed(
             "llama.cpp MTP requires a non-empty tokenized prompt".to_string(),
@@ -546,7 +485,6 @@ pub(super) fn run_mtp_completion(
     // can live in its CUDA graph. This avoids copying every 248k-vocabulary
     // verification row to the CPU. Keep a separate CPU sampler below so the
     // streaming verifier retains one model-neutral state machine.
-    let backend_greedy = use_backend_greedy(sampling_settings);
     let target_context_result = if backend_greedy {
         let backend_sampler = build_llamacpp_sampler(model, sampling_settings)?;
         model.new_context_with_samplers(backend_ref(), target_params, [(0, backend_sampler)])
@@ -556,8 +494,9 @@ pub(super) fn run_mtp_completion(
     let target_context = target_context_result.map_err(|error| {
         PowerError::InferenceFailed(format!("Failed to create MTP target context: {error}"))
     })?;
-    tracing::debug!(
+    tracing::info!(
         backend_greedy,
+        draft_greedy = speculative_params.greedy_draft,
         recurrent_snapshots,
         configured_recurrent_snapshots = settings.recurrent_snapshots,
         "Configured MTP target sampling and rollback snapshots"
@@ -621,8 +560,17 @@ pub(super) fn run_mtp_completion(
     let mut generated_count = 0usize;
     let mut metrics = SpeculativeMetrics::default();
     let mut timings = MtpPhaseTimings::default();
+    let mut adaptive = settings.adaptive.then(|| {
+        AdaptiveSpeculationController::new(
+            settings.draft_max as usize,
+            settings.draft_min.max(1) as usize,
+            settings.draft_max as usize,
+            recurrent_snapshots as usize,
+        )
+    });
     let decode_started = std::time::Instant::now();
     let target_context_size = speculative.target_context().n_ctx() as usize;
+    let mtp_fr_vocab_size = context_settings.mtp_fr_vocab_size;
     if settings.max_tokens == 0 {
         log_metrics(metrics, timings, generated_count, decode_started);
         send_completion_result(
@@ -684,27 +632,100 @@ pub(super) fn run_mtp_completion(
                 "MTP sequence position exceeds llama.cpp limits".to_string(),
             )
         })?;
+        if adaptive
+            .as_ref()
+            .is_some_and(|controller| controller.draft_limit().is_none())
+        {
+            let mut target_batch = LlamaBatch::new(1, 1);
+            target_batch.add(anchor, n_past, &[0], true).map_err(|_| {
+                PowerError::InferenceFailed(
+                    "Failed to add target-only MTP token to batch".to_string(),
+                )
+            })?;
+            let target_decode_started = std::time::Instant::now();
+            speculative
+                .target_context_mut()
+                .decode(&mut target_batch)
+                .map_err(|error| {
+                    PowerError::InferenceFailed(format!("MTP target-only decode failed: {error}"))
+                })?;
+            timings.target_only_decode_ns = timings
+                .target_only_decode_ns
+                .saturating_add(elapsed_ns(target_decode_started));
+
+            let sampling_started = std::time::Instant::now();
+            let next = sample_target_token(
+                &mut sampler,
+                speculative.target_context(),
+                -1,
+                backend_greedy,
+            );
+            timings.sampling_ns = timings
+                .sampling_ns
+                .saturating_add(elapsed_ns(sampling_started));
+            committed_tokens.push(anchor);
+
+            let streaming_started = std::time::Instant::now();
+            let count_before = generated_count;
+            let keep_streaming = stream_token(
+                model,
+                next,
+                eos_token,
+                &mut generated_text,
+                &mut generated_count,
+                &settings.stop_sequences,
+                prompt_token_count,
+                prompt_eval_duration_ns,
+                tx,
+            );
+            timings.target_only_tokens = timings
+                .target_only_tokens
+                .saturating_add(generated_count.saturating_sub(count_before) as u64);
+            timings.streaming_ns = timings
+                .streaming_ns
+                .saturating_add(elapsed_ns(streaming_started));
+            if !keep_streaming {
+                log_metrics(metrics, timings, generated_count, decode_started);
+                return Ok(());
+            }
+            anchor = next;
+            continue;
+        }
         let remaining_tokens = settings.max_tokens.saturating_sub(generated_count);
         let remaining_context =
             target_context_size.saturating_sub(committed_tokens.len().saturating_add(1));
-        let draft_limit = bounded_draft_len(
-            settings.draft_max as usize,
-            remaining_tokens,
-            remaining_context,
-        );
+        let requested_draft_limit = adaptive
+            .as_ref()
+            .and_then(AdaptiveSpeculationController::draft_limit)
+            .unwrap_or(settings.draft_max as usize);
+        let draft_limit =
+            bounded_draft_len(requested_draft_limit, remaining_tokens, remaining_context);
+        timings.draft_limit_histogram[draft_limit.min(64)] =
+            timings.draft_limit_histogram[draft_limit.min(64)].saturating_add(1);
         let draft_started = std::time::Instant::now();
+        let mut recurrent_draft_steps = 0usize;
         let mut drafts = if draft_limit >= settings.draft_min as usize && draft_limit > 0 {
             // This handle contains only llama.cpp's MTP implementation. At the
             // pinned revision MTP proposes from its synchronized recurrent
             // state plus `anchor`; unlike n-gram drafters it never reads the
             // history pointer. Avoid serializing and copying a growing token
             // history across Rust and C++ on every speculative round.
-            speculative.draft(n_past, anchor, &[]).map_err(|error| {
-                PowerError::InferenceFailed(format!("MTP drafting failed: {error}"))
-            })?
+            let drafts = speculative
+                .draft_with_max(n_past, anchor, &[], draft_limit)
+                .map_err(|error| {
+                    PowerError::InferenceFailed(format!("MTP drafting failed: {error}"))
+                })?;
+            recurrent_draft_steps = speculative.last_recurrent_steps();
+            drafts
         } else {
             Vec::new()
         };
+        if recurrent_draft_steps > 0 {
+            timings.recurrent_draft_chains = timings.recurrent_draft_chains.saturating_add(1);
+            timings.recurrent_draft_steps = timings
+                .recurrent_draft_steps
+                .saturating_add(u64::try_from(recurrent_draft_steps).unwrap_or(u64::MAX));
+        }
         timings.draft_ns = timings.draft_ns.saturating_add(elapsed_ns(draft_started));
         let draft_pending = !drafts.is_empty();
         drafts.truncate(draft_limit);
@@ -769,12 +790,14 @@ pub(super) fn run_mtp_completion(
             |row| {
                 // `LlamaSampler::sample` also accepts the selected token,
                 // advancing grammar, penalty, mirostat, and RNG state once.
-                sample_target_token(
+                let token = sample_target_token(
                     &mut sampler,
                     speculative.target_context(),
                     row as i32,
                     backend_greedy,
-                )
+                );
+                timings.fr.observe_target_sample(token.0, mtp_fr_vocab_size);
+                token
             },
             |token| {
                 if token == eos_token {
@@ -793,6 +816,16 @@ pub(super) fn run_mtp_completion(
         timings.sampling_ns = timings
             .sampling_ns
             .saturating_add(elapsed_ns(sampling_started));
+        if verified.accepted < drafts.len() {
+            let correction = verified.emitted.last().ok_or_else(|| {
+                PowerError::InferenceFailed(
+                    "MTP rejection did not emit a target correction".to_string(),
+                )
+            })?;
+            timings
+                .fr
+                .observe_rejection(correction.0, mtp_fr_vocab_size);
+        }
 
         // Keep only a bounded number of recurrent rollback snapshots. Most
         // mismatches reject a short suffix and use llama.cpp's exact in-place
@@ -905,6 +938,10 @@ pub(super) fn run_mtp_completion(
             ) {
                 emitted_this_round += generated_count.saturating_sub(count_before);
                 metrics.record_round(drafts.len(), verified.accepted, emitted_this_round);
+                if let Some(controller) = adaptive.as_mut() {
+                    controller.observe(verified.accepted, drafts.len());
+                    timings.target_only_after_round = controller.target_only_after_round();
+                }
                 timings.streaming_ns = timings
                     .streaming_ns
                     .saturating_add(elapsed_ns(streaming_started));
@@ -918,6 +955,10 @@ pub(super) fn run_mtp_completion(
             .saturating_add(elapsed_ns(streaming_started));
 
         metrics.record_round(drafts.len(), verified.accepted, emitted_this_round);
+        if let Some(controller) = adaptive.as_mut() {
+            controller.observe(verified.accepted, drafts.len());
+            timings.target_only_after_round = controller.target_only_after_round();
+        }
         anchor = *verified.emitted.last().ok_or_else(|| {
             PowerError::InferenceFailed("MTP verification emitted no continuation".to_string())
         })?;

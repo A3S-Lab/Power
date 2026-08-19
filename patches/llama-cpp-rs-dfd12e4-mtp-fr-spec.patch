@@ -1,20 +1,503 @@
+diff --git a/common/common.h b/common/common.h
+index b16bd3b..928d8e3 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -329,6 +329,8 @@ struct common_params_speculative_draft {
+     float p_min   = 0.0f; // minimum speculative decoding probability (greedy)
+ 
+     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
++    bool greedy = false;          // sample only the argmax draft token (no probability required)
++    bool recurrent = true;        // chain compatible greedy MTP steps on the backend queue
+ 
+     common_params_model mparams;
+ 
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 0082e5f..e601a6f 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -168,6 +168,8 @@ struct common_speculative_impl {
+ 
+     virtual void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) = 0;
+ 
++    virtual size_t last_recurrent_steps() const { return 0; }
++
+     // (optional) serialize/restore per-seq internal state (e.g. eagle3's deferred boundary).
+     virtual bool get_state(llama_seq_id /*seq_id*/, std::vector<uint8_t> & /*data*/) const { return false; }
+     virtual void set_state(llama_seq_id /*seq_id*/, const std::vector<uint8_t> & /*data*/) {}
+@@ -1259,6 +1261,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+     bool    is_mem_shared = false;   // gemma4
+     bool    chain_heads   = false;   // derived in the ctor: n_mtp_layers > 1 && !is_mem_shared
+ 
++    // The dense single-head greedy path can feed each draft graph directly
++    // from the preceding graph on the same backend queue. Disable it after an
++    // unsupported graph shape is observed so subsequent rounds use the exact
++    // host-staged implementation without repeatedly probing.
++    bool   recurrent_chain_enabled = false;
++    size_t recurrent_steps_last    = 0;
++
+     // Per-sequence cross-batch carryover: pair (h_p, x_{p+1}) at MTP pos p+1.
+     // The last h-row of one process() call needs the first token of the NEXT
+     // call to pair with, so it's stashed here until that next call fires.
+@@ -1279,6 +1288,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq)
+         , params(params.draft)
+     {
++        recurrent_chain_enabled = this->params.recurrent;
++
+         auto * ctx_tgt = this->params.ctx_tgt;
+         auto * ctx_dft = this->params.ctx_dft;
+         GGML_ASSERT(ctx_tgt && ctx_dft && "MTP requires ctx_tgt and ctx_dft to be set");
+@@ -1289,7 +1300,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+         n_mtp_layers = std::max(1, (int) llama_model_n_layer_nextn(llama_get_model(ctx_dft)));
+ 
+         SPC_TRC("%s", "adding speculative implementation 'draft-mtp'\n");
+-        SPC_TRC("- n_max=%d, n_min=%d, p_min=%.2f, n_embd=%d, backend_sampling=%d\n", this->params.n_max, this->params.n_min, this->params.p_min, n_embd, (int) this->params.backend_sampling);
++        SPC_TRC("- n_max=%d, n_min=%d, p_min=%.2f, n_embd=%d, backend_sampling=%d, greedy=%d, recurrent=%d\n", this->params.n_max, this->params.n_min, this->params.p_min, n_embd, (int) this->params.backend_sampling, (int) this->params.greedy, (int) this->params.recurrent);
+         SPC_TRC("- gpu_layers=%d, cache_k=%s, cache_v=%s, ctx_tgt=%s, ctx_dft=%s, devices=[%s]\n",
+                 this->params.n_gpu_layers,
+                 ggml_type_name(this->params.cache_type_k),
+@@ -1318,7 +1329,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+         if (this->params.backend_sampling) {
+             for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+                 llama_sampler * chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+-                llama_sampler_chain_add(chain, llama_sampler_init_top_k(10));
++                llama_sampler_chain_add(chain, this->params.greedy
++                        ? llama_sampler_init_greedy()
++                        : llama_sampler_init_top_k(10));
+ 
+                 if (!llama_set_sampler(ctx_dft, seq_id, chain)) {
+                     SPC_WRN("backend offload failed for seq_id=%d; using CPU sampler\n", (int) seq_id);
+@@ -1510,9 +1523,110 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+         return true;
+     }
+ 
++    size_t last_recurrent_steps() const override {
++        return recurrent_steps_last;
++    }
++
++    bool draft_recurrent(common_speculative_draft_params_vec & dparams, int n_drafting, size_t row_bytes) {
++        recurrent_steps_last = 0;
++
++        if (!recurrent_chain_enabled || n_seq != 1 || n_drafting != 1 ||
++                dparams.empty() || !dparams[0].drafting || !params.greedy ||
++                backend_chains.empty() || backend_chains[0] == nullptr ||
++                chain_heads || is_mem_shared || params.p_min != 0.0f ||
++                batch.n_tokens != 1) {
++            return false;
++        }
++
++        auto * ctx_dft = params.ctx_dft;
++        auto & dp      = dparams[0];
++        auto & result  = *dp.result;
++
++        const int32_t n_steps = std::min(params.n_max, dp.n_max > 0 ? dp.n_max : params.n_max);
++        if (n_steps <= 0 || !llama_mtp_recurrent_begin(ctx_dft, (uint32_t) n_steps)) {
++            return false;
++        }
++
++        // Pre-size the public result once. Draft tokens first land in a pinned
++        // context buffer and are copied here after the final synchronization.
++        result.assign((size_t) n_steps, LLAMA_TOKEN_NULL);
++
++        size_t n_captured = 0;
++        for (int32_t step = 0; step < n_steps; ++step) {
++            const int ret = llama_decode(ctx_dft, batch);
++            if (ret != 0) {
++                SPC_ERR("recurrent llama_decode[%d] returned %d; disabling recurrent draft chaining\n",
++                        step, ret);
++                recurrent_chain_enabled = false;
++                break;
++            }
++
++            const bool prepare_next = step + 1 < n_steps;
++            const int32_t capture = llama_mtp_recurrent_capture(ctx_dft, prepare_next);
++            if (capture < 0) {
++                SPC_ERR("recurrent MTP capture[%d] failed; disabling recurrent draft chaining\n", step);
++                recurrent_chain_enabled = false;
++                break;
++            }
++
++            ++n_captured;
++            if (prepare_next && capture != 1) {
++                SPC_WRN("recurrent MTP graph cannot carry step %d (status=%d); "
++                        "using host-staged drafting from the next round\n",
++                        step, capture);
++                recurrent_chain_enabled = false;
++                break;
++            }
++
++            if (!prepare_next) {
++                continue;
++            }
++
++            // Only position and sequence metadata are consumed from this host
++            // batch. The recurrent token and hidden row have already been
++            // copied into the reused graph inputs on the backend queue.
++            common_batch_clear(batch);
++            common_batch_add(batch, dp.id_last, dp.n_past + step + 1, { 0 }, true);
++            std::memcpy(batch.embd, pending_h[0].data(), row_bytes);
++            i_last[0] = 0;
++        }
++
++        const int32_t n_result = llama_mtp_recurrent_end(ctx_dft, result.data(), result.size());
++        if (n_result < 0 || (size_t) n_result != n_captured) {
++            SPC_ERR("recurrent MTP finalization returned %d tokens after %zu captures; discarding the draft\n",
++                    n_result, n_captured);
++            result.clear();
++            recurrent_chain_enabled = false;
++            recurrent_steps_last = n_captured;
++            return true;
++        }
++
++        result.resize((size_t) n_result);
++        recurrent_steps_last = (size_t) n_result;
++
++        for (const llama_token id : result) {
++            if (id == LLAMA_TOKEN_NULL) {
++                SPC_ERR("%s", "recurrent MTP chain returned an invalid token; discarding the draft\n");
++                result.clear();
++                recurrent_chain_enabled = false;
++                break;
++            }
++            SPC_DBG(" - seq_id 0, recurrent greedy draft: %6d '%s'\n",
++                    id, common_token_to_piece(ctx_dft, id).c_str());
++        }
++
++        if (result.size() < (size_t) params.n_min) {
++            result.clear();
++        }
++
++        return true;
++    }
++
+     void draft(common_speculative_draft_params_vec & dparams) override {
+         auto & ctx_dft = params.ctx_dft;
+ 
++        recurrent_steps_last = 0;
++
+         common_batch_clear(batch);
+ 
+         // keep track of which sequences are still drafting
+@@ -1542,6 +1656,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+             }
+         }
+ 
++        if (draft_recurrent(dparams, n_drafting, row_bytes)) {
++            return;
++        }
++
+         int i = 0;
+ 
+         while (n_drafting > 0) {
+@@ -1567,6 +1685,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+                 break;
+             }
+ 
++            // Greedy MTP only needs the backend-selected token and the nextn
++            // hidden row. Synchronize once for the whole draft step instead of
++            // materializing Top-K logits/probabilities and invoking the CPU
++            // sampler once per sequence.
++            if (params.greedy) {
++                llama_synchronize(ctx_dft);
++            }
++
+             // rebuild the batch for the next step: the growing-KV paths re-add only the
+             // new token (the KV already holds the prefix), while chained heads re-add the
+             // whole prefix at the next head. dropped sequences are simply not re-added.
+@@ -1578,37 +1704,48 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+                 }
+ 
+                 auto * smpl = smpls[seq_id].get();
+-
+-                common_sampler_sample(smpl, ctx_dft, i_last[seq_id], true);
+                 const float * h_row = llama_get_embeddings_nextn_ith(ctx_dft, i_last[seq_id]);
++                llama_token id = LLAMA_TOKEN_NULL;
++
++                if (params.greedy && backend_chains[seq_id] != nullptr) {
++                    id = llama_get_sampled_token_ith(ctx_dft, i_last[seq_id]);
++                    if (id == LLAMA_TOKEN_NULL) {
++                        SPC_ERR("greedy backend produced no token for seq_id=%d, pos=%d\n", seq_id, i);
++                        drafting[seq_id] = false;
++                        n_drafting--;
++                        continue;
++                    }
++                    SPC_DBG(" - seq_id %d, greedy draft, pos %3d: %6d '%s'\n",
++                            seq_id, i, id, common_token_to_piece(ctx_dft, id).c_str());
++                } else {
++                    common_sampler_sample(smpl, ctx_dft, i_last[seq_id], true);
++                    const auto * cur_p = common_sampler_get_candidates(smpl, true);
+ 
+-                const auto * cur_p = common_sampler_get_candidates(smpl, true);
+-
+-                for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
+-                    SPC_DBG(" - seq_id %d, draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n",
+-                            seq_id, k, i, cur_p->data[k].id, cur_p->data[k].p,
+-                            common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
+-                }
++                    for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
++                        SPC_DBG(" - seq_id %d, draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n",
++                                seq_id, k, i, cur_p->data[k].id, cur_p->data[k].p,
++                                common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
++                    }
+ 
+-                // add drafted token for each sequence
+-                const llama_token id = cur_p->data[0].id;
++                    id = cur_p->data[0].id;
+ 
+-                // only collect very high-confidence draft tokens
+-                if (cur_p->data[0].p < params.p_min) {
+-                    drafting[seq_id] = false;
+-                    n_drafting--;
++                    // only collect very high-confidence draft tokens
++                    if (cur_p->data[0].p < params.p_min) {
++                        drafting[seq_id] = false;
++                        n_drafting--;
++                        continue;
++                    }
+ 
+-                    continue;
++                    common_sampler_accept(smpl, id, true);
+                 }
+ 
+-                common_sampler_accept(smpl, id, true);
+-
+                 auto & dp = dparams.at(seq_id);
+                 auto & result = *dp.result;
+ 
+                 result.push_back(id);
+ 
+-                if (params.n_max <= (int) result.size()) {
++                if ((params.n_max <= (int) result.size()) ||
++                    (dp.n_max > 0 && dp.n_max <= (int) result.size())) {
+                     drafting[seq_id] = false;
+                     n_drafting--;
+                     continue;
+@@ -1636,6 +1773,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+                 }
+ 
+                 i_last[seq_id] = batch.n_tokens - 1;
++
+             }
+ 
+             if (batch.n_tokens == 0) {
+@@ -2602,6 +2740,18 @@ void common_speculative_draft(common_speculative * spec) {
+     }
+ }
+ 
++size_t common_speculative_last_recurrent_steps(const common_speculative * spec) {
++    if (spec == nullptr) {
++        return 0;
++    }
++
++    size_t result = 0;
++    for (const auto & impl : spec->impls) {
++        result += impl->last_recurrent_steps();
++    }
++    return result;
++}
++
+ void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, uint16_t n_accepted) {
+     common_speculative_impl * impl = spec->impl_last[seq_id];
+ 
+diff --git a/common/speculative.h b/common/speculative.h
+index 06b0992..9864ca6 100644
+--- a/common/speculative.h
++++ b/common/speculative.h
+@@ -70,6 +70,9 @@ bool common_speculative_process(common_speculative * spec, const llama_batch & b
+ // generate drafts for the sequences specified with `common_speculative_get_draft_params`
+ void common_speculative_draft(common_speculative * spec);
+ 
++// number of draft graph steps queued by the recurrent fast path in the latest call
++size_t common_speculative_last_recurrent_steps(const common_speculative * spec);
++
+ // informs the speculative context that n_accepted tokens were accepted by the target model
+ void common_speculative_accept(common_speculative * spec, llama_seq_id, uint16_t n_accepted);
+ 
+diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
+index cc3f8cd..c0140f7 100644
+--- a/ggml/include/ggml-backend.h
++++ b/ggml/include/ggml-backend.h
+@@ -336,6 +336,15 @@ extern "C" {
+     GGML_API void                 ggml_backend_sched_set_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node, ggml_backend_t backend);
+     GGML_API ggml_backend_t       ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node);
+ 
++    // Access a scheduler-owned backend copy of a logical tensor and suppress
++    // the next automatic host copy into it. Intended for device-resident
++    // recurrent graph inputs; overrides are consumed by one graph compute.
++    GGML_API struct ggml_tensor * ggml_backend_sched_get_tensor_copy(
++            ggml_backend_sched_t sched, struct ggml_tensor * node, ggml_backend_t backend);
++    GGML_API bool ggml_backend_sched_override_input_copy(
++            ggml_backend_sched_t sched, struct ggml_tensor * input, ggml_backend_t backend);
++    GGML_API void ggml_backend_sched_clear_input_copy_overrides(ggml_backend_sched_t sched);
++
+     // Split graph without allocating it
+     GGML_API void                 ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph);
+ 
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index f6fb917..75056c0 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -761,6 +761,13 @@ static bool ggml_is_view_op(enum ggml_op op) {
+ #define GGML_SCHED_MAX_COPIES 4
+ #endif
+ 
++#define GGML_SCHED_MAX_INPUT_COPY_OVERRIDES 16
++
++struct ggml_backend_sched_input_copy_override {
++    struct ggml_tensor * input;
++    int backend_id;
++};
++
+ struct ggml_backend_sched_split {
+     int backend_id;
+     int i_start;
+@@ -810,6 +817,9 @@ struct ggml_backend_sched {
+     int n_graph_inputs;
+     int graph_inputs_capacity;
+ 
++    struct ggml_backend_sched_input_copy_override input_copy_overrides[GGML_SCHED_MAX_INPUT_COPY_OVERRIDES];
++    int n_input_copy_overrides;
++
+     struct ggml_context * ctx;
+ 
+     ggml_backend_sched_eval_callback callback_eval;
+@@ -834,6 +844,17 @@ struct ggml_backend_sched {
+ #define tensor_id_copy(id, backend_id, copy_id) sched->hv_tensor_copies[(id) * sched->n_backends * sched->n_copies + (backend_id) * sched->n_copies + (copy_id)]
+ #define tensor_copy(tensor, backend_id, copy_id) tensor_id_copy(hash_id(tensor), backend_id, copy_id)
+ 
++static bool ggml_backend_sched_input_copy_is_overridden(
++        const ggml_backend_sched_t sched, const struct ggml_tensor * input, int backend_id) {
++    for (int i = 0; i < sched->n_input_copy_overrides; ++i) {
++        const auto & entry = sched->input_copy_overrides[i];
++        if (entry.input == input && entry.backend_id == backend_id) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ static void ggml_backend_sched_split_inputs_grow(struct ggml_backend_sched_split * split) {
+     int new_cap = GGML_SCHED_MAX_SPLIT_INPUTS;
+     if (split->inputs_capacity > 0) {
+@@ -1603,13 +1624,18 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+         struct ggml_backend_sched_split * split = &splits[split_id];
+         int split_backend_id = split->backend_id;
+         ggml_backend_t split_backend = sched->backends[split_backend_id];
+-
+         // copy the input tensors to the split backend
+         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+-            ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[input_id]);
+             struct ggml_tensor * input = split->inputs[input_id];
+             struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
+ 
++            if ((input->flags & GGML_TENSOR_FLAG_INPUT) &&
++                    ggml_backend_sched_input_copy_is_overridden(sched, input, split_backend_id)) {
++                continue;
++            }
++
++            ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, input);
++
+             if (input->flags & GGML_TENSOR_FLAG_INPUT) {
+                 // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
+                 if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+@@ -1887,6 +1913,7 @@ void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
+         memset(sched->hv_tensor_copies,       0, sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
+         sched->is_reset = true;
+     }
++    sched->n_input_copy_overrides = 0;
+     sched->is_alloc = false;
+ }
+ 
+@@ -1958,7 +1985,9 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
+         }
+     }
+ 
+-    return ggml_backend_sched_compute_splits(sched);
++    const enum ggml_status result = ggml_backend_sched_compute_splits(sched);
++    sched->n_input_copy_overrides = 0;
++    return result;
+ }
+ 
+ void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {
+@@ -2035,6 +2064,53 @@ ggml_backend_t ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched,
+     return sched->backends[backend_index];
+ }
+ 
++struct ggml_tensor * ggml_backend_sched_get_tensor_copy(
++        ggml_backend_sched_t sched, struct ggml_tensor * node, ggml_backend_t backend) {
++    GGML_ASSERT(sched);
++    if (!node || !backend || !ggml_hash_contains(&sched->hash_set, node)) {
++        return NULL;
++    }
++
++    const int backend_id = ggml_backend_sched_backend_id(sched, backend);
++    if (backend_id < 0 || backend_id >= sched->n_backends) {
++        return NULL;
++    }
++
++    const size_t node_id = ggml_hash_find(&sched->hash_set, node);
++    GGML_ASSERT(node_id != GGML_HASHSET_FULL);
++    struct ggml_tensor * copy = tensor_id_copy(node_id, backend_id, sched->cur_copy);
++    if (copy != NULL) {
++        return copy;
++    }
++
++    return sched->hv_tensor_backend_ids[node_id] == backend_id ? node : NULL;
++}
++
++bool ggml_backend_sched_override_input_copy(
++        ggml_backend_sched_t sched, struct ggml_tensor * input, ggml_backend_t backend) {
++    GGML_ASSERT(sched);
++    if (!input || !(input->flags & GGML_TENSOR_FLAG_INPUT) ||
++            ggml_backend_sched_get_tensor_copy(sched, input, backend) == NULL) {
++        return false;
++    }
++
++    const int backend_id = ggml_backend_sched_backend_id(sched, backend);
++    if (ggml_backend_sched_input_copy_is_overridden(sched, input, backend_id)) {
++        return true;
++    }
++    if (sched->n_input_copy_overrides >= GGML_SCHED_MAX_INPUT_COPY_OVERRIDES) {
++        return false;
++    }
++
++    sched->input_copy_overrides[sched->n_input_copy_overrides++] = { input, backend_id };
++    return true;
++}
++
++void ggml_backend_sched_clear_input_copy_overrides(ggml_backend_sched_t sched) {
++    GGML_ASSERT(sched);
++    sched->n_input_copy_overrides = 0;
++}
++
+ // utils
+ 
+ enum ggml_status ggml_backend_view_init(struct ggml_tensor * tensor) {
 diff --git a/include/llama.h b/include/llama.h
-index 177fc10..69601d0 100644
+index 177fc10..63387bc 100644
 --- a/include/llama.h
 +++ b/include/llama.h
 @@ -356,6 +356,7 @@ extern "C" {
          uint32_t n_rs_seq;              // number of recurrent-state snapshots per seq for rollback (0 = no rollback) [EXPERIMENTAL]
          uint32_t n_outputs_max;         // max outputs in a ubatch (0 = n_batch)
          uint32_t n_outputs_max_per_seq; // max outputs per sequence (0 = n_outputs_max)
-+        uint32_t n_mtp_fr_vocab;        // MTP reduced-vocabulary prefix rows (0 = full vocabulary) [EXPERIMENTAL]
++        uint32_t n_mtp_fr_vocab;        // MTP draft-head rows (rank order with d2t, token-ID order otherwise; 0 = all) [EXPERIMENTAL]
          int32_t  n_threads;             // number of threads to use for generation
          int32_t  n_threads_batch;       // number of threads to use for batch processing
  
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index aa9fb2c..f8a17a7 100644
+index aa9fb2c..81e3b37 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -110,6 +110,7 @@ llama_context::llama_context(
+@@ -15,6 +15,7 @@
+ 
+ #include <cinttypes>
+ #include <cmath>
++#include <cstdlib>
+ #include <cstring>
+ #include <limits>
+ #include <stdexcept>
+@@ -110,6 +111,7 @@ llama_context::llama_context(
  
      cparams.n_threads               = params.n_threads;
      cparams.n_threads_batch         = params.n_threads_batch;
@@ -22,7 +505,7 @@ index aa9fb2c..f8a17a7 100644
      cparams.yarn_ext_factor         = params.yarn_ext_factor  >= 0.0f ? params.yarn_ext_factor  : hparams.yarn_ext_factor;
      cparams.yarn_attn_factor        = params.yarn_attn_factor >= 0.0f ? params.yarn_attn_factor : hparams.yarn_attn_factor;
      cparams.yarn_beta_fast          = params.yarn_beta_fast   >= 0.0f ? params.yarn_beta_fast   : hparams.yarn_beta_fast;
-@@ -316,6 +317,7 @@ llama_context::llama_context(
+@@ -316,6 +318,7 @@ llama_context::llama_context(
      LLAMA_LOG_INFO("%s: n_rs_seq              = %u\n",   __func__, cparams.n_rs_seq);
      LLAMA_LOG_INFO("%s: n_outputs_max         = %u\n",   __func__, cparams.n_outputs_max);
      LLAMA_LOG_INFO("%s: n_outputs_max_per_seq = %u\n",   __func__, cparams.n_outputs_max_per_seq);
@@ -30,7 +513,251 @@ index aa9fb2c..f8a17a7 100644
  
      if (cparams.n_ctx_seq < hparams.n_ctx_train) {
          LLAMA_LOG_INFO("%s: n_ctx_seq (%u) < n_ctx_train (%u) -- the full capacity of the model will not be utilized\n",
-@@ -1440,6 +1442,8 @@ int llama_context::encode(const llama_batch & batch_inp) {
+@@ -905,6 +908,190 @@ llama_token * llama_context::get_sampled_tokens()  const{
+     return sampling.sampled.data;
+ }
+ 
++bool llama_context::mtp_recurrent_begin(uint32_t max_steps) {
++    if (mtp_recurrent_active || mtp_recurrent_input_pending ||
++            cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP ||
++            model.arch != LLM_ARCH_QWEN35 || model.hparams.n_layer_nextn != 1 ||
++            cparams.pipeline_parallel || graph_reuse_disable ||
++            sampling.samplers.size() != 1 || max_steps == 0 || max_steps > 64) {
++        return false;
++    }
++
++    auto * output_dev = model.dev_output();
++    auto * host_buft = output_dev ? ggml_backend_dev_host_buffer_type(output_dev) : nullptr;
++    if (host_buft == nullptr) {
++        return false;
++    }
++
++    const size_t token_bytes = (size_t) max_steps * sizeof(llama_token);
++    const size_t hidden_bytes = (size_t) model.hparams.n_embd_out() * sizeof(float);
++    const size_t required_bytes = token_bytes + hidden_bytes;
++    if (!buf_mtp_recurrent || ggml_backend_buffer_get_size(buf_mtp_recurrent.get()) < required_bytes) {
++        buf_mtp_recurrent.reset(ggml_backend_buft_alloc_buffer(host_buft, required_bytes));
++        if (!buf_mtp_recurrent) {
++            return false;
++        }
++    }
++
++    auto * base = (uint8_t *) ggml_backend_buffer_get_base(buf_mtp_recurrent.get());
++    mtp_recurrent_tokens_host = (llama_token *) base;
++    mtp_recurrent_h_host = (float *) (base + token_bytes);
++    mtp_recurrent_token_capacity = max_steps;
++    mtp_recurrent_token_count = 0;
++    mtp_recurrent_token_host = nullptr;
++    mtp_recurrent_active = true;
++    return true;
++}
++
++int32_t llama_context::mtp_recurrent_capture(bool prepare_next) {
++    if (!mtp_recurrent_active || mtp_recurrent_input_pending ||
++            mtp_recurrent_tokens_host == nullptr ||
++            mtp_recurrent_token_count >= mtp_recurrent_token_capacity) {
++        return -1;
++    }
++
++    auto * res = gf_res_prev.get();
++    ggml_tensor * sampled = nullptr;
++    for (auto * tensor : res->t_sampled) {
++        if (tensor == nullptr) {
++            continue;
++        }
++        if (sampled != nullptr) {
++            return -1;
++        }
++        sampled = tensor;
++    }
++
++    if (sampled == nullptr || ggml_nelements(sampled) != 1 ||
++            sampled->type != GGML_TYPE_I32) {
++        return -1;
++    }
++
++    ggml_backend_t backend_sampled = ggml_backend_sched_get_tensor_backend(sched.get(), sampled);
++    if (backend_sampled == nullptr) {
++        return -1;
++    }
++    llama_token * token_out = mtp_recurrent_tokens_host + mtp_recurrent_token_count++;
++    ggml_backend_tensor_get_async(backend_sampled, sampled, token_out, 0, sizeof(*token_out));
++
++    if (!prepare_next) {
++        return 0;
++    }
++
++    auto * h_out = res->t_h_nextn;
++    auto * token_in = res->t_inp_tokens;
++    auto * h_in = res->t_inp_h;
++    if (res->mtp_recurrent_input == nullptr || h_out == nullptr || token_in == nullptr || h_in == nullptr) {
++        LLAMA_LOG_ERROR("%s: recurrent MTP graph tensors are missing (input=%d, h_out=%d, token_in=%d, h_in=%d)\n",
++                __func__, res->mtp_recurrent_input != nullptr, h_out != nullptr,
++                token_in != nullptr, h_in != nullptr);
++        return 2;
++    }
++
++    const bool token_layout_ok = sampled->type == token_in->type &&
++            ggml_nelements(sampled) == ggml_nelements(token_in) &&
++            ggml_nbytes(sampled) == ggml_nbytes(token_in) && ggml_is_contiguous(token_in);
++    const bool hidden_layout_ok = h_out->type == h_in->type &&
++            ggml_nelements(h_out) == ggml_nelements(h_in) &&
++            ggml_nbytes(h_out) == ggml_nbytes(h_in) &&
++            ggml_is_contiguous(h_out) && ggml_is_contiguous(h_in) &&
++            (size_t) ggml_nelements(h_out) == model.hparams.n_embd_out();
++    if (!token_layout_ok || !hidden_layout_ok) {
++        LLAMA_LOG_ERROR("%s: recurrent MTP tensor layout mismatch "
++                "(sampled=%s/%lld/%zu, token_in=%s/%lld/%zu, h_out=%s/%lld/%zu, h_in=%s/%lld/%zu)\n",
++                __func__, ggml_type_name(sampled->type), (long long) ggml_nelements(sampled), ggml_nbytes(sampled),
++                ggml_type_name(token_in->type), (long long) ggml_nelements(token_in), ggml_nbytes(token_in),
++                ggml_type_name(h_out->type), (long long) ggml_nelements(h_out), ggml_nbytes(h_out),
++                ggml_type_name(h_in->type), (long long) ggml_nelements(h_in), ggml_nbytes(h_in));
++        return 3;
++    }
++
++    ggml_backend_t backend_h_out = ggml_backend_sched_get_tensor_backend(sched.get(), h_out);
++    if (backend_h_out == nullptr ||
++            ggml_backend_dev_type(ggml_backend_get_device(backend_sampled)) != GGML_BACKEND_DEVICE_TYPE_GPU ||
++            ggml_backend_dev_type(ggml_backend_get_device(backend_h_out)) != GGML_BACKEND_DEVICE_TYPE_GPU) {
++        LLAMA_LOG_ERROR(
++                "%s: recurrent MTP output backend mismatch (sampled=%s/%d, h_out=%s/%d)\n",
++                __func__,
++                backend_sampled ? ggml_backend_name(backend_sampled) : "none",
++                backend_sampled ? (int) ggml_backend_dev_type(ggml_backend_get_device(backend_sampled)) : -1,
++                backend_h_out ? ggml_backend_name(backend_h_out) : "none",
++                backend_h_out ? (int) ggml_backend_dev_type(ggml_backend_get_device(backend_h_out)) : -1);
++        return 41;
++    }
++
++    ggml_tensor * token_carry = ggml_backend_sched_get_tensor_copy(sched.get(), token_in, backend_sampled);
++    ggml_tensor * h_carry = ggml_backend_sched_get_tensor_copy(sched.get(), h_in, backend_h_out);
++    const bool token_copy_layout_ok = token_carry != nullptr &&
++            token_carry->type == sampled->type &&
++            ggml_nelements(token_carry) == ggml_nelements(sampled) &&
++            ggml_nbytes(token_carry) == ggml_nbytes(sampled) && ggml_is_contiguous(token_carry);
++    const bool hidden_copy_layout_ok = h_carry != nullptr &&
++            h_carry->type == h_out->type &&
++            ggml_nelements(h_carry) == ggml_nelements(h_out) &&
++            ggml_nbytes(h_carry) == ggml_nbytes(h_out) && ggml_is_contiguous(h_carry);
++    if (!token_copy_layout_ok || !hidden_copy_layout_ok) {
++        LLAMA_LOG_ERROR(
++                "%s: recurrent MTP scheduler copy mismatch "
++                "(sampled_backend=%s, h_backend=%s, token_copy=%d, h_copy=%d, "
++                "token_copy_ne=%lld, token_copy_bytes=%zu, h_copy_ne=%lld, h_copy_bytes=%zu)\n",
++                __func__, ggml_backend_name(backend_sampled), ggml_backend_name(backend_h_out),
++                token_carry != nullptr, h_carry != nullptr,
++                token_carry ? (long long) ggml_nelements(token_carry) : -1LL,
++                token_carry ? ggml_nbytes(token_carry) : 0,
++                h_carry ? (long long) ggml_nelements(h_carry) : -1LL,
++                h_carry ? ggml_nbytes(h_carry) : 0);
++        if (token_carry == nullptr) {
++            return 421;
++        }
++        if (h_carry == nullptr) {
++            return 422;
++        }
++        return !token_copy_layout_ok ? 423 : 424;
++    }
++
++    const bool token_override =
++            ggml_backend_sched_override_input_copy(sched.get(), token_in, backend_sampled);
++    const bool hidden_override =
++            ggml_backend_sched_override_input_copy(sched.get(), h_in, backend_h_out);
++    if (!token_override || !hidden_override) {
++        LLAMA_LOG_ERROR(
++                "%s: recurrent MTP scheduler override rejected "
++                "(token_input=%d, h_input=%d, token_override=%d, h_override=%d)\n",
++                __func__, !!(token_in->flags & GGML_TENSOR_FLAG_INPUT),
++                !!(h_in->flags & GGML_TENSOR_FLAG_INPUT), token_override, hidden_override);
++        ggml_backend_sched_clear_input_copy_overrides(sched.get());
++        return 43;
++    }
++
++    ggml_backend_tensor_copy_async(backend_sampled, backend_sampled, sampled, token_carry);
++    ggml_backend_tensor_copy_async(backend_h_out, backend_h_out, h_out, h_carry);
++
++    mtp_recurrent_token_host = token_out;
++    mtp_recurrent_input_pending = true;
++    return 1;
++}
++
++int32_t llama_context::mtp_recurrent_end(llama_token * tokens_out, size_t capacity) {
++    if (mtp_recurrent_active) {
++        synchronize();
++    }
++
++    const size_t n_tokens = mtp_recurrent_token_count;
++    const bool output_valid = n_tokens <= capacity && (n_tokens == 0 || tokens_out != nullptr);
++    if (output_valid && n_tokens > 0) {
++        std::memcpy(tokens_out, mtp_recurrent_tokens_host, n_tokens * sizeof(llama_token));
++    }
++
++    mtp_recurrent_active = false;
++    mtp_recurrent_input_pending = false;
++    mtp_recurrent_token_host = nullptr;
++    mtp_recurrent_token_count = 0;
++    ggml_backend_sched_clear_input_copy_overrides(sched.get());
++
++    return output_valid ? (int32_t) n_tokens : -1;
++}
++
+ float * llama_context::get_embeddings_ith(int32_t i) {
+     output_reorder();
+ 
+@@ -1336,7 +1523,42 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
+     const auto gparams = graph_params(res, ubatch, mctx, gtype);
+ 
+-    if (!graph_reuse_disable && res->can_reuse(gparams)) {
++    const bool can_reuse = !graph_reuse_disable && res->can_reuse(gparams);
++    const bool use_mtp_recurrent_carry = mtp_recurrent_input_pending && can_reuse &&
++            res->mtp_recurrent_input != nullptr;
++    llama_ubatch recurrent_fallback_ubatch;
++    const llama_ubatch * input_ubatch = &ubatch;
++
++    if (mtp_recurrent_input_pending && !use_mtp_recurrent_carry) {
++        synchronize();
++        auto * h_out = res->t_h_nextn;
++        if (mtp_recurrent_token_host == nullptr || mtp_recurrent_h_host == nullptr ||
++                h_out == nullptr ||
++                (size_t) ggml_nelements(h_out) != model.hparams.n_embd_out()) {
++            LLAMA_LOG_ERROR("%s: recurrent MTP fallback input is unavailable\n", __func__);
++            ret = GGML_STATUS_FAILED;
++            return nullptr;
++        }
++
++        ggml_backend_t backend_h_out = ggml_backend_sched_get_tensor_backend(sched.get(), h_out);
++        if (backend_h_out == nullptr) {
++            LLAMA_LOG_ERROR("%s: recurrent MTP fallback hidden state has no backend\n", __func__);
++            ret = GGML_STATUS_FAILED;
++            return nullptr;
++        }
++        ggml_backend_tensor_get(
++                h_out, mtp_recurrent_h_host, 0, ggml_nbytes(h_out));
++
++        recurrent_fallback_ubatch = ubatch;
++        recurrent_fallback_ubatch.token = mtp_recurrent_token_host;
++        recurrent_fallback_ubatch.embd = mtp_recurrent_h_host;
++        input_ubatch = &recurrent_fallback_ubatch;
++    }
++
++    mtp_recurrent_input_pending = false;
++    mtp_recurrent_token_host = nullptr;
++
++    if (can_reuse) {
+         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
+ 
+         // with pipeline parallelism, the previous graph_compute_async may still be running
+@@ -1377,7 +1599,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         //const auto t_start_us = ggml_time_us();
+ 
+         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
+-        res->set_inputs(&ubatch);
++        res->set_inputs(input_ubatch, use_mtp_recurrent_carry);
+ 
+         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+     }
+@@ -1440,6 +1662,8 @@ int llama_context::encode(const llama_batch & batch_inp) {
  
      n_queued_tokens += n_tokens;
  
@@ -39,7 +766,7 @@ index aa9fb2c..f8a17a7 100644
      // reserve output buffer
      if (output_reserve(n_tokens) < n_tokens) {
          LLAMA_LOG_ERROR("%s: could not reserve space for batch with %u outputs\n", __func__, n_tokens);
-@@ -1484,6 +1488,7 @@ int llama_context::encode(const llama_batch & batch_inp) {
+@@ -1484,6 +1708,7 @@ int llama_context::encode(const llama_batch & batch_inp) {
          GGML_ASSERT(logits.data != nullptr);
  
          ggml_backend_tensor_get_async(backend_res, t_logits, logits.data, 0, n_tokens*n_vocab*sizeof(float));
@@ -47,7 +774,36 @@ index aa9fb2c..f8a17a7 100644
      }
  
      // extract embeddings
-@@ -1725,6 +1730,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
+@@ -1592,6 +1817,28 @@ static void copy_tensor_async_rows(
+         return;
+     }
+ 
++    // The batched greedy path stores all sampled tokens in the first tensor.
++    // Preserve the row-vector API while issuing one contiguous device-to-host copy.
++    if (counts == nullptr &&
++        !tensors.empty() &&
++        tensors[0] != nullptr &&
++        ggml_nelements(tensors[0]) == (int64_t) tensors.size() * (int64_t) stride) {
++        for (size_t i = 1; i < tensors.size(); ++i) {
++            GGML_ASSERT(tensors[i] == nullptr && "packed sampling tensor must be unique");
++        }
++
++        auto * tensor = tensors[0];
++        const size_t n_elements = ggml_nelements(tensor);
++        GGML_ASSERT(ggml_is_contiguous(tensor) && "packed sampling tensor must be contiguous");
++        GGML_ASSERT((size_t) row_offset * stride + n_elements <= dst.size);
++        GGML_ASSERT(ggml_nbytes(tensor) == n_elements * sizeof(T));
++
++        ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched, tensor);
++        T * row_ptr = dst.data + (size_t) row_offset * stride;
++        ggml_backend_tensor_get_async(backend, tensor, row_ptr, 0, ggml_nbytes(tensor));
++        return;
++    }
++
+     for (size_t i = 0; i < tensors.size(); ++i) {
+         auto * tensor = tensors[i];
+         if (tensor == nullptr) {
+@@ -1725,6 +1972,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
      n_queued_tokens += n_tokens_all;
  
      output_swaps.clear();
@@ -55,7 +811,7 @@ index aa9fb2c..f8a17a7 100644
  
      sched_reserve();
  
-@@ -1871,6 +1877,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
+@@ -1871,6 +2119,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
                  GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
                  GGML_ASSERT((n_outputs_prev + n_outputs)*n_vocab <= (int64_t) logits.size);
                  ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, n_outputs*n_vocab*sizeof(float));
@@ -63,7 +819,25 @@ index aa9fb2c..f8a17a7 100644
              }
          }
  
-@@ -2228,7 +2235,7 @@ void llama_context::output_reorder() {
+@@ -1943,7 +2192,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
+             const int64_t n_rows = masked ? n_outputs       : (int64_t) ubatch.n_tokens;
+             const int64_t offset = masked ? n_outputs_prev  : n_tokens_prev;
+ 
+-            if (embd_nextn.data && t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
++            if (!mtp_recurrent_active && embd_nextn.data && t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+                 ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
+                 GGML_ASSERT(backend_h != nullptr);
+ 
+@@ -1955,7 +2204,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
+             }
+         }
+ 
+-        if (has_samplers) {
++        if (has_samplers && !mtp_recurrent_active) {
+             const auto stride = n_vocab;
+ 
+             // async copy the sampling data from the backend to the host
+@@ -2228,7 +2477,7 @@ void llama_context::output_reorder() {
          const uint64_t i0 = output_swaps[s].i0;
          const uint64_t i1 = output_swaps[s].i1;
  
@@ -72,7 +846,7 @@ index aa9fb2c..f8a17a7 100644
              for (uint64_t k = 0; k < n_vocab; k++) {
                  std::swap(logits.data[i0*n_vocab + k], logits.data[i1*n_vocab + k]);
              }
-@@ -2265,16 +2272,22 @@ void llama_context::output_reorder() {
+@@ -2265,16 +2514,22 @@ void llama_context::output_reorder() {
              assert(sampling.probs_count.size() > 0);
              assert(sampling.candidates_count.size() > 0);
  
@@ -101,7 +875,7 @@ index aa9fb2c..f8a17a7 100644
              }
  
              std::swap(sampling.sampled.data[i0],     sampling.sampled.data[i1]);
-@@ -3514,6 +3527,7 @@ llama_context_params llama_context_default_params() {
+@@ -3514,6 +3769,7 @@ llama_context_params llama_context_default_params() {
          /*.n_rs_seq                    =*/ 0,
          /*.n_outputs_max               =*/ 0,
          /*.n_outputs_max_per_seq       =*/ 1,
@@ -109,11 +883,41 @@ index aa9fb2c..f8a17a7 100644
          /*.n_threads                   =*/ GGML_DEFAULT_N_THREADS, // TODO: better default
          /*.n_threads_batch             =*/ GGML_DEFAULT_N_THREADS,
          /*.ctx_type                    =*/ LLAMA_CONTEXT_TYPE_DEFAULT,
+@@ -3801,6 +4057,18 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
+     return ctx->get_embeddings_nextn_ith(i);
+ }
+ 
++bool llama_mtp_recurrent_begin(llama_context * ctx, uint32_t max_steps) {
++    return ctx != nullptr && ctx->mtp_recurrent_begin(max_steps);
++}
++
++int32_t llama_mtp_recurrent_capture(llama_context * ctx, bool prepare_next) {
++    return ctx != nullptr ? ctx->mtp_recurrent_capture(prepare_next) : -1;
++}
++
++int32_t llama_mtp_recurrent_end(llama_context * ctx, llama_token * tokens_out, size_t capacity) {
++    return ctx != nullptr ? ctx->mtp_recurrent_end(tokens_out, capacity) : -1;
++}
++
+ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
+     ctx->synchronize();
+ 
 diff --git a/src/llama-context.h b/src/llama-context.h
-index bf91daa..b64d0ec 100644
+index bf91daa..bb1cc6a 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
-@@ -290,6 +290,7 @@ private:
+@@ -93,6 +93,10 @@ struct llama_context {
+     llama_token * get_sampled_tokens() const;
+     llama_token   get_sampled_token_ith(int32_t idx);
+ 
++    bool    mtp_recurrent_begin(uint32_t max_steps);
++    int32_t mtp_recurrent_capture(bool prepare_next);
++    int32_t mtp_recurrent_end(llama_token * tokens_out, size_t capacity);
++
+     float * get_sampled_logits_ith(int32_t idx);
+     size_t  get_sampled_logits_count(int32_t idx);
+ 
+@@ -290,6 +294,7 @@ private:
  
      // decode output (2-dimensional array: [n_outputs][n_vocab])
      buffer_view<float> logits = {nullptr, 0};
@@ -121,42 +925,299 @@ index bf91daa..b64d0ec 100644
  
      // embeddings output (2-dimensional array: [n_outputs][n_embd])
      // populated only when pooling_type == LLAMA_POOLING_TYPE_NONE
+@@ -367,6 +372,18 @@ private:
+     llm_graph_result_ptr gf_res_prev;
+     llm_graph_result_ptr gf_res_reserve;
+ 
++    // Greedy, single-sequence MTP can queue recurrent draft graphs without a
++    // host round trip between steps. The previous graph writes token and hidden
++    // inputs for the next reuse; host copies remain available for exact fallback.
++    bool mtp_recurrent_active = false;
++    bool mtp_recurrent_input_pending = false;
++    llama_token * mtp_recurrent_token_host = nullptr;
++    ggml_backend_buffer_ptr buf_mtp_recurrent;
++    llama_token * mtp_recurrent_tokens_host = nullptr;
++    float * mtp_recurrent_h_host = nullptr;
++    size_t mtp_recurrent_token_capacity = 0;
++    size_t mtp_recurrent_token_count = 0;
++
+     // host buffer for the model output (logits and embeddings)
+     ggml_backend_buffer_ptr buf_output;
+ 
 diff --git a/src/llama-cparams.h b/src/llama-cparams.h
-index 574ce95..95e0db6 100644
+index 574ce95..4e37ccd 100644
 --- a/src/llama-cparams.h
 +++ b/src/llama-cparams.h
 @@ -16,6 +16,7 @@ struct llama_cparams {
      uint32_t n_rs_seq;        // number of recurrent-state snapshots per seq for rollback
      uint32_t n_outputs_max;   // max outputs supported by the context
      uint32_t n_outputs_max_per_seq;
-+    uint32_t n_mtp_fr_vocab;  // reduced-vocabulary MTP prefix rows, 0 = full vocabulary
++    uint32_t n_mtp_fr_vocab;  // MTP head rows; d2t rank order when present, 0 = all rows
      int32_t  n_threads;       // number of threads to use for generation
      int32_t  n_threads_batch; // number of threads to use for batch processing
  
+diff --git a/src/llama-ext.h b/src/llama-ext.h
+index 35d6e58..e6ac2b8 100644
+--- a/src/llama-ext.h
++++ b/src/llama-ext.h
+@@ -107,6 +107,14 @@ LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);
+ // LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i);
+ LLAMA_API float * llama_get_embeddings_nextn_ith(struct llama_context * ctx, int32_t i);
+ 
++// Queue a fixed-width greedy MTP draft chain with one final host synchronization.
++// capture returns 1 when the next graph input was prepared on the backend, 0
++// when only the sampled token was captured, and -1 on invalid state.
++LLAMA_API bool llama_mtp_recurrent_begin(struct llama_context * ctx, uint32_t max_steps);
++LLAMA_API int32_t llama_mtp_recurrent_capture(struct llama_context * ctx, bool prepare_next);
++LLAMA_API int32_t llama_mtp_recurrent_end(
++        struct llama_context * ctx, llama_token * tokens_out, size_t capacity);
++
+ // Set whether the context outputs the input embeddings of a specific layer
+ LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid, bool value);
+ 
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 55d8580..df469ad 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1295,6 +1295,7 @@ int64_t llm_graph_result::get_max_nodes() const {
+ void llm_graph_result::reset() {
+     t_inp_tokens  = nullptr;
+     t_inp_embd    = nullptr;
++    t_inp_h       = nullptr;
+     t_logits      = nullptr;
+     t_embd        = nullptr;
+     t_embd_pooled = nullptr;
+@@ -1312,6 +1313,7 @@ void llm_graph_result::reset() {
+ 
+     inputs.clear();
+     fused_nodes.clear();
++    mtp_recurrent_input = nullptr;
+ 
+     buf_compute_meta.resize(ggml_tensor_overhead()*max_nodes + ggml_graph_overhead_custom(max_nodes, false));
+ 
+@@ -1326,8 +1328,11 @@ void llm_graph_result::reset() {
+     gf = ggml_new_graph_custom(ctx_compute.get(), max_nodes, false);
+ }
+ 
+-void llm_graph_result::set_inputs(const llama_ubatch * ubatch) {
++void llm_graph_result::set_inputs(const llama_ubatch * ubatch, bool use_mtp_recurrent_carry) {
+     for (auto & input : inputs) {
++        if (use_mtp_recurrent_carry && input.get() == mtp_recurrent_input) {
++            continue;
++        }
+         input->set_input(ubatch);
+     }
+ }
+@@ -3676,6 +3681,33 @@ void llm_graph_context::build_sampling() const {
+         }
+     }
+ 
++    // A single pure-greedy sequence can sample every dense output row with one
++    // matrix argmax. This replaces one graph node and one CUDA launch per row.
++    if (samplers.size() == 1 && sampling_rows.size() == 1) {
++        const auto & [seq_id, sampler] = *samplers.begin();
++        const auto rows_it = sampling_rows.find(seq_id);
++        if (rows_it != sampling_rows.end() &&
++            rows_it->second.size() == n_rows &&
++            llama_sampler_backend_is_pure_greedy(sampler)) {
++            bool dense = true;
++            for (uint32_t i = 0; i < n_rows; ++i) {
++                if (rows_it->second[i] != i) {
++                    dense = false;
++                    break;
++                }
++            }
++
++            if (dense) {
++                ggml_tensor * sampled = ggml_argmax(ctx0, res->t_logits);
++                ggml_set_name(sampled, "greedy_argmax_batch");
++                res->t_sampled[0] = sampled;
++                outs[1] = sampled;
++                ggml_build_forward_select(gf, outs.data(), outs.size(), 1);
++                return;
++            }
++        }
++    }
++
+     static const std::vector<uint32_t> dummy_row = { 0 };
+ 
+     for (const auto & [seq_id, sampler] : samplers) {
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 75bc0fe..72f85e5 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -15,7 +15,6 @@
+ struct ggml_cgraph;
+ struct ggml_context;
+ struct ggml_tensor;
+-
+ struct llama_cparams;
+ struct llama_layer;
+ 
+@@ -117,6 +116,7 @@ public:
+ protected:
+     // env: LLAMA_GRAPH_INPUT_DEBUG
+     int debug = 0;
++
+ };
+ 
+ using llm_graph_input_ptr = std::unique_ptr<llm_graph_input_i>;
+@@ -876,7 +876,7 @@ public:
+ 
+     void reset();
+ 
+-    void set_inputs(const llama_ubatch * ubatch);
++    void set_inputs(const llama_ubatch * ubatch, bool use_mtp_recurrent_carry = false);
+     void set_outputs(const llm_graph_params & params);
+ 
+     // try to update the existing graph result using the new graph parameters in order to reuse it
+@@ -897,6 +897,7 @@ public:
+     // important graph nodes
+     ggml_tensor * t_inp_tokens  = nullptr;
+     ggml_tensor * t_inp_embd    = nullptr; // [n_embd_inp, n_tokens]
++    ggml_tensor * t_inp_h       = nullptr; // [n_embd, n_tokens]
+     ggml_tensor * t_logits      = nullptr;
+     ggml_tensor * t_embd        = nullptr;
+     ggml_tensor * t_embd_pooled = nullptr;
+@@ -912,6 +913,10 @@ public:
+     std::vector<llm_graph_input_ptr> inputs;
+     std::vector<llm_graph_fused_node> fused_nodes;
+ 
++    // Input whose token and hidden tensors can be populated from the previous
++    // MTP graph output instead of host staging.
++    llm_graph_input_i * mtp_recurrent_input = nullptr;
++
+     ggml_context_ptr ctx_compute;
+ 
+     // memory buffers used to evaluate the model
+diff --git a/src/llama-sampler.cpp b/src/llama-sampler.cpp
+index 34a7988..4e684e5 100644
+--- a/src/llama-sampler.cpp
++++ b/src/llama-sampler.cpp
+@@ -1104,6 +1104,18 @@ static struct llama_sampler_i llama_sampler_greedy_i = {
+     /* .copy_state        = */ llama_sampler_backend_copy_state<llama_sampler_greedy>,
+ };
+ 
++bool llama_sampler_backend_is_pure_greedy(const llama_sampler * sampler) {
++    if (sampler == nullptr || sampler->iface != &llama_sampler_chain_i) {
++        return false;
++    }
++
++    const auto * chain = (const llama_sampler_chain *) sampler->ctx;
++    return chain->is_init &&
++           chain->samplers.size() == 1 &&
++           chain->samplers[0].is_backend &&
++           chain->samplers[0].ptr->iface == &llama_sampler_greedy_i;
++}
++
+ struct llama_sampler * llama_sampler_init_greedy() {
+     return llama_sampler_init(
+         /* .iface = */ &llama_sampler_greedy_i,
+diff --git a/src/llama-sampler.h b/src/llama-sampler.h
+index e5db298..ad48438 100644
+--- a/src/llama-sampler.h
++++ b/src/llama-sampler.h
+@@ -37,6 +37,7 @@ struct llama_sampler_chain {
+ 
+ uint32_t llama_sampler_backend_n_nodes(const llama_sampler * sampler);
+ void llama_sampler_backend_begin(llama_sampler * sampler);
++bool llama_sampler_backend_is_pure_greedy(const llama_sampler * sampler);
+ 
+ struct llama_sampler * llama_sampler_init_dry_testing(
+         float   dry_multiplier,
 diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
-index 309dd43..28373a8 100644
+index 309dd43..f21cf74 100644
 --- a/src/models/qwen35.cpp
 +++ b/src/models/qwen35.cpp
-@@ -637,7 +637,22 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
+@@ -41,6 +41,25 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
+     const int trunk_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
+     int mtp_flags = !ml.load_mtp ? TENSOR_SKIP : 0;
+ 
++    // A compact MTP head stores its rows in frequency rank order. The optional
++    // d2t tensor maps those local row IDs back to the target vocabulary.
++    int64_t n_mtp_vocab = n_vocab;
++    const struct ggml_tensor * d2t_meta = ml.get_tensor_meta("d2t");
++    if (d2t_meta) {
++        if (d2t_meta->type != GGML_TYPE_I64) {
++            throw std::runtime_error("QWEN35 MTP: d2t must use I64 token IDs");
++        }
++        n_mtp_vocab = d2t_meta->ne[0];
++        if (n_mtp_vocab <= 0 || n_mtp_vocab > n_vocab) {
++            throw std::runtime_error(format(
++                    "QWEN35 MTP: invalid compact vocabulary size %lld (target vocabulary = %lld)",
++                    (long long) n_mtp_vocab, (long long) n_vocab));
++        }
++        d2t = create_tensor(tn(LLM_TENSOR_D2T), { n_mtp_vocab }, mtp_flags);
++        LLAMA_LOG_INFO("%s: QWEN35 MTP frequency-ranked vocabulary = %lld / %lld tokens\n",
++                __func__, (long long) n_mtp_vocab, (long long) n_vocab);
++    }
++
+     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
+ 
+     // output
+@@ -115,7 +134,8 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
+         layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", il), { n_embd },              mtp_flags);
+         layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", il), { n_embd },              mtp_flags);
+         layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", il), { n_embd, n_vocab },     mtp_flags|TENSOR_NOT_REQUIRED);
+-        layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", il), { n_embd, n_vocab },     mtp_flags|TENSOR_NOT_REQUIRED);
++        const int head_flags = d2t_meta ? mtp_flags : mtp_flags|TENSOR_NOT_REQUIRED;
++        layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", il), { n_embd, n_mtp_vocab }, head_flags);
+         layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", il), { n_embd },              mtp_flags|TENSOR_NOT_REQUIRED);
+     };
+ 
+@@ -533,6 +553,9 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
+ 
+     ggml_tensor * h_embd = inp->h;
+ 
++    res->t_inp_tokens = inp->tokens;
++    res->t_inp_h = inp->h;
++    res->mtp_recurrent_input = inp.get();
+     res->add_input(std::move(inp));
+ 
+     ggml_tensor * inp_pos     = build_inp_pos();
+@@ -637,7 +660,45 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
      ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
      ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
      GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
 -    cur = build_lora_mm(head_w, cur, head_s);
 +
-+    const int64_t fr_vocab = cparams.n_mtp_fr_vocab > 0
++    const int64_t requested_vocab = cparams.n_mtp_fr_vocab > 0
 +            ? std::min<int64_t>(cparams.n_mtp_fr_vocab, head_w->ne[1])
 +            : head_w->ne[1];
-+    if (fr_vocab < head_w->ne[1] && loras->empty()) {
-+        ggml_tensor * head_fr = ggml_view_2d(ctx0, head_w,
-+                head_w->ne[0], fr_vocab, head_w->nb[1], 0);
-+        cur = build_lora_mm(head_fr, cur, head_s);
++    const int64_t draft_vocab = requested_vocab < head_w->ne[1] && loras->empty()
++            ? requested_vocab
++            : head_w->ne[1];
++    ggml_tensor * draft_head = head_w;
++    if (draft_vocab < head_w->ne[1]) {
++        draft_head = ggml_view_2d(ctx0, head_w,
++                head_w->ne[0], draft_vocab, head_w->nb[1], 0);
++    }
++    cur = build_lora_mm(draft_head, cur, head_s);
 +
++    if (model.d2t) {
++        GGML_ASSERT(layer.nextn.shared_head_head && "QWEN35 MTP: d2t requires a dedicated compact head");
++        GGML_ASSERT(model.d2t->type == GGML_TYPE_I64);
++        GGML_ASSERT(model.d2t->ne[0] == head_w->ne[1]);
++
++        ggml_tensor * token_ids = model.d2t;
++        if (draft_vocab < head_w->ne[1]) {
++            token_ids = ggml_view_1d(ctx0, model.d2t, draft_vocab, 0);
++        }
++
++        const int64_t n_outputs = cur->ne[1];
++        const int64_t n_vocab = (int64_t) model.vocab.n_tokens();
++        ggml_tensor * logits = ggml_fill(ctx0,
++                ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, n_vocab, n_outputs),
++                -INFINITY);
++        cur = ggml_set_rows(ctx0, logits,
++                ggml_reshape_3d(ctx0, cur,       1,           draft_vocab, n_outputs),
++                ggml_reshape_3d(ctx0, token_ids, draft_vocab, 1,           1));
++        cur = ggml_reshape_2d(ctx0, cur, n_vocab, n_outputs);
++    } else if (draft_vocab < head_w->ne[1]) {
 +        ggml_tensor * tail = ggml_new_tensor_2d(ctx0, cur->type,
-+                head_w->ne[1] - fr_vocab, cur->ne[1]);
++                head_w->ne[1] - draft_vocab, cur->ne[1]);
 +        tail = ggml_fill(ctx0, tail, -INFINITY);
 +        cur = ggml_concat(ctx0, cur, tail, 0);
-+    } else {
-+        cur = build_lora_mm(head_w, cur, head_s);
 +    }
      cb(cur, "result_output", -1);
  
