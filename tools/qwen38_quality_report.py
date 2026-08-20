@@ -97,7 +97,12 @@ def describe(values: Iterable[float | None]) -> dict[str, float | None]:
     }
 
 
-def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate_reports(
+    reports: list[dict[str, Any]],
+    comparisons: Iterable[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    if not reports:
+        raise ValueError("quality matrix contains no reports")
     task_hashes = {report["tasks_sha256"] for report in reports}
     server_hashes = {report["server_sha256"] for report in reports}
     if len(task_hashes) != 1 or len(server_hashes) != 1:
@@ -105,14 +110,34 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_repetition: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
     for report in reports:
-        grouped[report["mode_label"]].append(report)
-        by_repetition[int(report["repetition"])][report["mode_label"]] = report
-    required = {"q6-off", "tbq4-off", "tbq4-mtp-fr"}
-    if set(grouped) != required:
-        raise ValueError(f"expected modes {sorted(required)}, got {sorted(grouped)}")
+        mode = report["mode_label"]
+        repetition = int(report["repetition"])
+        if mode in by_repetition[repetition]:
+            raise ValueError(f"duplicate mode {mode} in repetition {repetition}")
+        grouped[mode].append(report)
+        by_repetition[repetition][mode] = report
+    required = set(grouped)
     repetitions = {len(items) for items in grouped.values()}
     if len(repetitions) != 1:
         raise ValueError("mode repetition counts differ")
+    if any(set(modes) != required for modes in by_repetition.values()):
+        raise ValueError("quality matrix repetition is incomplete")
+
+    selected_comparisons = list(comparisons) if comparisons is not None else [
+        (base, candidate)
+        for base, candidate in (
+            ("q6-off", "tbq4-off"),
+            ("tbq4-off", "tbq4-mtp-fr"),
+        )
+        if base in required and candidate in required
+    ]
+    for base, candidate in selected_comparisons:
+        if base not in required or candidate not in required:
+            raise ValueError(
+                f"comparison {base} -> {candidate} references an absent mode"
+            )
+        if base == candidate:
+            raise ValueError("comparison base and candidate must differ")
 
     modes: dict[str, Any] = {}
     for mode, items in sorted(grouped.items()):
@@ -170,6 +195,7 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
             "content_stable_tasks": sum(
                 len(set(values)) == 1 for values in task_outputs.values()
             ),
+            "task_count": len(items[0]["results"]),
             "by_benchmark": by_benchmark,
         }
         runtime_reports = [
@@ -209,16 +235,10 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
 
     pairs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for repetition, modes_for_run in sorted(by_repetition.items()):
-        if set(modes_for_run) != required:
-            raise ValueError(f"repetition {repetition} is incomplete")
-        pairs["q6-off -> tbq4-off"].append(
-            pair_metrics(modes_for_run["q6-off"], modes_for_run["tbq4-off"])
-        )
-        pairs["tbq4-off -> tbq4-mtp-fr"].append(
-            pair_metrics(
-                modes_for_run["tbq4-off"], modes_for_run["tbq4-mtp-fr"]
+        for base, candidate in selected_comparisons:
+            pairs[f"{base} -> {candidate}"].append(
+                pair_metrics(modes_for_run[base], modes_for_run[candidate])
             )
-        )
     return {
         "schema": "a3s.power.quality-eval.aggregate.v1",
         "created_at": utc_now(),
@@ -366,6 +386,7 @@ def render_markdown(aggregate: dict[str, Any]) -> str:
         "q6-off": "Untouched Q6_K, speculation off",
         "tbq4-off": "TBQ4 mixed artifact, speculation off",
         "tbq4-mtp-fr": "TBQ4 + MTP + FR",
+        "tbq4-mtp-full-vocab": "TBQ4 + full-vocabulary MTP",
     }
     lines = [
         "# Qwen3.8-27B quality and workload-throughput matrix",
@@ -376,14 +397,13 @@ def render_markdown(aggregate: dict[str, Any]) -> str:
         "| Mode | Mean accuracy | Mean strict accuracy | Median run latency | Mean workload throughput | Stable answers |",
         "| --- | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for mode in ("q6-off", "tbq4-off", "tbq4-mtp-fr"):
-        metrics = aggregate["modes"][mode]
+    for mode, metrics in aggregate["modes"].items():
         lines.append(
-            f"| {labels[mode]} | {metrics['accuracy']['mean']:.1%} | "
+            f"| {labels.get(mode, mode)} | {metrics['accuracy']['mean']:.1%} | "
             f"{metrics['strict_accuracy']['mean']:.1%} | "
             f"{metrics['median_latency_seconds']['median']:.3f} s | "
             f"{metrics['aggregate_completion_tokens_per_second']['mean']:.3f} token/s | "
-            f"{metrics['prediction_stable_tasks']}/100 |"
+            f"{metrics['prediction_stable_tasks']}/{metrics['task_count']} |"
         )
     lines.extend(
         [

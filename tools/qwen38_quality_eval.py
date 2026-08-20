@@ -705,7 +705,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
 def aggregate_command(args: argparse.Namespace) -> None:
     report_paths = sorted(Path(path) for path in args.reports)
     reports = [json.loads(path.read_text(encoding="utf-8")) for path in report_paths]
-    aggregate = aggregate_reports(reports)
+    aggregate = aggregate_reports(reports, comparisons=args.pair)
     aggregate["reports"] = [
         {"path": path.name, "sha256": sha256_file(path)} for path in report_paths
     ]
@@ -788,6 +788,13 @@ def parser() -> argparse.ArgumentParser:
 
     aggregate = commands.add_parser("aggregate", help="aggregate complete reports")
     aggregate.add_argument("--reports", nargs="+", required=True)
+    aggregate.add_argument(
+        "--pair",
+        nargs=2,
+        action="append",
+        metavar=("BASE", "CANDIDATE"),
+        help="add a paired per-repetition quality comparison",
+    )
     aggregate.add_argument("--output-json", type=Path, required=True)
     aggregate.add_argument("--output-markdown", type=Path, required=True)
 

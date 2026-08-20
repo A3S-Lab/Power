@@ -370,6 +370,46 @@ class AggregateTests(unittest.TestCase):
             0,
         )
 
+    def test_explicit_full_vocab_comparisons_are_aggregated(self) -> None:
+        reports = []
+        modes = ("q6-off", "tbq4-off", "tbq4-mtp-full-vocab")
+        for order, mode in enumerate(modes, 1):
+            rows = [
+                result_row("a", "A", "A", strict_prediction="A"),
+                result_row("b", "B", "B", strict_prediction="B"),
+            ]
+            reports.append(
+                {
+                    "mode_label": mode,
+                    "repetition": 1,
+                    "order_index": order,
+                    "model_sha256": mode,
+                    "tasks_sha256": "tasks",
+                    "server_sha256": "server",
+                    "results": rows,
+                    "summary": quality.report_summary(rows),
+                    "speculative_runtime": None,
+                }
+            )
+
+        comparisons = [
+            ("q6-off", "tbq4-off"),
+            ("tbq4-off", "tbq4-mtp-full-vocab"),
+        ]
+        aggregate = quality.aggregate_reports(reports, comparisons=comparisons)
+
+        self.assertEqual(set(aggregate["modes"]), set(modes))
+        self.assertEqual(
+            set(aggregate["paired_runs"]),
+            {
+                "q6-off -> tbq4-off",
+                "tbq4-off -> tbq4-mtp-full-vocab",
+            },
+        )
+        markdown = quality.render_markdown(aggregate)
+        self.assertIn("TBQ4 + full-vocabulary MTP", markdown)
+        self.assertIn("2/2", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()

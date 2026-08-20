@@ -5,6 +5,11 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Tbq4PowerHome,
 
+    [ValidateSet('prefix-fr-release', 'full-vocabulary-current')]
+    [string]$Profile = 'prefix-fr-release',
+
+    [string]$RuntimeConfig,
+
     [ValidateRange(1, 20)]
     [int]$Repetitions = 3,
 
@@ -16,6 +21,8 @@ param(
 
     [ValidateSet('Normal', 'AboveNormal', 'High')]
     [string]$ProcessPriority = 'High',
+
+    [UInt64]$ProcessorAffinityMask = 0,
 
     [string]$TargetDirectory = 'target-native-sm89-ninja',
 
@@ -49,9 +56,16 @@ $ErrorActionPreference = 'Stop'
 $powerRoot = Split-Path -Parent $PSScriptRoot
 $server = Join-Path $powerRoot "$TargetDirectory\release\a3s-power.exe"
 $evaluator = Join-Path $PSScriptRoot 'qwen38_quality_eval.py'
-$benchmarkRoot = Join-Path $powerRoot 'docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality'
+$qwenBenchmarkRoot = Join-Path $powerRoot 'docs\benchmarks\qwen3.8-27b-q6k-rtx4090'
+$benchmarkRoot = Join-Path $qwenBenchmarkRoot 'quality'
 $manifest = Join-Path $benchmarkRoot 'tasks-v1.manifest.json'
-$config = Join-Path $benchmarkRoot 'matrix.acl'
+$config = if (-not [string]::IsNullOrWhiteSpace($RuntimeConfig)) {
+    [System.IO.Path]::GetFullPath($RuntimeConfig)
+} elseif ($Profile -eq 'full-vocabulary-current') {
+    Join-Path $benchmarkRoot 'full-vocabulary-current.acl'
+} else {
+    Join-Path $benchmarkRoot 'matrix.acl'
+}
 $output = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
     [System.IO.Path]::GetFullPath($OutputRoot)
 } else {
@@ -170,12 +184,12 @@ function Invoke-ModeRun {
                 [int]$existing.request.num_batch -eq $NumBatch -and
                 [int]$existing.request.warmup_requests -eq 1
             $isComplete =
-                $existing.results.Count -eq 100 -and
+                $existing.results.Count -eq $expectedTaskCount -and
                 $existing.completed_at -and
-                [int]$existing.summary.overall.completed -eq 100 -and
+                [int]$existing.summary.overall.completed -eq $expectedTaskCount -and
                 [int]$existing.summary.overall.errors -eq 0
             $runtimeMatches =
-                ($Mode.label -ne 'tbq4-mtp-fr') -or
+                ($Mode.spec_mode -ne 'mtp') -or
                 ($null -ne $existing.speculative_runtime)
             if ($identityMatches -and $isComplete -and $runtimeMatches) {
                 Write-Output "Reusing complete report: $report"
@@ -211,6 +225,14 @@ function Invoke-ModeRun {
             -WindowStyle Hidden `
             -PassThru
         $process.PriorityClass = $ProcessPriority
+        if ($ProcessorAffinityMask -gt 0) {
+            $process.ProcessorAffinity = [IntPtr]::new([int64]$ProcessorAffinityMask)
+            $effectiveAffinity = [uint64]$process.ProcessorAffinity.ToInt64()
+            if ($effectiveAffinity -ne $ProcessorAffinityMask) {
+                throw ('Requested processor affinity 0x{0:x} became 0x{1:x}' -f `
+                    $ProcessorAffinityMask, $effectiveAffinity)
+            }
+        }
 
         $ready = $false
         for ($attempt = 0; $attempt -lt 240; $attempt++) {
@@ -259,10 +281,10 @@ function Invoke-ModeRun {
         }
         Invoke-Python -Arguments $arguments
         $completed = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
-        if ($completed.results.Count -ne 100 -or
-            [int]$completed.summary.overall.completed -ne 100 -or
+        if ($completed.results.Count -ne $expectedTaskCount -or
+            [int]$completed.summary.overall.completed -ne $expectedTaskCount -or
             [int]$completed.summary.overall.errors -ne 0) {
-            throw "Mode $($Mode.label) repetition $Repetition did not complete 100 error-free requests"
+            throw "Mode $($Mode.label) repetition $Repetition did not complete $expectedTaskCount error-free requests"
         }
     } finally {
         if ($process -and -not $process.HasExited) {
@@ -306,6 +328,39 @@ if ($RequireHighPerformancePowerPlan -and
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $q6Identity = Get-ModelIdentity -PowerHome $Q6PowerHome -ExpectedHash $Q6ModelHash
 $tbq4Identity = Get-ModelIdentity -PowerHome $Tbq4PowerHome -ExpectedHash $Tbq4ModelHash
+$mtpLabel = if ($Profile -eq 'full-vocabulary-current') {
+    'tbq4-mtp-full-vocab'
+} else {
+    'tbq4-mtp-fr'
+}
+$mtpFrVocabSize = if ($Profile -eq 'full-vocabulary-current') { $null } else { 8192 }
+$modes = @(
+    @{
+        label = 'q6-off'
+        power_home = $q6Identity.power_home
+        model_hash = $Q6ModelHash
+        spec_mode = 'off'
+        fr_vocab_size = $null
+    },
+    @{
+        label = 'tbq4-off'
+        power_home = $tbq4Identity.power_home
+        model_hash = $Tbq4ModelHash
+        spec_mode = 'off'
+        fr_vocab_size = $null
+    },
+    @{
+        label = $mtpLabel
+        power_home = $tbq4Identity.power_home
+        model_hash = $Tbq4ModelHash
+        spec_mode = 'mtp'
+        fr_vocab_size = $mtpFrVocabSize
+    }
+)
+$comparisons = @(
+    @('q6-off', 'tbq4-off'),
+    @('tbq4-off', $modes[2].label)
+)
 $serverHash = (Get-FileHash -LiteralPath $server -Algorithm SHA256).Hash.ToLowerInvariant()
 $gpu = @(& nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap,pstate,power.limit --format=csv,noheader,nounits)
 $cpu = Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors
@@ -330,9 +385,26 @@ $environment = [ordered]@{
     os = $os
     active_power_scheme = $activePowerScheme.Trim()
     process_priority = $ProcessPriority
+    process_affinity = [ordered]@{
+        requested_mask = if ($ProcessorAffinityMask -gt 0) {
+            '0x{0:x}' -f $ProcessorAffinityMask
+        } else {
+            $null
+        }
+        logical_processor_count = [Environment]::ProcessorCount
+    }
     num_batch = $NumBatch
     repetitions = $Repetitions
-    order = 'three-mode cyclic Latin rotation'
+    profile = $Profile
+    modes = @($modes | ForEach-Object {
+        [ordered]@{
+            label = $_.label
+            model_sha256 = $_.model_hash.ToLowerInvariant()
+            spec_mode = $_.spec_mode
+            fr_vocab_size = $_.fr_vocab_size
+        }
+    })
+    order = "$($modes.Count)-mode cyclic Latin rotation"
     task_manifest_sha256 = $taskManifestHash
     config_sha256 = $configHash
 }
@@ -348,8 +420,13 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
             $previous.tbq4_model.sha256 -eq $environment.tbq4_model.sha256 -and
             $previous.active_power_scheme -eq $environment.active_power_scheme -and
             $previous.process_priority -eq $environment.process_priority -and
+            $previous.process_affinity.requested_mask -eq
+                $environment.process_affinity.requested_mask -and
             [int]$previous.num_batch -eq $environment.num_batch -and
             [int]$previous.repetitions -eq $environment.repetitions -and
+            $previous.profile -eq $environment.profile -and
+            (@($previous.modes.label) -join ',') -eq
+                (@($environment.modes.label) -join ',') -and
             $previous.task_manifest_sha256 -eq $environment.task_manifest_sha256 -and
             $previous.config_sha256 -eq $environment.config_sha256 -and
             (Get-GpuCompatibilityIdentity $previous.gpu) -eq
@@ -382,30 +459,10 @@ $taskDigest = $taskPayload.tasks_sha256
 if ($taskDigest -ne $taskManifest.expected_tasks_sha256) {
     throw 'Prepared task digest differs from the reviewed manifest'
 }
-
-$modes = @(
-    @{
-        label = 'q6-off'
-        power_home = $q6Identity.power_home
-        model_hash = $Q6ModelHash
-        spec_mode = 'off'
-        fr_vocab_size = $null
-    },
-    @{
-        label = 'tbq4-off'
-        power_home = $tbq4Identity.power_home
-        model_hash = $Tbq4ModelHash
-        spec_mode = 'off'
-        fr_vocab_size = $null
-    },
-    @{
-        label = 'tbq4-mtp-fr'
-        power_home = $tbq4Identity.power_home
-        model_hash = $Tbq4ModelHash
-        spec_mode = 'mtp'
-        fr_vocab_size = 8192
-    }
-)
+$expectedTaskCount = @($taskPayload.tasks).Count
+if ($expectedTaskCount -le 0) {
+    throw 'Prepared task cache contains no tasks'
+}
 
 $environmentNames = @(
     'A3S_POWER_HOME',
@@ -424,7 +481,7 @@ try {
     for ($repetition = 1; $repetition -le $Repetitions; $repetition++) {
         for ($position = 0; $position -lt $modes.Count; $position++) {
             $mode = $modes[($position + $repetition - 1) % $modes.Count]
-            Write-Output "Running repetition $repetition/$Repetitions, order $($position + 1)/3: $($mode.label)"
+            Write-Output "Running repetition $repetition/$Repetitions, order $($position + 1)/$($modes.Count): $($mode.label)"
             Invoke-ModeRun `
                 -Mode $mode `
                 -Repetition $repetition `
@@ -457,5 +514,8 @@ $aggregateArguments = @($evaluator, 'aggregate', '--reports') + $reports + @(
     '--output-json', $aggregateJson,
     '--output-markdown', $aggregateMarkdown
 )
+foreach ($comparison in $comparisons) {
+    $aggregateArguments += @('--pair', $comparison[0], $comparison[1])
+}
 Invoke-Python -Arguments $aggregateArguments
 Write-Output "Quality matrix complete: $aggregateJson"
