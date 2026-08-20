@@ -255,7 +255,7 @@ fn current_executable_sha256() -> Result<String> {
         ));
     }
     let mut file = File::open(executable)?;
-    let mut buffer = [0_u8; 1024 * 1024];
+    let mut buffer = [0_u8; 64 * 1024];
     let mut hasher = Sha256::new();
     loop {
         let read = file.read(&mut buffer)?;
@@ -462,5 +462,14 @@ mod tests {
         assert!(Arguments::new(vec!["--device".to_string()])
             .optional("--device")
             .is_err());
+    }
+
+    #[test]
+    fn current_runner_artifact_has_a_canonical_sha256() {
+        let digest = current_executable_sha256().unwrap();
+        assert_eq!(digest.len(), 64);
+        assert!(digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
     }
 }
