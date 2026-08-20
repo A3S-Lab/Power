@@ -23,4 +23,5 @@ pub mod model_seal;
 pub mod model_signature;
 pub mod policy;
 pub mod privacy;
+#[cfg(any(feature = "server", test, target_os = "linux"))]
 pub(crate) mod tdx_report;

@@ -40,6 +40,8 @@ mod receipt;
 mod release_gate;
 #[cfg(test)]
 mod release_gate_tests;
+#[cfg(all(test, feature = "server"))]
+mod release_promotion_tests;
 mod residency;
 mod routing;
 mod runtime;

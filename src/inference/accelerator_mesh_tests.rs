@@ -415,7 +415,7 @@ fn confidential_mesh_binds_exact_gpu_and_fabric_claim_indices() {
         ],
     );
     let binding =
-        ConfidentialGpuBinding::from_verified_attestation_report(&report, &declaration).unwrap();
+        ConfidentialGpuBinding::from_attestation_report_for_test(&report, &declaration).unwrap();
     assert!(matches!(
         hierarchy
             .resolve_accelerator_mesh_batch(
@@ -435,7 +435,7 @@ fn confidential_mesh_binds_exact_gpu_and_fabric_claim_indices() {
         vec![device_claim(7, "gpu"), device_claim(11, "nvswitch")],
     );
     assert!(
-        ConfidentialGpuBinding::from_verified_attestation_report(&missing_peer, &declaration,)
+        ConfidentialGpuBinding::from_attestation_report_for_test(&missing_peer, &declaration,)
             .is_err()
     );
 
@@ -450,7 +450,7 @@ fn confidential_mesh_binds_exact_gpu_and_fabric_claim_indices() {
         ],
     );
     assert!(
-        ConfidentialGpuBinding::from_verified_attestation_report(&extra_gpu, &declaration,)
+        ConfidentialGpuBinding::from_attestation_report_for_test(&extra_gpu, &declaration,)
             .is_err()
     );
 }

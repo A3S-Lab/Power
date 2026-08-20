@@ -1,25 +1,24 @@
+#[cfg(any(feature = "server", test))]
 use std::collections::BTreeSet;
 
+#[cfg(any(feature = "server", test))]
 use sha2::{Digest, Sha256};
 
 use crate::error::{PowerError, Result};
 use crate::inference::RuntimeDeviceIdentity;
+#[cfg(any(feature = "server", test))]
 use crate::tee::attestation::{
     canonical_claims_bytes, require_verified_hardware_claims, AttestationReport, ModelDigestKind,
 };
+#[cfg(feature = "server")]
+use crate::verify::VerifiedConfidentialGpuAttestation;
 
-use super::types::{
-    validate_sha256, AcceleratorResidencyDeclaration, AcceleratorSecurityRequirement,
-};
+#[cfg(any(feature = "server", test))]
+use super::types::AcceleratorSecurityRequirement;
+use super::types::{validate_sha256, AcceleratorResidencyDeclaration};
 
-/// Digest-only binding from an already verified GPU-confidential attestation
-/// report to one accelerator declaration.
-///
-/// This constructor deliberately reuses Power's existing canonical v2 claims
-/// and CPU-TEE `report_data` binding. It performs structural and digest
-/// matching, not a second hardware-signature verification; callers must pass a
-/// report accepted by their existing strict verifier or produced inside the
-/// current attested runtime.
+/// Digest-only binding from a strictly verified GPU-confidential attestation to
+/// one accelerator declaration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ConfidentialGpuBinding {
     claims_sha256: String,
@@ -31,7 +30,26 @@ pub struct ConfidentialGpuBinding {
 }
 
 impl ConfidentialGpuBinding {
-    pub fn from_verified_attestation_report(
+    /// Bind a declaration to the exact report carried by an opaque proof from
+    /// [`crate::verify::verify_confidential_gpu_attestation`].
+    #[cfg(feature = "server")]
+    pub fn from_verified_attestation(
+        proof: &VerifiedConfidentialGpuAttestation<'_>,
+        declaration: &AcceleratorResidencyDeclaration,
+    ) -> Result<Self> {
+        Self::from_attestation_report(proof.report(), declaration)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_attestation_report_for_test(
+        report: &AttestationReport,
+        declaration: &AcceleratorResidencyDeclaration,
+    ) -> Result<Self> {
+        Self::from_attestation_report(report, declaration)
+    }
+
+    #[cfg(any(feature = "server", test))]
+    fn from_attestation_report(
         report: &AttestationReport,
         declaration: &AcceleratorResidencyDeclaration,
     ) -> Result<Self> {
@@ -185,6 +203,7 @@ impl std::fmt::Debug for ConfidentialGpuBinding {
     }
 }
 
+#[cfg(any(feature = "server", test))]
 fn validate_attested_mesh(
     mesh: &super::AcceleratorDeviceMeshDeclaration,
     devices: &[crate::tee::attestation::GpuDeviceClaim],

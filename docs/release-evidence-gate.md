@@ -39,12 +39,16 @@ After replaying a capture, `ReleaseRevisionBinding::from_capture` and
 `ReleaseCapture::platform_binding` project the common and platform-specific
 identities for explicit policy review without manual nested-field copying.
 
-The Rust construction path does not accept loose confidential digest strings.
-`ReleaseCaptureSecurity::from_verified_confidential_gpu` requires a
-`ConfidentialGpuBinding`, which Power can create only after matching an already
-verified attestation report to the exact accelerator declaration, weights,
-execution policy, device, and optional mesh. Deserialized bundles still require
-the external signed trust-root check described below.
+The Rust construction path does not accept loose confidential digest strings or
+a raw report. `verify_confidential_gpu_attestation` applies the fixed production
+profile and returns a non-serializable proof tied to the exact authenticated
+report. `ReleaseCapture::promote_confidential_gpu` consumes that proof plus the
+matching accelerator declaration, verifies the source is a valid local CUDA
+capture, projects the verified claims, and rebuilds the capture under the
+confidential-GPU class. `ReleaseCapture::build` accepts only local captures, so
+a caller-supplied label cannot invoke the trusted mint path. Deserialized
+bundles remain evidence inputs and still require the external signed trust-root
+check described below.
 
 Projects that are not preparing a v1 production release may construct an
 explicit narrower policy, for example a CPU-only development policy. Such a
@@ -207,8 +211,9 @@ negative CPU batching result, and exact reproduction commands are checked in.
 
 Metal and confidential-GPU results cannot be inferred from this Windows RTX
 4090 host. They remain explicit release blockers until captured on appropriate
-hardware from the same immutable release revision. The current benchmark CLI
-emits only local captures; v1 also requires a promotion path that consumes an
-opaque successful strict-verification proof before it can construct the
-confidential-GPU security class. A raw attestation report or caller-provided
-label is insufficient.
+hardware from the same immutable release revision. The Rust API now implements
+proof-backed confidential promotion, and a raw attestation report or
+caller-provided label is insufficient. The benchmark CLI still emits only local
+captures; an external confidential capture workflow must collect the vendor
+evidence, run strict verification, call the promotion API, and preserve the raw
+report plus release trust-root material from one immutable revision.

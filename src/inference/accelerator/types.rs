@@ -205,6 +205,39 @@ impl AcceleratorResidencyDeclaration {
         Ok(declaration)
     }
 
+    #[cfg(all(test, feature = "server"))]
+    pub(crate) fn confidential_release_fixture(
+        weights_sha256: String,
+        runtime_device: RuntimeDeviceIdentity,
+    ) -> Self {
+        let group_id = "release-fixture".to_string();
+        let spec = AcceleratorFusedBatchSpec::new(
+            "11".repeat(32),
+            "22".repeat(32),
+            vec![group_id.clone()],
+        )
+        .with_fallback_mode(AcceleratorFallbackMode::AllowExact)
+        .with_security(AcceleratorSecurityRequirement::ConfidentialGpu);
+        Self::build(
+            weights_sha256,
+            "33".repeat(32),
+            runtime_device,
+            &spec,
+            1_024,
+            1_024,
+            vec![AcceleratorResidencyGroup {
+                canonical_index: 0,
+                residency_group_id: group_id,
+                bytes: 4,
+                weights: vec![WeightKey::new(0, "release.weight")],
+            }],
+            1,
+            4,
+            None,
+        )
+        .expect("confidential release fixture declaration should be valid")
+    }
+
     pub(super) fn validate(&self) -> Result<()> {
         if self.schema != Self::SCHEMA && self.schema != Self::MESH_SCHEMA {
             return Err(PowerError::InvalidFormat(

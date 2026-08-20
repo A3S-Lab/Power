@@ -1,24 +1,46 @@
+#[cfg(any(feature = "server", test))]
 use sha2::{Digest, Sha256};
+#[cfg(any(feature = "server", test))]
 use zeroize::Zeroizing;
 
 use crate::error::{PowerError, Result};
+use crate::tee::attestation::TeeType;
+#[cfg(any(feature = "server", test))]
 use crate::tee::attestation::{
     canonical_claims_bytes, require_verified_hardware_claims, AttestationReport, ModelDigestKind,
-    TeeType,
 };
+#[cfg(feature = "server")]
+use crate::verify::VerifiedHardwareAttestation;
 
+use super::decode_sha256;
+#[cfg(any(feature = "server", test))]
+use super::encode_sha256;
 use super::types::{SealedStateBinding, TeeStateExportAuthorization};
-use super::{decode_sha256, encode_sha256};
 
 impl TeeStateExportAuthorization {
-    /// Creates an explicit export token from an already hardware-verified
-    /// attestation report and caller-approved policy digest.
+    /// Creates an explicit export token from an opaque strict-verification
+    /// proof and caller-approved policy digest.
     ///
-    /// The constructor reuses Power's canonical v2 claim/report-data matcher;
-    /// it does not duplicate hardware signature verification. The report must
-    /// bind the exact plaintext/directory model digest so an authorization
-    /// cannot be replayed across models.
-    pub fn from_verified_attestation_report(
+    /// The report carried by the proof must bind the exact plaintext/directory
+    /// model digest so an authorization cannot be replayed across models.
+    #[cfg(feature = "server")]
+    pub fn from_verified_attestation(
+        proof: &VerifiedHardwareAttestation<'_>,
+        export_policy_sha256: &str,
+    ) -> Result<Self> {
+        Self::from_attestation_report(proof.report(), export_policy_sha256)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_attestation_report_for_test(
+        report: &AttestationReport,
+        export_policy_sha256: &str,
+    ) -> Result<Self> {
+        Self::from_attestation_report(report, export_policy_sha256)
+    }
+
+    #[cfg(any(feature = "server", test))]
+    fn from_attestation_report(
         report: &AttestationReport,
         export_policy_sha256: &str,
     ) -> Result<Self> {

@@ -615,6 +615,7 @@ pub fn canonical_claims_bytes(claims: &AttestationClaimsV2) -> crate::error::Res
 /// one place prevents confidential accelerator and sealed-state policies from
 /// drifting into separate attestation formats.
 #[cfg(feature = "embedded-inference")]
+#[cfg(any(feature = "server", test))]
 pub(crate) fn require_verified_hardware_claims(
     report: &AttestationReport,
 ) -> crate::error::Result<&AttestationClaimsV2> {

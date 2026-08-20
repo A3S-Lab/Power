@@ -64,6 +64,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Added opaque, non-serializable strict hardware and confidential-GPU
+  attestation proof types tied to the exact authenticated report lifetime.
+  Production accelerator bindings, sealed-state export authorization, and
+  local-CUDA-to-confidential release promotion now consume those proofs; raw
+  reports, mutable verification results, and caller-supplied security labels
+  cannot mint the protected classes through the Rust construction API.
 - Strict hardware verification now requires the policy-visible SEV-SNP
   `report_data` and launch `measurement` to exactly match their fields in the
   raw signed report before a hardware verifier is called. This prevents a valid

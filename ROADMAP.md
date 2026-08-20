@@ -141,9 +141,13 @@ confidential-GPU captures exist for the same immutable release revision.
 - [x] Publish clean-revision CPU and CUDA complete-contract captures with raw
       JSON, byte-stable policy input, exact artifact hashes, negative results,
       and replay commands.
-- [ ] Require an opaque successful strict-verification proof when promoting a
-      local CUDA capture to confidential-GPU evidence; a raw report or caller
-      label alone must never mint the security class.
+- [x] Require an opaque successful strict-verification proof when promoting a
+      local CUDA capture to confidential-GPU evidence; the proof borrows the
+      exact authenticated report, and a raw report or caller label cannot mint
+      the production security class.
+- [ ] Add the external confidential-GPU capture workflow that collects vendor
+      evidence, invokes strict proof-backed promotion, and preserves the raw
+      report plus trust-root material for the same immutable release revision.
 - [ ] Implement reviewed Intel DCAP Quote generation and QVL verification, or
       explicitly exclude TDX from the v1 production support matrix. A local
       TDREPORT now fails closed and is not treated as a PCK-signed Quote.

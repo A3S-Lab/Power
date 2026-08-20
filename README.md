@@ -250,6 +250,14 @@ binds its own finite shape-profile declaration and TEE policy because device
 topology and memory reservations differ. The exact runtime executable remains
 capture-specific, and confidential GPU claims are required where applicable.
 
+Local captures can be constructed only with the local security class. A
+confidential capture must pass the fixed
+`verify_confidential_gpu_attestation` profile and carry its opaque,
+exact-report proof into `ReleaseCapture::promote_confidential_gpu`; raw reports,
+deserialized labels, and caller-authored verification booleans cannot mint that
+class. The resulting digest-bound capture is still evidence, not authorship, so
+the release system must authenticate its bundle digest.
+
 `a3s-power-tensor-batch-bench release-run` applies the same collector to any
 caller-owned reviewed graph, typed tensors, opaque profile identities, and
 independent reference output. `release-fixture` is only a reproducible Add-graph

@@ -95,6 +95,12 @@ use crate::tee::attestation::{
 
 mod hardware_binding;
 pub mod hw_verify;
+mod proof;
+
+pub use proof::{
+    verify_confidential_gpu_attestation, verify_report_strict_with_proof,
+    VerifiedConfidentialGpuAttestation, VerifiedHardwareAttestation,
+};
 
 #[cfg(feature = "hw-verify")]
 pub use hw_verify::{SevSnpVerifier, TdxVerifier};
@@ -4437,10 +4443,73 @@ mod tests {
             hardware_verifier: Some(&verifier),
         };
 
-        let result = verify_report_strict(&report, &opts).unwrap();
+        let (result, proof) = verify_report_strict_with_proof(&report, &opts).unwrap();
         assert!(result.hardware_verified);
         assert!(result.measurement_verified);
         assert_eq!(result.tee_type, TeeType::SevSnp);
+        assert_eq!(proof.tee_type(), TeeType::SevSnp);
+        assert!(std::ptr::eq(proof.report(), &report));
+    }
+
+    #[test]
+    fn test_gpu_confidential_profile_issues_an_exact_report_proof() {
+        struct AlwaysOk;
+        impl HardwareVerifier for AlwaysOk {
+            fn verify_hardware_signature(&self, _report: &AttestationReport) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let evidence_digest = vec![0x11; 32];
+        let verdict_digest = vec![0x22; 32];
+        let weights_digest = vec![0x02; 32];
+        let execution_digest = vec![0x55; 32];
+        let (mut report, mut claims) = make_gpu_claims_report_with_device_claims(
+            evidence_digest.clone(),
+            Some(verdict_digest.clone()),
+        );
+        claims.model = Some(ModelDigestClaim {
+            name: "test-model".to_string(),
+            kind: ModelDigestKind::PlaintextWeightsSha256,
+            digest: weights_digest.clone(),
+            plaintext_digest: None,
+            ciphertext_digest: None,
+        });
+        claims.runtime = Some(
+            RuntimePolicyClaim::new().with_execution(ExecutionPolicyClaim {
+                gpu_sha256: execution_digest.clone(),
+            }),
+        );
+        report.report_data = build_claims_report_data(&claims).unwrap();
+        report.claims = Some(claims);
+        let report = with_sev_snp_raw(report);
+        let verifier = AlwaysOk;
+        let opts = VerifyOptions {
+            nonce: Some(gpu_nonce().to_vec()),
+            expected_model_hash: Some(weights_digest),
+            expected_measurement: Some(report.measurement.clone()),
+            expected_gpu_evidence_digest: Some(evidence_digest),
+            expected_gpu_verdict_digest: Some(verdict_digest),
+            expected_gpu_evidence: Some(expected_gpu_evidence_pins()),
+            expected_gpu_devices: Some(expected_gpu_device_pins()),
+            expected_chat_template_digest: None,
+            expected_decoding_parameters_digest: None,
+            expected_gpu_execution_digest: Some(execution_digest),
+            hardware_verifier: Some(&verifier),
+        };
+
+        let (result, proof) = verify_confidential_gpu_attestation(&report, &opts).unwrap();
+
+        assert!(result.hardware_verified);
+        assert!(result.measurement_verified);
+        assert!(result.nonce_verified);
+        assert!(result.model_hash_verified);
+        assert!(result.claims_verified);
+        assert!(result.gpu_evidence_verified);
+        assert!(result.gpu_device_claims_verified);
+        assert!(result.runtime_policy_verified);
+        assert!(std::ptr::eq(proof.report(), &report));
+        assert!(std::ptr::eq(proof.as_hardware().report(), &report));
     }
 
     #[test]

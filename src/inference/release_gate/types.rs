@@ -1,11 +1,15 @@
 use serde::{Deserialize, Serialize};
 
 use crate::admission::AdmissionSnapshot;
-use crate::error::Result;
+use crate::error::{PowerError, Result};
+#[cfg(feature = "server")]
+use crate::verify::VerifiedConfidentialGpuAttestation;
 
+#[cfg(feature = "server")]
+use super::super::{AcceleratorResidencyDeclaration, ConfidentialGpuBinding};
 use super::super::{
-    ConfidentialGpuBinding, ExecutionBatchLifecycleEvidence, ExecutionDigest,
-    ModelSessionPoolSnapshot, ResidentTensorSnapshot, RuntimeDeviceIdentity, ShapeProfileBinding,
+    ExecutionBatchLifecycleEvidence, ExecutionDigest, ModelSessionPoolSnapshot,
+    ResidentTensorSnapshot, RuntimeDeviceIdentity, ShapeProfileBinding,
     ShapeProfileExecutionEvidence, TensorBatchBenchmarkReport,
 };
 
@@ -312,6 +316,7 @@ pub struct ConfidentialReleaseBinding {
 }
 
 impl ConfidentialReleaseBinding {
+    #[cfg(feature = "server")]
     fn from_verified(binding: &ConfidentialGpuBinding) -> Self {
         Self {
             verified_claims_sha256: binding.claims_sha256().to_string(),
@@ -380,7 +385,8 @@ pub enum ReleaseCaptureSecurity {
 impl ReleaseCaptureSecurity {
     /// Projects only digest-bound fields from a binding that Power created
     /// after strict attestation-claim validation.
-    pub fn from_verified_confidential_gpu(binding: &ConfidentialGpuBinding) -> Result<Self> {
+    #[cfg(feature = "server")]
+    fn from_verified_confidential_gpu(binding: &ConfidentialGpuBinding) -> Result<Self> {
         let security = Self::ConfidentialGpu {
             binding: ConfidentialReleaseBinding::from_verified(binding),
         };
@@ -414,6 +420,21 @@ impl ReleaseCapture {
         tensor_batch: TensorBatchBenchmarkReport,
         contracts: ReleaseContractEvidence,
     ) -> Result<Self> {
+        if security != ReleaseCaptureSecurity::Local {
+            return Err(PowerError::PolicyViolation(
+                "a release capture can enter the confidential-GPU class only through strict proof-backed promotion"
+                    .to_string(),
+            ));
+        }
+        Self::build_with_security(security, shape_binding, tensor_batch, contracts)
+    }
+
+    fn build_with_security(
+        security: ReleaseCaptureSecurity,
+        shape_binding: ShapeProfileBinding,
+        tensor_batch: TensorBatchBenchmarkReport,
+        contracts: ReleaseContractEvidence,
+    ) -> Result<Self> {
         let mut capture = Self {
             schema: Self::SCHEMA.to_string(),
             security,
@@ -426,6 +447,34 @@ impl ReleaseCapture {
         capture.sha256 = super::digest::capture_sha256(&capture)?;
         capture.verify()?;
         Ok(capture)
+    }
+
+    /// Consume a verified local CUDA capture and promote it with the exact
+    /// report/declaration pair authorized by the confidential-GPU verifier.
+    ///
+    /// A raw report, deserialized security label, or permissive verification
+    /// result cannot call this path because the proof type is opaque.
+    #[cfg(feature = "server")]
+    pub fn promote_confidential_gpu(
+        self,
+        proof: &VerifiedConfidentialGpuAttestation<'_>,
+        declaration: &AcceleratorResidencyDeclaration,
+    ) -> Result<Self> {
+        self.verify()?;
+        if self.platform()? != ReleasePlatform::Cuda {
+            return Err(PowerError::PolicyViolation(
+                "only a verified local CUDA capture can be promoted to confidential-GPU evidence"
+                    .to_string(),
+            ));
+        }
+        let binding = ConfidentialGpuBinding::from_verified_attestation(proof, declaration)?;
+        let security = ReleaseCaptureSecurity::from_verified_confidential_gpu(&binding)?;
+        Self::build_with_security(
+            security,
+            self.shape_binding,
+            self.tensor_batch,
+            self.contracts,
+        )
     }
 
     pub fn platform(&self) -> Result<ReleasePlatform> {

@@ -652,15 +652,19 @@ match hierarchy.resolve_accelerator_batch(
 # Ok::<(), a3s_power::error::PowerError>(())
 ```
 
-`ConfidentialGpuBinding::from_verified_attestation_report` structurally matches
-a hardware report with canonical v2 claims and the exact model, NVIDIA NRAS
-evidence/verdict, and execution-policy digest. The current constructor name is
-a caller trust contract, not a type-level proof: callers must first use Power's
-strict verifier. Strict SEV-SNP verification binds exposed fields to the signed
-raw report; built-in Intel TDX verification fails closed pending DCAP Quote/QVL
-support. A v1 confidential release promotion path must consume an opaque
-successful-verification token instead of accepting an unproven raw report. The
-binding stores digests only.
+`verify_confidential_gpu_attestation` applies Power's fixed fail-closed profile
+and returns an opaque `VerifiedConfidentialGpuAttestation` that borrows the exact
+report it authenticated. The proof has no public constructor and cannot be
+deserialized. `ConfidentialGpuBinding::from_verified_attestation` accepts only
+that proof, then matches its canonical v2 claims to the exact model, NVIDIA NRAS
+evidence/verdict, execution-policy digest, CUDA device, and optional mesh. A raw
+report or caller-supplied verification result cannot mint the binding in a
+production build. `ReleaseCapture::promote_confidential_gpu` is the only Rust
+construction path from a verified local CUDA capture to the confidential-GPU
+security class; it replays and re-hashes the promoted capture. Strict SEV-SNP
+verification binds exposed fields to the signed raw report. Built-in Intel TDX
+verification fails closed pending DCAP Quote/QVL support. Stored bindings remain
+digest-only evidence and still need the release trust root described below.
 
 ### Attestation-Bound Heterogeneous Device Meshes
 
@@ -996,9 +1000,11 @@ authority over export.
   and opaque payload. Keys and opened plaintext zeroize on drop; model-owned
   serializers must likewise clear their source buffers after sealing.
 - Local sealed envelopes cannot be exported through Power's API. Hardware-TEE
-  export tokens are model- and policy-bound and consume a report the caller has
-  already verified; structural claim matching is shared with confidential GPU
-  execution and is not represented as a second signature verifier. The built-in
+  export tokens are model- and policy-bound and consume only an opaque
+  `VerifiedHardwareAttestation` issued by `verify_report_strict_with_proof`;
+  production callers cannot authorize export with a raw report or boolean
+  result. Structural claim matching is shared with confidential GPU execution
+  and is not represented as a second signature verifier. The built-in
   production verifier currently supports SEV-SNP and rejects TDX TDREPORTs.
 - Atomic state recovery ignores pending files, authenticates primary and
   backup, and obeys the caller's minimum generation. Retaining that minimum in
@@ -1117,6 +1123,14 @@ capture binds a replayed `TensorBatchBenchmarkReport` to its exact
 cleanup, queue expiry, replica retirement/reconstruction, and explicit exact
 fallback. Missing coverage, reused platform reports, stale bindings, and
 canonical-digest mutation fail closed.
+
+Local CPU, CUDA, and Metal captures enter through `ReleaseCapture::build`, which
+accepts only the local security class. Confidential-GPU evidence must start from
+a verified local CUDA capture and pass through
+`verify_confidential_gpu_attestation` and
+`ReleaseCapture::promote_confidential_gpu`. The opaque proof is tied to the
+authenticated report's lifetime; neither a raw report, a deserialized security
+label, nor a permissive `VerifyResult` can invoke that promotion path.
 
 Policy schema v2 separates the revision-wide Power, weight, and graph identity
 from `ReleasePlatformBinding`. Each platform pins its own shape-profile

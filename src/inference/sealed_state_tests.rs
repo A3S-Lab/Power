@@ -49,7 +49,7 @@ fn export_report(weights_sha256: &str) -> AttestationReport {
 }
 
 fn test_authorization(weights_sha256: &str, policy: char) -> TeeStateExportAuthorization {
-    TeeStateExportAuthorization::from_verified_attestation_report(
+    TeeStateExportAuthorization::from_attestation_report_for_test(
         &export_report(weights_sha256),
         &digest(policy),
     )
@@ -603,7 +603,7 @@ fn export_authorization_rejects_simulation_and_cross_model_use() {
     simulated.claims.as_mut().unwrap().tee_type = TeeType::Simulated;
     simulated.report_data = build_claims_report_data(simulated.claims.as_ref().unwrap()).unwrap();
     assert!(
-        TeeStateExportAuthorization::from_verified_attestation_report(&simulated, &digest('d'))
+        TeeStateExportAuthorization::from_attestation_report_for_test(&simulated, &digest('d'))
             .is_err()
     );
 

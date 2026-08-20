@@ -489,24 +489,7 @@ fn confidential_gpu_execution_requires_matching_existing_attestation_claims() {
         hex::decode(hierarchy.store().sha256()).unwrap(),
     );
     let binding =
-        ConfidentialGpuBinding::from_verified_attestation_report(&report, &declaration).unwrap();
-    let release_security =
-        ReleaseCaptureSecurity::from_verified_confidential_gpu(&binding).unwrap();
-    let ReleaseCaptureSecurity::ConfidentialGpu {
-        binding: release_binding,
-    } = release_security
-    else {
-        panic!("verified confidential binding must retain its security class");
-    };
-    assert_eq!(
-        release_binding.verified_claims_sha256(),
-        binding.claims_sha256()
-    );
-    assert_eq!(
-        release_binding.accelerator_declaration_sha256(),
-        declaration.declaration_sha256
-    );
-    assert_eq!(release_binding.runtime_device(), declaration.runtime_device);
+        ConfidentialGpuBinding::from_attestation_report_for_test(&report, &declaration).unwrap();
     let AcceleratorBatchResolution::Ready(batch) = hierarchy
         .resolve_accelerator_batch(&declaration, Some(&binding), &permit, &cancellation)
         .unwrap()
@@ -547,7 +530,7 @@ fn confidential_binding_rejects_wrong_policy_model_and_simulation() {
 
     let wrong_policy = confidential_report(&declaration, vec![0x99; 32], weights.clone());
     assert!(
-        ConfidentialGpuBinding::from_verified_attestation_report(&wrong_policy, &declaration)
+        ConfidentialGpuBinding::from_attestation_report_for_test(&wrong_policy, &declaration)
             .is_err()
     );
 
@@ -557,7 +540,7 @@ fn confidential_binding_rejects_wrong_policy_model_and_simulation() {
         vec![0x88; 32],
     );
     assert!(
-        ConfidentialGpuBinding::from_verified_attestation_report(&wrong_model, &declaration)
+        ConfidentialGpuBinding::from_attestation_report_for_test(&wrong_model, &declaration)
             .is_err()
     );
 
@@ -577,7 +560,7 @@ fn confidential_binding_rejects_wrong_policy_model_and_simulation() {
         .clear();
     missing_device.report_data =
         build_claims_report_data(missing_device.claims.as_ref().unwrap()).unwrap();
-    assert!(ConfidentialGpuBinding::from_verified_attestation_report(
+    assert!(ConfidentialGpuBinding::from_attestation_report_for_test(
         &missing_device,
         &declaration
     )
@@ -592,7 +575,7 @@ fn confidential_binding_rejects_wrong_policy_model_and_simulation() {
     simulated.claims.as_mut().unwrap().tee_type = TeeType::Simulated;
     simulated.report_data = build_claims_report_data(simulated.claims.as_ref().unwrap()).unwrap();
     assert!(
-        ConfidentialGpuBinding::from_verified_attestation_report(&simulated, &declaration).is_err()
+        ConfidentialGpuBinding::from_attestation_report_for_test(&simulated, &declaration).is_err()
     );
 }
 

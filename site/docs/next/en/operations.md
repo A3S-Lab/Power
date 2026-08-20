@@ -73,6 +73,9 @@ Model aliases point to manifests rather than weakening blob identity.
   chooses a transport for the caller.
 - Treat simulated TEE mode as development-only.
 - Do not claim confidential GPU execution from CPU TEE placement alone.
+- Promote confidential release captures only with the opaque proof returned by
+  strict confidential-GPU verification; raw reports are evidence inputs, not
+  authorization tokens.
 - Preserve raw report fields when saving attestation evidence.
 - Treat mixed quantization and vocabulary-reduced drafting as quality-gated,
   workload-specific techniques.

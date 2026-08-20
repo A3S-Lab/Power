@@ -104,6 +104,13 @@ peak memory, active cancellation cleanup, queue expiry, replica recovery, and
 an explicit exact fallback. The schema contains no Qwen, GGUF, tokenizer,
 decoder, or model-family dispatch field.
 
+The trusted construction path is type-safe. Strict confidential-GPU
+verification returns an opaque proof bound to the exact report; only
+`ReleaseCapture::promote_confidential_gpu` can use that proof to promote a valid
+local CUDA capture. A raw report, deserialized label, or caller-authored boolean
+cannot mint confidential release evidence. The resulting bundle still needs an
+authenticated release trust root.
+
 The current [clean-revision CPU/CUDA captures](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/release-contract-windows-20260821/README.md)
 replay as one verified two-platform partial bundle. Metal and confidential-GPU
 captures remain required before the strict four-platform v1 policy can pass.
