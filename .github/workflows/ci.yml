@@ -56,7 +56,7 @@ jobs:
       - name: Install native build dependencies
         if: matrix.native_deps == true
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
-      - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
+      - run: cargo clippy --locked --all-targets ${{ matrix.features }} -- -D warnings
 
   embedded-boundary:
     name: Embedded dependency boundary
@@ -72,13 +72,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Enable long paths for Cargo Git dependencies
+        run: git config --global core.longpaths true
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows-embedded-inference
-      - run: cargo check --no-default-features --features embedded-inference --lib
-      - run: cargo test --no-default-features --features embedded-inference --lib inference::weights
-      - run: cargo test --no-default-features --features embedded-inference --lib inference::storage_benchmark
-      - run: cargo test --no-default-features --features embedded-inference --lib positional_demand_and_prefetch_serialize_one_materialization
+      - run: cargo check --locked --no-default-features --features embedded-inference --lib
+      - run: cargo test --locked --no-default-features --features embedded-inference --lib inference::weights
+      - run: cargo test --locked --no-default-features --features embedded-inference --lib inference::storage_benchmark
+      - run: cargo test --locked --no-default-features --features embedded-inference --lib positional_demand_and_prefetch_serialize_one_materialization
 
   macos-embedded:
     name: Check (macos-embedded-inference)
@@ -89,10 +91,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: macos-embedded-inference
-      - run: cargo check --no-default-features --features embedded-inference --lib
-      - run: cargo test --no-default-features --features embedded-inference --lib inference::weights
-      - run: cargo test --no-default-features --features embedded-inference --lib inference::storage_benchmark
-      - run: cargo test --no-default-features --features embedded-inference --lib positional_demand_and_prefetch_serialize_one_materialization
+      - run: cargo check --locked --no-default-features --features embedded-inference --lib
+      - run: cargo test --locked --no-default-features --features embedded-inference --lib inference::weights
+      - run: cargo test --locked --no-default-features --features embedded-inference --lib inference::storage_benchmark
+      - run: cargo test --locked --no-default-features --features embedded-inference --lib positional_demand_and_prefetch_serialize_one_materialization
 
   test:
     name: Test (${{ matrix.label }})
@@ -122,7 +124,7 @@ jobs:
       - name: Install native build dependencies
         if: matrix.native_deps == true
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
-      - run: cargo test ${{ matrix.args }}
+      - run: cargo test --locked ${{ matrix.args }}
 
   cross-build:
     name: Cross (${{ matrix.target }})
@@ -160,4 +162,4 @@ jobs:
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             BUILD_CMD="cross"
           fi
-          $BUILD_CMD build --release --target ${{ matrix.target }} --features hf,hw-verify
+          $BUILD_CMD build --locked --release --target ${{ matrix.target }} --features hf,hw-verify

@@ -146,14 +146,14 @@ fn mtp_metadata_detection_is_architecture_neutral() {
 #[test]
 fn mtp_parameters_accept_adapter_defaults() {
     let params = mtp_speculative_params(&settings(), true).unwrap();
-    assert_eq!(params.n_max, 3);
-    assert_eq!(params.n_min, 0);
-    assert_eq!(params.p_min, 0.0);
-    assert!(params.greedy_draft);
-    assert!(params.recurrent_draft);
+    assert_eq!(params.upstream.n_max, 3);
+    assert_eq!(params.upstream.n_min, 0);
+    assert_eq!(params.upstream.p_min, 0.0);
+    assert_eq!(params.draft_greedy, cfg!(feature = "llamacpp-mtp-fr"));
+    assert_eq!(params.recurrent_draft, cfg!(feature = "llamacpp-mtp-fr"));
 
     let non_greedy = mtp_speculative_params(&settings(), false).unwrap();
-    assert!(!non_greedy.greedy_draft);
+    assert!(!non_greedy.draft_greedy);
 
     let thresholded = mtp_speculative_params(
         &MtpCompletionSettings {
@@ -163,7 +163,7 @@ fn mtp_parameters_accept_adapter_defaults() {
         true,
     )
     .unwrap();
-    assert!(!thresholded.greedy_draft);
+    assert!(!thresholded.draft_greedy);
 
     let host_staged = mtp_speculative_params(
         &MtpCompletionSettings {
@@ -173,7 +173,7 @@ fn mtp_parameters_accept_adapter_defaults() {
         true,
     )
     .unwrap();
-    assert!(host_staged.greedy_draft);
+    assert_eq!(host_staged.draft_greedy, cfg!(feature = "llamacpp-mtp-fr"));
     assert!(!host_staged.recurrent_draft);
 }
 

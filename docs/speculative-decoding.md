@@ -115,7 +115,7 @@ Power's context extensions, so fetch it and apply the reviewed patch before a
 CUDA build:
 
 ```powershell
-cargo fetch
+cargo fetch --locked
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\apply-llamacpp-power-patches.ps1
 ```
@@ -127,7 +127,7 @@ On non-Windows hosts, apply
 `llama-cpp-sys-2/llama.cpp` checkout. Then build both executables:
 
 ```console
-cargo build --release --no-default-features --features llamacpp-cuda,llamacpp-mtp-fr \
+cargo build --locked --release --no-default-features --features llamacpp-cuda,llamacpp-mtp-fr \
   --bin a3s-power --bin a3s-power-speculative-bench
 ```
 

@@ -1,4 +1,5 @@
 *.patch text eol=lf whitespace=-blank-at-eol
+Cargo.lock text eol=lf
 
 # Benchmark evidence carries byte-level SHA-256 identities. Preserve captured
 # JSON, ACL, and prompt bytes across clones instead of applying autocrlf. Treat

@@ -312,10 +312,21 @@ pub(super) struct MtpCompletionSettings {
     pub(super) draft_p_min: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct MtpAdapterParams {
+    upstream: MtpSpeculativeParams,
+    draft_greedy: bool,
+    recurrent_draft: bool,
+}
+
+// Field assignment is intentional: the default supplies experimental fields
+// when the reviewed patch is present while the same source still compiles
+// against the smaller upstream struct.
+#[allow(clippy::field_reassign_with_default)]
 fn mtp_speculative_params(
     settings: &MtpCompletionSettings,
     greedy_draft: bool,
-) -> Result<MtpSpeculativeParams> {
+) -> Result<MtpAdapterParams> {
     if settings.draft_max == 0 || settings.draft_max > 64 {
         return Err(PowerError::Config(format!(
             "spec_draft_max must be between 1 and 64 for llama.cpp MTP, got {}",
@@ -348,14 +359,48 @@ fn mtp_speculative_params(
         )));
     }
 
-    let use_greedy_draft = greedy_draft && settings.draft_p_min == 0.0;
-    Ok(MtpSpeculativeParams {
-        n_max: settings.draft_max as i32,
-        n_min: settings.draft_min as i32,
-        p_min: settings.draft_p_min,
-        greedy_draft: use_greedy_draft,
-        recurrent_draft: settings.recurrent_chain,
+    let requested_greedy_draft = greedy_draft && settings.draft_p_min == 0.0;
+    let draft_greedy = cfg!(feature = "llamacpp-mtp-fr") && requested_greedy_draft;
+    let recurrent_draft = cfg!(feature = "llamacpp-mtp-fr") && settings.recurrent_chain;
+
+    // Construct from the upstream default so an unpatched llama-cpp-rs remains
+    // source-compatible. The experimental feature is the only place allowed to
+    // reference fields added by Power's reviewed binding patch.
+    let mut upstream = MtpSpeculativeParams::default();
+    upstream.n_max = settings.draft_max as i32;
+    upstream.n_min = settings.draft_min as i32;
+    upstream.p_min = settings.draft_p_min;
+    #[cfg(feature = "llamacpp-mtp-fr")]
+    {
+        upstream.greedy_draft = draft_greedy;
+        upstream.recurrent_draft = recurrent_draft;
+    }
+
+    Ok(MtpAdapterParams {
+        upstream,
+        draft_greedy,
+        recurrent_draft,
     })
+}
+
+fn draft_mtp_tokens(
+    speculative: &mut MtpSpeculative<'_>,
+    n_past: i32,
+    anchor: llama_cpp_2::token::LlamaToken,
+    _draft_limit: usize,
+) -> Result<(Vec<llama_cpp_2::token::LlamaToken>, usize)> {
+    #[cfg(feature = "llamacpp-mtp-fr")]
+    let result = {
+        let drafts = speculative.draft_with_max(n_past, anchor, &[], _draft_limit);
+        drafts.map(|drafts| (drafts, speculative.last_recurrent_steps()))
+    };
+
+    #[cfg(not(feature = "llamacpp-mtp-fr"))]
+    let result = speculative
+        .draft(n_past, anchor, &[])
+        .map(|drafts| (drafts, 0));
+
+    result.map_err(|error| PowerError::InferenceFailed(format!("MTP drafting failed: {error}")))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -462,7 +507,7 @@ pub(super) fn run_mtp_completion(
     tx: &tokio::sync::mpsc::Sender<Result<CompletionResponseChunk>>,
 ) -> Result<()> {
     let backend_greedy = use_backend_greedy(sampling_settings);
-    let speculative_params = mtp_speculative_params(&settings, backend_greedy)?;
+    let adapter_params = mtp_speculative_params(&settings, backend_greedy)?;
     if tokens.is_empty() {
         return Err(PowerError::InferenceFailed(
             "llama.cpp MTP requires a non-empty tokenized prompt".to_string(),
@@ -498,7 +543,8 @@ pub(super) fn run_mtp_completion(
     })?;
     tracing::info!(
         backend_greedy,
-        draft_greedy = speculative_params.greedy_draft,
+        draft_greedy = adapter_params.draft_greedy,
+        recurrent_draft = adapter_params.recurrent_draft,
         recurrent_snapshots,
         configured_recurrent_snapshots = settings.recurrent_snapshots,
         "Configured MTP target sampling and rollback snapshots"
@@ -510,12 +556,14 @@ pub(super) fn run_mtp_completion(
             PowerError::InferenceFailed(format!("Failed to create MTP draft context: {error}"))
         })?;
 
-    let mut speculative = MtpSpeculative::new(target_context, draft_context, speculative_params)
-        .map_err(|error| {
-            PowerError::InferenceFailed(format!(
-                "Failed to initialize llama.cpp MTP speculation: {error}"
-            ))
-        })?;
+    let mut speculative =
+        MtpSpeculative::new(target_context, draft_context, adapter_params.upstream).map_err(
+            |error| {
+                PowerError::InferenceFailed(format!(
+                    "Failed to initialize llama.cpp MTP speculation: {error}"
+                ))
+            },
+        )?;
 
     let prompt_eval_started = std::time::Instant::now();
     let prompt_batch_size = usize::try_from(speculative.target_context().n_batch())
@@ -720,12 +768,8 @@ pub(super) fn run_mtp_completion(
             // state plus `anchor`; unlike n-gram drafters it never reads the
             // history pointer. Avoid serializing and copying a growing token
             // history across Rust and C++ on every speculative round.
-            let drafts = speculative
-                .draft_with_max(n_past, anchor, &[], draft_limit)
-                .map_err(|error| {
-                    PowerError::InferenceFailed(format!("MTP drafting failed: {error}"))
-                })?;
-            recurrent_draft_steps = speculative.last_recurrent_steps();
+            let (drafts, steps) = draft_mtp_tokens(&mut speculative, n_past, anchor, draft_limit)?;
+            recurrent_draft_steps = steps;
             drafts
         } else {
             Vec::new()

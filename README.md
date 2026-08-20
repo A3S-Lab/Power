@@ -198,18 +198,26 @@ for the complete contract model.
 | `tls` / `vsock` | RA-TLS and A3S Box guest-host transports | Platform-specific |
 | `hw-verify` | AMD KDS and Intel PCS signature verification | Platform crypto dependencies |
 
+Cargo resolves the pinned optional Git dependencies before feature selection.
+On Windows, enable Git's long-path support once before the first build so the
+pinned llama.cpp source can be checked out intact:
+
+```powershell
+git config --global core.longpaths true
+```
+
 ```bash
 # Default hosted service
-cargo build --release
+cargo build --locked --release
 
 # Listener-free embedded runtime
-cargo build --release --no-default-features --features embedded-inference
+cargo build --locked --release --no-default-features --features embedded-inference
 
 # Pure-Rust layer-streaming TEE service
-cargo build --release --no-default-features --features tee-minimal
+cargo build --locked --release --no-default-features --features tee-minimal
 
 # llama.cpp with CUDA
-cargo build --release --no-default-features --features llamacpp-cuda
+cargo build --locked --release --no-default-features --features llamacpp-cuda
 ```
 
 The FR-Spec-inspired path is separate because it patches the pinned llama.cpp
@@ -379,10 +387,10 @@ Run checks from this crate rather than the monorepo root:
 
 ```bash
 cargo fmt --all -- --check
-cargo test --lib
-cargo test --no-default-features --features embedded-inference --lib
-cargo test --no-default-features --features picolm --lib
-cargo clippy --all-targets -- -D warnings
+cargo test --locked --lib
+cargo test --locked --no-default-features --features embedded-inference --lib
+cargo test --locked --no-default-features --features picolm --lib
+cargo clippy --locked --all-targets -- -D warnings
 
 npm ci --prefix site
 npm run typecheck --prefix site

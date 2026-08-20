@@ -56,10 +56,10 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --features hf,hw-verify -- -D warnings
+        run: cargo clippy --locked --all-targets --features hf,hw-verify -- -D warnings
 
       - name: Tests
-        run: cargo test --lib
+        run: cargo test --locked --lib
 
       - name: Install Linux CPU feature dependencies
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
@@ -67,13 +67,13 @@ jobs:
       # CUDA and Metal need different native runners/toolchains, so a Linux
       # release gate must not combine both through Cargo's --all-features.
       - name: Linux CPU feature tests
-        run: cargo test $LINUX_CPU_FEATURES --lib
+        run: cargo test --locked $LINUX_CPU_FEATURES --lib
 
       - name: TEE minimal clippy
-        run: cargo clippy --all-targets --no-default-features --features tee-minimal -- -D warnings
+        run: cargo clippy --locked --all-targets --no-default-features --features tee-minimal -- -D warnings
 
       - name: TEE minimal tests
-        run: cargo test --no-default-features --features tee-minimal --tests
+        run: cargo test --locked --no-default-features --features tee-minimal --tests
 
   # ───────────────────────────────────────────────
   # Build release binaries for all platforms
@@ -120,9 +120,9 @@ jobs:
       - name: Build release binary
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} ${{ env.BUILD_FEATURES }}
+            cross build --locked --release --target ${{ matrix.target }} ${{ env.BUILD_FEATURES }}
           else
-            cargo build --release --target ${{ matrix.target }} ${{ env.BUILD_FEATURES }}
+            cargo build --locked --release --target ${{ matrix.target }} ${{ env.BUILD_FEATURES }}
           fi
 
       - name: Determine tag

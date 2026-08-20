@@ -3,7 +3,6 @@
 /target-*/
 **/*.rs.bk
 *.pdb
-Cargo.lock
 
 # Python tooling
 __pycache__/
