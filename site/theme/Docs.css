@@ -1,0 +1,67 @@
+.rp-doc-layout__container,
+.rp-doc-layout__sidebar,
+.rp-doc-layout__outline {
+  background: var(--power-canvas);
+}
+
+.rp-doc-layout__content {
+  background: var(--power-paper);
+}
+
+.rp-doc-layout,
+.rp-doc-layout__container,
+.rp-doc-layout__content,
+.rp-doc-container,
+.rp-doc {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--power-ink);
+}
+
+.rp-doc :not(:where(.rp-not-doc, .rp-not-doc *)):where(h1) {
+  margin-bottom: 18px;
+  color: var(--power-ink);
+  font-size: clamp(36px, 4.2vw, 52px);
+  font-weight: 690;
+  letter-spacing: -0.052em;
+  line-height: 1.04;
+}
+
+.rp-doc :not(:where(.rp-not-doc, .rp-not-doc *)):where(h2, h3, h4) {
+  color: var(--power-ink);
+  letter-spacing: -0.026em;
+}
+
+.rp-doc :not(:where(.rp-not-doc, .rp-not-doc *)):where(h2) {
+  margin-top: 54px;
+  padding-top: 24px;
+  border-top: 1px solid var(--power-line);
+  font-size: 27px;
+}
+
+.rp-doc :not(:where(.rp-not-doc, .rp-not-doc *)):where(h3) {
+  margin-top: 34px;
+  font-size: 20px;
+}
+
+.rp-doc > p:first-of-type {
+  color: var(--power-muted);
+  font-size: 17px;
+  line-height: 1.75;
+}
+
+@media (max-width: 640px) {
+  .rp-doc :not(:where(.rp-not-doc, .rp-not-doc *)):where(h1) {
+    font-size: 38px;
+    line-height: 1.08;
+  }
+
+  .rp-doc :not(:where(.rp-not-doc, .rp-not-doc *)):where(h2) {
+    margin-top: 44px;
+    font-size: 24px;
+  }
+
+  .rp-doc > p:first-of-type {
+    font-size: 15px;
+  }
+}

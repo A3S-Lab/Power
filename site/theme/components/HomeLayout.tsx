@@ -1,24 +1,15 @@
-import { withBase } from "@rspress/core/runtime";
+import {
+  useLang,
+  useSite,
+  useVersion,
+  withBase,
+} from "@rspress/core/runtime";
 
-const principles = [
-  {
-    index: "01",
-    title: "Bound every resource",
-    body: "Finite memory, compute, and queue capacity become explicit admission, placement, microbatch, and cancellation contracts.",
-  },
-  {
-    index: "02",
-    title: "Bind execution identity",
-    body: "Artifact bytes, runtime policy, device path, input, and output are committed into one canonical receipt.",
-  },
-  {
-    index: "03",
-    title: "Move trust to the verifier",
-    body: "The client selects accepted measurements, hashes, evidence, and receipt fields; the server cannot weaken them.",
-  },
-];
+import { CodeExecutionDemo } from "./CodeExecutionDemo";
 
-const modes = [
+type Locale = "zh" | "en";
+
+const modeData = [
   {
     mode: "Q6_K / AR",
     quality: "67 / 60",
@@ -40,149 +31,239 @@ const modes = [
   },
 ];
 
-const surfaces = [
-  {
-    label: "LIBRARY",
-    title: "Embed a reviewed model graph",
-    body: "Use the listener-free runtime for shared devices, admission, placement, state, and evidence while the model crate retains semantics.",
-    meta: "embedded-inference",
+const homeCopy = {
+  zh: {
+    kicker: "A3S 可验证推理运行时",
+    title: "运行模型。",
+    titleAccent: "证明边界。",
+    summary:
+      "面向有界执行、规范化回执与验证方自主信任的模型中立 Rust 运行时，可嵌入，也兼容 OpenAI API。",
+    primaryAction: "从运行时开始",
+    evidenceAction: "查看实测证据",
+    cargoLabel: "Cargo 依赖",
+    facts: ["稳态 token/s 边界", "请求全程 token/s", "矩阵请求全部完成"],
+    principlesTitle: "当推理中的隐含假设成为显式契约，系统才值得信任。",
+    principles: [
+      {
+        title: "约束每一项资源",
+        body: "有限的内存、算力与队列容量，被转化为明确的准入、放置、微批处理与取消契约。",
+      },
+      {
+        title: "绑定执行身份",
+        body: "模型字节、运行策略、设备路径、输入与输出，共同写入一份规范化回执。",
+      },
+      {
+        title: "把信任交给验证方",
+        body: "由客户端选择接受哪些度量、哈希、证据与回执字段，服务端无法降低标准。",
+      },
+    ],
+    measuredTitle: "性能边界必须附带可复验回执，而不是脱离语境的数字。",
+    reproduce: "复现基准测试",
+    columns: ["模型制品 / 模式", "宽松 / 严格", "请求全程 t/s", "稳态 t/s"],
+    current: "当前",
+    note:
+      "* 较早的稳态记录。175+ 是 Q6_K 衍生混合制品的稳态解码边界，不是原始 6-bit 模型的服务下限；质量值是固定任务代理指标，而非通用智力分数。",
+    surfacesTitle: "选择推理从哪里进入，但始终保留同一执行契约。",
+    surfaces: [
+      {
+        label: "库",
+        title: "嵌入已审查的模型图",
+        body: "使用无监听器运行时共享设备、准入、放置、状态与证据；模型 crate 继续拥有语义。",
+        meta: "embedded-inference",
+      },
+      {
+        label: "服务",
+        title: "暴露 OpenAI 兼容 API",
+        body: "通过显式 HTTP、RA-TLS 或 vsock 传输承载对话、补全、嵌入、模型生命周期、指标与证明。",
+        meta: "server + backend",
+      },
+      {
+        label: "制品安装器",
+        title: "安装精确的制品包",
+        body: "流式写入私有暂存区，校验字节上限与 SHA-256 身份，再在跨进程锁下原子提交。",
+        meta: "artifact-provisioning",
+      },
+    ],
+    boundaryTitle: "Power 负责执行，模型 crate 负责语义。",
+    boundaryBody:
+      "Power 不复制拓扑、分词、预处理或质量策略；它围绕已审查的模型代码，提供共享设备、资源、完整性、状态、隐私与证据机制。",
+    architectureAction: "阅读架构设计",
+    trace: [
+      ["准入", "约束队列与内存"],
+      ["执行", "选择精确设备路径"],
+      ["提交", "绑定制品、策略与输入输出"],
+      ["验证", "按客户端策略接受"],
+    ],
+    ctaTitle: "优化执行路径，而不移动信任边界。",
+    ctaBody: "原生 MTP、完整回滚验证、可复现实验矩阵与诚实的适用边界。",
+    speculationAction: "阅读推测解码",
+    sourceAction: "查看源码",
   },
-  {
-    label: "SERVICE",
-    title: "Expose an OpenAI-compatible API",
-    body: "Host chat, completions, embeddings, model lifecycle, metrics, and attestation over explicit HTTP, RA-TLS, or vsock transport.",
-    meta: "server + backend",
+  en: {
+    kicker: "A3S VERIFIABLE INFERENCE RUNTIME",
+    title: "Run the model.",
+    titleAccent: "Prove the boundary.",
+    summary:
+      "A model-neutral Rust runtime for bounded execution, canonical receipts, and verifier-owned trust, embedded or OpenAI-compatible.",
+    primaryAction: "Start with the runtime",
+    evidenceAction: "Inspect the evidence",
+    cargoLabel: "Cargo dependency",
+    facts: [
+      "steady token/s boundary",
+      "request-wide token/s",
+      "matrix requests completed",
+    ],
+    principlesTitle:
+      "Inference becomes trustworthy when its hidden assumptions become contracts.",
+    principles: [
+      {
+        title: "Bound every resource",
+        body: "Finite memory, compute, and queue capacity become explicit admission, placement, microbatch, and cancellation contracts.",
+      },
+      {
+        title: "Bind execution identity",
+        body: "Artifact bytes, runtime policy, device path, input, and output are committed into one canonical receipt.",
+      },
+      {
+        title: "Move trust to the verifier",
+        body: "The client selects accepted measurements, hashes, evidence, and receipt fields; the server cannot weaken them.",
+      },
+    ],
+    measuredTitle:
+      "A performance boundary with receipts, not a headline without context.",
+    reproduce: "Reproduce the benchmark",
+    columns: [
+      "Artifact / mode",
+      "Lenient / strict",
+      "Request-wide t/s",
+      "Steady t/s",
+    ],
+    current: "CURRENT",
+    note:
+      "* Earlier steady capture. The 175+ result is a steady-decode boundary for a Q6_K-derived mixed artifact, not an untouched 6-bit service floor. Quality values are fixed-task proxies, not general intelligence scores.",
+    surfacesTitle: "Choose where inference enters. Keep the execution contract.",
+    surfaces: [
+      {
+        label: "LIBRARY",
+        title: "Embed a reviewed model graph",
+        body: "Use the listener-free runtime for shared devices, admission, placement, state, and evidence while the model crate retains semantics.",
+        meta: "embedded-inference",
+      },
+      {
+        label: "SERVICE",
+        title: "Expose an OpenAI-compatible API",
+        body: "Host chat, completions, embeddings, model lifecycle, metrics, and attestation over explicit HTTP, RA-TLS, or vsock transport.",
+        meta: "server + backend",
+      },
+      {
+        label: "PROVISIONER",
+        title: "Install an exact artifact bundle",
+        body: "Stream into private staging, enforce byte limits and SHA-256 identity, then commit atomically under a cross-process lock.",
+        meta: "artifact-provisioning",
+      },
+    ],
+    boundaryTitle: "Power owns execution. Model crates own meaning.",
+    boundaryBody:
+      "Power does not duplicate topology, tokenization, preprocessing, or quality policy. It supplies the shared device, resource, integrity, state, privacy, and evidence mechanisms around reviewed model code.",
+    architectureAction: "Read the architecture",
+    trace: [
+      ["ADMIT", "Bound queue and memory"],
+      ["EXECUTE", "Select an exact device path"],
+      ["COMMIT", "Bind artifacts, policy, and I/O"],
+      ["VERIFY", "Accept against client policy"],
+    ],
+    ctaTitle: "Optimize the path without moving the trust boundary.",
+    ctaBody:
+      "Native MTP, rollback-complete verification, reproducible matrices, and honest limits.",
+    speculationAction: "Read speculative decoding",
+    sourceAction: "View source",
   },
-  {
-    label: "PROVISIONER",
-    title: "Install an exact artifact bundle",
-    body: "Stream into private staging, enforce byte limits and SHA-256 identity, then commit atomically under a cross-process lock.",
-    meta: "artifact-provisioning",
-  },
-];
+} as const;
 
 function ArrowIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 16 16">
-      <path d="M3 8h9M8.5 3.5 13 8l-4.5 4.5" />
-    </svg>
-  );
+  return <span className="power-arrow" aria-hidden="true">→</span>;
 }
 
 function CheckIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20">
-      <path d="m5 10 3 3 7-7" />
-    </svg>
-  );
+  return <span className="power-check" aria-hidden="true">✓</span>;
 }
 
 export function HomeLayout() {
-  const architectureHref = withBase("/architecture");
-  const benchmarkHref = withBase("/performance");
-  const reproduceHref = withBase("/performance#reproduce-the-boundary");
-  const speculationHref = withBase("/speculative-decoding");
+  const rawLang = useLang();
+  const locale: Locale = rawLang === "zh" ? "zh" : "en";
+  const copy = homeCopy[locale];
+  const version = useVersion();
+  const { site } = useSite();
+  const defaultVersion = site.multiVersion.default;
+  const routePrefix = [
+    version && version !== defaultVersion ? version : "",
+    locale !== site.lang ? locale : "",
+  ]
+    .filter(Boolean)
+    .join("/");
+  const route = (pathname: string) => {
+    const normalizedPath = pathname.replace(/^\/+/, "");
+    const parts = [routePrefix, normalizedPath].filter(Boolean).join("/");
+    return withBase(`/${parts}`);
+  };
+
+  const architectureHref = route("/architecture");
+  const benchmarkHref = route("/performance");
+  const reproduceHref = route("/performance#reproduce-the-boundary");
+  const speculationHref = route("/speculative-decoding");
 
   return (
     <main className="power-home">
       <section className="power-hero" aria-labelledby="power-title">
         <div className="power-hero__copy">
           <p className="power-kicker">
-            <span aria-hidden="true" /> A3S VERIFIABLE INFERENCE RUNTIME
+            <img
+              alt=""
+              aria-hidden="true"
+              className="power-brand-mark"
+              height="30"
+              src={withBase("/a3s-os-logo.png")}
+              width="30"
+            />
+            {copy.kicker}
           </p>
           <h1 id="power-title">
-            Run the model.
-            <span>Prove the boundary.</span>
+            {copy.title}
+            <span>{copy.titleAccent}</span>
           </h1>
-          <p className="power-hero__summary">
-            A model-neutral Rust runtime for bounded execution, canonical
-            receipts, and verifier-owned trust - embedded or OpenAI-compatible.
-          </p>
+          <p className="power-hero__summary">{copy.summary}</p>
           <div className="power-hero__actions">
             <a className="power-action power-action--primary" href={architectureHref}>
-              Start with the runtime <ArrowIcon />
+              {copy.primaryAction} <ArrowIcon />
             </a>
             <a className="power-action power-action--secondary" href={benchmarkHref}>
-              Inspect the evidence
+              {copy.evidenceAction}
             </a>
           </div>
-          <div className="power-install" aria-label="Cargo dependency">
+          <div className="power-install" aria-label={copy.cargoLabel}>
             <span>$</span>
             <code>cargo add a3s-power --no-default-features -F embedded-inference</code>
           </div>
           <dl className="power-hero__facts">
-            <div>
-              <dt>175.2089</dt>
-              <dd>steady token/s boundary</dd>
-            </div>
-            <div>
-              <dt>83.228</dt>
-              <dd>request-wide token/s</dd>
-            </div>
-            <div>
-              <dt className="power-is-verified">900/900</dt>
-              <dd>matrix requests completed</dd>
-            </div>
+            <div><dt>175.2089</dt><dd>{copy.facts[0]}</dd></div>
+            <div><dt>83.228</dt><dd>{copy.facts[1]}</dd></div>
+            <div><dt className="power-is-verified">900/900</dt><dd>{copy.facts[2]}</dd></div>
           </dl>
         </div>
 
-        <div className="power-hero__specimen" aria-label="A3S Power execution boundary">
-          <div className="power-specimen__bar">
-            <span />
-            <span />
-            <strong>ATTESTED EXECUTION</strong>
-          </div>
-          <div className="power-entry-grid">
-            <div>
-              <small>EMBEDDED</small>
-              <strong>Rust model graph</strong>
-            </div>
-            <div>
-              <small>HOSTED</small>
-              <strong>OpenAI API</strong>
-            </div>
-          </div>
-          <div className="power-flow-line" aria-hidden="true"><span /></div>
-          <div className="power-runtime-card">
-            <small>ONE RUNTIME BOUNDARY</small>
-            <div>
-              <strong>Admission</strong>
-              <strong>Placement</strong>
-              <strong>Cancellation</strong>
-            </div>
-            <p>weights + policy / CPU + CUDA + Metal</p>
-          </div>
-          <div className="power-flow-line power-flow-line--short" aria-hidden="true"><span /></div>
-          <div className="power-proof-row">
-            <div>
-              <small>CANONICAL RECEIPT</small>
-              <strong>model + policy + I/O digests</strong>
-            </div>
-            <i aria-hidden="true" />
-            <div className="power-verifier">
-              <span><CheckIcon /></span>
-              <p><small>CLIENT</small><strong>verifies</strong></p>
-            </div>
-          </div>
-          <div className="power-trace-meta">
-            <span><i /> IDENTITY</span>
-            <span><i /> RESOURCES</span>
-            <span><i /> EVIDENCE</span>
-          </div>
+        <div className="power-hero__specimen">
+          <CodeExecutionDemo locale={locale} />
         </div>
       </section>
 
       <section className="power-section power-principles" aria-labelledby="principles-title">
         <header className="power-section__header">
-          <p>FIRST PRINCIPLES</p>
-          <h2 id="principles-title">Inference becomes trustworthy when its hidden assumptions become contracts.</h2>
+          <h2 id="principles-title">{copy.principlesTitle}</h2>
         </header>
         <div className="power-principles__grid">
-          {principles.map((principle) => (
-            <article key={principle.index}>
-              <span>{principle.index}</span>
-              <h3>{principle.title}</h3>
-              <p>{principle.body}</p>
+          {copy.principles.map((principle) => (
+            <article key={principle.title}>
+              <h3>{principle.title}</h3><p>{principle.body}</p>
             </article>
           ))}
         </div>
@@ -190,53 +271,33 @@ export function HomeLayout() {
 
       <section className="power-section power-proof" aria-labelledby="proof-title">
         <header className="power-section__header power-section__header--split">
-          <div>
-            <p>MEASURED ON THE REAL API</p>
-            <h2 id="proof-title">A performance boundary with receipts, not a headline without context.</h2>
-          </div>
-          <a href={reproduceHref}>Reproduce the benchmark <ArrowIcon /></a>
+          <div><h2 id="proof-title">{copy.measuredTitle}</h2></div>
+          <a href={reproduceHref}>{copy.reproduce} <ArrowIcon /></a>
         </header>
         <div className="power-proof__table-wrap">
           <table>
-            <thead>
-              <tr>
-                <th>Artifact / mode</th>
-                <th>Lenient / strict</th>
-                <th>Request-wide t/s</th>
-                <th>Steady t/s</th>
-              </tr>
-            </thead>
+            <thead><tr>{copy.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
             <tbody>
-              {modes.map((mode) => (
+              {modeData.map((mode) => (
                 <tr className={mode.current ? "power-current-row" : undefined} key={mode.mode}>
-                  <th>{mode.mode}{mode.current && <span>CURRENT</span>}</th>
-                  <td>{mode.quality}</td>
-                  <td>{mode.request}</td>
-                  <td>{mode.steady}</td>
+                  <th>{mode.mode}{mode.current && <span>{copy.current}</span>}</th>
+                  <td>{mode.quality}</td><td>{mode.request}</td><td>{mode.steady}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <p className="power-proof__note">
-          * Earlier steady capture. The 175+ result is a steady-decode boundary
-          for a Q6_K-derived mixed artifact, not an untouched 6-bit service floor.
-          Quality values are fixed-task proxies, not general intelligence scores.
-        </p>
+        <p className="power-proof__note">{copy.note}</p>
       </section>
 
       <section className="power-section power-surfaces" aria-labelledby="surfaces-title">
         <header className="power-section__header">
-          <p>ONE CORE / THREE SURFACES</p>
-          <h2 id="surfaces-title">Choose where inference enters. Keep the execution contract.</h2>
+          <h2 id="surfaces-title">{copy.surfacesTitle}</h2>
         </header>
         <div className="power-surfaces__grid">
-          {surfaces.map((surface) => (
+          {copy.surfaces.map((surface) => (
             <article key={surface.label}>
-              <small>{surface.label}</small>
-              <h3>{surface.title}</h3>
-              <p>{surface.body}</p>
-              <code>{surface.meta}</code>
+              <small>{surface.label}</small><h3>{surface.title}</h3><p>{surface.body}</p><code>{surface.meta}</code>
             </article>
           ))}
         </div>
@@ -244,37 +305,29 @@ export function HomeLayout() {
 
       <section className="power-section power-contract" aria-labelledby="contract-title">
         <div className="power-contract__copy">
-          <p>RESPONSIBILITY BOUNDARY</p>
-          <h2 id="contract-title">Power owns execution. Model crates own meaning.</h2>
-          <p>
-            Power does not duplicate topology, tokenization, preprocessing, or
-            quality policy. It supplies the shared device, resource, integrity,
-            state, privacy, and evidence mechanisms around reviewed model code.
-          </p>
-          <a href={architectureHref}>Read the architecture <ArrowIcon /></a>
+          <h2 id="contract-title">{copy.boundaryTitle}</h2><p>{copy.boundaryBody}</p>
+          <a href={architectureHref}>{copy.architectureAction} <ArrowIcon /></a>
         </div>
         <div className="power-contract__trace">
           <ol>
-            <li><span>01</span><div><small>ADMIT</small><strong>Bound queue and memory</strong></div></li>
-            <li><span>02</span><div><small>EXECUTE</small><strong>Select an exact device path</strong></div></li>
-            <li><span>03</span><div><small>COMMIT</small><strong>Bind artifacts, policy, and I/O</strong></div></li>
-            <li className="is-verified"><span><CheckIcon /></span><div><small>VERIFY</small><strong>Accept against client policy</strong></div></li>
+            {copy.trace.map((item, index) => (
+              <li className={index === 3 ? "is-verified" : undefined} key={item[0]}>
+                <span>{index === 3 ? <CheckIcon /> : "→"}</span>
+                <div><small>{item[0]}</small><strong>{item[1]}</strong></div>
+              </li>
+            ))}
           </ol>
         </div>
       </section>
 
       <section className="power-cta">
-        <div>
-          <p>EXACT SPECULATION / EXPLICIT EVIDENCE</p>
-          <h2>Optimize the path without moving the trust boundary.</h2>
-          <span>Native MTP, rollback-complete verification, reproducible matrices, and honest limits.</span>
-        </div>
+        <div><h2>{copy.ctaTitle}</h2><span>{copy.ctaBody}</span></div>
         <div>
           <a className="power-action power-action--primary" href={speculationHref}>
-            Read speculative decoding <ArrowIcon />
+            {copy.speculationAction} <ArrowIcon />
           </a>
           <a className="power-action power-action--secondary" href="https://github.com/A3S-Lab/Power">
-            View source
+            {copy.sourceAction}
           </a>
         </div>
       </section>

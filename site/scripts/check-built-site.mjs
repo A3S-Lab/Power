@@ -1,14 +1,15 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 
 const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const buildRoot = path.join(siteRoot, "doc_build");
-const indexPath = path.join(buildRoot, "index.html");
-
-if (!existsSync(indexPath)) {
-  throw new Error(`Missing built homepage: ${indexPath}`);
-}
 
 const htmlFiles = [];
 const visit = (directory) => {
@@ -18,33 +19,129 @@ const visit = (directory) => {
     else if (entry.endsWith(".html")) htmlFiles.push(candidate);
   }
 };
+
+if (!existsSync(buildRoot)) {
+  throw new Error(`Missing built documentation directory: ${buildRoot}`);
+}
 visit(buildRoot);
 
-const renderedHtml = htmlFiles
-  .map((file) => readFileSync(file, "utf8"))
-  .join("\n");
-const requiredCopy = [
-  "Run the model.",
-  "Prove the boundary.",
-  "175.2089",
-  "Embedded Inference Architecture",
-  "Model-neutral Speculative Decoding",
+const routeChecks = [
+  {
+    file: "index.html",
+    lang: "zh",
+    copy: [
+      "运行模型。",
+      "证明边界。",
+      "简体中文",
+      "v0.9.0",
+      "EmbeddedRuntime::new",
+      "begin_wait",
+      "规范化回执",
+    ],
+  },
+  {
+    file: path.join("en", "index.html"),
+    lang: "en",
+    copy: [
+      "Run the model.",
+      "Prove the boundary.",
+      "English",
+      "v0.9.0",
+      "EmbeddedRuntime::new",
+      "begin_wait",
+      "Canonical receipt",
+    ],
+  },
+  {
+    file: path.join("v0.9.0", "index.html"),
+    lang: "zh",
+    copy: [
+      "运行模型。",
+      "证明边界。",
+      "简体中文",
+      "next",
+      "EmbeddedRuntime::new",
+      "begin_wait",
+      "规范化回执",
+    ],
+  },
+  {
+    file: path.join("v0.9.0", "en", "index.html"),
+    lang: "en",
+    copy: [
+      "Run the model.",
+      "Prove the boundary.",
+      "English",
+      "next",
+      "EmbeddedRuntime::new",
+      "begin_wait",
+      "Canonical receipt",
+    ],
+  },
+  {
+    file: "performance.html",
+    lang: "zh",
+    copy: ["性能证据", "175.2089", "智力水平下降了吗？"],
+  },
+  {
+    file: path.join("en", "performance.html"),
+    lang: "en",
+    copy: ["Performance evidence", "175.2089", "Did quality fall?"],
+  },
+  {
+    file: path.join("v0.9.0", "performance.html"),
+    lang: "zh",
+    copy: ["性能证据", "175.2089"],
+  },
+  {
+    file: path.join("v0.9.0", "en", "performance.html"),
+    lang: "en",
+    copy: ["Performance evidence", "175.2089"],
+  },
 ];
 
-for (const copy of requiredCopy) {
-  if (!renderedHtml.includes(copy)) {
-    throw new Error(`Built documentation is missing required copy: ${copy}`);
+for (const route of routeChecks) {
+  const renderedPath = path.join(buildRoot, route.file);
+  if (!existsSync(renderedPath)) {
+    throw new Error(`Missing rendered route: ${route.file}`);
+  }
+
+  const html = readFileSync(renderedPath, "utf8");
+  if (!html.includes(`<html lang="${route.lang}">`)) {
+    throw new Error(`Rendered route has the wrong language: ${route.file}`);
+  }
+  if (!html.includes("a3s-os-logo.png")) {
+    throw new Error(`Rendered route is missing the A3S OS logo: ${route.file}`);
+  }
+  for (const copy of route.copy) {
+    if (!html.includes(copy)) {
+      throw new Error(`Rendered route ${route.file} is missing copy: ${copy}`);
+    }
   }
 }
 
-for (const asset of ["power-mark.svg", "social-card.svg"]) {
+const assetChecks = ["a3s-os-logo.png", "social-card.svg"];
+for (const asset of assetChecks) {
   if (!existsSync(path.join(buildRoot, asset))) {
     throw new Error(`Built documentation is missing public asset: ${asset}`);
   }
 }
 
-if (htmlFiles.length < 7) {
-  throw new Error(`Expected at least 7 rendered documentation pages, found ${htmlFiles.length}`);
+const logoHash = createHash("sha256")
+  .update(readFileSync(path.join(buildRoot, "a3s-os-logo.png")))
+  .digest("hex");
+const expectedLogoHash =
+  "72b94cf69a95dc6153f865c4f8742c0f67079caa876f35f8b2b5f970ea795a2d";
+if (logoHash !== expectedLogoHash) {
+  throw new Error(`Built A3S OS logo has an unexpected SHA-256: ${logoHash}`);
 }
 
-console.log(`Verified ${htmlFiles.length} rendered pages and public assets.`);
+if (htmlFiles.length < 29) {
+  throw new Error(
+    `Expected 28 localized/versioned pages plus 404, found ${htmlFiles.length}`,
+  );
+}
+
+console.log(
+  `Verified ${htmlFiles.length} rendered pages, four locale/version roots, and official A3S OS assets.`,
+);

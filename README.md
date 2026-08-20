@@ -1,6 +1,10 @@
 # A3S Power
 
 <p align="center">
+  <a href="https://a3s-lab.github.io/Power/"><img src="./site/docs/public/a3s-os-logo.png" width="72" alt="A3S OS"></a>
+</p>
+
+<p align="center">
   <img src="./assets/readme/hero.svg" width="100%" alt="A3S Power connects embedded and OpenAI-compatible inference to one bounded runtime, canonical execution receipts, and independent verification">
 </p>
 
@@ -11,7 +15,8 @@
 <p align="center">
   <a href="https://github.com/A3S-Lab/Power/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/A3S-Lab/Power/ci.yml?branch=main&amp;style=flat-square&amp;label=CI" alt="CI status"></a>
   <a href="https://github.com/A3S-Lab/Power/actions/workflows/pages.yml"><img src="https://img.shields.io/github/actions/workflow/status/A3S-Lab/Power/pages.yml?branch=main&amp;style=flat-square&amp;label=docs" alt="Documentation deployment status"></a>
-  <a href="https://a3s-lab.github.io/Power/"><img src="https://img.shields.io/badge/docs-GitHub%20Pages-2864e8?style=flat-square" alt="A3S Power documentation"></a>
+  <a href="https://a3s-lab.github.io/Power/"><img src="https://img.shields.io/badge/docs-简体中文-2864e8?style=flat-square" alt="A3S Power Chinese documentation"></a>
+  <a href="https://a3s-lab.github.io/Power/en/"><img src="https://img.shields.io/badge/docs-English-2864e8?style=flat-square" alt="A3S Power English documentation"></a>
   <a href="https://crates.io/crates/a3s-power"><img src="https://img.shields.io/crates/v/a3s-power?style=flat-square&amp;color=2864e8" alt="a3s-power on crates.io"></a>
   <a href="https://docs.rs/a3s-power"><img src="https://img.shields.io/docsrs/a3s-power?style=flat-square" alt="a3s-power API documentation"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-17181a?style=flat-square" alt="MIT License"></a>
@@ -345,7 +350,9 @@ production certificate caching and failure policy.
 
 | Guide | Scope |
 | --- | --- |
-| [Documentation home](https://a3s-lab.github.io/Power/) | Project story, architecture, benchmarks, and operational guides |
+| [Documentation home - 简体中文](https://a3s-lab.github.io/Power/) | Default `next` documentation in Simplified Chinese |
+| [Documentation home - English](https://a3s-lab.github.io/Power/en/) | English `next` documentation |
+| [v0.9.0 release documentation](https://a3s-lab.github.io/Power/v0.9.0/) | Versioned bilingual release snapshot |
 | [Embedded Inference Architecture](docs/embedded-inference-architecture.md) | Graph execution, placement, scheduling, state, and receipts |
 | [Model-neutral Speculative Decoding](docs/speculative-decoding.md) | Strategies, native MTP, patching, protocol, and acceptance |
 | [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | Performance gates, artifact identity, quality, and raw evidence |
