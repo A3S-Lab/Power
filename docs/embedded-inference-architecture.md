@@ -76,7 +76,10 @@ Model crates continue to own the state type and its mutation semantics; see
 
 - Finite model and device queues reuse one cancellation-aware admission
   controller. Queue slots, active permits, and unfinished model-load slots are
-  RAII-owned, so cancellation or future drop cannot strand capacity.
+  RAII-owned, so cancellation or future drop cannot strand capacity. Optional
+  `tokio::time::Instant` deadlines cover sequential model and physical-device
+  waits without conversion to wall-clock time. Expiry releases earlier permits
+  and records only aggregate controller or pool-lifetime counts.
 - Deterministic microbatch planning preserves caller order while enforcing
   explicit input/state bounds and point-in-time host/device peak-memory
   budgets. Execution refreshes memory pressure and exact topology before

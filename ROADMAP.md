@@ -103,7 +103,7 @@ importing TensorRT profiles or moving shape selection into Power.
 - [x] Allow a policy-bounded number of independently mutable session replicas
       for one exact model identity while retaining one shared device gate and
       resident-byte budget.
-- [ ] Add monotonic admission deadlines, queue-expiry evidence, and
+- [x] Add monotonic admission deadlines, queue-expiry evidence, and
       cancellation-safe cleanup. No request bytes or slot identities enter
       telemetry.
 - [ ] Add health-driven replica retirement and lazy reconstruction at a safe

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::OnceCell;
@@ -24,6 +24,7 @@ struct PoolInner<T> {
     device: RuntimeDevice,
     policy: ModelSessionPoolPolicy,
     device_admission: AdmissionController,
+    expired_replica_requests: AtomicU64,
     sessions: Mutex<BTreeMap<String, Arc<SessionEntry<T>>>>,
 }
 
@@ -79,6 +80,7 @@ where
                 device,
                 policy,
                 device_admission,
+                expired_replica_requests: AtomicU64::new(0),
                 sessions: Mutex::new(BTreeMap::new()),
             }),
         })
@@ -173,6 +175,7 @@ where
                 .iter()
                 .map(|snapshot| snapshot.waiting)
                 .fold(0_usize, usize::saturating_add),
+            expired_replica_requests: self.inner.expired_replica_requests.load(Ordering::Relaxed),
             reserved_bytes,
             device_admission: self.inner.device_admission.snapshot(),
         }
@@ -269,6 +272,12 @@ where
         });
         sessions.insert(key.clone(), Arc::clone(&entry));
         Ok((key, entry))
+    }
+
+    pub(super) fn record_expired_replica_request(&self) {
+        self.inner
+            .expired_replica_requests
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     fn remove_empty(&self, key: &str, entry: &Arc<SessionEntry<T>>) {

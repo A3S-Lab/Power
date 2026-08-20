@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::admission::{AdmissionError, AdmissionPermit};
@@ -89,8 +90,46 @@ where
         F: FnOnce(EmbeddedRuntime, CancellationToken) -> Fut + Send,
         Fut: Future<Output = Result<T>> + Send,
     {
+        self.acquire_replica_inner(spec, cancellation, None, loader)
+            .await
+    }
+
+    /// Acquires one exclusive replica before a monotonic admission deadline.
+    ///
+    /// The same absolute deadline covers the complete replica wait. It is not
+    /// serialized, logged, or converted to wall-clock time.
+    pub async fn acquire_replica_until<F, Fut>(
+        &self,
+        spec: ModelSessionSpec,
+        cancellation: &CancellationToken,
+        deadline: Instant,
+        loader: F,
+    ) -> Result<ModelSessionReplica<T>>
+    where
+        F: FnOnce(EmbeddedRuntime, CancellationToken) -> Fut + Send,
+        Fut: Future<Output = Result<T>> + Send,
+    {
+        self.acquire_replica_inner(spec, cancellation, Some(deadline), loader)
+            .await
+    }
+
+    async fn acquire_replica_inner<F, Fut>(
+        &self,
+        spec: ModelSessionSpec,
+        cancellation: &CancellationToken,
+        deadline: Option<Instant>,
+        loader: F,
+    ) -> Result<ModelSessionReplica<T>>
+    where
+        F: FnOnce(EmbeddedRuntime, CancellationToken) -> Fut + Send,
+        Fut: Future<Output = Result<T>> + Send,
+    {
         if cancellation.is_cancelled() {
             return Err(PowerError::InferenceCancelled);
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            self.record_expired_replica_request();
+            return Err(PowerError::InferenceDeadlineExceeded);
         }
         let (key, entry) = self.entry(spec, SessionAccess::ExclusiveReplica)?;
         let _load_guard = SessionLoadGuard {
@@ -98,11 +137,26 @@ where
             key,
             entry: Arc::clone(&entry),
         };
-        let admission = entry
-            .replica_admission
-            .acquire_cancellable(cancellation)
-            .await
-            .map_err(map_admission_error)?;
+        let admission = match deadline {
+            Some(deadline) => {
+                entry
+                    .replica_admission
+                    .acquire_cancellable_until(cancellation, deadline)
+                    .await
+            }
+            None => {
+                entry
+                    .replica_admission
+                    .acquire_cancellable(cancellation)
+                    .await
+            }
+        }
+        .map_err(|error| {
+            if matches!(error, AdmissionError::DeadlineExceeded) {
+                self.record_expired_replica_request();
+            }
+            map_admission_error(error)
+        })?;
         let index = lock(&entry.available_replicas).pop().ok_or_else(|| {
             PowerError::InferenceFailed(
                 "replica admission succeeded without an available session slot".to_string(),
@@ -141,6 +195,7 @@ fn map_admission_error(error: AdmissionError) -> PowerError {
     match error {
         AdmissionError::QueueFull { maximum } => PowerError::InferenceQueueFull { maximum },
         AdmissionError::Cancelled => PowerError::InferenceCancelled,
+        AdmissionError::DeadlineExceeded => PowerError::InferenceDeadlineExceeded,
         AdmissionError::Closed => {
             PowerError::InferenceFailed("replica admission controller closed".to_string())
         }

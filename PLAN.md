@@ -23,8 +23,9 @@ The model-neutral Power layer now provides the scheduling substrate required by
 `a3s-ocr` and `a3s-parser`: finite cancellation-aware model queues, an exact
 device/model session pool with declared resident-byte bounds, a shared physical
 device gate, policy-bounded exclusive mutable session replicas with worst-case
-residency admission, deterministic memory-aware microbatch plans with
-live-pressure revalidation, and digest-only receipt evidence. Language,
+residency admission, monotonic queue deadlines with aggregate expiry evidence,
+deterministic memory-aware microbatch plans with live-pressure revalidation,
+and digest-only receipt evidence. Language,
 vision, OCR, embedding, and multimodal crates use the same runtime contracts.
 OCR stage semantics, image
 pre/postprocessing, document target identity, cross-page structure, and retry

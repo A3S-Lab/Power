@@ -16,6 +16,7 @@ model architecture, or assigns model semantics to a replica.
 | Device work has one authority | Every replica receives the same pool-created `EmbeddedRuntime`, which contains the same physical-device admission controller. A loader cannot receive a slot-specific scheduler. |
 | Initialization remains lazy | Each finite slot has one cancellation-safe initialization cell. A released initialized slot is reused without calling its loader again. |
 | Failure cannot strand capacity | Cancellation, loader error, or future drop returns the replica permit and free-list entry. If no replica initialized, the pool also removes the empty entry and releases its byte reservation. |
+| Queue time is caller-bounded | `acquire_replica_until` accepts one monotonic `tokio::time::Instant`. Expiry returns a typed error, returns all acquired capacity, and never becomes a wall-clock timestamp. |
 | Operations remain private | The loader receives no ordinal. Debug output redacts model identities, the declaration digest contains no ordinal, and snapshots report only aggregate reserved, ready, leased, and waiting counts. |
 
 Language decoders, vision encoders, OCR graphs, embedding models, and multimodal
@@ -78,6 +79,23 @@ let mut context = replica.value().lock().await;
 context.infer(input, cancellation).await?;
 ```
 
+Use `acquire_replica_until` when queueing must have a finite latency budget:
+
+```rust,ignore
+let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
+let replica = pool
+    .acquire_replica_until(spec, cancellation, deadline, load_context)
+    .await?;
+```
+
+The deadline covers admission only. Once a replica is admitted, the owning
+model crate retains execution and cancellation policy. The same absolute
+deadline is used by `EmbeddedRuntime::begin_wait_until` for its model and
+physical-device queues, so time spent at the first gate cannot reset the budget
+at the second gate. `AdmissionSnapshot::deadline_expirations` and
+`ModelSessionPoolSnapshot::expired_replica_requests` are cumulative aggregate
+evidence; neither exposes a deadline value, request bytes, or replica identity.
+
 The configured replica count is part of the replica declaration SHA-256. A
 deployment changing that count or its resulting total reservation therefore
 changes the evidence identity. JSON policies created before replica support
@@ -103,5 +121,6 @@ cargo clippy --locked --no-default-features --features embedded-inference \
 The focused tests cover independent lazy state, shared device admission,
 worst-case byte reservation before loader execution, bounded policy parsing,
 opaque language/vision/embedding identities, queue cancellation, aborted
-initialization, ready-slot reuse, shared/exclusive isolation, privacy-safe
+initialization, monotonic expiry across sequential gates, persistent aggregate
+expiry evidence, ready-slot reuse, shared/exclusive isolation, privacy-safe
 debug output, and `Send + Sync` public leases.

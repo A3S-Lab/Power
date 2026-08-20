@@ -1,4 +1,6 @@
 pub mod admission;
+#[cfg(test)]
+mod admission_tests;
 #[cfg(feature = "server")]
 pub mod api;
 #[cfg(feature = "artifact-provisioning")]

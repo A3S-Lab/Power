@@ -15,6 +15,9 @@ pub enum PowerError {
     #[error("Inference was cancelled before admission")]
     InferenceCancelled,
 
+    #[error("Inference admission deadline was exceeded")]
+    InferenceDeadlineExceeded,
+
     #[error(
         "Embedded model session pool is full at {maximum_sessions} session(s) or {maximum_resident_bytes} resident byte(s)"
     )]
@@ -79,6 +82,7 @@ impl From<PowerError> for axum::response::Response {
             }
             PowerError::InvalidRequest(_) => (StatusCode::BAD_REQUEST, err.to_string()),
             PowerError::InvalidFormat(_) => (StatusCode::BAD_REQUEST, err.to_string()),
+            PowerError::InferenceDeadlineExceeded => (StatusCode::REQUEST_TIMEOUT, err.to_string()),
             PowerError::IntegrityCheckFailed { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
             }
@@ -115,6 +119,12 @@ mod tests {
     fn test_inference_failed_display() {
         let err = PowerError::InferenceFailed("context too long".to_string());
         assert_eq!(err.to_string(), "Inference failed: context too long");
+    }
+
+    #[test]
+    fn test_inference_deadline_exceeded_display() {
+        let err = PowerError::InferenceDeadlineExceeded;
+        assert_eq!(err.to_string(), "Inference admission deadline was exceeded");
     }
 
     #[test]
@@ -191,6 +201,16 @@ mod tests {
         let err = PowerError::InvalidRequest("bad request".to_string());
         let resp: Response = err.into();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn test_error_to_response_inference_deadline_exceeded() {
+        use axum::http::StatusCode;
+        use axum::response::Response;
+
+        let resp: Response = PowerError::InferenceDeadlineExceeded.into();
+        assert_eq!(resp.status(), StatusCode::REQUEST_TIMEOUT);
     }
 
     #[cfg(feature = "server")]

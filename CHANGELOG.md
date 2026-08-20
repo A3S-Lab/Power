@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate, and worst-case resident-byte reservation. Cancellation and dropped
   loaders release queue, lease, and empty-entry capacity; declarations and
   aggregate snapshots expose no replica ordinal or model-specific semantics.
+- Added monotonic admission deadlines to the shared controller, embedded
+  model/device admission, and exclusive replica acquisition. One absolute
+  deadline covers sequential model and physical-device waits; typed expiry
+  releases every prior permit and increments only content-free aggregate
+  counters, including a pool-lifetime replica-expiry count.
 - Added model-owned finite shape-profile declarations for the embedded runtime.
   Opaque class digests bind exact implementations to aggregate execution and
   scratch bounds under the current weights, graph, device topology, memory

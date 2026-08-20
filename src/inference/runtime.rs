@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::admission::{AdmissionController, AdmissionError, AdmissionPermit, AdmissionSnapshot};
@@ -154,30 +155,43 @@ impl EmbeddedRuntime {
     /// returned permit is identical to a fail-fast [`Self::begin`] permit and
     /// must be held across every component graph in the logical request.
     pub async fn begin_wait(&self, cancellation: &CancellationToken) -> Result<ExecutionPermit> {
-        let admission = self
-            .inner
-            .admission
-            .acquire_cancellable(cancellation)
+        self.begin_wait_inner(cancellation, None).await
+    }
+
+    /// Waits for model and physical-device capacity until one monotonic
+    /// deadline shared by both queues.
+    ///
+    /// Capacity acquired from the first queue is released if the second queue
+    /// expires, is cancelled, or fails.
+    pub async fn begin_wait_until(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<ExecutionPermit> {
+        self.begin_wait_inner(cancellation, Some(deadline)).await
+    }
+
+    async fn begin_wait_inner(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: Option<Instant>,
+    ) -> Result<ExecutionPermit> {
+        let admission = acquire_admission(&self.inner.admission, cancellation, deadline)
             .await
-            .map_err(|error| match error {
-                AdmissionError::QueueFull { maximum } => PowerError::InferenceQueueFull { maximum },
-                AdmissionError::Cancelled => PowerError::InferenceCancelled,
-                AdmissionError::Closed => PowerError::InferenceFailed(
-                    "embedded runtime admission controller was closed".to_string(),
-                ),
+            .map_err(|error| {
+                map_admission_error(error, "embedded runtime admission controller was closed")
             })?;
         let device_admission = match &self.inner.device_admission {
-            Some(controller) => Some(controller.acquire_cancellable(cancellation).await.map_err(
-                |error| match error {
-                    AdmissionError::QueueFull { maximum } => {
-                        PowerError::InferenceQueueFull { maximum }
-                    }
-                    AdmissionError::Cancelled => PowerError::InferenceCancelled,
-                    AdmissionError::Closed => PowerError::InferenceFailed(
-                        "embedded device admission controller was closed".to_string(),
-                    ),
-                },
-            )?),
+            Some(controller) => Some(
+                acquire_admission(controller, cancellation, deadline)
+                    .await
+                    .map_err(|error| {
+                        map_admission_error(
+                            error,
+                            "embedded device admission controller was closed",
+                        )
+                    })?,
+            ),
             None => None,
         };
         Ok(self.execution_permit(admission, device_admission))
@@ -335,6 +349,30 @@ impl EmbeddedRuntime {
                 _device_admission: device_admission,
             }),
         }
+    }
+}
+
+async fn acquire_admission(
+    controller: &AdmissionController,
+    cancellation: &CancellationToken,
+    deadline: Option<Instant>,
+) -> std::result::Result<AdmissionPermit, AdmissionError> {
+    match deadline {
+        Some(deadline) => {
+            controller
+                .acquire_cancellable_until(cancellation, deadline)
+                .await
+        }
+        None => controller.acquire_cancellable(cancellation).await,
+    }
+}
+
+fn map_admission_error(error: AdmissionError, closed_message: &str) -> PowerError {
+    match error {
+        AdmissionError::QueueFull { maximum } => PowerError::InferenceQueueFull { maximum },
+        AdmissionError::Cancelled => PowerError::InferenceCancelled,
+        AdmissionError::DeadlineExceeded => PowerError::InferenceDeadlineExceeded,
+        AdmissionError::Closed => PowerError::InferenceFailed(closed_message.to_string()),
     }
 }
 

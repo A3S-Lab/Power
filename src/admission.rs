@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 /// Reason a cancellation-aware admission request was not accepted.
@@ -17,6 +18,8 @@ pub enum AdmissionError {
     QueueFull { maximum: usize },
     #[error("admission was cancelled while waiting")]
     Cancelled,
+    #[error("admission deadline was exceeded")]
+    DeadlineExceeded,
     #[error("admission controller was closed")]
     Closed,
 }
@@ -33,6 +36,7 @@ pub struct AdmissionSnapshot {
     pub admitted: u64,
     pub queue_rejections: u64,
     pub cancelled_waiters: u64,
+    pub deadline_expirations: u64,
 }
 
 /// Cloneable admission controller with an optional concurrency bound.
@@ -54,6 +58,7 @@ struct AdmissionInner {
     admitted: AtomicU64,
     queue_rejections: AtomicU64,
     cancelled_waiters: AtomicU64,
+    deadline_expirations: AtomicU64,
 }
 
 /// RAII permit returned for an admitted request.
@@ -62,6 +67,20 @@ pub struct AdmissionPermit {
     _permit: Option<OwnedSemaphorePermit>,
     inner: Arc<AdmissionInner>,
     was_queued: bool,
+}
+
+enum ImmediatePermit {
+    Unbounded,
+    Bounded(OwnedSemaphorePermit),
+}
+
+impl ImmediatePermit {
+    fn into_owned(self) -> Option<OwnedSemaphorePermit> {
+        match self {
+            Self::Unbounded => None,
+            Self::Bounded(permit) => Some(permit),
+        }
+    }
 }
 
 impl AdmissionPermit {
@@ -109,6 +128,7 @@ impl AdmissionController {
                 admitted: AtomicU64::new(0),
                 queue_rejections: AtomicU64::new(0),
                 cancelled_waiters: AtomicU64::new(0),
+                deadline_expirations: AtomicU64::new(0),
             }),
         }
     }
@@ -133,6 +153,7 @@ impl AdmissionController {
                 admitted: AtomicU64::new(0),
                 queue_rejections: AtomicU64::new(0),
                 cancelled_waiters: AtomicU64::new(0),
+                deadline_expirations: AtomicU64::new(0),
             }),
         }
     }
@@ -156,24 +177,36 @@ impl AdmissionController {
             admitted: self.inner.admitted.load(Ordering::Relaxed),
             queue_rejections: self.inner.queue_rejections.load(Ordering::Relaxed),
             cancelled_waiters: self.inner.cancelled_waiters.load(Ordering::Relaxed),
+            deadline_expirations: self.inner.deadline_expirations.load(Ordering::Relaxed),
         }
     }
 
     /// Attempts immediate admission and returns `None` at capacity.
     pub fn try_acquire(&self) -> Option<AdmissionPermit> {
-        let Some(semaphore) = &self.inner.semaphore else {
-            return Some(self.admitted_permit(None, false));
-        };
-        match Arc::clone(semaphore).try_acquire_owned() {
-            Ok(permit) => Some(self.admitted_permit(Some(permit), false)),
-            Err(TryAcquireError::NoPermits) => None,
-            Err(TryAcquireError::Closed) => {
-                // The semaphore is private and this type exposes no close
-                // operation, so a closed controller is an internal invariant
-                // violation rather than a recoverable capacity condition.
+        match self.try_acquire_immediate() {
+            Ok(Some(permit)) => Some(self.admitted_permit(permit.into_owned(), false)),
+            Ok(None) => None,
+            Err(AdmissionError::Closed) => {
                 debug_assert!(false, "private admission semaphore was closed");
                 None
             }
+            Err(_) => {
+                debug_assert!(false, "immediate admission returned a waiting-only error");
+                None
+            }
+        }
+    }
+
+    fn try_acquire_immediate(
+        &self,
+    ) -> std::result::Result<Option<ImmediatePermit>, AdmissionError> {
+        let Some(semaphore) = &self.inner.semaphore else {
+            return Ok(Some(ImmediatePermit::Unbounded));
+        };
+        match Arc::clone(semaphore).try_acquire_owned() {
+            Ok(permit) => Ok(Some(ImmediatePermit::Bounded(permit))),
+            Err(TryAcquireError::NoPermits) => Ok(None),
+            Err(TryAcquireError::Closed) => Err(AdmissionError::Closed),
         }
     }
 
@@ -206,16 +239,59 @@ impl AdmissionController {
         &self,
         cancellation: &CancellationToken,
     ) -> std::result::Result<AdmissionPermit, AdmissionError> {
+        self.acquire_cancellable_inner(cancellation, None).await
+    }
+
+    /// Waits through the finite queue until one monotonic deadline.
+    ///
+    /// The deadline is checked before immediate admission, while queued, and
+    /// again after the semaphore wakes. Cancellation has deterministic
+    /// precedence when both signals are already observable.
+    pub async fn acquire_cancellable_until(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: Instant,
+    ) -> std::result::Result<AdmissionPermit, AdmissionError> {
+        self.acquire_cancellable_inner(cancellation, Some(deadline))
+            .await
+    }
+
+    async fn acquire_cancellable_inner(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: Option<Instant>,
+    ) -> std::result::Result<AdmissionPermit, AdmissionError> {
         if cancellation.is_cancelled() {
             return Err(AdmissionError::Cancelled);
         }
-        if let Some(permit) = self.try_acquire() {
-            return Ok(permit);
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(self.deadline_exceeded());
+        }
+        if let Some(permit) = self.try_acquire_immediate()? {
+            if cancellation.is_cancelled() {
+                return Err(AdmissionError::Cancelled);
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(self.deadline_exceeded());
+            }
+            return Ok(self.admitted_permit(permit.into_owned(), false));
+        }
+        if cancellation.is_cancelled() {
+            return Err(AdmissionError::Cancelled);
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(self.deadline_exceeded());
         }
         let queue_slot = match &self.inner.queue_slots {
             Some(slots) => match Arc::clone(slots).try_acquire_owned() {
                 Ok(slot) => Some(slot),
                 Err(TryAcquireError::NoPermits) => {
+                    if cancellation.is_cancelled() {
+                        return Err(AdmissionError::Cancelled);
+                    }
+                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        return Err(self.deadline_exceeded());
+                    }
                     self.inner.queue_rejections.fetch_add(1, Ordering::Relaxed);
                     return Err(AdmissionError::QueueFull {
                         maximum: self.inner.waiting_limit.unwrap_or(0),
@@ -231,23 +307,49 @@ impl AdmissionController {
             .semaphore
             .as_ref()
             .ok_or(AdmissionError::Closed)?;
-        let permit = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                self.inner.cancelled_waiters.fetch_add(1, Ordering::Relaxed);
-                return Err(AdmissionError::Cancelled);
-            }
-            result = Arc::clone(semaphore).acquire_owned() => {
-                result.map_err(|_| AdmissionError::Closed)?
-            }
+        let permit = match deadline {
+            Some(deadline) => tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    self.inner.cancelled_waiters.fetch_add(1, Ordering::Relaxed);
+                    return Err(AdmissionError::Cancelled);
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    return Err(self.deadline_exceeded());
+                }
+                result = Arc::clone(semaphore).acquire_owned() => {
+                    result.map_err(|_| AdmissionError::Closed)?
+                }
+            },
+            None => tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    self.inner.cancelled_waiters.fetch_add(1, Ordering::Relaxed);
+                    return Err(AdmissionError::Cancelled);
+                }
+                result = Arc::clone(semaphore).acquire_owned() => {
+                    result.map_err(|_| AdmissionError::Closed)?
+                }
+            },
         };
         if cancellation.is_cancelled() {
             drop(permit);
             self.inner.cancelled_waiters.fetch_add(1, Ordering::Relaxed);
             return Err(AdmissionError::Cancelled);
         }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            drop(permit);
+            return Err(self.deadline_exceeded());
+        }
         drop(waiting);
         Ok(self.admitted_permit(Some(permit), true))
+    }
+
+    fn deadline_exceeded(&self) -> AdmissionError {
+        self.inner
+            .deadline_expirations
+            .fetch_add(1, Ordering::Relaxed);
+        AdmissionError::DeadlineExceeded
     }
 
     fn register_waiter(&self, queue_slot: Option<OwnedSemaphorePermit>) -> WaitingGuard {
@@ -274,143 +376,5 @@ impl AdmissionController {
             inner: Arc::clone(&self.inner),
             was_queued,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio_util::sync::CancellationToken;
-
-    async fn wait_for_waiting(controller: &AdmissionController, expected: usize) {
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if controller.snapshot().waiting == expected {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("admission waiting count did not converge");
-    }
-
-    #[tokio::test]
-    async fn clones_share_capacity() {
-        let controller = AdmissionController::new(Some(1));
-        let clone = controller.clone();
-        let permit = controller.try_acquire().unwrap();
-        assert!(clone.try_acquire().is_none());
-        drop(permit);
-        assert!(clone.try_acquire().is_some());
-    }
-
-    #[tokio::test]
-    async fn waiting_acquire_is_released_by_drop() {
-        let controller = AdmissionController::new(Some(1));
-        let permit = controller.try_acquire().unwrap();
-        let waiter = tokio::spawn({
-            let controller = controller.clone();
-            async move { controller.acquire().await }
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert!(!waiter.is_finished());
-        drop(permit);
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), waiter)
-                .await
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn unbounded_controller_always_admits() {
-        let controller = AdmissionController::new(None);
-        let permits = (0..1_000)
-            .map(|_| controller.try_acquire().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(permits.len(), 1_000);
-    }
-
-    #[test]
-    fn excessive_capacity_is_safely_clamped() {
-        let controller = AdmissionController::new(Some(usize::MAX));
-        assert_eq!(controller.maximum(), Some(Semaphore::MAX_PERMITS));
-    }
-
-    #[tokio::test]
-    async fn bounded_queue_rejects_overflow_and_reports_counts() {
-        let controller = AdmissionController::new_bounded(1, 1);
-        let active = controller.try_acquire().unwrap();
-        let queued_cancellation = CancellationToken::new();
-        let queued = tokio::spawn({
-            let controller = controller.clone();
-            let cancellation = queued_cancellation.clone();
-            async move { controller.acquire_cancellable(&cancellation).await }
-        });
-        wait_for_waiting(&controller, 1).await;
-
-        let overflow = controller
-            .acquire_cancellable(&CancellationToken::new())
-            .await
-            .unwrap_err();
-        assert_eq!(overflow, AdmissionError::QueueFull { maximum: 1 });
-        assert_eq!(controller.snapshot().queue_rejections, 1);
-
-        drop(active);
-        let admitted = queued.await.unwrap().unwrap();
-        assert!(admitted.was_queued());
-        let snapshot = controller.snapshot();
-        assert_eq!(snapshot.active, 1);
-        assert_eq!(snapshot.waiting, 0);
-        assert_eq!(snapshot.peak_waiting, 1);
-        assert_eq!(snapshot.admitted, 2);
-    }
-
-    #[tokio::test]
-    async fn cancellation_and_future_drop_release_bounded_queue_slots() {
-        let controller = AdmissionController::new_bounded(1, 1);
-        let _active = controller.try_acquire().unwrap();
-
-        let cancellation = CancellationToken::new();
-        let cancelled_waiter = tokio::spawn({
-            let controller = controller.clone();
-            let cancellation = cancellation.clone();
-            async move { controller.acquire_cancellable(&cancellation).await }
-        });
-        wait_for_waiting(&controller, 1).await;
-        cancellation.cancel();
-        assert_eq!(
-            cancelled_waiter.await.unwrap().unwrap_err(),
-            AdmissionError::Cancelled
-        );
-        wait_for_waiting(&controller, 0).await;
-        assert_eq!(controller.snapshot().cancelled_waiters, 1);
-
-        let dropped_waiter = tokio::spawn({
-            let controller = controller.clone();
-            async move {
-                controller
-                    .acquire_cancellable(&CancellationToken::new())
-                    .await
-            }
-        });
-        wait_for_waiting(&controller, 1).await;
-        dropped_waiter.abort();
-        let _ = dropped_waiter.await;
-        wait_for_waiting(&controller, 0).await;
-
-        let replacement = tokio::spawn({
-            let controller = controller.clone();
-            async move {
-                controller
-                    .acquire_cancellable(&CancellationToken::new())
-                    .await
-            }
-        });
-        wait_for_waiting(&controller, 1).await;
-        replacement.abort();
-        let _ = replacement.await;
-        wait_for_waiting(&controller, 0).await;
     }
 }

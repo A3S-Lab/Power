@@ -59,7 +59,10 @@ their semantics into a central model switch statement.
 
 Admission limits active and queued work. Device admission prevents independent
 models from overcommitting the same accelerator. Cancellation is checked before
-admission and remains safe while a request waits or executes.
+admission and remains safe while a request waits or executes. A caller may set
+one monotonic deadline across sequential model and physical-device waits;
+expiry releases earlier permits and records only aggregate counters, never a
+wall-clock timestamp, request content, or slot identity.
 
 ### Model-owned finite profiles
 
@@ -79,6 +82,8 @@ runtime and physical-device admission gate. Power reserves the worst-case
 resident bytes before any loader runs and reports only aggregate replica
 counts. Language, vision, OCR, embedding, and multimodal contexts use the same
 path: the model family is opaque identity, never a dispatch branch.
+Replica acquisition can use the same monotonic deadline contract, and its
+pool-lifetime expiry counter survives removal of an otherwise empty entry.
 
 ### Verified weights
 

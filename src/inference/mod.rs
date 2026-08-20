@@ -43,6 +43,8 @@ mod runtime;
 mod sealed_state;
 #[cfg(test)]
 mod sealed_state_tests;
+#[cfg(test)]
+mod session_deadline_tests;
 mod session_pool;
 #[cfg(test)]
 mod session_pool_tests;
