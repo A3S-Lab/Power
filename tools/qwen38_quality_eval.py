@@ -702,6 +702,37 @@ def run_evaluation(args: argparse.Namespace) -> None:
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
 
 
+def report_metadata(report: dict[str, Any]) -> dict[str, Any]:
+    """Return control-plane fields without carrying model-generated content."""
+    request = report.get("request") or {}
+    overall = (report.get("summary") or {}).get("overall") or {}
+    return {
+        "schema": report.get("schema"),
+        "mode_label": report.get("mode_label"),
+        "repetition": report.get("repetition"),
+        "order_index": report.get("order_index"),
+        "model": report.get("model"),
+        "model_sha256": report.get("model_sha256"),
+        "tasks_sha256": report.get("tasks_sha256"),
+        "server_sha256": report.get("server_sha256"),
+        "power_commit": report.get("power_commit"),
+        "seed": report.get("seed"),
+        "num_ctx": request.get("num_ctx"),
+        "num_batch": request.get("num_batch"),
+        "warmup_requests": request.get("warmup_requests"),
+        "result_count": len(report.get("results") or []),
+        "completed_at": report.get("completed_at"),
+        "completed": overall.get("completed"),
+        "errors": overall.get("errors"),
+        "has_speculative_runtime": report.get("speculative_runtime") is not None,
+    }
+
+
+def inspect_report_command(args: argparse.Namespace) -> None:
+    report = json.loads(args.report.read_text(encoding="utf-8"))
+    print(json.dumps(report_metadata(report), ensure_ascii=True, sort_keys=True))
+
+
 def aggregate_command(args: argparse.Namespace) -> None:
     report_paths = sorted(Path(path) for path in args.reports)
     reports = [json.loads(path.read_text(encoding="utf-8")) for path in report_paths]
@@ -786,6 +817,12 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout-seconds", type=int, default=900)
     run.add_argument("--include-content", action="store_true")
 
+    inspect_report = commands.add_parser(
+        "inspect-report",
+        help="emit safe control-plane metadata for one report",
+    )
+    inspect_report.add_argument("--report", type=Path, required=True)
+
     aggregate = commands.add_parser("aggregate", help="aggregate complete reports")
     aggregate.add_argument("--reports", nargs="+", required=True)
     aggregate.add_argument(
@@ -813,6 +850,8 @@ def main() -> None:
         prepare_tasks(args.manifest, args.output)
     elif args.command == "run":
         run_evaluation(args)
+    elif args.command == "inspect-report":
+        inspect_report_command(args)
     elif args.command == "aggregate":
         aggregate_command(args)
     elif args.command == "aggregate-sweep":

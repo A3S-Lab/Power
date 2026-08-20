@@ -48,7 +48,9 @@ param(
 
     [switch]$RequireHighPerformancePowerPlan,
 
-    [switch]$IncludeContent
+    [switch]$IncludeContent,
+
+    [switch]$ReuseCompatibleReportsAcrossCommits
 )
 
 $ErrorActionPreference = 'Stop'
@@ -139,6 +141,17 @@ function Invoke-Python {
     }
 }
 
+function Get-ReportMetadata {
+    param([string]$Path)
+
+    $json = @(& $PythonLauncher @pythonPrefix $evaluator `
+        'inspect-report' '--report' $Path) -join [Environment]::NewLine
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python report inspection exited with code $LASTEXITCODE"
+    }
+    return $json | ConvertFrom-Json
+}
+
 function Get-GpuCompatibilityIdentity {
     param([object[]]$GpuRows)
 
@@ -168,7 +181,7 @@ function Invoke-ModeRun {
 
     if ($ReuseCompatible -and (Test-Path -LiteralPath $report -PathType Leaf)) {
         try {
-            $existing = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+            $existing = Get-ReportMetadata -Path $report
             $identityMatches =
                 $existing.schema -eq 'a3s.power.quality-eval.report.v3' -and
                 $existing.mode_label -eq $Mode.label -and
@@ -178,19 +191,20 @@ function Invoke-ModeRun {
                 $existing.model_sha256 -eq $Mode.model_hash -and
                 $existing.tasks_sha256 -eq $taskDigest -and
                 $existing.server_sha256 -eq $ServerHash -and
-                $existing.power_commit -eq $PowerCommit -and
+                ($existing.power_commit -eq $PowerCommit -or
+                    $ReuseCompatibleReportsAcrossCommits) -and
                 [int]$existing.seed -eq 42 -and
-                [int]$existing.request.num_ctx -eq 4096 -and
-                [int]$existing.request.num_batch -eq $NumBatch -and
-                [int]$existing.request.warmup_requests -eq 1
+                [int]$existing.num_ctx -eq 4096 -and
+                [int]$existing.num_batch -eq $NumBatch -and
+                [int]$existing.warmup_requests -eq 1
             $isComplete =
-                $existing.results.Count -eq $expectedTaskCount -and
+                [int]$existing.result_count -eq $expectedTaskCount -and
                 $existing.completed_at -and
-                [int]$existing.summary.overall.completed -eq $expectedTaskCount -and
-                [int]$existing.summary.overall.errors -eq 0
+                [int]$existing.completed -eq $expectedTaskCount -and
+                [int]$existing.errors -eq 0
             $runtimeMatches =
                 ($Mode.spec_mode -ne 'mtp') -or
-                ($null -ne $existing.speculative_runtime)
+                [bool]$existing.has_speculative_runtime
             if ($identityMatches -and $isComplete -and $runtimeMatches) {
                 Write-Output "Reusing complete report: $report"
                 return
@@ -280,10 +294,10 @@ function Invoke-ModeRun {
             $arguments += '--include-content'
         }
         Invoke-Python -Arguments $arguments
-        $completed = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
-        if ($completed.results.Count -ne $expectedTaskCount -or
-            [int]$completed.summary.overall.completed -ne $expectedTaskCount -or
-            [int]$completed.summary.overall.errors -ne 0) {
+        $completed = Get-ReportMetadata -Path $report
+        if ([int]$completed.result_count -ne $expectedTaskCount -or
+            [int]$completed.completed -ne $expectedTaskCount -or
+            [int]$completed.errors -ne 0) {
             throw "Mode $($Mode.label) repetition $Repetition did not complete $expectedTaskCount error-free requests"
         }
     } finally {
@@ -396,6 +410,7 @@ $environment = [ordered]@{
     num_batch = $NumBatch
     repetitions = $Repetitions
     profile = $Profile
+    compatible_report_commit_reuse = [bool]$ReuseCompatibleReportsAcrossCommits
     modes = @($modes | ForEach-Object {
         [ordered]@{
             label = $_.label
@@ -414,7 +429,10 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
         $previous = Get-Content -LiteralPath $environmentPath -Raw | ConvertFrom-Json
         $reuseCompatible =
             $previous.schema -eq $environment.schema -and
-            $previous.power_commit -eq $environment.power_commit -and
+            ($previous.power_commit -eq $environment.power_commit -or
+                ($ReuseCompatibleReportsAcrossCommits -and
+                    -not [bool]$previous.dirty_worktree -and
+                    -not [bool]$environment.dirty_worktree)) -and
             $previous.server.sha256 -eq $environment.server.sha256 -and
             $previous.q6_model.sha256 -eq $environment.q6_model.sha256 -and
             $previous.tbq4_model.sha256 -eq $environment.tbq4_model.sha256 -and

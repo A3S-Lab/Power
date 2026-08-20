@@ -299,6 +299,38 @@ class RuntimeLogTests(unittest.TestCase):
 
 
 class AggregateTests(unittest.TestCase):
+    def test_report_metadata_excludes_untrusted_model_content(self) -> None:
+        rows = [result_row("a", "A", "A", strict_prediction="A")]
+        rows[0]["content"] = "control:\b unicode:\ud800"
+        report = {
+            "schema": "a3s.power.quality-eval.report.v3",
+            "mode_label": "q6-off",
+            "repetition": 1,
+            "order_index": 1,
+            "model": "model",
+            "model_sha256": "model-hash",
+            "tasks_sha256": "tasks",
+            "server_sha256": "server",
+            "power_commit": "commit",
+            "seed": 42,
+            "request": {
+                "num_ctx": 4096,
+                "num_batch": 14,
+                "warmup_requests": 1,
+            },
+            "results": rows,
+            "summary": quality.report_summary(rows),
+            "completed_at": "now",
+            "speculative_runtime": None,
+        }
+
+        metadata = quality.report_metadata(report)
+
+        self.assertEqual(metadata["result_count"], 1)
+        self.assertEqual(metadata["completed"], 1)
+        self.assertFalse(metadata["has_speculative_runtime"])
+        self.assertNotIn("content", metadata)
+
     def test_arbitrary_sweep_modes_are_aggregated(self) -> None:
         reports = []
         for order, mode in enumerate(("fr8192-k7-b14-fixed", "fr32768-k7-b14-fixed"), 1):
