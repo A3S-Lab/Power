@@ -5,9 +5,9 @@ edition = "2021"
 authors = ["A3S Lab"]
 license = "MIT"
 repository = "https://github.com/A3S-Lab/Power"
-description = "A3S Power — Privacy-preserving LLM inference for TEE environments"
+description = "A3S Power — Model-neutral, bounded, verifiable inference for confidential systems"
 readme = "README.md"
-keywords = ["llm", "inference", "tee", "privacy", "gguf"]
+keywords = ["inference", "runtime", "tee", "privacy", "gpu"]
 categories = ["web-programming::http-server"]
 
 [lib]

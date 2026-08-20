@@ -1,0 +1,509 @@
+{
+  "schema": "a3s.power.tensor-batch-benchmark.v1",
+  "binding": {
+    "powerVersion": "0.9.0",
+    "powerCommit": "1a9504e58fc2751e016efede2fc006615a0b8cc2",
+    "weightsSha256": "0f3de53015794403689b151f172b05e0bd115ed1b61290318ec4eab882dca443",
+    "graphSourceSha256": "e894ac8daa23b2caaf3031af5ef287dc0a3dc15dbe580338ca552817ed5f92c3",
+    "runtimeDevice": {
+      "kind": "cuda",
+      "ordinal": 0
+    },
+    "runtimeSha256": "d4a2a3cc23efe170170d97d98dede13c74b7060cf261bceaa3a5438c4b595332",
+    "deviceSha256": "48d11e19201675f948eae65c6be5ecee3154d33dbd498afde9af4746fc911510",
+    "environmentSha256": "b688e5fc1c1e08c1ee179f7cae00ec11a21ad85b45a3140a0de62580ff10f4ea"
+  },
+  "runtimeArtifactSha256": "e1903fd14e9d79942cc042811929ad787afe2903a3643c9cc4604eb70d8a7eb1",
+  "system": {
+    "os": "windows",
+    "architecture": "x86_64",
+    "cpuModel": "Intel(R) Xeon(R) w5-2445",
+    "logicalCpus": 20,
+    "ramBytes": 137071693824,
+    "filesystemClass": "ntfs",
+    "deviceClass": "NVIDIA GeForce RTX 4090 24 GiB; driver 610.74"
+  },
+  "warmupRounds": 2,
+  "measuredRounds": 9,
+  "itemCount": 8,
+  "inputSequenceSha256": "13a4f130a8cab6d583fe6109abc40920aa40bb3f3545dc76389f21391c9f6cf1",
+  "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+  "exactOutputParity": true,
+  "samples": [
+    {
+      "round": 0,
+      "order": "individual-then-leading-batch",
+      "mode": "individual",
+      "itemCount": 8,
+      "executionCount": 8,
+      "elapsedNanos": 423700,
+      "hostAllocations": {
+        "allocationCount": 257,
+        "allocatedBytes": 281504,
+        "reallocationCount": 16,
+        "reallocatedBytes": 768
+      },
+      "boundary": {
+        "inputMaterializations": 8,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 8,
+        "inputMaterializationNanos": 59000,
+        "outputMaterializations": 8,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 8,
+        "outputMaterializationNanos": 263500
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 0,
+      "order": "individual-then-leading-batch",
+      "mode": "leading-batch",
+      "itemCount": 8,
+      "executionCount": 1,
+      "elapsedNanos": 290900,
+      "hostAllocations": {
+        "allocationCount": 54,
+        "allocatedBytes": 527308,
+        "reallocationCount": 2,
+        "reallocatedBytes": 96
+      },
+      "boundary": {
+        "inputMaterializations": 1,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 1,
+        "inputMaterializationNanos": 18100,
+        "outputMaterializations": 1,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 1,
+        "outputMaterializationNanos": 152000
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 1,
+      "order": "leading-batch-then-individual",
+      "mode": "leading-batch",
+      "itemCount": 8,
+      "executionCount": 1,
+      "elapsedNanos": 266200,
+      "hostAllocations": {
+        "allocationCount": 54,
+        "allocatedBytes": 527308,
+        "reallocationCount": 2,
+        "reallocatedBytes": 96
+      },
+      "boundary": {
+        "inputMaterializations": 1,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 1,
+        "inputMaterializationNanos": 18600,
+        "outputMaterializations": 1,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 1,
+        "outputMaterializationNanos": 180300
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 1,
+      "order": "leading-batch-then-individual",
+      "mode": "individual",
+      "itemCount": 8,
+      "executionCount": 8,
+      "elapsedNanos": 383000,
+      "hostAllocations": {
+        "allocationCount": 257,
+        "allocatedBytes": 281504,
+        "reallocationCount": 16,
+        "reallocatedBytes": 768
+      },
+      "boundary": {
+        "inputMaterializations": 8,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 8,
+        "inputMaterializationNanos": 75900,
+        "outputMaterializations": 8,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 8,
+        "outputMaterializationNanos": 183500
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 2,
+      "order": "individual-then-leading-batch",
+      "mode": "individual",
+      "itemCount": 8,
+      "executionCount": 8,
+      "elapsedNanos": 416700,
+      "hostAllocations": {
+        "allocationCount": 257,
+        "allocatedBytes": 281504,
+        "reallocationCount": 16,
+        "reallocatedBytes": 768
+      },
+      "boundary": {
+        "inputMaterializations": 8,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 8,
+        "inputMaterializationNanos": 63600,
+        "outputMaterializations": 8,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 8,
+        "outputMaterializationNanos": 253400
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 2,
+      "order": "individual-then-leading-batch",
+      "mode": "leading-batch",
+      "itemCount": 8,
+      "executionCount": 1,
+      "elapsedNanos": 190600,
+      "hostAllocations": {
+        "allocationCount": 54,
+        "allocatedBytes": 527308,
+        "reallocationCount": 2,
+        "reallocatedBytes": 96
+      },
+      "boundary": {
+        "inputMaterializations": 1,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 1,
+        "inputMaterializationNanos": 16600,
+        "outputMaterializations": 1,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 1,
+        "outputMaterializationNanos": 103200
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 3,
+      "order": "leading-batch-then-individual",
+      "mode": "leading-batch",
+      "itemCount": 8,
+      "executionCount": 1,
+      "elapsedNanos": 184700,
+      "hostAllocations": {
+        "allocationCount": 54,
+        "allocatedBytes": 527308,
+        "reallocationCount": 2,
+        "reallocatedBytes": 96
+      },
+      "boundary": {
+        "inputMaterializations": 1,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 1,
+        "inputMaterializationNanos": 18300,
+        "outputMaterializations": 1,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 1,
+        "outputMaterializationNanos": 99700
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 3,
+      "order": "leading-batch-then-individual",
+      "mode": "individual",
+      "itemCount": 8,
+      "executionCount": 8,
+      "elapsedNanos": 502800,
+      "hostAllocations": {
+        "allocationCount": 257,
+        "allocatedBytes": 281504,
+        "reallocationCount": 16,
+        "reallocatedBytes": 768
+      },
+      "boundary": {
+        "inputMaterializations": 8,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 8,
+        "inputMaterializationNanos": 62500,
+        "outputMaterializations": 8,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 8,
+        "outputMaterializationNanos": 301800
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 4,
+      "order": "individual-then-leading-batch",
+      "mode": "individual",
+      "itemCount": 8,
+      "executionCount": 8,
+      "elapsedNanos": 314200,
+      "hostAllocations": {
+        "allocationCount": 257,
+        "allocatedBytes": 281504,
+        "reallocationCount": 16,
+        "reallocatedBytes": 768
+      },
+      "boundary": {
+        "inputMaterializations": 8,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 8,
+        "inputMaterializationNanos": 63300,
+        "outputMaterializations": 8,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 8,
+        "outputMaterializationNanos": 144100
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 4,
+      "order": "individual-then-leading-batch",
+      "mode": "leading-batch",
+      "itemCount": 8,
+      "executionCount": 1,
+      "elapsedNanos": 191800,
+      "hostAllocations": {
+        "allocationCount": 54,
+        "allocatedBytes": 527308,
+        "reallocationCount": 2,
+        "reallocatedBytes": 96
+      },
+      "boundary": {
+        "inputMaterializations": 1,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 1,
+        "inputMaterializationNanos": 15800,
+        "outputMaterializations": 1,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 1,
+        "outputMaterializationNanos": 109200
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 5,
+      "order": "leading-batch-then-individual",
+      "mode": "leading-batch",
+      "itemCount": 8,
+      "executionCount": 1,
+      "elapsedNanos": 184300,
+      "hostAllocations": {
+        "allocationCount": 54,
+        "allocatedBytes": 527308,
+        "reallocationCount": 2,
+        "reallocatedBytes": 96
+      },
+      "boundary": {
+        "inputMaterializations": 1,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 1,
+        "inputMaterializationNanos": 18100,
+        "outputMaterializations": 1,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 1,
+        "outputMaterializationNanos": 99700
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 5,
+      "order": "leading-batch-then-individual",
+      "mode": "individual",
+      "itemCount": 8,
+      "executionCount": 8,
+      "elapsedNanos": 362600,
+      "hostAllocations": {
+        "allocationCount": 257,
+        "allocatedBytes": 281504,
+        "reallocationCount": 16,
+        "reallocatedBytes": 768
+      },
+      "boundary": {
+        "inputMaterializations": 8,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 8,
+        "inputMaterializationNanos": 61000,
+        "outputMaterializations": 8,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 8,
+        "outputMaterializationNanos": 201600
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 6,
+      "order": "individual-then-leading-batch",
+      "mode": "individual",
+      "itemCount": 8,
+      "executionCount": 8,
+      "elapsedNanos": 394200,
+      "hostAllocations": {
+        "allocationCount": 257,
+        "allocatedBytes": 281504,
+        "reallocationCount": 16,
+        "reallocatedBytes": 768
+      },
+      "boundary": {
+        "inputMaterializations": 8,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 8,
+        "inputMaterializationNanos": 58800,
+        "outputMaterializations": 8,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 8,
+        "outputMaterializationNanos": 236300
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 6,
+      "order": "individual-then-leading-batch",
+      "mode": "leading-batch",
+      "itemCount": 8,
+      "executionCount": 1,
+      "elapsedNanos": 191100,
+      "hostAllocations": {
+        "allocationCount": 54,
+        "allocatedBytes": 527308,
+        "reallocationCount": 2,
+        "reallocatedBytes": 96
+      },
+      "boundary": {
+        "inputMaterializations": 1,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 1,
+        "inputMaterializationNanos": 17500,
+        "outputMaterializations": 1,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 1,
+        "outputMaterializationNanos": 106700
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 7,
+      "order": "leading-batch-then-individual",
+      "mode": "leading-batch",
+      "itemCount": 8,
+      "executionCount": 1,
+      "elapsedNanos": 200800,
+      "hostAllocations": {
+        "allocationCount": 54,
+        "allocatedBytes": 527308,
+        "reallocationCount": 2,
+        "reallocatedBytes": 96
+      },
+      "boundary": {
+        "inputMaterializations": 1,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 1,
+        "inputMaterializationNanos": 17900,
+        "outputMaterializations": 1,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 1,
+        "outputMaterializationNanos": 116000
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 7,
+      "order": "leading-batch-then-individual",
+      "mode": "individual",
+      "itemCount": 8,
+      "executionCount": 8,
+      "elapsedNanos": 380700,
+      "hostAllocations": {
+        "allocationCount": 257,
+        "allocatedBytes": 281504,
+        "reallocationCount": 16,
+        "reallocatedBytes": 768
+      },
+      "boundary": {
+        "inputMaterializations": 8,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 8,
+        "inputMaterializationNanos": 59600,
+        "outputMaterializations": 8,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 8,
+        "outputMaterializationNanos": 222900
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 8,
+      "order": "individual-then-leading-batch",
+      "mode": "individual",
+      "itemCount": 8,
+      "executionCount": 8,
+      "elapsedNanos": 755700,
+      "hostAllocations": {
+        "allocationCount": 257,
+        "allocatedBytes": 281504,
+        "reallocationCount": 16,
+        "reallocatedBytes": 768
+      },
+      "boundary": {
+        "inputMaterializations": 8,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 8,
+        "inputMaterializationNanos": 59600,
+        "outputMaterializations": 8,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 8,
+        "outputMaterializationNanos": 596800
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    },
+    {
+      "round": 8,
+      "order": "individual-then-leading-batch",
+      "mode": "leading-batch",
+      "itemCount": 8,
+      "executionCount": 1,
+      "elapsedNanos": 248300,
+      "hostAllocations": {
+        "allocationCount": 54,
+        "allocatedBytes": 527308,
+        "reallocationCount": 2,
+        "reallocatedBytes": 96
+      },
+      "boundary": {
+        "inputMaterializations": 1,
+        "inputHostBytes": 131072,
+        "hostToDeviceCopyOperations": 1,
+        "inputMaterializationNanos": 16700,
+        "outputMaterializations": 1,
+        "outputHostBytes": 131072,
+        "deviceToHostCopyOperations": 1,
+        "outputMaterializationNanos": 145800
+      },
+      "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840"
+    }
+  ],
+  "summaries": [
+    {
+      "mode": "individual",
+      "sampleCount": 9,
+      "medianElapsedNanos": 394200,
+      "medianHostAllocationCount": 257,
+      "medianHostAllocatedBytes": 281504,
+      "medianHostReallocationCount": 16,
+      "medianHostReallocatedBytes": 768,
+      "medianInputMaterializationNanos": 61000,
+      "medianOutputMaterializationNanos": 236300
+    },
+    {
+      "mode": "leading-batch",
+      "sampleCount": 9,
+      "medianElapsedNanos": 191800,
+      "medianHostAllocationCount": 54,
+      "medianHostAllocatedBytes": 527308,
+      "medianHostReallocationCount": 2,
+      "medianHostReallocatedBytes": 96,
+      "medianInputMaterializationNanos": 17900,
+      "medianOutputMaterializationNanos": 109200
+    }
+  ],
+  "sha256": "a2ada015aba85be45796c9f5198f5a2c03f8be43df90532bf50a03f69b10ee7a"
+}

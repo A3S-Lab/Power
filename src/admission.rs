@@ -7,6 +7,7 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -25,7 +26,8 @@ pub enum AdmissionError {
 }
 
 /// Content-free operational counters for one shared admission controller.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdmissionSnapshot {
     pub active_limit: Option<usize>,
     pub waiting_limit: Option<usize>,

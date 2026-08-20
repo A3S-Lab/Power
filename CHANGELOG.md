@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a model-, format-, and backend-neutral production release evidence gate.
+  Canonical policies require exact platform coverage and bind clean source,
+  runtime artifact, weights, graph and shape declarations, typed devices, memory
+  reservations, TEE policy, and confidential-GPU claims. Captures replay raw
+  scalar/batch parity plus bounded peak memory, cancellation cleanup, queue
+  expiry, replica retirement/reconstruction, and explicit exact fallback;
+  missing, duplicate, relabeled, or mutated evidence fails closed.
 - Added model-neutral, device-resident chaining for adjacent reviewed static
   graphs. `ResidentGraphTensor` is non-cloneable, retains the exact request
   permit, enforces F32/fixed-or-symbolic-shape/device identity, and consumes a

@@ -133,6 +133,26 @@ impl ConfidentialGpuBinding {
         &self.claims_sha256
     }
 
+    pub fn declaration_sha256(&self) -> &str {
+        &self.declaration_sha256
+    }
+
+    pub fn weights_sha256(&self) -> &str {
+        &self.weights_sha256
+    }
+
+    pub fn execution_policy_sha256(&self) -> &str {
+        &self.execution_policy_sha256
+    }
+
+    pub fn runtime_device(&self) -> RuntimeDeviceIdentity {
+        self.runtime_device
+    }
+
+    pub fn device_mesh_sha256(&self) -> Option<&str> {
+        self.device_mesh_sha256.as_deref()
+    }
+
     pub(super) fn validate_for(&self, declaration: &AcceleratorResidencyDeclaration) -> Result<()> {
         if self.declaration_sha256 != declaration.declaration_sha256
             || self.weights_sha256 != declaration.weights_sha256

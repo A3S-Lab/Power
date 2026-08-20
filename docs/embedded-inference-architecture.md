@@ -1103,6 +1103,23 @@ does not branch on Qwen, OLMoE, or any other architecture name.
 Power will not add a Web dashboard or embed model assets to imitate Colibri's
 product surface.
 
+### Production release evidence gate
+
+`ReleaseEvidenceBundle` is the final cross-platform promotion envelope above
+the existing per-platform reports. A strict v1 policy requires separate CPU,
+CUDA, Metal, and confidential-GPU captures from one immutable revision. Each
+capture binds a replayed `TensorBatchBenchmarkReport` to its exact
+`ShapeProfileBinding` and generic proofs for bounded peak memory, cancellation
+cleanup, queue expiry, replica retirement/reconstruction, and explicit exact
+fallback. Missing coverage, reused platform reports, stale bindings, and
+canonical-digest mutation fail closed.
+
+The release schema contains no architecture, tokenizer, container, modality, or
+generation-mode switch. Architecture integrations own the implementations
+behind the graph and weight digests. See
+[Production Release Evidence Gate](release-evidence-gate.md) for the complete
+schema and trust-root boundary.
+
 ## Validation Gates
 
 Every model integration must publish reproducible evidence for:
@@ -1118,7 +1135,10 @@ Every model integration must publish reproducible evidence for:
 6. TEE regression tests, including telemetry-off behavior and no plaintext
    persistence; and
 7. an externally authenticated `HardwareEvidenceBundle` digest tying storage,
-   tuning, parity artifacts, and the named platform together.
+   tuning, parity artifacts, and each named platform together; and
+8. for production release, an externally authenticated
+   `ReleaseEvidenceBundle` with exact policy coverage and all generic runtime
+   contract proofs.
 
 An optimization is not enabled by default from a microbenchmark alone. It must
 preserve model semantics and improve an end-to-end workload under a documented

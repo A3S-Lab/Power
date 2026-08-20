@@ -204,7 +204,8 @@ impl ModelSessionPoolPolicy {
 }
 
 /// Aggregate, content-free state for one device-bound session pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelSessionPoolSnapshot {
     pub device: RuntimeDeviceIdentity,
     pub maximum_sessions: usize,

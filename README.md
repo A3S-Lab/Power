@@ -233,6 +233,24 @@ trigger an implicit copy: materialize explicitly, move the owned output through
 `TensorOutput::into_input`, and acquire the target permit afterward. See
 [Device-Resident Reviewed Graph Chains](docs/device-resident-graphs.md).
 
+### The release gate verifies contracts, not model names
+
+`ReleaseEvidenceBundle` applies one fail-closed policy to named-hardware
+captures. The strict v1 policy requires distinct CPU, CUDA, Metal, and
+confidential-GPU evidence; a local CUDA report cannot be reused as the
+confidential capture. Every capture must replay exact scalar/batch parity and
+prove bounded host/device peak memory, active-work cancellation cleanup, queue
+deadline expiry, replica retirement and reconstruction, and an explicit exact
+fallback.
+
+The policy binds the Power revision, runtime executable, weights, reviewed graph
+source and declaration, finite shape-profile declaration, resolved device, TEE
+policy, and verified confidential-GPU claims where applicable. None of its
+types contain a tokenizer, container format, generation mode, model family, or
+architecture dispatch key. Qwen is one workload that can produce these
+artifacts; language, vision, embedding, audio, scientific, and custom graphs use
+the same gate. See [Production Release Evidence Gate](docs/release-evidence-gate.md).
+
 ## Backends are capabilities, not architecture
 
 | Feature | Role | Native dependency |
@@ -419,6 +437,7 @@ production certificate caching and failure policy.
 | [Model-Owned Shape Profiles](docs/shape-profiles.md) | Finite opaque classes, stale-binding rejection, fallback, and receipt v5 |
 | [Model-Neutral Session Replicas](docs/session-replicas.md) | Exclusive mutable contexts, shared device admission, residency bounds, and cancellation |
 | [Device-Resident Reviewed Graph Chains](docs/device-resident-graphs.md) | Same-request opaque handles, exact boundary validation, digest continuity, and explicit owned fallback |
+| [Production Release Evidence Gate](docs/release-evidence-gate.md) | Strict platform coverage, immutable bindings, runtime failure proofs, and trust-root requirements |
 | [Model-neutral Speculative Decoding](docs/speculative-decoding.md) | Strategies, native MTP, patching, protocol, and acceptance |
 | [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | Performance gates, artifact identity, quality, and raw evidence |
 | [Reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) | CUDA build, pinned inputs, replay, audit, and validation |
@@ -426,6 +445,7 @@ production certificate caching and failure policy.
 | [Supply-chain Audit](docs/supply-chain.md) | Feature profiles, native code, and threat model |
 | [Storage Benchmark](docs/storage-benchmark.md) | Verified storage and residency measurements |
 | [Tensor Batch Cost Benchmark](docs/tensor-batch-benchmark.md) | Model-neutral allocation, host-boundary copy cost, parity, and named-hardware reproduction |
+| [Windows CPU/CUDA P5 pre-captures](docs/benchmarks/release-gate-windows-20260821/README.md) | Clean-revision raw samples, hashes, negative evidence, reproduction, and explicit remaining gaps |
 | [Roadmap](ROADMAP.md) | Acceptance gates and remaining work |
 | [Changelog](CHANGELOG.md) | Released behavior |
 

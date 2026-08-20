@@ -37,6 +37,9 @@ mod microbatch;
 mod microbatch_tests;
 mod mirror;
 mod receipt;
+mod release_gate;
+#[cfg(test)]
+mod release_gate_tests;
 mod residency;
 mod routing;
 mod runtime;
@@ -110,6 +113,12 @@ pub use mirror::{
 pub use receipt::{
     ExecutionDigest, ExecutionReceipt, ExecutionRepresentation, MicrobatchExecutionEvidence,
     ModelIdentity, RuntimeIdentity,
+};
+pub use release_gate::{
+    BoundedMemoryEvidence, CancellationContractEvidence, ConfidentialReleaseBinding,
+    ExactFallbackEvidence, PeakMemoryEvidence, PeakMemoryMethod, QueueExpiryEvidence,
+    ReleaseCapture, ReleaseCaptureSecurity, ReleaseContractEvidence, ReleaseEvidenceBundle,
+    ReleaseEvidencePolicy, ReleasePlatform, ReleaseRevisionBinding, ReplicaRecoveryEvidence,
 };
 pub use residency::{
     CacheEvictionPolicy, PlacementPreference, PlannedResidencyGroup, PrefetchReport, PrefetchTask,

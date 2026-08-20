@@ -124,6 +124,12 @@ deadline-drop, and recycle behavior.
 
 ### P5 — Confidential performance release gate
 
+The model-neutral, fail-closed evidence schema and strict four-platform policy
+are implemented. The 2026-08-21 Windows CPU/CUDA pre-captures cover only
+scalar/batch parity and cost; the unchecked items below remain release blockers
+until complete runtime-contract, Metal, and supported confidential-GPU captures
+exist for one clean immutable release revision.
+
 - [ ] Publish CPU, Metal, CUDA, and supported confidential-GPU captures from a
       clean immutable revision.
 - [ ] Prove scalar/batch numerical equivalence, bounded peak host/device memory,

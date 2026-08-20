@@ -490,6 +490,23 @@ fn confidential_gpu_execution_requires_matching_existing_attestation_claims() {
     );
     let binding =
         ConfidentialGpuBinding::from_verified_attestation_report(&report, &declaration).unwrap();
+    let release_security =
+        ReleaseCaptureSecurity::from_verified_confidential_gpu(&binding).unwrap();
+    let ReleaseCaptureSecurity::ConfidentialGpu {
+        binding: release_binding,
+    } = release_security
+    else {
+        panic!("verified confidential binding must retain its security class");
+    };
+    assert_eq!(
+        release_binding.verified_claims_sha256(),
+        binding.claims_sha256()
+    );
+    assert_eq!(
+        release_binding.accelerator_declaration_sha256(),
+        declaration.declaration_sha256
+    );
+    assert_eq!(release_binding.runtime_device(), declaration.runtime_device);
     let AcceleratorBatchResolution::Ready(batch) = hierarchy
         .resolve_accelerator_batch(&declaration, Some(&binding), &permit, &cancellation)
         .unwrap()
