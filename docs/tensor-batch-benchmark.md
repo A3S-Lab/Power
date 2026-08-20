@@ -46,6 +46,8 @@ same process would contribute to the host allocation counters.
 `TensorBatchBenchmarkReport` binds the raw samples to:
 
 - the exact Power version and lowercase Git revision;
+- the SHA-256 of the exact benchmark runner executable (or equivalent
+  caller-owned runtime artifact);
 - the verified weight-collection SHA-256;
 - the model-owned reviewed graph/source SHA-256;
 - the typed CPU, CUDA, or Metal device identity; and
@@ -58,6 +60,12 @@ outside the report. The report's canonical SHA-256 detects mutation relative to
 a pinned digest; it does not prove who ran the benchmark. Release evidence must
 authenticate the report digest through a signed revision, attestation, or an
 equivalent caller-owned trust root.
+
+The executable digest is mandatory because one source revision can be built
+with different Cargo features, compiler flags, link settings, or native
+dependencies. Reports from CPU-only and accelerator-enabled binaries therefore
+cannot be mistaken for the same runtime artifact even when their Git revision
+matches.
 
 Deserialization is fail-closed. `verify()` reconstructs the named-hardware
 binding, checks canonical alternating order, requires two modes per round,

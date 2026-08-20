@@ -11,6 +11,10 @@ pub(super) const MAX_MEASURED_ROUNDS: usize = 1_000;
 pub(super) const MAX_WARMUP_ROUNDS: usize = 100;
 
 pub(super) fn validate_config(config: &TensorBatchBenchmarkConfig) -> Result<()> {
+    validate_sha256(
+        &config.runtime_artifact_sha256,
+        "tensor batch benchmark runtime artifact SHA-256",
+    )?;
     if config.warmup_rounds > MAX_WARMUP_ROUNDS
         || config.measured_rounds == 0
         || config.measured_rounds > MAX_MEASURED_ROUNDS
@@ -42,6 +46,10 @@ pub(super) fn verify_report(report: &TensorBatchBenchmarkReport) -> Result<()> {
     validate_sha256(
         &report.output_sha256,
         "tensor batch benchmark output SHA-256",
+    )?;
+    validate_sha256(
+        &report.runtime_artifact_sha256,
+        "tensor batch benchmark runtime artifact SHA-256",
     )?;
     validate_sha256(&report.sha256, "tensor batch benchmark report SHA-256")?;
 

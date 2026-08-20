@@ -92,6 +92,7 @@ pub fn run_tensor_batch_benchmark<C: HostAllocationCounter>(
     let mut report = TensorBatchBenchmarkReport {
         schema: TensorBatchBenchmarkReport::SCHEMA.to_string(),
         binding,
+        runtime_artifact_sha256: config.runtime_artifact_sha256.clone(),
         system: config.system.clone(),
         warmup_rounds: config.warmup_rounds,
         measured_rounds: config.measured_rounds,

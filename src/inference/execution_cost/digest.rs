@@ -13,6 +13,7 @@ const MAX_CANONICAL_REPORT_BYTES: usize = 16 * 1024 * 1024;
 struct ReportPayload<'a> {
     schema: &'a str,
     binding: &'a super::super::HardwareEvidenceBinding,
+    runtime_artifact_sha256: &'a str,
     system: &'a super::super::StorageBenchmarkSystem,
     warmup_rounds: usize,
     measured_rounds: usize,
@@ -62,6 +63,7 @@ pub(super) fn report_sha256(report: &TensorBatchBenchmarkReport) -> Result<Strin
     let payload = ReportPayload {
         schema: &report.schema,
         binding: &report.binding,
+        runtime_artifact_sha256: &report.runtime_artifact_sha256,
         system: &report.system,
         warmup_rounds: report.warmup_rounds,
         measured_rounds: report.measured_rounds,

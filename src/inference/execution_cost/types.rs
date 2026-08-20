@@ -145,6 +145,9 @@ fn add(left: u64, right: u64, label: &str) -> Result<u64> {
 #[derive(Clone)]
 pub struct TensorBatchBenchmarkConfig {
     pub power_commit: String,
+    /// SHA-256 of the exact benchmark runner executable or equivalent
+    /// caller-owned runtime artifact.
+    pub runtime_artifact_sha256: String,
     pub system: StorageBenchmarkSystem,
     pub warmup_rounds: usize,
     pub measured_rounds: usize,
@@ -155,6 +158,7 @@ impl std::fmt::Debug for TensorBatchBenchmarkConfig {
         formatter
             .debug_struct("TensorBatchBenchmarkConfig")
             .field("power_commit", &"revision")
+            .field("runtime_artifact", &"sha256")
             .field("system", &self.system)
             .field("warmup_rounds", &self.warmup_rounds)
             .field("measured_rounds", &self.measured_rounds)
@@ -234,6 +238,7 @@ pub struct TensorBatchBenchmarkSummary {
 pub struct TensorBatchBenchmarkReport {
     pub schema: String,
     pub binding: HardwareEvidenceBinding,
+    pub runtime_artifact_sha256: String,
     pub system: StorageBenchmarkSystem,
     pub warmup_rounds: usize,
     pub measured_rounds: usize,
@@ -262,6 +267,7 @@ impl std::fmt::Debug for TensorBatchBenchmarkReport {
             .debug_struct("TensorBatchBenchmarkReport")
             .field("schema", &self.schema)
             .field("binding", &self.binding)
+            .field("runtime_artifact", &"sha256")
             .field("system", &self.system)
             .field("warmup_rounds", &self.warmup_rounds)
             .field("measured_rounds", &self.measured_rounds)

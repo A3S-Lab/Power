@@ -87,8 +87,9 @@ eviction or persistence policy.
   `a3s-power-tensor-batch-bench` process separately counts successful host heap
   allocations, alternates individual/batch order, requires byte-exact ordered
   outputs, and binds path-free raw evidence to the graph, weights, revision,
-  typed device, and named hardware. It does not claim access to driver/device
-  allocator internals or infer a model-level speedup from a micrograph.
+  exact runner-artifact digest, typed device, and named hardware. It does not
+  claim access to driver/device allocator internals or infer a model-level
+  speedup from a micrograph.
 - Storage, host RAM, and accelerator memory form one typed weight hierarchy.
   Placement changes latency only; tensor dtype and shape are checked after each
   transfer and are never silently converted.

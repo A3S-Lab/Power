@@ -13,6 +13,8 @@ use crate::inference::{
 
 const SOURCE_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const POWER_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+const RUNTIME_ARTIFACT_SHA256: &str =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 struct StepCounter {
     step: AtomicU64,
@@ -117,6 +119,7 @@ fn report(family: &str) -> (tempfile::TempDir, TensorBatchBenchmarkReport) {
         &inputs(&limits),
         &TensorBatchBenchmarkConfig {
             power_commit: POWER_COMMIT.to_string(),
+            runtime_artifact_sha256: RUNTIME_ARTIFACT_SHA256.to_string(),
             system: system(),
             warmup_rounds: 1,
             measured_rounds: 2,
@@ -136,6 +139,7 @@ fn benchmark_binds_generic_graph_and_named_hardware_with_exact_parity() {
     assert_eq!(report.schema, TensorBatchBenchmarkReport::SCHEMA);
     assert_eq!(report.binding.graph_source_sha256, SOURCE_SHA256);
     assert_eq!(report.binding.runtime_device.name(), "cpu");
+    assert_eq!(report.runtime_artifact_sha256, RUNTIME_ARTIFACT_SHA256);
     assert_eq!(report.system.device_class, "test-device");
     assert_eq!(report.samples.len(), 4);
     assert!(report.exact_output_parity);
@@ -248,6 +252,7 @@ fn counters_and_configuration_fail_closed_at_their_bounds() {
 
     let mut config = TensorBatchBenchmarkConfig {
         power_commit: POWER_COMMIT.to_string(),
+        runtime_artifact_sha256: RUNTIME_ARTIFACT_SHA256.to_string(),
         system: system(),
         warmup_rounds: 0,
         measured_rounds: 0,
@@ -285,6 +290,7 @@ fn incompatible_items_fail_before_measurement() {
         &incompatible,
         &TensorBatchBenchmarkConfig {
             power_commit: POWER_COMMIT.to_string(),
+            runtime_artifact_sha256: RUNTIME_ARTIFACT_SHA256.to_string(),
             system: system(),
             warmup_rounds: 0,
             measured_rounds: 1,

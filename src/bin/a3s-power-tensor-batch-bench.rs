@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::{fs::File, io::Read};
 
 use a3s_power::error::{PowerError, Result};
 use a3s_power::inference::graph::{GraphExecutor, GraphIdentity, GraphPlan};
@@ -68,6 +69,7 @@ struct InputDocument {
 struct CommonOptions {
     device: DevicePreference,
     power_commit: String,
+    runtime_artifact_sha256: String,
     system: StorageBenchmarkSystem,
     warmup_rounds: usize,
     measured_rounds: usize,
@@ -121,6 +123,7 @@ fn parse_common(arguments: &mut Arguments) -> Result<CommonOptions> {
     Ok(CommonOptions {
         device,
         power_commit,
+        runtime_artifact_sha256: current_executable_sha256()?,
         system: StorageBenchmarkSystem {
             os: std::env::consts::OS.to_string(),
             architecture: std::env::consts::ARCH.to_string(),
@@ -233,6 +236,7 @@ fn benchmark(
         inputs,
         &TensorBatchBenchmarkConfig {
             power_commit: common.power_commit.clone(),
+            runtime_artifact_sha256: common.runtime_artifact_sha256.clone(),
             system: common.system.clone(),
             warmup_rounds: common.warmup_rounds,
             measured_rounds: common.measured_rounds,
@@ -240,6 +244,27 @@ fn benchmark(
         &ProcessAllocationCounter,
         &CancellationToken::new(),
     )
+}
+
+fn current_executable_sha256() -> Result<String> {
+    let executable = std::env::current_exe()?;
+    let metadata = std::fs::symlink_metadata(&executable)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() == 0 {
+        return Err(PowerError::InvalidRequest(
+            "benchmark executable must be a non-empty regular non-symlink file".to_string(),
+        ));
+    }
+    let mut file = File::open(executable)?;
+    let mut buffer = [0_u8; 1024 * 1024];
+    let mut hasher = Sha256::new();
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn fixture_source_sha256() -> String {
