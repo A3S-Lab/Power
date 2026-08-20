@@ -278,6 +278,22 @@ fn public_evidence_types_are_send_and_sync() {
 }
 
 #[test]
+fn published_named_hardware_reports_replay_successfully() {
+    for source in [
+        include_str!("../../../docs/benchmarks/tensor-batch-cost-windows-20260820/cpu.json"),
+        include_str!("../../../docs/benchmarks/tensor-batch-cost-windows-20260820/cuda.json"),
+    ] {
+        let report = serde_json::from_str::<TensorBatchBenchmarkReport>(source).unwrap();
+        report.verify().unwrap();
+        assert_eq!(
+            report.binding.power_commit,
+            "8537d7aad7b82d943c1698d985976a4e3dd40153"
+        );
+        assert!(report.exact_output_parity);
+    }
+}
+
+#[test]
 fn incompatible_items_fail_before_measurement() {
     let (_directory, graph, limits) = graph("family-alpha");
     let incompatible = vec![

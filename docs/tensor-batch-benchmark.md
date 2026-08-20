@@ -191,3 +191,10 @@ publishes:
    runtime, device, and build revision.
 
 No fixture or Power-level microbenchmark establishes a universal model speedup.
+
+## Published named-hardware evidence
+
+The checked-in [Windows CPU and RTX 4090 capture](benchmarks/tensor-batch-cost-windows-20260820/README.md)
+contains both raw reports, exact runtime-artifact and report pins, environment
+details, median summaries, reproduction commands, and the retained CPU negative
+result. Repository tests deserialize and replay `verify()` for both reports.

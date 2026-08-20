@@ -81,8 +81,10 @@ kernels.
       graph device before bounded host materialization. The caller must bind
       the projection into its execution identity; Power retains permit,
       cancellation, same-device, dtype, finite-value, and tensor bounds.
-- [ ] Add benchmark evidence for allocation count and host-copy cost on named
-      hardware before claiming a throughput improvement.
+- [x] Add benchmark evidence for allocation count and host-copy cost on named
+      hardware before claiming a throughput improvement. The generic Windows
+      CPU/RTX 4090 fixture capture retains raw paired samples, exact output
+      parity, distinct runtime-artifact pins, and the CPU negative result.
 
 ### P2 — Shape-profile execution evidence
 

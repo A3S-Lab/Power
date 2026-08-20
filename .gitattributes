@@ -9,3 +9,4 @@ docs/benchmarks/qwen3.8-27b-q6k-rtx4090/*.acl -text -diff
 docs/benchmarks/qwen3.8-27b-q6k-rtx4090/**/*.json -text -diff
 docs/benchmarks/qwen3.8-27b-q6k-rtx4090/**/*.acl -text -diff
 docs/benchmarks/qwen3.8-27b-q6k-rtx4090/prompt.txt -text
+docs/benchmarks/tensor-batch-cost-windows-20260820/*.json -text -diff
