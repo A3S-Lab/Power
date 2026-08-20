@@ -23,6 +23,11 @@ jobs:
   clippy:
     name: Clippy (${{ matrix.label }})
     runs-on: ubuntu-latest
+    env:
+      # Bound Clippy's hosted-runner peak memory. The
+      # embedded Candle graph and every test target are checked together.
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -52,11 +57,29 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          key: clippy-${{ matrix.label }}
+          key: clippy-v2-${{ matrix.label }}
       - name: Install native build dependencies
         if: matrix.native_deps == true
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
-      - run: cargo clippy --locked --all-targets ${{ matrix.features }} -- -D warnings
+      - name: Run Clippy
+        shell: bash
+        run: |
+          set +e
+          log_path="${RUNNER_TEMP}/clippy-${{ matrix.label }}.log"
+          cargo clippy --locked --all-targets ${{ matrix.features }} -- -D warnings 2>&1 | tee "$log_path"
+          statuses=("${PIPESTATUS[@]}")
+          status="${statuses[0]}"
+          if [ "$status" -eq 0 ]; then
+            status="${statuses[1]}"
+          fi
+          if [ "$status" -ne 0 ]; then
+            annotation="$(tail -n 40 "$log_path")"
+            annotation="${annotation//'%'/'%25'}"
+            annotation="${annotation//$'\r'/'%0D'}"
+            annotation="${annotation//$'\n'/'%0A'}"
+            echo "::error title=Clippy (${{ matrix.label }}) failed::$annotation"
+          fi
+          exit "$status"
 
   embedded-boundary:
     name: Embedded dependency boundary
