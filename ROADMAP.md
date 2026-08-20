@@ -106,7 +106,7 @@ importing TensorRT profiles or moving shape selection into Power.
 - [x] Add monotonic admission deadlines, queue-expiry evidence, and
       cancellation-safe cleanup. No request bytes or slot identities enter
       telemetry.
-- [ ] Add health-driven replica retirement and lazy reconstruction at a safe
+- [x] Add health-driven replica retirement and lazy reconstruction at a safe
       request boundary; do not introduce an OCR-local watchdog or pool.
 
 This is the model-neutral counterpart of TurboOCR pipeline replicas,

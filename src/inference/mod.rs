@@ -49,6 +49,8 @@ mod session_pool;
 #[cfg(test)]
 mod session_pool_tests;
 #[cfg(test)]
+mod session_replica_health_tests;
+#[cfg(test)]
 mod session_replica_tests;
 mod shape_profile;
 #[cfg(test)]

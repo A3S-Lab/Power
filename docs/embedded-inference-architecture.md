@@ -69,6 +69,10 @@ Power reserves the worst-case replica residency before the first loader runs,
 reuses the same runtime and device gate across every replica, and exposes no
 replica ordinal to the loader, declaration debug output, or aggregate snapshot.
 One entry cannot mix cloneable shared access with exclusive replica access.
+The model crate may consume a lease with `retire()` when its mutable state is no
+longer reusable. Power replaces that anonymous generation before releasing the
+slot and rebuilds it lazily; failed or cancelled reconstruction remains
+retryable without affecting healthy peers.
 Model crates continue to own the state type and its mutation semantics; see
 [Model-Neutral Session Replicas](session-replicas.md).
 

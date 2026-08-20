@@ -217,6 +217,9 @@ pub struct ModelSessionPoolSnapshot {
     pub leased_replicas: usize,
     pub waiting_replica_requests: usize,
     pub expired_replica_requests: u64,
+    pub replicas_pending_reconstruction: usize,
+    pub replica_retirements: u64,
+    pub replica_reconstructions: u64,
     pub reserved_bytes: u64,
     pub device_admission: AdmissionSnapshot,
 }

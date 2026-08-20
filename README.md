@@ -208,10 +208,13 @@ The family string is opaque identity, not a dispatch key: language decoders,
 vision encoders, OCR graphs, embedding models, and multimodal pipelines use the
 same pool. The loader receives no replica ordinal or model-family switch, and
 snapshots contain only aggregate counts. Cancellation or future drop returns
-the lease and removes an otherwise empty entry. Optional monotonic deadlines
-cover the complete model/device admission path without serializing wall-clock
-time; the typed expiry maps to HTTP 408 when surfaced at the hosted boundary
-and increments only content-free aggregate counters. See
+the lease and removes a never-initialized empty entry. Optional monotonic
+deadlines cover the complete model/device admission path without serializing
+wall-clock time; the typed expiry maps to HTTP 408 at the hosted boundary
+and increments only content-free aggregate counters. A model crate can consume
+an exclusive lease with `retire()` after it determines that mutable state is no
+longer reusable; Power replaces that anonymous generation before releasing the
+slot and reconstructs it lazily without changing the declaration identity. See
 [Model-Neutral Session Replicas](docs/session-replicas.md).
 
 ## Backends are capabilities, not architecture

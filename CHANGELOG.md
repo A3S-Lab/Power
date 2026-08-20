@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadline covers sequential model and physical-device waits; typed expiry
   releases every prior permit and increments only content-free aggregate
   counters, including a pool-lifetime replica-expiry count.
+- Added explicit health retirement for exclusive session replicas. Consuming
+  `ModelSessionReplica::retire` replaces the anonymous state generation before
+  its lease returns, preserves the entry reservation, and rebuilds lazily on a
+  later acquisition. Failed or cancelled rebuilds remain retryable, while
+  pool-lifetime retirement and reconstruction counters expose no model or slot
+  identity.
 - Added model-owned finite shape-profile declarations for the embedded runtime.
   Opaque class digests bind exact implementations to aggregate execution and
   scratch bounds under the current weights, graph, device topology, memory

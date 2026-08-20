@@ -2,6 +2,7 @@
 
 mod pool;
 mod replica;
+mod slot;
 mod types;
 
 pub use pool::{ModelSession, ModelSessionPool};

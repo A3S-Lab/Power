@@ -3,13 +3,13 @@ use std::future::Future;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 
 use crate::admission::AdmissionController;
 use crate::error::{PowerError, Result};
 
 use super::super::{DevicePreference, EmbeddedRuntime, RuntimeDevice};
+use super::slot::SessionSlot;
 use super::types::{
     replica_declaration_sha256, ModelSessionBinding, ModelSessionPoolPolicy,
     ModelSessionPoolSnapshot, ModelSessionSpec,
@@ -25,6 +25,8 @@ struct PoolInner<T> {
     policy: ModelSessionPoolPolicy,
     device_admission: AdmissionController,
     expired_replica_requests: AtomicU64,
+    replica_retirements: AtomicU64,
+    replica_reconstructions: AtomicU64,
     sessions: Mutex<BTreeMap<String, Arc<SessionEntry<T>>>>,
 }
 
@@ -41,7 +43,7 @@ pub(super) struct SessionEntry<T> {
     pub(super) replica_declaration_digest: String,
     reserved_bytes: u64,
     pub(super) runtime: EmbeddedRuntime,
-    pub(super) values: Vec<OnceCell<Arc<T>>>,
+    pub(super) slots: Vec<SessionSlot<T>>,
     pub(super) replica_admission: AdmissionController,
     pub(super) available_replicas: Mutex<Vec<usize>>,
     loading_callers: AtomicUsize,
@@ -64,6 +66,26 @@ impl<T> Clone for ModelSessionPool<T> {
     }
 }
 
+impl<T> ModelSessionPool<T> {
+    pub(super) fn record_expired_replica_request(&self) {
+        self.inner
+            .expired_replica_requests
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn record_replica_retirement(&self) {
+        self.inner
+            .replica_retirements
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn record_replica_reconstruction(&self) {
+        self.inner
+            .replica_reconstructions
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 impl<T> ModelSessionPool<T>
 where
     T: Send + Sync + 'static,
@@ -81,6 +103,8 @@ where
                 policy,
                 device_admission,
                 expired_replica_requests: AtomicU64::new(0),
+                replica_retirements: AtomicU64::new(0),
+                replica_reconstructions: AtomicU64::new(0),
                 sessions: Mutex::new(BTreeMap::new()),
             }),
         })
@@ -117,12 +141,13 @@ where
         };
         let runtime = entry.runtime.clone();
         let load_cancellation = cancellation.clone();
+        let cell = entry.slots[0].cell();
         let initialized = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
                 return Err(PowerError::InferenceCancelled);
             }
-            result = entry.values[0].get_or_try_init(|| async move {
+            result = cell.get_or_try_init(|| async move {
                 loader(runtime, load_cancellation).await.map(Arc::new)
             }) => result,
         };
@@ -137,20 +162,14 @@ where
         let sessions = lock(&self.inner.sessions);
         let ready_sessions = sessions
             .values()
-            .filter(|entry| entry.values.iter().any(|value| value.get().is_some()))
+            .filter(|entry| entry.slots.iter().any(SessionSlot::is_ready))
             .count();
         let reserved_bytes = sessions.values().fold(0_u64, |total, entry| {
             total.saturating_add(entry.reserved_bytes)
         });
         let ready_replicas = sessions
             .values()
-            .map(|entry| {
-                entry
-                    .values
-                    .iter()
-                    .filter(|value| value.get().is_some())
-                    .count()
-            })
+            .map(|entry| entry.slots.iter().filter(|slot| slot.is_ready()).count())
             .fold(0_usize, usize::saturating_add);
         let replica_snapshots = sessions
             .values()
@@ -176,6 +195,13 @@ where
                 .map(|snapshot| snapshot.waiting)
                 .fold(0_usize, usize::saturating_add),
             expired_replica_requests: self.inner.expired_replica_requests.load(Ordering::Relaxed),
+            replicas_pending_reconstruction: sessions
+                .values()
+                .flat_map(|entry| entry.slots.iter())
+                .filter(|slot| slot.reconstruction_pending())
+                .count(),
+            replica_retirements: self.inner.replica_retirements.load(Ordering::Relaxed),
+            replica_reconstructions: self.inner.replica_reconstructions.load(Ordering::Relaxed),
             reserved_bytes,
             device_admission: self.inner.device_admission.snapshot(),
         }
@@ -248,8 +274,8 @@ where
             spec.limits.clone(),
             self.inner.device_admission.clone(),
         )?;
-        let values = (0..self.inner.policy.max_replicas_per_session)
-            .map(|_| OnceCell::new())
+        let slots = (0..self.inner.policy.max_replicas_per_session)
+            .map(|_| SessionSlot::new())
             .collect();
         let available_replicas = (0..self.inner.policy.max_replicas_per_session)
             .rev()
@@ -262,7 +288,7 @@ where
             replica_declaration_digest,
             reserved_bytes: entry_reserved_bytes,
             runtime,
-            values,
+            slots,
             replica_admission: AdmissionController::new_bounded(
                 self.inner.policy.max_replicas_per_session,
                 max_queued_replicas,
@@ -274,19 +300,17 @@ where
         Ok((key, entry))
     }
 
-    pub(super) fn record_expired_replica_request(&self) {
-        self.inner
-            .expired_replica_requests
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
     fn remove_empty(&self, key: &str, entry: &Arc<SessionEntry<T>>) {
         let mut sessions = lock(&self.inner.sessions);
         let is_current = sessions
             .get(key)
             .is_some_and(|current| Arc::ptr_eq(current, entry));
         if is_current
-            && entry.values.iter().all(|value| value.get().is_none())
+            && entry.slots.iter().all(|slot| !slot.is_ready())
+            && entry
+                .slots
+                .iter()
+                .all(|slot| !slot.reconstruction_pending())
             && entry.loading_callers.load(Ordering::Relaxed) == 0
         {
             sessions.remove(key);

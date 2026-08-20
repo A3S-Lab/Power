@@ -39,6 +39,16 @@ impl<T> ModelSessionReplica<T> {
     pub fn value(&self) -> &T {
         &self.value
     }
+
+    /// Retires this replica at the exclusive request boundary.
+    ///
+    /// The model-owning crate decides when state is no longer reusable. Power
+    /// records no reason or model semantics, removes the current generation
+    /// before returning the anonymous slot, and initializes a replacement on
+    /// the next acquisition.
+    pub fn retire(mut self) {
+        self.lease.retire_on_drop = true;
+    }
 }
 
 impl<T> std::fmt::Debug for ModelSessionReplica<T> {
@@ -52,8 +62,10 @@ impl<T> std::fmt::Debug for ModelSessionReplica<T> {
 }
 
 struct ReplicaLease<T> {
+    pool: ModelSessionPool<T>,
     entry: Arc<SessionEntry<T>>,
     index: Option<usize>,
+    retire_on_drop: bool,
     _admission: AdmissionPermit,
 }
 
@@ -62,12 +74,32 @@ impl<T> Drop for ReplicaLease<T> {
         let Some(index) = self.index.take() else {
             return;
         };
-        let mut available = lock(&self.entry.available_replicas);
-        if available.contains(&index) {
-            debug_assert!(false, "model session replica was returned more than once");
+        let Some(slot) = self.entry.slots.get(index) else {
+            debug_assert!(
+                false,
+                "model session replica index was out of range during release"
+            );
             return;
+        };
+        let retired = if self.retire_on_drop {
+            slot.retire()
+        } else {
+            None
+        };
+        if retired.is_some() {
+            self.pool.record_replica_retirement();
         }
-        available.push(index);
+        {
+            let mut available = lock(&self.entry.available_replicas);
+            if available.contains(&index) {
+                debug_assert!(false, "model session replica was returned more than once");
+                return;
+            }
+            available.push(index);
+        }
+        // A model-owned destructor must not run under either lifecycle mutex.
+        // The slot is already consistent if that destructor unwinds.
+        drop(retired);
     }
 }
 
@@ -163,23 +195,26 @@ where
             )
         })?;
         let lease = ReplicaLease {
+            pool: self.clone(),
             entry: Arc::clone(&entry),
             index: Some(index),
+            retire_on_drop: false,
             _admission: admission,
         };
-        if index >= entry.values.len() {
+        if index >= entry.slots.len() {
             return Err(PowerError::InferenceFailed(
                 "replica free list contained an out-of-range session slot".to_string(),
             ));
         }
         let runtime = entry.runtime.clone();
         let load_cancellation = cancellation.clone();
+        let cell = entry.slots[index].cell();
         let initialized = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
                 return Err(PowerError::InferenceCancelled);
             }
-            result = entry.values[index].get_or_try_init(|| async move {
+            result = cell.get_or_try_init(|| async move {
                 loader(runtime, load_cancellation).await.map(Arc::new)
             }) => result,
         };
@@ -187,6 +222,9 @@ where
             Ok(value) => Arc::clone(value),
             Err(error) => return Err(error),
         };
+        if entry.slots[index].finish_reconstruction(&cell) {
+            self.record_replica_reconstruction();
+        }
         Ok(ModelSessionReplica { value, lease })
     }
 }

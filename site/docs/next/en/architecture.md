@@ -84,6 +84,11 @@ counts. Language, vision, OCR, embedding, and multimodal contexts use the same
 path: the model family is opaque identity, never a dispatch branch.
 Replica acquisition can use the same monotonic deadline contract, and its
 pool-lifetime expiry counter survives removal of an otherwise empty entry.
+A model crate can also consume an exclusive lease with `retire()` after its own
+health check rejects mutable state. Power replaces that anonymous generation
+before returning the slot and reconstructs it lazily; failed or cancelled
+reconstruction remains retryable and cannot disturb healthy peers. Telemetry
+contains only current pending-reconstruction and cumulative lifecycle counts.
 
 ### Verified weights
 
