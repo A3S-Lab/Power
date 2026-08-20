@@ -9,7 +9,8 @@ use crate::error::{PowerError, Result};
 
 use super::super::{
     EmbeddedRuntime, ExecutionPermit, GraphExecutionBoundaryMeasurement, HardwareEvidenceBinding,
-    RuntimeDeviceKind, StorageBenchmarkSystem, TensorInput, TensorOutput, WeightStore,
+    RuntimeDeviceKind, RuntimeMemoryReservations, ShapeProfileBinding, StorageBenchmarkSystem,
+    TensorInput, TensorOutput, WeightStore,
 };
 use super::plan::{GraphNode, GraphOp, GraphPlan};
 use super::value::GraphValue;
@@ -179,6 +180,24 @@ impl GraphExecutor {
 
     pub(crate) fn runtime(&self) -> &EmbeddedRuntime {
         &self.runtime
+    }
+
+    /// Derives the current finite shape-profile binding from the validated
+    /// graph, exact weight collection, and resolved single-device executor.
+    /// Model crates still own the opaque shape classes and TEE policy digest.
+    pub fn shape_profile_binding(
+        &self,
+        runtime_reservations: RuntimeMemoryReservations,
+        tee_policy_sha256: impl Into<String>,
+    ) -> Result<ShapeProfileBinding> {
+        let graph_sha256 = self.plan.identity().binding_sha256()?;
+        ShapeProfileBinding::for_single_device(
+            &self.weights_sha256,
+            graph_sha256,
+            self.runtime.device().identity(),
+            runtime_reservations,
+            tee_policy_sha256,
+        )
     }
 
     pub(crate) fn benchmark_binding(

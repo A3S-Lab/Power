@@ -61,6 +61,15 @@ Admission limits active and queued work. Device admission prevents independent
 models from overcommitting the same accelerator. Cancellation is checked before
 admission and remains safe while a request waits or executes.
 
+### Model-owned finite profiles
+
+Model crates may declare finite optimized shape classes as opaque SHA-256
+identities. Power checks only aggregate batch, tensor-element, scratch, device,
+artifact, and TEE-policy bounds; it never interprets sequence lengths, image
+geometry, tokenization, or a model family. Unsupported classes either fail
+closed or select an explicitly identified dynamic implementation. Receipt v5
+records that decision without exposing private geometry.
+
 ### Verified weights
 
 Weight descriptors bind tensor ranges to storage identities. Complete and
@@ -111,4 +120,6 @@ release permits and verify receipt
 The detailed design includes tensor batches, residency budgets, partial mirrors,
 prefetch hints, heterogeneous meshes, sealed state, and tuning evidence. Read
 the [canonical architecture document](https://github.com/A3S-Lab/Power/blob/main/docs/embedded-inference-architecture.md)
-for the complete APIs, invariants, and validation gates.
+for the complete APIs, invariants, and validation gates. The
+[shape-profile contract](https://github.com/A3S-Lab/Power/blob/main/docs/shape-profiles.md)
+documents its model-neutral ownership boundary and reproduction commands.

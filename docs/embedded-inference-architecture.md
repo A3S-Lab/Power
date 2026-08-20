@@ -81,6 +81,14 @@ eviction or persistence policy.
   compatible trailing shapes, exact positive partitions, finite values, caller
   order, and the shared tensor limit. The model crate still owns padding,
   valid extents, bucketing, and per-slot semantics.
+- `ShapeProfileDeclaration` admits at most 256 model-owned opaque shape-class
+  digests. Each class binds an exact implementation to aggregate batch,
+  tensor-element, and scratch bounds; Power never derives or interprets a
+  bucket. The declaration is bound to weights, reviewed graph, resolved device
+  topology, fixed/scratch reservations, and TEE policy. Stale bindings fail
+  before selection, while an allowed dynamic path records its exact
+  implementation and a typed reason. Receipt v5 contains only path-safe
+  digests and the reason, never dimensions, class data, or tensor values.
 - `GraphExecutor::run_measured` and
   `GraphExecutor::run_with_output_projection_measured` expose only reviewed
   host/execution-device boundary counts, bytes, and durations. The isolated

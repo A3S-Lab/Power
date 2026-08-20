@@ -10,7 +10,7 @@ use super::RuntimeDeviceKind;
 use super::{
     AcceleratorExecutionEvidence, DevicePreference, ExecutionDigest, ExecutionReceipt,
     HardwareMemorySnapshot, InferenceLimits, ModelIdentity, ResidencyBudgetPlan,
-    ResidencyBudgetPolicy, ResidencyPolicy, RuntimeDevice, RuntimeIdentity,
+    ResidencyBudgetPolicy, ResidencyPolicy, RuntimeDevice, RuntimeIdentity, ShapeProfileSelection,
 };
 
 /// Shared execution context for every embedded model implementation.
@@ -197,7 +197,93 @@ impl EmbeddedRuntime {
             output,
             accelerator: None,
             microbatch: None,
+            shape_profile: None,
         }
+    }
+
+    /// Constructs a receipt with a validated finite shape-profile selection or
+    /// its explicitly declared dynamic fallback.
+    pub fn receipt_with_shape_profile(
+        &self,
+        model: ModelIdentity,
+        input: ExecutionDigest,
+        output: ExecutionDigest,
+        selection: &ShapeProfileSelection,
+    ) -> Result<ExecutionReceipt> {
+        let receipt = self.receipt(model, input, output);
+        self.attach_shape_profile(receipt, selection)
+    }
+
+    /// Attaches shape-profile evidence to a receipt already carrying another
+    /// reviewed execution extension, preserving one composable receipt chain.
+    pub fn attach_shape_profile(
+        &self,
+        mut receipt: ExecutionReceipt,
+        selection: &ShapeProfileSelection,
+    ) -> Result<ExecutionReceipt> {
+        let current_runtime = RuntimeIdentity::current(self.device());
+        if receipt.runtime != current_runtime {
+            return Err(PowerError::InvalidRequest(
+                "shape-profile evidence requires a receipt from the current runtime".to_string(),
+            ));
+        }
+        self.validate_shape_profile_source_receipt(&receipt)?;
+        selection.validate_for_receipt(
+            &receipt.model.weights_sha256,
+            self.device().identity(),
+            &receipt.input.sha256,
+        )?;
+        receipt.schema = ExecutionReceipt::SHAPE_PROFILE_SCHEMA.to_string();
+        receipt.shape_profile = Some(selection.evidence().clone());
+        Ok(receipt)
+    }
+
+    fn validate_shape_profile_source_receipt(&self, receipt: &ExecutionReceipt) -> Result<()> {
+        let extension_shape_is_valid = match receipt.schema.as_str() {
+            ExecutionReceipt::SCHEMA => {
+                receipt.accelerator.is_none() && receipt.microbatch.is_none()
+            }
+            ExecutionReceipt::ACCELERATOR_SCHEMA => {
+                receipt
+                    .accelerator
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.device_mesh_sha256.is_none())
+                    && receipt.microbatch.is_none()
+            }
+            ExecutionReceipt::ACCELERATOR_MESH_SCHEMA => {
+                receipt
+                    .accelerator
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.device_mesh_sha256.is_some())
+                    && receipt.microbatch.is_none()
+            }
+            ExecutionReceipt::MICROBATCH_SCHEMA => {
+                receipt.accelerator.is_none() && receipt.microbatch.is_some()
+            }
+            _ => false,
+        };
+        if !extension_shape_is_valid || receipt.shape_profile.is_some() {
+            return Err(PowerError::InvalidRequest(
+                "shape-profile evidence requires one valid pre-v5 receipt extension shape"
+                    .to_string(),
+            ));
+        }
+        if let Some(accelerator) = &receipt.accelerator {
+            accelerator.validate()?;
+            if accelerator.weights_sha256 != receipt.model.weights_sha256
+                || accelerator.runtime_device != self.device().identity()
+                || accelerator.input_sha256 != receipt.input.sha256
+                || accelerator.output_sha256 != receipt.output.sha256
+            {
+                return Err(PowerError::InvalidRequest(
+                    "existing accelerator evidence does not match the source receipt".to_string(),
+                ));
+            }
+        }
+        if let Some(microbatch) = &receipt.microbatch {
+            microbatch.validate()?;
+        }
+        Ok(())
     }
 
     /// Constructs a receipt that commits to the actual accelerator or exact
@@ -233,6 +319,7 @@ impl EmbeddedRuntime {
             output,
             accelerator: Some(accelerator),
             microbatch: None,
+            shape_profile: None,
         })
     }
 

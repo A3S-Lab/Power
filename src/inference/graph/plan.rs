@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::{PowerError, Result};
 
@@ -39,6 +40,39 @@ impl GraphIdentity {
             source_sha256: source_sha256.into(),
             opset,
         }
+    }
+
+    /// Canonical digest of every semantic field in the reviewed graph
+    /// identity. The source digest is normalized because hexadecimal case does
+    /// not change the identified bytes.
+    pub(super) fn binding_sha256(&self) -> Result<String> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Binding<'a> {
+            family: &'a str,
+            role: &'a str,
+            source_format: &'a str,
+            source_sha256: String,
+            opset: u32,
+        }
+
+        let payload = serde_json::to_vec(&Binding {
+            family: &self.family,
+            role: &self.role,
+            source_format: &self.source_format,
+            source_sha256: self.source_sha256.to_ascii_lowercase(),
+            opset: self.opset,
+        })?;
+        let payload_len = u64::try_from(payload.len()).map_err(|_| {
+            PowerError::InvalidRequest(
+                "reviewed graph identity payload length overflowed".to_string(),
+            )
+        })?;
+        let mut digest = Sha256::new();
+        digest.update(b"a3s-power-reviewed-graph-identity-v1\0");
+        digest.update(payload_len.to_le_bytes());
+        digest.update(payload);
+        Ok(format!("{:x}", digest.finalize()))
     }
 
     fn validate(&self, limits: &InferenceLimits) -> Result<()> {
@@ -358,5 +392,23 @@ mod tests {
 
         let invalid = GraphIdentity::new("model", "encoder", "onnx", "not-a-hash", 17);
         assert!(invalid.validate(&limits).is_err());
+    }
+
+    #[test]
+    fn reviewed_identity_digest_binds_every_semantic_field() {
+        let identity = GraphIdentity::new("model", "encoder", "onnx", "a".repeat(64), 17);
+        let expected = identity.binding_sha256().unwrap();
+        let variants = [
+            GraphIdentity::new("other", "encoder", "onnx", "a".repeat(64), 17),
+            GraphIdentity::new("model", "decoder", "onnx", "a".repeat(64), 17),
+            GraphIdentity::new("model", "encoder", "gguf", "a".repeat(64), 17),
+            GraphIdentity::new("model", "encoder", "onnx", "b".repeat(64), 17),
+            GraphIdentity::new("model", "encoder", "onnx", "a".repeat(64), 18),
+        ];
+        for variant in variants {
+            assert_ne!(variant.binding_sha256().unwrap(), expected);
+        }
+        let uppercase_source = GraphIdentity::new("model", "encoder", "onnx", "A".repeat(64), 17);
+        assert_eq!(uppercase_source.binding_sha256().unwrap(), expected);
     }
 }

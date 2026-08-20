@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{AcceleratorExecutionEvidence, RuntimeDevice, RUNTIME_NAME};
+use super::{
+    AcceleratorExecutionEvidence, RuntimeDevice, ShapeProfileExecutionEvidence, RUNTIME_NAME,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -55,6 +57,8 @@ pub struct ExecutionReceipt {
     pub accelerator: Option<AcceleratorExecutionEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub microbatch: Option<MicrobatchExecutionEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape_profile: Option<ShapeProfileExecutionEvidence>,
 }
 
 impl ExecutionReceipt {
@@ -62,6 +66,7 @@ impl ExecutionReceipt {
     pub const ACCELERATOR_SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v2";
     pub const ACCELERATOR_MESH_SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v3";
     pub const MICROBATCH_SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v4";
+    pub const SHAPE_PROFILE_SCHEMA: &'static str = "a3s.power.embedded-execution-receipt.v5";
 }
 
 /// Digest-only scheduling evidence for one admitted microbatch execution.
@@ -308,5 +313,6 @@ mod tests {
         });
         let receipt: ExecutionReceipt = serde_json::from_value(encoded).unwrap();
         assert!(receipt.microbatch.is_none());
+        assert!(receipt.shape_profile.is_none());
     }
 }

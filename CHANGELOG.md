@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added model-owned finite shape-profile declarations for the embedded runtime.
+  Opaque class digests bind exact implementations to aggregate execution and
+  scratch bounds under the current weights, graph, device topology, memory
+  reservations, and TEE policy. Explicit dynamic fallback records a typed
+  reason and implementation digest; receipt v5 exposes no dimensions, class
+  data, filesystem paths, or tensor values.
+
 ## [0.9.0] - 2026-08-19
 
 ### Added

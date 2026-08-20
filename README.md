@@ -46,7 +46,7 @@ Start from three constraints:
 
 | First principle | Engineering consequence | Power mechanism |
 | --- | --- | --- |
-| Inference consumes finite memory, compute, and queue capacity. | Every request must enter through explicit limits and remain cancellable. | Bounded admission, deterministic microbatching, placement plans, session pools, and cancellation-safe queues. |
+| Inference consumes finite memory, compute, and queue capacity. | Every request must enter through explicit limits and remain cancellable. | Bounded admission, deterministic microbatching, model-owned finite shape profiles, placement plans, session pools, and cancellation-safe queues. |
 | A model name does not identify the bytes or policy that produced an answer. | Execution identity must bind artifacts, runtime policy, device path, input, and output. | SHA-256 identities, verified mirrors, accelerator evidence, and canonical receipts. |
 | The server operator cannot be the root of trust for its own claims. | Acceptance policy belongs to the client or verifier. | Nonce-bound CPU TEE reports, optional confidential-GPU claims, RA-TLS, and an independent verifier CLI. |
 
@@ -184,6 +184,16 @@ revision-locked bundle       model-owned graph       API client
 
 Read the [embedded inference architecture](docs/embedded-inference-architecture.md)
 for the complete contract model.
+
+### Finite profiles do not give Power model semantics
+
+A model crate may publish up to 256 opaque, digest-bound shape classes for
+reviewed optimized implementations. Power checks only aggregate batch,
+tensor-element, scratch, device-topology, artifact, and TEE-policy bounds. The
+model still chooses what a class means and how an input maps to it. Missing or
+oversized classes either fail or use an explicitly digest-bound dynamic
+implementation; receipt v5 records the path and reason without dimensions or
+class data. See [Model-Owned Shape Profiles](docs/shape-profiles.md).
 
 ## Backends are capabilities, not architecture
 
@@ -368,6 +378,7 @@ production certificate caching and failure policy.
 | [Documentation home - English](https://a3s-lab.github.io/Power/en/) | English `next` documentation |
 | [v0.9.0 release documentation](https://a3s-lab.github.io/Power/v0.9.0/) | Versioned bilingual release snapshot |
 | [Embedded Inference Architecture](docs/embedded-inference-architecture.md) | Graph execution, placement, scheduling, state, and receipts |
+| [Model-Owned Shape Profiles](docs/shape-profiles.md) | Finite opaque classes, stale-binding rejection, fallback, and receipt v5 |
 | [Model-neutral Speculative Decoding](docs/speculative-decoding.md) | Strategies, native MTP, patching, protocol, and acceptance |
 | [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | Performance gates, artifact identity, quality, and raw evidence |
 | [Reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) | CUDA build, pinned inputs, replay, audit, and validation |

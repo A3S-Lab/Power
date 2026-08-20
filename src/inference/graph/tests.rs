@@ -5,7 +5,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::inference::{
-    DevicePreference, EmbeddedRuntime, InferenceLimits, TensorInput, TensorOutput, WeightStore,
+    DevicePreference, EmbeddedRuntime, InferenceLimits, RuntimeMemoryReservations, TensorInput,
+    TensorOutput, WeightStore,
 };
 
 const SOURCE_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -52,10 +53,19 @@ fn model_owned_reviewed_plan_executes_on_shared_runtime() {
 
     let limits = InferenceLimits::default();
     let store = Arc::new(WeightStore::open(directory.path(), &limits).unwrap());
+    let weights_sha256 = store.sha256().to_string();
     let identity = GraphIdentity::new("test-model", "encoder", "onnx", SOURCE_SHA256, 17);
+    let graph_sha256 = identity.binding_sha256().unwrap();
     let plan = GraphPlan::parse(&plan_json(), &identity, &store, &limits).unwrap();
     let runtime = EmbeddedRuntime::new(DevicePreference::Cpu, limits.clone()).unwrap();
     let graph = GraphExecutor::new(plan, store, runtime.clone()).unwrap();
+    let profile_binding = graph
+        .shape_profile_binding(RuntimeMemoryReservations::default(), "b".repeat(64))
+        .unwrap();
+    assert_eq!(profile_binding.weights_sha256, weights_sha256);
+    assert_eq!(profile_binding.graph_sha256, graph_sha256);
+    assert_ne!(profile_binding.graph_sha256, SOURCE_SHA256);
+    assert_eq!(profile_binding.runtime_device, runtime.device().identity());
     let cancellation = CancellationToken::new();
     let permit = runtime.begin(&cancellation).unwrap();
     let input = TensorInput::new(vec![1, 2], vec![3.0, 4.0], &limits).unwrap();

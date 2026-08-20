@@ -46,6 +46,9 @@ mod sealed_state_tests;
 mod session_pool;
 #[cfg(test)]
 mod session_pool_tests;
+mod shape_profile;
+#[cfg(test)]
+mod shape_profile_tests;
 mod storage_benchmark;
 mod telemetry;
 mod tensor;
@@ -119,6 +122,11 @@ pub use sealed_state::{
 pub use session_pool::{
     ModelSession, ModelSessionBinding, ModelSessionPool, ModelSessionPoolPolicy,
     ModelSessionPoolSnapshot, ModelSessionSpec,
+};
+pub use shape_profile::{
+    DynamicShapeFallback, ShapeProfile, ShapeProfileBinding, ShapeProfileDeclaration,
+    ShapeProfileExecutionEvidence, ShapeProfileExecutionPath, ShapeProfileFallbackReason,
+    ShapeProfileRequest, ShapeProfileSelection,
 };
 pub use storage_benchmark::{
     compare_storage_benchmarks, run_storage_benchmark, StorageBenchmarkComparison,

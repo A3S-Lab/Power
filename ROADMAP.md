@@ -88,11 +88,11 @@ kernels.
 
 ### P2 — Shape-profile execution evidence
 
-- [ ] Add a model-owned, digest-bound shape-profile declaration for a finite
+- [x] Add a model-owned, digest-bound shape-profile declaration for a finite
       set of batch/shape classes and an explicit dynamic fallback.
-- [ ] Record selected profile identity and fallback reason without exposing
+- [x] Record selected profile identity and fallback reason without exposing
       tensor values, source identities, or model-private geometry.
-- [ ] Reject stale profiles when weights, graph identity, device topology,
+- [x] Reject stale profiles when weights, graph identity, device topology,
       scratch bounds, or TEE policy change.
 
 This adapts TurboOCR's useful static `(batch, width)` profile discipline without
