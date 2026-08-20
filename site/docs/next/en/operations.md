@@ -20,7 +20,7 @@ than treating the backend name as the architecture.
 | `picolm` | Pure-Rust, layer-streaming GGUF backend for constrained TEE memory | No C/C++ inference engine |
 | `embedded-cuda` / `embedded-metal` | Accelerators for model-owned embedded graphs | Platform toolkit |
 | `tls` / `vsock` | RA-TLS and A3S Box guest-host transports | Platform-specific |
-| `hw-verify` | AMD KDS and Intel PCS signature verification | Platform crypto dependencies |
+| `hw-verify` | AMD SEV-SNP verification; Intel TDX fails closed pending DCAP Quote/QVL support | Platform crypto dependencies and AMD KDS access |
 
 ```bash
 # Default hosted service

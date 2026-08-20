@@ -2,7 +2,8 @@
 
 Status: immediate remediation in progress
 Scope: A3S Power TEE and NVIDIA GPU confidential-computing attestation soundness
-Current code baseline reviewed locally: `4efcd1c`
+Initial code baseline reviewed locally: `4efcd1c`; status below tracks later
+hardening commits on the v0.9 development line.
 
 ## Purpose
 
@@ -74,6 +75,14 @@ Landed in the current working tree:
 - Made `a3s-power-verify` default to strict verification; skipping hardware
   signatures and measurement pinning now requires explicit `--allow-offline`,
   while strict mode requires `--expected-measurement`.
+- Bound policy-visible SEV-SNP `report_data` and `measurement` fields to their
+  exact offsets in the raw signed report before invoking the hardware verifier;
+  a valid signature over unrelated bytes can no longer authenticate substituted
+  JSON fields.
+- Removed the incorrect built-in attempt to verify a local Intel TDREPORT MAC
+  with a PCK public key. `TdxVerifier` now fails closed until Power implements
+  DCAP Quote generation, QVL verification, collateral freshness, and exact
+  Quote REPORTDATA/MRTD extraction.
 - Added `AttestationClaimsV2`, model digest claims, GPU evidence claims,
   canonical JSON hashing, and CPU TEE `report_data` binding for model-bound
   and GPU-confidential attestations.
@@ -379,12 +388,12 @@ Landed in the current working tree:
 - Exposed the same original-request receipt comparison through
   `a3s-power-verify --receipt-chat-request-file` and
   `--receipt-completion-request-file`.
-- Added strict hardware-verifier operations guidance for AMD SEV-SNP and Intel
-  TDX, covering `hw-verify` builds, raw report requirements, AMD KDS / Intel
-  PCS outbound access, measurement pins, and production failure handling.
+- Added strict hardware-verifier operations guidance for AMD SEV-SNP and the
+  current fail-closed Intel TDX boundary, covering `hw-verify` builds, signed
+  field binding, AMD KDS access, measurement pins, and production failures.
 - Added `a3s-power-verify --hw-cert-cache-ttl-secs` so strict verifier
-  operators can tune AMD KDS / Intel PCS certificate cache lifetime without
-  weakening hardware-signature or measurement requirements.
+  operators can tune AMD KDS certificate cache lifetime without weakening
+  hardware-signature or measurement requirements.
 - Tightened the GPU confidential verifier profile so it requires the top-level
   GPU evidence nonce claim in addition to structured device `eat_nonce`
   freshness checks.
@@ -769,10 +778,11 @@ Code changes:
 - Make `a3s-power-verify` default to strict verification unless an explicit
   offline/development flag is provided, and require `--expected-measurement`
   in strict mode.
-- Add `--hw-cert-cache-ttl-secs` to tune the in-memory AMD KDS / Intel PCS
-  certificate cache for long-running verifier processes.
-- Add CLI flags for AMD KDS, Intel PCS, and NVIDIA GPU evidence verification
-  modes where needed.
+- Add `--hw-cert-cache-ttl-secs` to tune the in-memory AMD KDS certificate cache
+  for long-running verifier processes.
+- Add CLI flags for AMD KDS and NVIDIA GPU evidence verification modes where
+  needed. Intel TDX requires a separate typed DCAP Quote/QVL path rather than a
+  certificate-fetch flag over a local TDREPORT.
 - Make skipped checks visible as non-success status in strict mode.
 
 Tests:
@@ -1058,6 +1068,9 @@ Tests:
 - `src/tee/attestation.rs`: add v2 claim digest binding.
 - `src/verify/mod.rs`: continue evolving strict verification policy toward v2
   claim verification.
+- TDX evidence provider/verifier: generate a DCAP Quote, verify it through QVL
+  or an equivalently reviewed service, bind exact Quote REPORTDATA/MRTD fields,
+  and enforce collateral status/freshness before enabling strict TDX.
 - `src/bin/a3s-power-verify.rs`: add production configuration examples and
   operational flags for vendor verifier settings.
 - `src/tee/encrypted_model.rs` and backend load interfaces: complete chunked
@@ -1074,6 +1087,8 @@ The remediation is complete only when all of the following are true:
 - `/v1/attestation?model=...` never silently omits model binding.
 - Verifiers can prove that CPU `report_data` binds the full canonical claim set.
 - Hardware signature verification is required in production verifier paths.
+- Policy-visible fields are proven to come from the exact authenticated raw
+  evidence; Intel TDX remains incomplete until its DCAP Quote/QVL path passes.
 - Encrypted model claims identify plaintext and ciphertext digests precisely.
 - NVIDIA GPU confidential-computing evidence is verified and bound into CPU TEE
   evidence in GPU confidential mode.

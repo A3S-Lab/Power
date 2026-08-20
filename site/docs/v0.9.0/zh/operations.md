@@ -18,7 +18,7 @@ description: A3S Power 后端能力、构建配置、服务端点、制品存储
 | `picolm` | 面向受限 TEE 内存的纯 Rust 层流式 GGUF 后端 | 无 C/C++ 推理引擎 |
 | `embedded-cuda` / `embedded-metal` | 模型自有嵌入式图的加速器支持 | 平台工具链 |
 | `tls` / `vsock` | RA-TLS 与 A3S Box guest-host 传输 | 平台相关 |
-| `hw-verify` | AMD KDS 与 Intel PCS 签名验证 | 平台密码学依赖 |
+| `hw-verify` | AMD SEV-SNP 验证；Intel TDX 在 v0.9.0 中不支持生产使用 | 平台密码学依赖与 AMD KDS 网络访问 |
 
 ```bash
 # 默认托管服务

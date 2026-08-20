@@ -923,17 +923,19 @@ mod sev_snp_ioctl {
 ///
 /// Wraps the kernel ABI from `include/uapi/linux/tdx-guest.h`:
 /// - `TDX_CMD_GET_REPORT0` ioctl on `/dev/tdx-guest`
-/// - Parses `reportdata` (offset 64) and `mrtd` (offset 528) from the TDREPORT
+/// - Parses `reportdata` (offset 128) and `mrtd` (offset 528) from the TDREPORT
 #[cfg(target_os = "linux")]
 mod tdx_ioctl {
     use std::os::unix::io::AsRawFd;
+
+    use crate::tee::tdx_report;
 
     // Kernel struct: tdx_report_req (1088 bytes)
     // TDX_REPORTDATA_LEN = 64, TDX_REPORT_LEN = 1024
     #[repr(C)]
     pub struct TdxReportReq {
         pub reportdata: [u8; 64], // user-supplied data bound into the report
-        pub tdreport: [u8; 1024], // output: TDREPORT from TDX module
+        pub tdreport: [u8; tdx_report::TDREPORT_BYTES], // output from TDX module
     }
 
     // TDX_CMD_GET_REPORT0 = _IOWR('T', 1, struct tdx_report_req)
@@ -943,15 +945,13 @@ mod tdx_ioctl {
     //
     // TDREPORT_STRUCT layout (1024 bytes):
     //   [0..256]   REPORTMACSTRUCT (256 bytes)
-    //     [64..128]  reportdata (64 bytes) — echoed user input
+    //     [128..192] reportdata (64 bytes) -- echoed user input
     //   [256..495] TEE_TCB_INFO (239 bytes)
     //   [495..512] reserved (17 bytes)
     //   [512..1024] TDINFO_STRUCT (512 bytes)
     //     [512..520]  attr (8 bytes)
     //     [520..528]  xfam (8 bytes)
-    //     [528..576]  mrtd (48 bytes) — TD measurement
-    const REPORTDATA_OFFSET: usize = 64; // within REPORTMACSTRUCT
-    const MRTD_OFFSET: usize = 528; // within TDINFO_STRUCT (512 + 8 + 8)
+    //     [528..576] mrtd (48 bytes) -- TD measurement
 
     /// Issue TDX_CMD_GET_REPORT0 ioctl and return (report_data, measurement, raw_report).
     pub fn tdx_get_report(
@@ -998,8 +998,13 @@ mod tdx_ioctl {
             }
         }
 
-        let report_data = req.tdreport[REPORTDATA_OFFSET..REPORTDATA_OFFSET + 64].to_vec();
-        let measurement = req.tdreport[MRTD_OFFSET..MRTD_OFFSET + 48].to_vec();
+        let fields = tdx_report::parse_tdreport(&req.tdreport).ok_or_else(|| {
+            crate::error::PowerError::Config(
+                "TDX_CMD_GET_REPORT0 returned an invalid TDREPORT length".to_string(),
+            )
+        })?;
+        let report_data = fields.report_data.to_vec();
+        let measurement = fields.mrtd.to_vec();
         let raw_report = req.tdreport.to_vec();
 
         Ok((report_data, measurement, raw_report))
@@ -1013,14 +1018,6 @@ mod tdx_ioctl {
         fn test_tdx_report_req_size() {
             // reportdata(64) + tdreport(1024) = 1088
             assert_eq!(size_of::<TdxReportReq>(), 1088);
-        }
-
-        #[test]
-        fn test_tdreport_field_offsets_within_bounds() {
-            const {
-                assert!(REPORTDATA_OFFSET + 64 <= 1024);
-                assert!(MRTD_OFFSET + 48 <= 1024);
-            }
         }
 
         #[test]

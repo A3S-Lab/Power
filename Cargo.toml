@@ -91,8 +91,9 @@ tls = ["server", "dep:axum-server", "dep:rcgen", "dep:time"]
 vsock = ["server", "dep:tokio-vsock", "dep:hyper-util"]
 # hf = HuggingFace Hub model pull support (async HTTP download)
 hf = ["server"]
-# hw-verify = AMD KDS + Intel PCS hardware attestation signature verification
-hw-verify = ["server", "dep:x509-cert", "dep:p384", "dep:p256"]
+# hw-verify = AMD SEV-SNP hardware verification; TDX fails closed until a
+# reviewed DCAP quote-generation and QVL path is implemented.
+hw-verify = ["server", "dep:x509-cert", "dep:p384"]
 # picolm = pure-Rust layer-streaming GGUF inference for TEE memory-constrained environments.
 # Streams transformer layers one at a time; peak RAM = O(layer_size) not O(model_size).
 # Ideal for 7B+ models inside 512MB EPC. No C/C++ inference backend.
@@ -161,9 +162,6 @@ x509-cert = { version = "0.2", optional = true }
 
 # ECDSA P-384 for AMD SEV-SNP VCEK signature verification (hw-verify feature)
 p384 = { version = "0.13", features = ["ecdsa"], optional = true }
-
-# ECDSA P-256 for Intel TDX PCK signature verification (hw-verify feature)
-p256 = { version = "0.13", features = ["ecdsa"], optional = true }
 
 # Image decoding for vision/multimodal model inputs
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"], optional = true }

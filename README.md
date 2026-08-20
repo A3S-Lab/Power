@@ -270,7 +270,7 @@ audio, scientific, and custom graphs use the same contract. See
 | `picolm` | Pure-Rust layer-streaming GGUF backend for constrained TEE memory | No C/C++ inference engine |
 | `embedded-cuda` / `embedded-metal` | Accelerators for model-owned embedded graphs | Platform toolkit |
 | `tls` / `vsock` | RA-TLS and A3S Box guest-host transports | Platform-specific |
-| `hw-verify` | AMD KDS and Intel PCS signature verification | Platform crypto dependencies |
+| `hw-verify` | AMD SEV-SNP signature verification; Intel TDX fails closed pending DCAP Quote/QVL support | Platform crypto dependencies and AMD KDS access |
 
 Cargo resolves the pinned optional Git dependencies before feature selection.
 On Windows, enable Git's long-path support once before the first build so the
@@ -418,11 +418,13 @@ The verifier selects acceptable launch measurements, artifact hashes, runtime
 policy, GPU evidence, and receipt fields. The server does not get to weaken
 those conditions.
 
-Power verifies AMD SEV-SNP and Intel TDX signatures, nonce freshness, canonical
-model/runtime claims, RA-TLS binding, request and response digests, and optional
-NVIDIA GPU/NVSwitch topology and NRAS verdicts. See
-[Hardware Verifier Operations](docs/hardware-verifier-operations.md) for
-production certificate caching and failure policy.
+Power verifies AMD SEV-SNP signatures, binds policy-visible fields to the exact
+signed raw report, and checks nonce freshness, canonical model/runtime claims,
+RA-TLS binding, request/response digests, and optional NVIDIA GPU/NVSwitch
+topology and NRAS verdicts. Intel TDX currently emits a local TDREPORT and fails
+strict verification until a reviewed DCAP Quote/QVL path exists. See
+[Hardware Verifier Operations](docs/hardware-verifier-operations.md) for the
+current production boundary and failure policy.
 
 ### Security boundaries
 

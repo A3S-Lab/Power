@@ -23,3 +23,4 @@ pub mod model_seal;
 pub mod model_signature;
 pub mod policy;
 pub mod privacy;
+pub(crate) mod tdx_report;

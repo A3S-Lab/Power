@@ -652,12 +652,15 @@ match hierarchy.resolve_accelerator_batch(
 # Ok::<(), a3s_power::error::PowerError>(())
 ```
 
-`ConfidentialGpuBinding::from_verified_attestation_report` accepts only a
-hardware SEV-SNP/TDX report with canonical v2 claims and matching model,
-NVIDIA NRAS evidence/verdict, and execution-policy digest. Its name is an
-explicit trust contract: callers must first use Power's existing strict
-hardware verifier or obtain the report inside the currently attested runtime.
-The binding stores digests only.
+`ConfidentialGpuBinding::from_verified_attestation_report` structurally matches
+a hardware report with canonical v2 claims and the exact model, NVIDIA NRAS
+evidence/verdict, and execution-policy digest. The current constructor name is
+a caller trust contract, not a type-level proof: callers must first use Power's
+strict verifier. Strict SEV-SNP verification binds exposed fields to the signed
+raw report; built-in Intel TDX verification fails closed pending DCAP Quote/QVL
+support. A v1 confidential release promotion path must consume an opaque
+successful-verification token instead of accepting an unproven raw report. The
+binding stores digests only.
 
 ### Attestation-Bound Heterogeneous Device Meshes
 
@@ -993,9 +996,10 @@ authority over export.
   and opaque payload. Keys and opened plaintext zeroize on drop; model-owned
   serializers must likewise clear their source buffers after sealing.
 - Local sealed envelopes cannot be exported through Power's API. Hardware-TEE
-  export tokens are model- and policy-bound and consume an already verified
-  SEV-SNP/TDX report; structural claim matching is shared with confidential GPU
-  execution and is not represented as a second signature verifier.
+  export tokens are model- and policy-bound and consume a report the caller has
+  already verified; structural claim matching is shared with confidential GPU
+  execution and is not represented as a second signature verifier. The built-in
+  production verifier currently supports SEV-SNP and rejects TDX TDREPORTs.
 - Atomic state recovery ignores pending files, authenticates primary and
   backup, and obeys the caller's minimum generation. Retaining that minimum in
   a trusted monotonic source and serializing cross-process writers remain

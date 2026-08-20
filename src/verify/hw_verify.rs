@@ -1,7 +1,8 @@
-//! Hardware attestation signature verification for AMD SEV-SNP and Intel TDX.
+//! Hardware attestation verification for AMD SEV-SNP and Intel TDX.
 //!
-//! Implements the [`HardwareVerifier`] trait for both platforms by fetching
-//! the vendor certificate chain and verifying the raw report signature.
+//! The SEV-SNP implementation fetches AMD certificate material and verifies the
+//! raw report signature. The TDX implementation fails closed until Power has a
+//! reviewed DCAP Quote-generation and QVL path.
 //!
 //! # AMD SEV-SNP
 //!
@@ -14,16 +15,20 @@
 //!
 //! # Intel TDX
 //!
+//! Built-in TDX verification is deliberately unavailable. The current TEE
+//! provider exposes a local TDREPORT rather than a remotely verifiable DCAP
+//! quote, so `TdxVerifier` fails closed.
+//!
 //! Certificate chain: Intel Root CA → PCK CA → PCK (leaf).
-//! The PCK certificate is fetched from Intel PCS. The TDREPORT signature
-//! (ECDSA P-256) is verified against the PCK public key.
+//! A future implementation must generate a quote and verify it with Intel QVL
+//! or an equivalently reviewed remote-verification service.
 //!
 //! PCS endpoint: `https://api.trustedservices.intel.com/tdx/certification/v4/`
 //!
 //! # Caching
 //!
-//! Both verifiers cache fetched certificates in memory with a 1-hour TTL to
-//! avoid hammering vendor endpoints (AMD KDS rate-limits aggressively).
+//! The SEV-SNP verifier caches fetched certificates in memory with a 1-hour TTL
+//! to avoid hammering AMD KDS, which rate-limits aggressively.
 
 #[cfg(feature = "hw-verify")]
 use std::io::Read;
@@ -280,176 +285,23 @@ impl HardwareVerifier for SevSnpVerifier {
 
 /// Intel TDX hardware signature verifier.
 ///
-/// Fetches the PCK certificate from Intel PCS and verifies the TDREPORT
-/// signature using the Intel Root CA → PCK CA → PCK certificate chain.
+/// This placeholder rejects all TDX reports. A TDREPORT carries a local MAC,
+/// not the remotely verifiable ECDSA evidence contained in a DCAP quote.
 ///
 /// Requires the `hw-verify` feature.
 #[cfg(feature = "hw-verify")]
-pub struct TdxVerifier {
-    /// Cached (cert_chain_pem, fetched_at) keyed by FMSPC hex.
-    cache: CertCache,
-    /// How long to keep cached certificates before re-fetching.
-    cache_ttl: Duration,
-}
+pub struct TdxVerifier;
 
 #[cfg(feature = "hw-verify")]
 impl TdxVerifier {
     /// Create a new verifier with the default 1-hour certificate cache TTL.
     pub fn new() -> Self {
-        Self {
-            cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            cache_ttl: Duration::from_secs(3600),
-        }
+        Self
     }
 
-    /// Create a verifier with a custom cache TTL (useful for testing).
-    pub fn with_ttl(ttl: Duration) -> Self {
-        Self {
-            cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            cache_ttl: ttl,
-        }
-    }
-
-    /// Extract FMSPC from the TDREPORT TEE_TCB_INFO structure.
-    ///
-    /// FMSPC is a 6-byte platform identifier at offset 0x148 in the TDREPORT.
-    /// Intel TDX Module Specification — TEE_TCB_INFO.fmspc field.
-    fn extract_fmspc(raw: &[u8]) -> Result<String> {
-        let fmspc_offset = 0x148usize;
-        if raw.len() < fmspc_offset + 6 {
-            return Err(PowerError::AttestationVerificationFailed(format!(
-                "TDX raw report too short for FMSPC: {} bytes",
-                raw.len()
-            )));
-        }
-        Ok(raw[fmspc_offset..fmspc_offset + 6]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect())
-    }
-
-    /// Fetch the PCK certificate chain from Intel PCS.
-    fn fetch_pck_chain(&self, report: &AttestationReport) -> Result<Vec<u8>> {
-        let raw = report.raw_report.as_ref().ok_or_else(|| {
-            PowerError::AttestationVerificationFailed(
-                "TDX raw_report is required for hardware verification".to_string(),
-            )
-        })?;
-
-        let fmspc = Self::extract_fmspc(raw)?;
-
-        // Check cache
-        {
-            let cache = lock_cert_cache(&self.cache, "Intel PCS")?;
-            if let Some((cert, fetched_at)) = cache.get(&fmspc) {
-                if fetched_at.elapsed() < self.cache_ttl {
-                    return Ok(cert.clone());
-                }
-            }
-        }
-
-        // Intel PCS v4 endpoint for TDX PCK CRL/cert retrieval
-        let url = "https://api.trustedservices.intel.com/tdx/certification/v4/pckcrl?ca=platform&encoding=pem".to_string();
-
-        let response = ureq::get(&url)
-            .set("Accept", "application/pem-certificate-chain")
-            .call()
-            .map_err(|e| {
-                PowerError::AttestationVerificationFailed(format!(
-                    "Failed to fetch PCK chain from Intel PCS: {e}"
-                ))
-            })?;
-
-        let mut cert_bytes = Vec::new();
-        response
-            .into_reader()
-            .read_to_end(&mut cert_bytes)
-            .map_err(|e| {
-                PowerError::AttestationVerificationFailed(format!(
-                    "Failed to read Intel PCS response body: {e}"
-                ))
-            })?;
-
-        lock_cert_cache(&self.cache, "Intel PCS")?
-            .insert(fmspc, (cert_bytes.clone(), Instant::now()));
-
-        Ok(cert_bytes)
-    }
-
-    /// Verify the TDREPORT signature using the PCK certificate chain.
-    fn verify_signature(&self, report: &AttestationReport) -> Result<()> {
-        use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
-        use x509_cert::der::DecodePem;
-
-        let raw = report.raw_report.as_ref().ok_or_else(|| {
-            PowerError::AttestationVerificationFailed(
-                "TDX raw_report required for signature verification".to_string(),
-            )
-        })?;
-
-        let cert_chain_pem = self.fetch_pck_chain(report)?;
-        let cert_chain_str = std::str::from_utf8(&cert_chain_pem).map_err(|e| {
-            PowerError::AttestationVerificationFailed(format!(
-                "PCK certificate chain is not valid UTF-8: {e}"
-            ))
-        })?;
-
-        // Parse the first certificate in the chain (PCK leaf)
-        let pck_cert = x509_cert::Certificate::from_pem(cert_chain_str).map_err(|e| {
-            PowerError::AttestationVerificationFailed(format!(
-                "Failed to parse PCK certificate: {e}"
-            ))
-        })?;
-
-        let spki = pck_cert.tbs_certificate.subject_public_key_info;
-        let pub_key_bytes = spki.subject_public_key.raw_bytes();
-        let verifying_key = VerifyingKey::from_sec1_bytes(pub_key_bytes).map_err(|e| {
-            PowerError::AttestationVerificationFailed(format!(
-                "Failed to parse PCK public key: {e}"
-            ))
-        })?;
-
-        // TDREPORT MAC structure covers bytes 0..256 (REPORTMACSTRUCT).
-        // The MAC/signature is at offset 0x20 (32 bytes for the MAC tag in REPORTMACSTRUCT).
-        // For TDX quote verification the full Quote structure is needed; here we verify
-        // the TDREPORT integrity using the MAC field per Intel TDX Module Spec.
-        //
-        // The signed portion is the REPORTMACSTRUCT body (bytes 0..32, excluding the MAC itself).
-        let signed_data = &raw[..32];
-
-        // MAC field at offset 32 (32 bytes) in REPORTMACSTRUCT
-        let mac_offset = 32usize;
-        if raw.len() < mac_offset + 32 {
-            return Err(PowerError::AttestationVerificationFailed(format!(
-                "TDX raw report too short for MAC field: {} bytes",
-                raw.len()
-            )));
-        }
-        let sig_bytes = &raw[mac_offset..mac_offset + 32];
-
-        // Attempt to parse as a P-256 DER signature; if it fails, treat as raw r||s
-        let signature = if let Ok(sig) = Signature::from_der(sig_bytes) {
-            sig
-        } else {
-            // Pad to 64 bytes (32 r + 32 s) if needed
-            let mut padded = [0u8; 64];
-            let copy_len = sig_bytes.len().min(64);
-            padded[..copy_len].copy_from_slice(&sig_bytes[..copy_len]);
-            Signature::from_bytes((&padded).into()).map_err(|e| {
-                PowerError::AttestationVerificationFailed(format!(
-                    "Failed to parse TDX report signature: {e}"
-                ))
-            })?
-        };
-
-        verifying_key.verify(signed_data, &signature).map_err(|e| {
-            PowerError::AttestationVerificationFailed(format!(
-                "TDX report signature verification failed: {e}"
-            ))
-        })?;
-
-        tracing::info!("TDX hardware signature verified via Intel PCS PCK");
-        Ok(())
+    /// Retain CLI compatibility while TDX verification remains unavailable.
+    pub fn with_ttl(_ttl: Duration) -> Self {
+        Self
     }
 }
 
@@ -469,7 +321,10 @@ impl HardwareVerifier for TdxVerifier {
                 report.tee_type
             )));
         }
-        self.verify_signature(report)
+        Err(PowerError::AttestationVerificationFailed(
+            "built-in TDX verification is unavailable: a local TDREPORT is not a remotely verifiable DCAP quote; configure a reviewed quote-generation and QVL path"
+                .to_string(),
+        ))
     }
 }
 
@@ -529,11 +384,12 @@ mod tests {
 
     #[cfg(feature = "hw-verify")]
     #[test]
-    fn test_tdx_verifier_fails_without_raw_report() {
+    fn test_tdx_verifier_fails_closed_without_a_dcap_quote_path() {
         let verifier = TdxVerifier::new();
         let report = make_report(TeeType::Tdx, None);
         let err = verifier.verify_hardware_signature(&report).unwrap_err();
-        assert!(err.to_string().contains("raw_report"));
+        assert!(err.to_string().contains("DCAP quote"));
+        assert!(err.to_string().contains("unavailable"));
     }
 
     #[cfg(feature = "hw-verify")]
@@ -548,12 +404,11 @@ mod tests {
 
     #[cfg(feature = "hw-verify")]
     #[test]
-    fn test_tdx_verifier_fails_on_short_raw_report() {
+    fn test_tdx_verifier_does_not_treat_tdreport_bytes_as_a_quote() {
         let verifier = TdxVerifier::new();
-        // Too short to contain FMSPC at offset 0x148
-        let report = make_report(TeeType::Tdx, Some(vec![0u8; 10]));
+        let report = make_report(TeeType::Tdx, Some(vec![0u8; 1024]));
         let err = verifier.verify_hardware_signature(&report).unwrap_err();
-        assert!(err.to_string().contains("too short"));
+        assert!(err.to_string().contains("DCAP quote"));
     }
 
     #[cfg(feature = "hw-verify")]
@@ -571,23 +426,6 @@ mod tests {
         assert!(err
             .to_string()
             .contains("AMD KDS certificate cache lock poisoned"));
-    }
-
-    #[cfg(feature = "hw-verify")]
-    #[test]
-    fn test_tdx_verifier_returns_error_when_cache_lock_poisoned() {
-        let verifier = TdxVerifier::new();
-        let cache = verifier.cache.clone();
-        let _ = std::panic::catch_unwind(move || {
-            let _guard = cache.lock().unwrap();
-            panic!("poison cache");
-        });
-
-        let report = make_report(TeeType::Tdx, Some(vec![0u8; 1024]));
-        let err = verifier.fetch_pck_chain(&report).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Intel PCS certificate cache lock poisoned"));
     }
 
     #[cfg(feature = "hw-verify")]

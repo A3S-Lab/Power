@@ -22,13 +22,16 @@ deployment boundary, not a restriction to LLMs or to a particular model family.
 
 ### Current State (v0.9.0 development line)
 - 3 backends (mistralrs, llamacpp, picolm) — all functional
-- Full TEE stack (attestation, encrypted models, RA-TLS, privacy, audit)
+- TEE runtime stack (attestation collection, encrypted models, RA-TLS, privacy,
+  audit); production verifier coverage is qualified below
 - OpenAI-compatible API with streaming
 - Listener-free embedded runtime with typed CPU, CUDA, and Metal devices
 - Model-owned reviewed graphs, finite shape profiles, session replicas,
   cancellation-safe execution batches, and device-resident graph boundaries
 - A model-neutral release-evidence gate and complete-contract collector;
   immutable cross-platform publication remains a v1 release blocker
+- Strict SEV-SNP verification now binds policy fields to the exact signed raw
+  report. Intel TDX fails closed until a DCAP Quote/QVL path is implemented.
 
 ### 2026 Shared Document Inference Substrate (TO2)
 
@@ -89,9 +92,12 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 
 ---
 
-## Phase 4: Production TEE Readiness ✅
+## Phase 4: TEE Runtime Components Complete; Remote Verification In Progress
 
-**Goal**: Make Power deployable in real AMD SEV-SNP / Intel TDX environments with confidence.
+**Goal**: Make Power deployable in real AMD SEV-SNP and Intel TDX environments
+with independently verifiable evidence. The runtime components below are
+implemented. Production SEV-SNP still needs release evidence, and TDX remains
+blocked on DCAP Quote generation and QVL verification.
 
 ### 4.1 — ✅ picolm Multi-Turn Session KV Cache
 - `Arc<Mutex<Option<KvCache>>>` return path via `tokio::spawn` background task
@@ -223,31 +229,22 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 
 ## Completion Summary
 
-```
-Phase 4 (Production TEE Readiness):          ✅ ALL COMPLETE
-  4.5 Remove candle-core from picolm         ✅
-  4.1 Multi-turn KV cache                    ✅
-  4.2 Chat template from GGUF                ✅
-  4.4 Stop sequence support                  ✅
-  4.3 Configurable context length            ✅
-  4.6 Integration tests                      ✅
+The picolm, performance, hardening-component, and ecosystem milestones above
+are implemented and covered by the repository test profiles. They are not a
+claim that Power is ready to tag v1.0.0.
 
-Phase 6 (TEE Hardening):                     ✅ ALL COMPLETE
-  6.1 Timing side-channel mitigation         ✅
-  6.2 Memory zeroization audit               ✅
-  6.3 Startup self-test                      ✅
+The production release remains open until all of these gates pass:
 
-Phase 5 (Performance):                       ✅ ALL COMPLETE
-  5.1 AVX2/AVX-512 vec_dot                   ✅ (F32, Q8_0, Q4_K, Q6_K)
-  5.2 NEON vec_dot                           ✅ (F32, Q8_0, Q4_K, Q6_K)
-  5.3 Batch prefill                          ✅ (layer-outer loop, matmul_batch)
-  5.4 Speculative decoding                   ✅ (prompt-lookup, KV rollback)
+1. one immutable revision supplies CPU, CUDA, Metal, and confidential-GPU
+   complete-contract captures;
+2. confidential capture promotion consumes a strictly verified hardware report
+   rather than trusting a caller-supplied label;
+3. Intel TDX either gains a reviewed DCAP Quote/QVL path or remains explicitly
+   unsupported by the v1 production support matrix;
+4. the full default, embedded, accelerator, verifier, documentation, and release
+   checks pass from the tagged revision; and
+5. the signed release and root-monorepo gitlink bind that exact revision.
 
-Phase 7 (Ecosystem):                         ✅ ALL COMPLETE
-  7.3 Repeat penalty                         ✅
-  7.1 Tool/function calling                  ✅
-  7.2 Structured output                      ✅ (JsonGrammarSampler)
-```
-
-**900+ tests** across unit, integration, and real-model validation profiles.
-**All phases complete.** Phases 4–7 fully implemented.
+See [ROADMAP.md](ROADMAP.md) and
+[Production Release Evidence Gate](docs/release-evidence-gate.md) for the
+authoritative remaining acceptance evidence.

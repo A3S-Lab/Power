@@ -207,4 +207,8 @@ negative CPU batching result, and exact reproduction commands are checked in.
 
 Metal and confidential-GPU results cannot be inferred from this Windows RTX
 4090 host. They remain explicit release blockers until captured on appropriate
-hardware from the same immutable release revision.
+hardware from the same immutable release revision. The current benchmark CLI
+emits only local captures; v1 also requires a promotion path that consumes an
+opaque successful strict-verification proof before it can construct the
+confidential-GPU security class. A raw attestation report or caller-provided
+label is insufficient.

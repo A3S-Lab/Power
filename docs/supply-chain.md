@@ -42,7 +42,8 @@ auditability is required. The candle ecosystem is high-quality but large.
 cargo build --release --no-default-features --features tee-minimal
 ```
 
-**Purpose**: Smallest auditable TEE build. Recommended for production TEE deployments.
+**Purpose**: Smallest auditable TEE service build. Production deployments also
+need an independent strict verifier and the evidence support described below.
 
 **Inference path**: picolm (pure Rust, ~800 lines in `src/backend/picolm.rs` +
 `src/backend/gguf_stream.rs`) → memmap2 → (no further inference deps)
@@ -50,8 +51,10 @@ cargo build --release --no-default-features --features tee-minimal
 **Dependency count**: ~1,220 lines in `cargo tree` output (40% fewer than default)
 
 **What is included**:
-- Full TEE stack: attestation (SEV-SNP / TDX), model integrity (SHA-256),
-  log redaction, memory zeroing, encrypted model loading (AES-256-GCM)
+- TEE runtime stack: local attestation collection (SEV-SNP / TDX), model
+  integrity (SHA-256), log redaction, memory zeroing, and encrypted model loading
+  (AES-256-GCM). The separate `hw-verify` client verifies SEV-SNP; TDX remote
+  verification fails closed until DCAP Quote/QVL support is implemented.
 - RA-TLS transport (`tls` feature): axum-server, rcgen
 - Vsock transport (`vsock` feature): tokio-vsock
 - picolm layer-streaming inference: memmap2, half, candle-core

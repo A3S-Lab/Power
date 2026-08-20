@@ -43,11 +43,12 @@
 //!
 //! # What this module does NOT verify
 //!
-//! Hardware signature verification (AMD KDS / Intel PCS certificate chain)
-//! requires network access and platform-specific tooling. Implement the
-//! [`HardwareVerifier`] trait to plug in your own verifier. Production callers
-//! should use [`verify_report_strict`] or [`verify_report_with_policy`] with a
-//! strict policy and an operator-pinned launch measurement.
+//! Hardware verification requires platform-specific evidence and tooling.
+//! The built-in SEV-SNP path uses AMD KDS; the built-in TDX path fails closed
+//! until DCAP Quote/QVL support exists. Implement the [`HardwareVerifier`] trait
+//! for another reviewed verifier. Production callers should use
+//! [`verify_report_strict`] or [`verify_report_with_policy`] with a strict
+//! policy and an operator-pinned launch measurement.
 //!
 //! # Example
 //!
@@ -92,6 +93,7 @@ use crate::tee::attestation::{
     RuntimePolicyClaim, TeeType,
 };
 
+mod hardware_binding;
 pub mod hw_verify;
 
 #[cfg(feature = "hw-verify")]
@@ -451,8 +453,8 @@ impl VerificationPolicy {
 
 /// Extension point for hardware attestation signature verification.
 ///
-/// Implement this trait to verify the raw TEE report against the
-/// AMD KDS or Intel PCS certificate chain.
+/// Implement this trait to verify the raw TEE evidence against the applicable
+/// hardware trust root.
 pub trait HardwareVerifier: Send + Sync {
     /// Verify the raw attestation report bytes.
     ///
@@ -666,6 +668,7 @@ pub fn verify_report_with_policy(
 
     // 7. Hardware signature verification (optional)
     if let Some(verifier) = opts.hardware_verifier {
+        hardware_binding::verify_signed_fields(report)?;
         verifier.verify_hardware_signature(report)?;
         result.hardware_verified = true;
     }
@@ -2518,6 +2521,15 @@ mod tests {
         }
     }
 
+    fn with_sev_snp_raw(mut report: AttestationReport) -> AttestationReport {
+        report.tee_type = TeeType::SevSnp;
+        let mut raw = vec![0; 0xc0];
+        raw[0x50..0x90].copy_from_slice(&report.report_data);
+        raw[0x90..0xc0].copy_from_slice(&report.measurement);
+        report.raw_report = Some(raw);
+        report
+    }
+
     fn build_report_data(nonce: Option<&[u8]>, model_hash: Option<&[u8]>) -> Vec<u8> {
         let mut data = vec![0u8; 64];
         if let Some(n) = nonce {
@@ -4229,7 +4241,7 @@ mod tests {
             }
         }
 
-        let report = make_report(vec![0u8; 64], vec![0u8; 48]);
+        let report = with_sev_snp_raw(make_report(vec![0u8; 64], vec![0u8; 48]));
         let verifier = AlwaysOk;
         let opts = VerifyOptions {
             nonce: None,
@@ -4249,6 +4261,41 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_report_rejects_substituted_fields_before_signature_acceptance() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct RecordingVerifier<'a>(&'a AtomicBool);
+        impl HardwareVerifier for RecordingVerifier<'_> {
+            fn verify_hardware_signature(&self, _report: &AttestationReport) -> Result<()> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let mut report = with_sev_snp_raw(make_report(vec![0u8; 64], vec![0u8; 48]));
+        report.report_data[0] = 1;
+        let called = AtomicBool::new(false);
+        let verifier = RecordingVerifier(&called);
+        let opts = VerifyOptions {
+            nonce: None,
+            expected_model_hash: None,
+            expected_measurement: None,
+            expected_gpu_evidence_digest: None,
+            expected_gpu_verdict_digest: None,
+            expected_gpu_evidence: None,
+            expected_gpu_devices: None,
+            expected_chat_template_digest: None,
+            expected_decoding_parameters_digest: None,
+            expected_gpu_execution_digest: None,
+            hardware_verifier: Some(&verifier),
+        };
+
+        let error = verify_report(&report, &opts).unwrap_err();
+        assert!(error.to_string().contains("report_data"));
+        assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[test]
     fn test_verify_report_hardware_verifier_failure_propagates() {
         struct AlwaysFail;
         impl HardwareVerifier for AlwaysFail {
@@ -4259,7 +4306,7 @@ mod tests {
             }
         }
 
-        let report = make_report(vec![0u8; 64], vec![0u8; 48]);
+        let report = with_sev_snp_raw(make_report(vec![0u8; 64], vec![0u8; 48]));
         let verifier = AlwaysFail;
         let opts = VerifyOptions {
             nonce: None,
@@ -4280,8 +4327,7 @@ mod tests {
 
     #[test]
     fn test_verify_report_strict_requires_hardware_verifier() {
-        let mut report = make_report(vec![0u8; 64], vec![0u8; 48]);
-        report.tee_type = TeeType::SevSnp;
+        let report = with_sev_snp_raw(make_report(vec![0u8; 64], vec![0u8; 48]));
         let opts = VerifyOptions {
             nonce: None,
             expected_model_hash: None,
@@ -4374,8 +4420,7 @@ mod tests {
             }
         }
 
-        let mut report = make_report(vec![0u8; 64], vec![0u8; 48]);
-        report.tee_type = TeeType::SevSnp;
+        let report = with_sev_snp_raw(make_report(vec![0u8; 64], vec![0u8; 48]));
         let measurement = report.measurement.clone();
         let verifier = AlwaysOk;
         let opts = VerifyOptions {

@@ -479,7 +479,7 @@ struct CliOpts {
     effective_prompt_kind: Option<String>,
     /// Explicitly allow offline/development verification without hardware signatures.
     allow_offline: bool,
-    /// Override the AMD KDS / Intel PCS certificate cache TTL in seconds.
+    /// Override the AMD KDS certificate cache TTL in seconds.
     hw_cert_cache_ttl_secs: Option<u64>,
 }
 
@@ -1226,7 +1226,7 @@ OPTIONS:
     --effective-prompt-backend <NAME> Expected backend label for the effective prompt digest
     --effective-prompt-kind <KIND> Expected semantic kind for the effective prompt digest
     --allow-offline                Explicitly skip hardware signature verification
-    --hw-cert-cache-ttl-secs <N>   AMD KDS / Intel PCS certificate cache TTL in seconds (default: 3600; 0 refetches every verification)
+    --hw-cert-cache-ttl-secs <N>   AMD KDS certificate cache TTL in seconds (default: 3600; 0 refetches every SEV-SNP verification)
     --help                         Show this help
 
 EXAMPLES:

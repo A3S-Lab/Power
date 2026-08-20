@@ -62,10 +62,10 @@ a3s-power-verify \
 | TEE | 严格验证 |
 | --- | --- |
 | AMD SEV-SNP | 原始报告解析、nonce 与度量绑定、VCEK 获取、ECDSA P-384 签名验证 |
-| Intel TDX | 原始报告解析、nonce 与度量绑定、Intel PCS 材料及已实现的签名／MAC 路径 |
+| Intel TDX | 不支持生产使用：本地 TDREPORT 不是可远程验证的 DCAP Quote，请勿依赖旧有签名／MAC 路径 |
 | NVIDIA 机密 GPU | 新鲜设备声明、固件与拓扑策略、固定 NRAS verdict、GPU 执行摘要 |
 
-Power 默认在内存中缓存获取到的 AMD KDS 或 Intel PCS 证书材料一小时。运营方可调整缓存，但网络或证书失败在生产中仍然是阻断错误，除非存在显式审查过的离线证书设计。
+Power 默认在内存中缓存获取到的 AMD KDS 证书材料一小时。运营方可调整该缓存，但网络或证书失败在生产中仍然是阻断错误，除非存在显式审查过的离线证书设计。Intel TDX 仍需后续经过审查的 DCAP Quote/QVL 路径。
 
 ## 配置严格策略
 

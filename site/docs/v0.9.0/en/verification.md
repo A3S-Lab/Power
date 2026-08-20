@@ -68,13 +68,13 @@ measurement, artifact hash, runtime policy, GPU evidence, and receipt fields.
 | TEE | Strict verification |
 | --- | --- |
 | AMD SEV-SNP | Raw report parsing, nonce and measurement binding, VCEK retrieval, and ECDSA P-384 signature verification |
-| Intel TDX | Raw report parsing, nonce and measurement binding, Intel PCS material, and the implemented signature/MAC path |
+| Intel TDX | Not production-supported: a local TDREPORT is not a remotely verifiable DCAP Quote; do not rely on the legacy signature/MAC path |
 | NVIDIA confidential GPU | Fresh device claims, firmware and topology policy, pinned NRAS verdict, and GPU execution digest |
 
-Power caches fetched AMD KDS or Intel PCS certificate material in memory for
-one hour by default. Operators can tune the verifier cache, but a network or
-certificate failure remains production-blocking unless an explicit reviewed
-offline certificate design exists.
+Power caches fetched AMD KDS certificate material in memory for one hour by
+default. Operators can tune that cache, but a network or certificate failure
+remains production-blocking unless an explicit reviewed offline certificate
+design exists. Intel TDX requires a later reviewed DCAP Quote/QVL path.
 
 ## Configure strict policy
 

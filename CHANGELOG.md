@@ -62,6 +62,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason and implementation digest; receipt v5 exposes no dimensions, class
   data, filesystem paths, or tensor values.
 
+### Security
+
+- Strict hardware verification now requires the policy-visible SEV-SNP
+  `report_data` and launch `measurement` to exactly match their fields in the
+  raw signed report before a hardware verifier is called. This prevents a valid
+  signature over unrelated bytes from authenticating substituted JSON claims.
+- Intel TDX verification now fails closed. The previous implementation treated
+  a local TDREPORT MAC as if it were a remotely verifiable PCK signature; that
+  path was removed. Production TDX support remains unavailable until Power has
+  typed DCAP Quote generation, QVL verification, collateral freshness checks,
+  and exact Quote REPORTDATA/MRTD binding.
+- Corrected local TDREPORT collection to read REPORTDATA from architectural
+  offset 128 rather than 64. Collection and strict binding now share one typed,
+  length-checked TDREPORT parser with a regression fixture that poisons the old
+  offset.
+
 ## [0.9.0] - 2026-08-19
 
 ### Added
@@ -491,7 +507,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **TEE security stack**: AMD SEV-SNP / Intel TDX attestation (ioctl), AES-256-GCM model encryption (3 modes: file/RAM/streaming), Ed25519 model signatures, log redaction, timing padding, EPC-aware backend routing
 - **Model management**: content-addressed blob store (SHA-256), HuggingFace Hub pull with Range resume, GGUF metadata reader with memory estimation
 - **Server infrastructure**: Axum HTTP server, TLS (RA-TLS with attestation X.509 extension), Vsock transport, API key auth (constant-time SHA-256), rate limiting, Prometheus metrics (16 groups), structured audit logging (plaintext/encrypted/async)
-- **Client-side verification SDK**: nonce binding, model hash binding, measurement check, AMD KDS / Intel PCS hardware signature verification
+- **Client-side verification SDK**: nonce binding, model hash binding,
+  measurement checks, AMD KDS verification, and experimental Intel PCS
+  plumbing. The local-TDREPORT Intel path was later found unsuitable for remote
+  verification and removed before v1.
 - **Key management**: static and rotating key providers, SIGHUP-triggered key rotation
 - **Privacy**: 10 sensitive JSON keys redacted, error sanitization, SensitiveString (auto-zeroize), token count rounding
 - **Configuration**: file-first with `A3S_POWER_*` environment overrides
