@@ -22,6 +22,7 @@ mod execution_batch;
 mod execution_batch_failure_tests;
 #[cfg(test)]
 mod execution_batch_tests;
+mod execution_cost;
 mod filesystem;
 pub mod graph;
 mod hardware;
@@ -75,6 +76,12 @@ pub use execution_batch::{
     ExecutionBatchMemberBinding, ExecutionBatchMemberSnapshot, ExecutionBatchMemberSpec,
     ExecutionBatchRow, ExecutionBatchRowDisposition, ExecutionBatchRowOutcome,
     ExecutionBatchRowSpec, ExecutionBatchStep, ExecutionBatchStepEvidence,
+};
+pub use execution_cost::{
+    run_tensor_batch_benchmark, GraphExecutionBoundaryMeasurement, HostAllocationCounter,
+    HostAllocationMeasurement, HostAllocationSnapshot, TensorBatchBenchmarkConfig,
+    TensorBatchBenchmarkMode, TensorBatchBenchmarkOrder, TensorBatchBenchmarkReport,
+    TensorBatchBenchmarkSample, TensorBatchBenchmarkSummary,
 };
 pub use hardware::{
     HardwareMemorySnapshot, MemoryDiscoverySource, MemoryPoolSnapshot, ResidencyAllocationOrder,

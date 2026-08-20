@@ -30,6 +30,23 @@ impl TensorInput {
         Ok(Self { shape, values })
     }
 
+    pub(crate) fn validate(&self, limits: &InferenceLimits) -> Result<()> {
+        let expected = limits.checked_elements(&self.shape, "input tensor")?;
+        if self.values.len() != expected {
+            return Err(PowerError::InvalidRequest(format!(
+                "input tensor has {} values but shape {:?} requires {expected}",
+                self.values.len(),
+                self.shape
+            )));
+        }
+        if self.values.iter().any(|value| !value.is_finite()) {
+            return Err(PowerError::InvalidRequest(
+                "input tensor contains a non-finite value".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Concatenates compatible tensors along their leading axis.
     ///
     /// Model crates retain ownership of padding, bucketing, and slot geometry.
@@ -93,6 +110,8 @@ impl TensorInput {
     }
 
     pub(crate) fn into_candle(self, device: &Device) -> Result<Tensor> {
+        // Deserialization can bypass `new`; GraphExecutor revalidates the
+        // owned tensor against runtime limits before reaching this conversion.
         Tensor::from_vec(self.values, self.shape.as_slice(), device).map_err(|error| {
             PowerError::InferenceFailed(format!("failed to materialize input tensor: {error}"))
         })

@@ -59,6 +59,12 @@ or embedding crates.
 Power publishes machine-readable captures from its real streaming API, not only
 a standalone llama.cpp microbenchmark.
 
+The Qwen3.8 table below is one pinned backend/model/hardware integration, not
+the scope of the engine. Power's public runtime, graph, scheduling, memory,
+copy-cost, and evidence contracts do not branch on Qwen or any model family;
+language, vision, OCR, embedding, and multimodal crates retain their own
+topology and semantics.
+
 | Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Mean request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
@@ -360,6 +366,7 @@ production certificate caching and failure policy.
 | [Hardware Verifier Operations](docs/hardware-verifier-operations.md) | Production hardware-signature verification |
 | [Supply-chain Audit](docs/supply-chain.md) | Feature profiles, native code, and threat model |
 | [Storage Benchmark](docs/storage-benchmark.md) | Verified storage and residency measurements |
+| [Tensor Batch Cost Benchmark](docs/tensor-batch-benchmark.md) | Model-neutral allocation, host-boundary copy cost, parity, and named-hardware reproduction |
 | [Roadmap](ROADMAP.md) | Acceptance gates and remaining work |
 | [Changelog](CHANGELOG.md) | Released behavior |
 

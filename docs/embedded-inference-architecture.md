@@ -81,6 +81,14 @@ eviction or persistence policy.
   compatible trailing shapes, exact positive partitions, finite values, caller
   order, and the shared tensor limit. The model crate still owns padding,
   valid extents, bucketing, and per-slot semantics.
+- `GraphExecutor::run_measured` and
+  `GraphExecutor::run_with_output_projection_measured` expose only reviewed
+  host/execution-device boundary counts, bytes, and durations. The isolated
+  `a3s-power-tensor-batch-bench` process separately counts successful host heap
+  allocations, alternates individual/batch order, requires byte-exact ordered
+  outputs, and binds path-free raw evidence to the graph, weights, revision,
+  typed device, and named hardware. It does not claim access to driver/device
+  allocator internals or infer a model-level speedup from a micrograph.
 - Storage, host RAM, and accelerator memory form one typed weight hierarchy.
   Placement changes latency only; tensor dtype and shape are checked after each
   transfer and are never silently converted.
@@ -1054,8 +1062,9 @@ Every model integration must publish reproducible evidence for:
 
 1. output parity against a pinned upstream implementation;
 2. exact model revision, graph-plan digest, and weight digest;
-3. cold and warm latency, peak host/device memory, per-source bytes read, cache
-   hit rate, and useful/unused prefetch rate on named hardware;
+3. cold and warm latency, host allocation count, host-boundary copy cost, peak
+   host/device memory, per-source bytes read, cache hit rate, and useful/unused
+   prefetch rate on named hardware;
 4. identical outputs with caching, prefetch, current-layer staging, and
    continuous/ragged batching disabled versus enabled;
 5. cancellation, resource-limit, malformed-plan, and wrong-digest failures;

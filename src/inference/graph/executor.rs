@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use candle_core::{DType, Device, Tensor};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{PowerError, Result};
 
-use super::super::{EmbeddedRuntime, ExecutionPermit, TensorInput, TensorOutput, WeightStore};
+use super::super::{
+    EmbeddedRuntime, ExecutionPermit, GraphExecutionBoundaryMeasurement, HardwareEvidenceBinding,
+    RuntimeDeviceKind, StorageBenchmarkSystem, TensorInput, TensorOutput, WeightStore,
+};
 use super::plan::{GraphNode, GraphOp, GraphPlan};
 use super::value::GraphValue;
 
@@ -16,6 +20,13 @@ mod gated_hard_sigmoid;
 mod gelu_erf;
 mod layer_norm_affine;
 mod liveness;
+mod support;
+
+use support::{
+    axis_index, convolution_pads, execution_error, nonnegative_usize, normalized_axes, pad_spatial,
+    pair, pool_pads, positive_usize, quad, resolve_reshape, slice_bounds, slice_tensor,
+    subsample_spatial,
+};
 
 /// Validated single-input/single-output static graph executor.
 pub struct GraphExecutor {
@@ -23,6 +34,7 @@ pub struct GraphExecutor {
     constants: HashMap<String, GraphValue>,
     scalar_constants: HashMap<String, f32>,
     value_use_counts: HashMap<String, usize>,
+    weights_sha256: String,
     runtime: EmbeddedRuntime,
 }
 
@@ -32,6 +44,7 @@ impl GraphExecutor {
         weights: Arc<WeightStore>,
         runtime: EmbeddedRuntime,
     ) -> Result<Self> {
+        let weights_sha256 = weights.sha256().to_string();
         let mut constants = HashMap::with_capacity(plan.initializers.len());
         let mut scalar_constants = HashMap::new();
         for initializer in &plan.initializers {
@@ -48,6 +61,7 @@ impl GraphExecutor {
             constants,
             scalar_constants,
             value_use_counts,
+            weights_sha256,
             runtime,
         })
     }
@@ -60,6 +74,20 @@ impl GraphExecutor {
         cancellation: &CancellationToken,
     ) -> Result<TensorOutput> {
         self.run_with_output_projection(input, permit, cancellation, |output| Ok(output.clone()))
+    }
+
+    /// Executes a graph while measuring only its owned-host-tensor boundary.
+    /// Kernel time remains part of the caller's end-to-end sample rather than
+    /// being misreported as copy time.
+    pub fn run_measured(
+        &self,
+        input: TensorInput,
+        permit: &ExecutionPermit,
+        cancellation: &CancellationToken,
+    ) -> Result<(TensorOutput, GraphExecutionBoundaryMeasurement)> {
+        self.run_with_output_projection_measured(input, permit, cancellation, |output| {
+            Ok(output.clone())
+        })
     }
 
     /// Executes a graph and applies one model-owned projection before the
@@ -80,6 +108,23 @@ impl GraphExecutor {
     where
         F: FnOnce(&Tensor) -> Result<Tensor>,
     {
+        self.run_with_output_projection_measured(input, permit, cancellation, projection)
+            .map(|(output, _)| output)
+    }
+
+    /// Measured form of [`Self::run_with_output_projection`]. The returned
+    /// counters describe the generic host/device boundary only; they do not
+    /// claim visibility into backend allocator or DMA internals.
+    pub fn run_with_output_projection_measured<F>(
+        &self,
+        input: TensorInput,
+        permit: &ExecutionPermit,
+        cancellation: &CancellationToken,
+        projection: F,
+    ) -> Result<(TensorOutput, GraphExecutionBoundaryMeasurement)>
+    where
+        F: FnOnce(&Tensor) -> Result<Tensor>,
+    {
         if !permit.belongs_to(&self.runtime) {
             return Err(PowerError::InvalidRequest(
                 "graph execution permit belongs to a different embedded runtime".to_string(),
@@ -90,7 +135,11 @@ impl GraphExecutor {
                 "static graph execution was cancelled".to_string(),
             ));
         }
+        input.validate(self.runtime.limits())?;
+        let input_host_bytes = tensor_bytes(input.values.len(), "input")?;
+        let input_started = Instant::now();
         let input = input.into_candle(self.runtime.device().tensor_device())?;
+        let input_materialization_nanos = duration_nanos(input_started.elapsed());
         let output = self.run_tensor(input, cancellation)?;
         let projected = projection(&output)?;
         if cancellation.is_cancelled() {
@@ -103,7 +152,48 @@ impl GraphExecutor {
                 "static graph output projection changed tensor devices".to_string(),
             ));
         }
-        TensorOutput::from_candle(&projected, self.runtime.limits())
+        let output_elements = self
+            .runtime
+            .limits()
+            .checked_elements(projected.dims(), "projected output tensor")?;
+        let output_host_bytes = tensor_bytes(output_elements, "output")?;
+        let output_started = Instant::now();
+        let output = TensorOutput::from_candle(&projected, self.runtime.limits())?;
+        let output_materialization_nanos = duration_nanos(output_started.elapsed());
+        let device_copy_operations =
+            u64::from(self.runtime.device().kind() != RuntimeDeviceKind::Cpu);
+        Ok((
+            output,
+            GraphExecutionBoundaryMeasurement {
+                input_materializations: 1,
+                input_host_bytes,
+                host_to_device_copy_operations: device_copy_operations,
+                input_materialization_nanos,
+                output_materializations: 1,
+                output_host_bytes,
+                device_to_host_copy_operations: device_copy_operations,
+                output_materialization_nanos,
+            },
+        ))
+    }
+
+    pub(crate) fn runtime(&self) -> &EmbeddedRuntime {
+        &self.runtime
+    }
+
+    pub(crate) fn benchmark_binding(
+        &self,
+        power_commit: &str,
+        system: &StorageBenchmarkSystem,
+    ) -> Result<HardwareEvidenceBinding> {
+        HardwareEvidenceBinding::new(
+            env!("CARGO_PKG_VERSION"),
+            power_commit,
+            &self.weights_sha256,
+            self.plan.identity().source_sha256,
+            self.runtime.device().identity(),
+            system,
+        )
     }
 
     fn run_tensor(&self, input: Tensor, cancellation: &CancellationToken) -> Result<Tensor> {
@@ -256,6 +346,25 @@ impl GraphExecutor {
             .tensor("graph output")
             .cloned()
     }
+}
+
+fn tensor_bytes(elements: usize, label: &str) -> Result<u64> {
+    let bytes = elements
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| {
+            PowerError::InferenceFailed(format!(
+                "static graph {label} tensor byte count overflowed"
+            ))
+        })?;
+    u64::try_from(bytes).map_err(|_| {
+        PowerError::InferenceFailed(format!(
+            "static graph {label} tensor byte count exceeds u64"
+        ))
+    })
+}
+
+fn duration_nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn commit_node_output(
@@ -851,298 +960,4 @@ fn softmax(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
     candle_nn::ops::softmax(input, axis)
         .map(GraphValue::Tensor)
         .map_err(|error| execution_error(node, error))
-}
-
-fn convolution_pads(
-    node: &GraphNode,
-    dimensions: (usize, usize, usize, usize),
-    kernel: (usize, usize),
-    stride: (usize, usize),
-    dilation: (usize, usize),
-) -> Result<(usize, usize, usize, usize)> {
-    match node.string("auto_pad", "NOTSET")? {
-        "NOTSET" => quad(&node.ints("pads", &[0, 0, 0, 0])?, "pads", node),
-        "SAME_UPPER" => {
-            let (_, _, height, width) = dimensions;
-            let (top, bottom) = same_upper_padding(height, kernel.0, stride.0, dilation.0);
-            let (left, right) = same_upper_padding(width, kernel.1, stride.1, dilation.1);
-            Ok((top, left, bottom, right))
-        }
-        other => Err(execution_error(
-            node,
-            format!("unsupported auto_pad '{other}'"),
-        )),
-    }
-}
-
-fn pool_pads(
-    node: &GraphNode,
-    dimensions: (usize, usize, usize, usize),
-    kernel: (usize, usize),
-    stride: (usize, usize),
-) -> Result<(usize, usize, usize, usize)> {
-    convolution_pads(node, dimensions, kernel, stride, (1, 1))
-}
-
-fn same_upper_padding(
-    input: usize,
-    kernel: usize,
-    stride: usize,
-    dilation: usize,
-) -> (usize, usize) {
-    let output = input.div_ceil(stride);
-    let effective = dilation * (kernel.saturating_sub(1)) + 1;
-    let total = ((output.saturating_sub(1)) * stride + effective).saturating_sub(input);
-    (total / 2, total - total / 2)
-}
-
-fn pad_spatial(
-    input: &Tensor,
-    pads: (usize, usize, usize, usize),
-    node: &GraphNode,
-) -> Result<Tensor> {
-    input
-        .pad_with_zeros(2, pads.0, pads.2)
-        .and_then(|value| value.pad_with_zeros(3, pads.1, pads.3))
-        .map_err(|error| execution_error(node, error))
-}
-
-fn subsample_spatial(
-    input: &Tensor,
-    stride: (usize, usize),
-    device: &Device,
-    node: &GraphNode,
-) -> Result<Tensor> {
-    let mut output = input.clone();
-    for (axis, step) in [(2, stride.0), (3, stride.1)] {
-        if step == 1 {
-            continue;
-        }
-        let length = output
-            .dim(axis)
-            .map_err(|error| execution_error(node, error))?;
-        let indices = (0..length)
-            .step_by(step)
-            .map(u32::try_from)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| execution_error(node, "subsample index exceeds u32"))?;
-        let indices = Tensor::from_vec(indices.clone(), indices.len(), device)
-            .map_err(|error| execution_error(node, error))?;
-        output = output
-            .index_select(&indices, axis)
-            .map_err(|error| execution_error(node, error))?;
-    }
-    Ok(output)
-}
-
-fn slice_tensor(
-    input: &Tensor,
-    axis: usize,
-    start: i64,
-    end: i64,
-    step: i64,
-    device: &Device,
-    node: &GraphNode,
-) -> Result<Tensor> {
-    if step <= 0 {
-        return Err(execution_error(node, "Slice step must be positive"));
-    }
-    let length = input
-        .dim(axis)
-        .map_err(|error| execution_error(node, error))?;
-    let (start, end) = slice_bounds(length, start, end, node)?;
-    if step == 1 {
-        return input
-            .narrow(axis, start, end - start)
-            .map_err(|error| execution_error(node, error));
-    }
-    let step = usize::try_from(step).map_err(|_| execution_error(node, "invalid Slice step"))?;
-    let indices = (start..end)
-        .step_by(step)
-        .map(u32::try_from)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|_| execution_error(node, "Slice index exceeds u32"))?;
-    let indices = Tensor::from_vec(indices.clone(), indices.len(), device)
-        .map_err(|error| execution_error(node, error))?;
-    input
-        .index_select(&indices, axis)
-        .map_err(|error| execution_error(node, error))
-}
-
-fn slice_bounds(length: usize, start: i64, end: i64, node: &GraphNode) -> Result<(usize, usize)> {
-    let length_i64 = i64::try_from(length).map_err(|_| execution_error(node, "axis too large"))?;
-    let normalize = |value: i64| {
-        if value < 0 {
-            (length_i64 + value).max(0)
-        } else {
-            value.min(length_i64)
-        }
-    };
-    let start = normalize(start);
-    let end = normalize(end);
-    if end < start {
-        return Err(execution_error(node, "Slice end precedes start"));
-    }
-    Ok((start as usize, end as usize))
-}
-
-fn resolve_reshape(input: &[usize], requested: &[i64], node: &GraphNode) -> Result<Vec<usize>> {
-    if requested.is_empty() {
-        return Err(execution_error(node, "Reshape target must not be empty"));
-    }
-    let input_elements = input.iter().product::<usize>();
-    let mut output = Vec::with_capacity(requested.len());
-    let mut inferred = None;
-    let mut known = 1_usize;
-    for (index, dimension) in requested.iter().copied().enumerate() {
-        match dimension {
-            -1 if inferred.is_none() => {
-                inferred = Some(index);
-                output.push(1);
-            }
-            0 if index < input.len() => {
-                known = known
-                    .checked_mul(input[index])
-                    .ok_or_else(|| execution_error(node, "Reshape dimensions overflowed"))?;
-                output.push(input[index]);
-            }
-            value if value > 0 => {
-                let value = usize::try_from(value)
-                    .map_err(|_| execution_error(node, "invalid Reshape dimension"))?;
-                known = known
-                    .checked_mul(value)
-                    .ok_or_else(|| execution_error(node, "Reshape dimensions overflowed"))?;
-                output.push(value);
-            }
-            _ => return Err(execution_error(node, "invalid Reshape target")),
-        }
-    }
-    if let Some(index) = inferred {
-        if known == 0 || !input_elements.is_multiple_of(known) {
-            return Err(execution_error(node, "Reshape target cannot be inferred"));
-        }
-        output[index] = input_elements / known;
-    } else if known != input_elements {
-        return Err(execution_error(node, "Reshape changes the element count"));
-    }
-    Ok(output)
-}
-
-fn normalized_axes(axes: &[i64], rank: usize, node: &GraphNode) -> Result<Vec<usize>> {
-    axes.iter()
-        .map(|axis| axis_index(*axis, rank, node))
-        .collect()
-}
-
-fn axis_index(axis: i64, rank: usize, node: &GraphNode) -> Result<usize> {
-    let rank_i64 = i64::try_from(rank).map_err(|_| execution_error(node, "rank exceeds i64"))?;
-    let axis = if axis < 0 { rank_i64 + axis } else { axis };
-    if axis < 0 || axis >= rank_i64 {
-        return Err(execution_error(
-            node,
-            format!("axis {axis} is out of range for rank {rank}"),
-        ));
-    }
-    Ok(axis as usize)
-}
-
-fn pair(values: &[i64], name: &str, node: &GraphNode) -> Result<(usize, usize)> {
-    if values.len() != 2 {
-        return Err(execution_error(
-            node,
-            format!("{name} must contain two values"),
-        ));
-    }
-    Ok((
-        positive_usize(values[0], name, node)?,
-        positive_usize(values[1], name, node)?,
-    ))
-}
-
-fn quad(values: &[i64], name: &str, node: &GraphNode) -> Result<(usize, usize, usize, usize)> {
-    if values.len() != 4 {
-        return Err(execution_error(
-            node,
-            format!("{name} must contain four values"),
-        ));
-    }
-    Ok((
-        nonnegative_usize(values[0], name, node)?,
-        nonnegative_usize(values[1], name, node)?,
-        nonnegative_usize(values[2], name, node)?,
-        nonnegative_usize(values[3], name, node)?,
-    ))
-}
-
-fn positive_usize(value: i64, name: &str, node: &GraphNode) -> Result<usize> {
-    if value <= 0 {
-        return Err(execution_error(node, format!("{name} must be positive")));
-    }
-    usize::try_from(value).map_err(|_| execution_error(node, format!("{name} exceeds usize")))
-}
-
-fn nonnegative_usize(value: i64, name: &str, node: &GraphNode) -> Result<usize> {
-    if value < 0 {
-        return Err(execution_error(
-            node,
-            format!("{name} must be non-negative"),
-        ));
-    }
-    usize::try_from(value).map_err(|_| execution_error(node, format!("{name} exceeds usize")))
-}
-
-fn execution_error(node: &GraphNode, error: impl std::fmt::Display) -> PowerError {
-    PowerError::InferenceFailed(format!(
-        "static graph node '{}' ({:?}) failed: {error}",
-        node.name, node.op
-    ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn node() -> GraphNode {
-        GraphNode {
-            name: "test".to_string(),
-            op: GraphOp::Reshape,
-            inputs: Vec::new(),
-            outputs: vec!["out".to_string()],
-            attributes: Default::default(),
-        }
-    }
-
-    #[test]
-    fn reshape_resolves_zero_and_inferred_dimensions() {
-        assert_eq!(
-            resolve_reshape(&[2, 3, 4], &[0, -1], &node()).unwrap(),
-            [2, 12]
-        );
-        assert!(resolve_reshape(&[2, 3], &[-1, -1], &node()).is_err());
-    }
-
-    #[test]
-    fn same_upper_padding_puts_odd_pixel_at_end() {
-        assert_eq!(same_upper_padding(48, 2, 1, 1), (0, 1));
-        assert_eq!(same_upper_padding(48, 3, 2, 1), (0, 1));
-    }
-
-    #[test]
-    fn matmul_materializes_a_transposed_rhs_view() {
-        let mut node = node();
-        node.op = GraphOp::MatMul;
-        let left = GraphValue::Tensor(
-            Tensor::zeros((3, 8, 41, 15), candle_core::DType::F32, &Device::Cpu).unwrap(),
-        );
-        let right = Tensor::zeros((3, 8, 41, 15), candle_core::DType::F32, &Device::Cpu)
-            .unwrap()
-            .transpose(2, 3)
-            .unwrap();
-        assert!(!right.is_contiguous());
-        let right = GraphValue::Tensor(right);
-
-        let output = matmul(&node, &[&left, &right]).unwrap();
-
-        assert_eq!(output.shape(), [3, 8, 41, 41]);
-    }
 }

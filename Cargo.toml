@@ -30,6 +30,11 @@ path = "src/bin/a3s-power-storage-bench.rs"
 required-features = ["embedded-inference"]
 
 [[bin]]
+name = "a3s-power-tensor-batch-bench"
+path = "src/bin/a3s-power-tensor-batch-bench.rs"
+required-features = ["embedded-inference"]
+
+[[bin]]
 name = "a3s-power-speculative-bench"
 path = "src/bin/a3s-power-speculative-bench.rs"
 required-features = ["server"]
