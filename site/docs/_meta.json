@@ -1,0 +1,32 @@
+[
+  {
+    "type": "file",
+    "name": "getting-started",
+    "label": "Getting started"
+  },
+  {
+    "type": "file",
+    "name": "architecture",
+    "label": "Architecture"
+  },
+  {
+    "type": "file",
+    "name": "performance",
+    "label": "Performance evidence"
+  },
+  {
+    "type": "file",
+    "name": "speculative-decoding",
+    "label": "Speculative decoding"
+  },
+  {
+    "type": "file",
+    "name": "verification",
+    "label": "Verification"
+  },
+  {
+    "type": "file",
+    "name": "operations",
+    "label": "Operations"
+  }
+]

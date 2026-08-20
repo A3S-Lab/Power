@@ -1,0 +1,25 @@
+{
+  "name": "a3s-power-website",
+  "version": "0.0.0",
+  "description": "Official A3S Power runtime and verification documentation.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rspress build",
+    "check:site": "node scripts/check-built-site.mjs",
+    "dev": "rspress dev",
+    "preview": "rspress preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@rspress/core": "^2.0.17"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "^6.0.3"
+  }
+}

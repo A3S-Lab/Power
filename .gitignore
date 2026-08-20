@@ -30,6 +30,10 @@ Thumbs.db
 # Logs
 *.log
 
+# Documentation site
+/site/doc_build/
+/site/node_modules/
+
 # Claude Code
 .claude/settings.local.json
 .claude/sessions/

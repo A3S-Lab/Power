@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">A3S Power</title>
+  <rect width="64" height="64" rx="16" fill="#2864e8"/>
+  <path d="M15 48 32 13l17 35M21 37c7-4 14 5 23-.5" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

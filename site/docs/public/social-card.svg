@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">A3S Power</title>
+  <desc id="desc">Run the model. Prove the boundary.</desc>
+  <defs>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#dfe3ea" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="#f3f4f7"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <rect x="46" y="46" width="1108" height="538" rx="20" fill="#ffffff" stroke="#cfd4dd"/>
+  <g transform="translate(92 92)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+    <rect width="42" height="42" rx="11" fill="#2864e8"/>
+    <path d="M10 32 21 9l11 23M14 25c4.5-2.7 9 3.2 15-.3" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="58" y="29" fill="#17181a" font-size="22" font-weight="700">A3S Power</text>
+    <text x="0" y="118" fill="#17181a" font-size="64" font-weight="680" letter-spacing="-3">Run the model.</text>
+    <text x="0" y="190" fill="#2864e8" font-size="64" font-weight="680" letter-spacing="-3">Prove the boundary.</text>
+    <text x="2" y="250" fill="#62666f" font-size="22">Model-neutral Rust inference with bounded execution,</text>
+    <text x="2" y="281" fill="#62666f" font-size="22">canonical receipts, and verifier-owned trust.</text>
+    <g transform="translate(0 337)" font-family="ui-monospace,SFMono-Regular,Consolas,monospace">
+      <rect width="474" height="68" rx="10" fill="#f7f7f8" stroke="#d9dce2"/>
+      <circle cx="24" cy="34" r="6" fill="#14a675"/>
+      <text x="44" y="41" fill="#17181a" font-size="19">embedded | OpenAI API | TEE</text>
+    </g>
+    <text x="2" y="463" fill="#62666f" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="16" letter-spacing="1.8">A3S-LAB.GITHUB.IO/POWER</text>
+  </g>
+  <g transform="translate(704 102)" font-family="ui-monospace,SFMono-Regular,Consolas,monospace">
+    <rect width="402" height="426" rx="14" fill="#ffffff" stroke="#aeb5c1"/>
+    <text x="24" y="38" fill="#62666f" font-size="14" font-weight="700">VERIFIED EXECUTION TRACE</text>
+    <path d="M24 58H378" stroke="#e2e4e8"/>
+    <g transform="translate(24 86)">
+      <rect width="354" height="66" rx="9" fill="#edf3ff" stroke="#b9ccf7"/>
+      <text x="18" y="27" fill="#1f51b8" font-size="12" font-weight="700">01 / EXECUTE</text>
+      <text x="18" y="50" fill="#17181a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="17" font-weight="650">admission - placement - device</text>
+    </g>
+    <path d="M201 152V178" stroke="#2864e8" stroke-width="2"/>
+    <g transform="translate(24 178)">
+      <rect width="354" height="66" rx="9" fill="#f7f7f8" stroke="#d9dce2"/>
+      <text x="18" y="27" fill="#62666f" font-size="12" font-weight="700">02 / COMMIT</text>
+      <text x="18" y="50" fill="#17181a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="17" font-weight="650">artifact + policy + I/O receipt</text>
+    </g>
+    <path d="M201 244V270" stroke="#14a675" stroke-width="2"/>
+    <g transform="translate(24 270)">
+      <rect width="354" height="82" rx="9" fill="#ebf8f3" stroke="#8dceb5"/>
+      <circle cx="29" cy="41" r="13" fill="#14a675"/>
+      <path d="m22 41 5 5 9-12" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="54" y="35" fill="#0b7c56" font-size="12" font-weight="700">03 / VERIFY</text>
+      <text x="54" y="58" fill="#17181a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="17" font-weight="650">client policy accepts or rejects</text>
+    </g>
+    <text x="24" y="392" fill="#62666f" font-size="13">IDENTITY / RESOURCES / EVIDENCE</text>
+  </g>
+</svg>
