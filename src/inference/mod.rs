@@ -46,6 +46,8 @@ mod sealed_state_tests;
 mod session_pool;
 #[cfg(test)]
 mod session_pool_tests;
+#[cfg(test)]
+mod session_replica_tests;
 mod shape_profile;
 #[cfg(test)]
 mod shape_profile_tests;
@@ -121,7 +123,7 @@ pub use sealed_state::{
 };
 pub use session_pool::{
     ModelSession, ModelSessionBinding, ModelSessionPool, ModelSessionPoolPolicy,
-    ModelSessionPoolSnapshot, ModelSessionSpec,
+    ModelSessionPoolSnapshot, ModelSessionReplica, ModelSessionSpec,
 };
 pub use shape_profile::{
     DynamicShapeFallback, ShapeProfile, ShapeProfileBinding, ShapeProfileDeclaration,

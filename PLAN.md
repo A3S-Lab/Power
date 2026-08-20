@@ -22,8 +22,11 @@ A3S Power exists to solve one problem: **LLM inference where the infrastructure 
 The model-neutral Power layer now provides the scheduling substrate required by
 `a3s-ocr` and `a3s-parser`: finite cancellation-aware model queues, an exact
 device/model session pool with declared resident-byte bounds, a shared physical
-device gate, deterministic memory-aware microbatch plans with live-pressure
-revalidation, and digest-only receipt v4 evidence. OCR stage semantics, image
+device gate, policy-bounded exclusive mutable session replicas with worst-case
+residency admission, deterministic memory-aware microbatch plans with
+live-pressure revalidation, and digest-only receipt evidence. Language,
+vision, OCR, embedding, and multimodal crates use the same runtime contracts.
+OCR stage semantics, image
 pre/postprocessing, document target identity, cross-page structure, and retry
 policy remain in their owning crates. Ready pool entries intentionally have no
 implicit eviction; the owning service controls pool lifetime.

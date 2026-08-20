@@ -57,6 +57,10 @@ Power 把推理视为一个身份与结果都可验证的有界操作，而不�
 
 模型 crate 可以用不透明的 SHA-256 身份声明有限的优化形状类别。Power 只检查聚合批量、张量元素、暂存内存、设备、制品与 TEE 策略边界；它不解释上下文长度、图像几何、分词方式或模型家族。未覆盖的类别要么关闭失败，要么选择身份明确的动态实现。回执 v5 记录这个决定，但不暴露模型私有几何信息。
 
+### 模型中立的可变副本
+
+有状态的模型 crate 可以为同一组精确模型与执行身份申请有限个延迟初始化、相互独立的会话副本。每个不可克隆的租约独占一个匿名槽位；所有槽位复用同一个已解析运行时与物理设备准入门。Power 在任何 loader 运行前预留最坏情况下的驻留内存，遥测只报告聚合副本数量。语言、视觉、OCR、向量与多模态上下文都走同一条路径：模型家族只是不透明身份，绝不是分派分支。
+
 ### 已验证权重
 
 权重描述符把张量区间绑定到存储身份。完整与局部镜像在存储层之间保持这一身份。放置与驻留证据记录真实选择的路径，而不只记录首选路径。
@@ -94,4 +98,4 @@ Power 把推理视为一个身份与结果都可验证的有界操作，而不�
 释放许可并验证回执
 ```
 
-详细设计还覆盖张量批处理、驻留预算、局部镜像、预取提示、异构网格、密封状态与调优证据。完整 API、不变量与验证门槛参阅[规范架构文档](https://github.com/A3S-Lab/Power/blob/main/docs/embedded-inference-architecture.md)；模型中立的职责边界与复现命令见[形状配置契约](https://github.com/A3S-Lab/Power/blob/main/docs/shape-profiles.md)。
+详细设计还覆盖张量批处理、驻留预算、局部镜像、预取提示、异构网格、密封状态与调优证据。完整 API、不变量与验证门槛参阅[规范架构文档](https://github.com/A3S-Lab/Power/blob/main/docs/embedded-inference-architecture.md)；模型中立的职责边界与复现命令见[形状配置契约](https://github.com/A3S-Lab/Power/blob/main/docs/shape-profiles.md)与[会话副本契约](https://github.com/A3S-Lab/Power/blob/main/docs/session-replicas.md)。

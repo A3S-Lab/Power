@@ -70,6 +70,16 @@ geometry, tokenization, or a model family. Unsupported classes either fail
 closed or select an explicitly identified dynamic implementation. Receipt v5
 records that decision without exposing private geometry.
 
+### Model-neutral mutable replicas
+
+Stateful model crates can request a finite set of lazy, independently
+initialized session replicas for one exact model and execution identity. Each
+non-cloneable lease owns one anonymous slot; all slots share the same resolved
+runtime and physical-device admission gate. Power reserves the worst-case
+resident bytes before any loader runs and reports only aggregate replica
+counts. Language, vision, OCR, embedding, and multimodal contexts use the same
+path: the model family is opaque identity, never a dispatch branch.
+
 ### Verified weights
 
 Weight descriptors bind tensor ranges to storage identities. Complete and
@@ -122,4 +132,5 @@ prefetch hints, heterogeneous meshes, sealed state, and tuning evidence. Read
 the [canonical architecture document](https://github.com/A3S-Lab/Power/blob/main/docs/embedded-inference-architecture.md)
 for the complete APIs, invariants, and validation gates. The
 [shape-profile contract](https://github.com/A3S-Lab/Power/blob/main/docs/shape-profiles.md)
-documents its model-neutral ownership boundary and reproduction commands.
+and [session-replica contract](https://github.com/A3S-Lab/Power/blob/main/docs/session-replicas.md)
+document their model-neutral ownership boundaries and reproduction commands.

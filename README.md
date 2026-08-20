@@ -195,6 +195,22 @@ oversized classes either fail or use an explicitly digest-bound dynamic
 implementation; receipt v5 records the path and reason without dimensions or
 class data. See [Model-Owned Shape Profiles](docs/shape-profiles.md).
 
+### Mutable replicas do not give Power model semantics
+
+Stateful backends may request up to 256 lazy, independently initialized replicas
+for one exact model/execution identity. Every replica is held by a non-cloneable
+lease, but all replicas reuse one resolved runtime and one physical-device
+admission gate. Power reserves the declared per-replica resident bytes for the
+entire configured replica set before invoking a loader, so concurrency cannot
+silently overcommit memory.
+
+The family string is opaque identity, not a dispatch key: language decoders,
+vision encoders, OCR graphs, embedding models, and multimodal pipelines use the
+same pool. The loader receives no replica ordinal or model-family switch, and
+snapshots contain only aggregate counts. Cancellation or future drop returns
+the lease and removes an otherwise empty entry. See
+[Model-Neutral Session Replicas](docs/session-replicas.md).
+
 ## Backends are capabilities, not architecture
 
 | Feature | Role | Native dependency |
@@ -379,6 +395,7 @@ production certificate caching and failure policy.
 | [v0.9.0 release documentation](https://a3s-lab.github.io/Power/v0.9.0/) | Versioned bilingual release snapshot |
 | [Embedded Inference Architecture](docs/embedded-inference-architecture.md) | Graph execution, placement, scheduling, state, and receipts |
 | [Model-Owned Shape Profiles](docs/shape-profiles.md) | Finite opaque classes, stale-binding rejection, fallback, and receipt v5 |
+| [Model-Neutral Session Replicas](docs/session-replicas.md) | Exclusive mutable contexts, shared device admission, residency bounds, and cancellation |
 | [Model-neutral Speculative Decoding](docs/speculative-decoding.md) | Strategies, native MTP, patching, protocol, and acceptance |
 | [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | Performance gates, artifact identity, quality, and raw evidence |
 | [Reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) | CUDA build, pinned inputs, replay, audit, and validation |

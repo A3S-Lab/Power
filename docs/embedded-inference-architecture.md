@@ -63,7 +63,14 @@ Multiple exact model sessions may instead share one device-bound
 `ModelSessionPool<T>`. The pool gives each entry its own bounded
 `EmbeddedRuntime` and one shared physical-device gate; it deduplicates lazy
 initialization and retains ready entries until pool drop without adding an
-eviction or persistence policy.
+eviction or persistence policy. A policy may alternatively enable a finite set
+of exclusive, independently initialized state replicas for each exact identity.
+Power reserves the worst-case replica residency before the first loader runs,
+reuses the same runtime and device gate across every replica, and exposes no
+replica ordinal to the loader, declaration debug output, or aggregate snapshot.
+One entry cannot mix cloneable shared access with exclusive replica access.
+Model crates continue to own the state type and its mutation semantics; see
+[Model-Neutral Session Replicas](session-replicas.md).
 
 ## Colibri Ideas Adapted as Generic Mechanisms
 

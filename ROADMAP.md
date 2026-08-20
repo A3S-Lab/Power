@@ -100,7 +100,7 @@ importing TensorRT profiles or moving shape selection into Power.
 
 ### P3 — Bounded replicas and deadline-aware admission
 
-- [ ] Allow a policy-bounded number of independently mutable session replicas
+- [x] Allow a policy-bounded number of independently mutable session replicas
       for one exact model identity while retaining one shared device gate and
       resident-byte budget.
 - [ ] Add monotonic admission deadlines, queue-expiry evidence, and
