@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shape-profile declaration and TEE policy. This removes an impossible
   cross-device invariant and also requires confidential accelerator execution
   policy to match the capture's TEE binding.
+- Published complete model-neutral CPU and CUDA runtime-contract captures from
+  one clean immutable revision, including byte-stable policy input, raw JSON,
+  exact artifact pins, negative CPU batching evidence, and a replay test that
+  constructs their verified two-platform partial bundle.
 - Added model-neutral, device-resident chaining for adjacent reviewed static
   graphs. `ResidentGraphTensor` is non-cloneable, retains the exact request
   permit, enforces F32/fixed-or-symbolic-shape/device identity, and consumes a

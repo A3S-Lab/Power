@@ -198,10 +198,12 @@ were produced from clean revision
 parity and retain the CPU negative result. They predate the complete runtime
 contract capture and therefore cannot form a strict v1 bundle.
 
-The complete model-neutral collector and isolated CPU regression coverage now
-exist in source. Those regression runs are development checks, not published
-release evidence. New CPU and CUDA captures must be generated from a clean
-immutable collector revision before they can replace the earlier pre-captures.
+The [2026-08-21 complete Windows CPU/CUDA captures](benchmarks/release-contract-windows-20260821/README.md)
+were generated from clean revision
+`6b7d6e5265b34c3e9e812c830ce22cc4a35940e5`. Both replay every runtime
+contract, and their platform-specific profile bindings form one verified
+two-platform partial bundle. The raw JSON, policy bytes, artifact hashes,
+negative CPU batching result, and exact reproduction commands are checked in.
 
 Metal and confidential-GPU results cannot be inferred from this Windows RTX
 4090 host. They remain explicit release blockers until captured on appropriate

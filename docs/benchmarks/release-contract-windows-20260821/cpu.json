@@ -1,0 +1,734 @@
+{
+  "contracts": {
+    "cancellation": {
+      "admissionAfter": {
+        "active": 0,
+        "activeLimit": 1,
+        "admitted": 3,
+        "cancelledWaiters": 0,
+        "deadlineExpirations": 0,
+        "peakActive": 1,
+        "peakWaiting": 0,
+        "queueRejections": 0,
+        "waiting": 0,
+        "waitingLimit": 32
+      },
+      "lifecycle": {
+        "admittedMembers": 1,
+        "cancelledMembers": 1,
+        "committedSteps": 1,
+        "completedMembers": 0,
+        "declarationSha256": "3185787a23f852c5eb172edc2af1b26823c14eeabbff1c0f87309ea8908c1164",
+        "maxActiveMembers": 1,
+        "peakStateBytes": 4096,
+        "processedRows": 1,
+        "schema": "a3s.power.execution-batch-lifecycle.v1",
+        "transcriptSha256": "c60b714c0d6f92115b46aedf00beafbe308482a9a74dada33488eaf1a9dcd131"
+      },
+      "residentAfter": {
+        "activeHandles": 0,
+        "maximumBytes": 1073741824,
+        "peakResidentBytes": 16384,
+        "rejectedReservations": 0,
+        "residentBytes": 0
+      }
+    },
+    "exactFallback": {
+      "fallbackOutput": {
+        "byteLength": 16384,
+        "itemCount": 4096,
+        "representation": "f32-tensor",
+        "sha256": "2d03d430cafee205479fbde2d854bd5b13f32d4d9b7aaddf4b6f1f1af5dd8489"
+      },
+      "referenceOutput": {
+        "byteLength": 16384,
+        "itemCount": 4096,
+        "representation": "f32-tensor",
+        "sha256": "2d03d430cafee205479fbde2d854bd5b13f32d4d9b7aaddf4b6f1f1af5dd8489"
+      },
+      "selection": {
+        "bindingSha256": "f1b41e44b82e6c98901a7a98a0ee5cc054f525b63193b26947c03dc8a9fa2f7f",
+        "declarationSha256": "54865497f48aac854c16f9ba6c442a463f39d11d64fc6c014f0f1a474ece2792",
+        "inputSha256": "d342e64d9f3ca957a76be12cf95615db7aeb27efbad456eda5ab95c9d983994e",
+        "path": {
+          "implementationSha256": "15b2cf23682a425384bb1ad005f8c020ecfc97ac311109b0cb2324668b6b1a33",
+          "kind": "dynamicFallback",
+          "reason": "shape-class-unavailable"
+        },
+        "requestSha256": "4e35227070314fc74f38c5ffe25d6616206517bf8779d5e9bb71859a87f4f7f5",
+        "runtimeDevice": {
+          "kind": "cpu",
+          "ordinal": null
+        },
+        "schema": "a3s.power.shape-profile-execution.v1",
+        "weightsSha256": "0f3de53015794403689b151f172b05e0bd115ed1b61290318ec4eab882dca443"
+      }
+    },
+    "peakMemory": {
+      "device": null,
+      "host": {
+        "baselineUsedBytes": 182289,
+        "finalUsedBytes": 182289,
+        "method": {
+          "kind": "host-allocator"
+        },
+        "peakUsedBytes": 216950,
+        "sampleCount": 1
+      }
+    },
+    "queueExpiry": {
+      "after": {
+        "active": 0,
+        "activeLimit": 1,
+        "admitted": 4,
+        "cancelledWaiters": 0,
+        "deadlineExpirations": 1,
+        "peakActive": 1,
+        "peakWaiting": 1,
+        "queueRejections": 0,
+        "waiting": 0,
+        "waitingLimit": 32
+      },
+      "before": {
+        "active": 0,
+        "activeLimit": 1,
+        "admitted": 3,
+        "cancelledWaiters": 0,
+        "deadlineExpirations": 0,
+        "peakActive": 1,
+        "peakWaiting": 0,
+        "queueRejections": 0,
+        "waiting": 0,
+        "waitingLimit": 32
+      }
+    },
+    "replicaRecovery": {
+      "before": {
+        "device": {
+          "kind": "cpu",
+          "ordinal": null
+        },
+        "deviceAdmission": {
+          "active": 0,
+          "activeLimit": 1,
+          "admitted": 0,
+          "cancelledWaiters": 0,
+          "deadlineExpirations": 0,
+          "peakActive": 0,
+          "peakWaiting": 0,
+          "queueRejections": 0,
+          "waiting": 0,
+          "waitingLimit": 1
+        },
+        "expiredReplicaRequests": 0,
+        "leasedReplicas": 0,
+        "maximumReplicasPerSession": 1,
+        "maximumResidentBytes": 32,
+        "maximumSessions": 1,
+        "readyReplicas": 1,
+        "readySessions": 1,
+        "registeredSessions": 1,
+        "replicaReconstructions": 0,
+        "replicaRetirements": 0,
+        "replicasPendingReconstruction": 0,
+        "reservedBytes": 32,
+        "reservedReplicas": 1,
+        "waitingReplicaRequests": 0
+      },
+      "recovered": {
+        "device": {
+          "kind": "cpu",
+          "ordinal": null
+        },
+        "deviceAdmission": {
+          "active": 0,
+          "activeLimit": 1,
+          "admitted": 0,
+          "cancelledWaiters": 0,
+          "deadlineExpirations": 0,
+          "peakActive": 0,
+          "peakWaiting": 0,
+          "queueRejections": 0,
+          "waiting": 0,
+          "waitingLimit": 1
+        },
+        "expiredReplicaRequests": 0,
+        "leasedReplicas": 0,
+        "maximumReplicasPerSession": 1,
+        "maximumResidentBytes": 32,
+        "maximumSessions": 1,
+        "readyReplicas": 1,
+        "readySessions": 1,
+        "registeredSessions": 1,
+        "replicaReconstructions": 1,
+        "replicaRetirements": 1,
+        "replicasPendingReconstruction": 0,
+        "reservedBytes": 32,
+        "reservedReplicas": 1,
+        "waitingReplicaRequests": 0
+      },
+      "retired": {
+        "device": {
+          "kind": "cpu",
+          "ordinal": null
+        },
+        "deviceAdmission": {
+          "active": 0,
+          "activeLimit": 1,
+          "admitted": 0,
+          "cancelledWaiters": 0,
+          "deadlineExpirations": 0,
+          "peakActive": 0,
+          "peakWaiting": 0,
+          "queueRejections": 0,
+          "waiting": 0,
+          "waitingLimit": 1
+        },
+        "expiredReplicaRequests": 0,
+        "leasedReplicas": 0,
+        "maximumReplicasPerSession": 1,
+        "maximumResidentBytes": 32,
+        "maximumSessions": 1,
+        "readyReplicas": 0,
+        "readySessions": 0,
+        "registeredSessions": 1,
+        "replicaReconstructions": 0,
+        "replicaRetirements": 1,
+        "replicasPendingReconstruction": 1,
+        "reservedBytes": 32,
+        "reservedReplicas": 1,
+        "waitingReplicaRequests": 0
+      }
+    }
+  },
+  "schema": "a3s.power.release-capture.v1",
+  "security": {
+    "kind": "local"
+  },
+  "sha256": "579ac88294a22c44f9dd9467a78a13c8d2567f7feb39e5fca7d7a98f147b8bdc",
+  "shapeBinding": {
+    "deviceTopologySha256": "eb613786f1005f2275079c679b3d2ef0c2e08bae7f430559b512ba46539e4e32",
+    "graphSha256": "0400ec37caa58a74731fb78c9cceb0e318bd44be71e925f094bce50cba82fb3c",
+    "runtimeDevice": {
+      "kind": "cpu",
+      "ordinal": null
+    },
+    "runtimeReservations": {
+      "deviceFixedBytes": 0,
+      "deviceScratchBytes": 0,
+      "hostFixedBytes": 67108864,
+      "hostScratchBytes": 67108864
+    },
+    "teePolicySha256": "e8706c8becf1dad80a5ff83004eb1028e1ef9c67ff3fa7fc978416dc8be4d3bd",
+    "weightsSha256": "0f3de53015794403689b151f172b05e0bd115ed1b61290318ec4eab882dca443"
+  },
+  "tensorBatch": {
+    "binding": {
+      "deviceSha256": "f5af866f1ad2e59e46e0e55b3fadbb3581334c5a07da663f86e41f7f6e67e6fa",
+      "environmentSha256": "5e2ede410913d5d0bf1c0a63007724ba78a77e13f79ec597f68207bfeaba93e0",
+      "graphSourceSha256": "e894ac8daa23b2caaf3031af5ef287dc0a3dc15dbe580338ca552817ed5f92c3",
+      "powerCommit": "6b7d6e5265b34c3e9e812c830ce22cc4a35940e5",
+      "powerVersion": "0.9.0",
+      "runtimeDevice": {
+        "kind": "cpu",
+        "ordinal": null
+      },
+      "runtimeSha256": "3f6f2362f860f8b56ffc9975397afc011cc0cce00b19eddb4eca8a317cde1de7",
+      "weightsSha256": "0f3de53015794403689b151f172b05e0bd115ed1b61290318ec4eab882dca443"
+    },
+    "exactOutputParity": true,
+    "inputSequenceSha256": "13a4f130a8cab6d583fe6109abc40920aa40bb3f3545dc76389f21391c9f6cf1",
+    "itemCount": 8,
+    "measuredRounds": 9,
+    "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+    "runtimeArtifactSha256": "04c90d829beff7b6752d1bc7471a2c5be369b0f5699d6f6ad471fc88b573dfa5",
+    "samples": [
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 2400,
+          "inputMaterializations": 8,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 17500,
+          "outputMaterializations": 8
+        },
+        "elapsedNanos": 67200,
+        "executionCount": 8,
+        "hostAllocations": {
+          "allocatedBytes": 277272,
+          "allocationCount": 233,
+          "reallocatedBytes": 256,
+          "reallocationCount": 8
+        },
+        "itemCount": 8,
+        "mode": "individual",
+        "order": "individual-then-leading-batch",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 0
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 300,
+          "inputMaterializations": 1,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 69900,
+          "outputMaterializations": 1
+        },
+        "elapsedNanos": 260700,
+        "executionCount": 1,
+        "hostAllocations": {
+          "allocatedBytes": 526731,
+          "allocationCount": 50,
+          "reallocatedBytes": 32,
+          "reallocationCount": 1
+        },
+        "itemCount": 8,
+        "mode": "leading-batch",
+        "order": "individual-then-leading-batch",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 0
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 500,
+          "inputMaterializations": 1,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 67800,
+          "outputMaterializations": 1
+        },
+        "elapsedNanos": 275300,
+        "executionCount": 1,
+        "hostAllocations": {
+          "allocatedBytes": 526731,
+          "allocationCount": 50,
+          "reallocatedBytes": 32,
+          "reallocationCount": 1
+        },
+        "itemCount": 8,
+        "mode": "leading-batch",
+        "order": "leading-batch-then-individual",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 1
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 2300,
+          "inputMaterializations": 8,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 22100,
+          "outputMaterializations": 8
+        },
+        "elapsedNanos": 71700,
+        "executionCount": 8,
+        "hostAllocations": {
+          "allocatedBytes": 277272,
+          "allocationCount": 233,
+          "reallocatedBytes": 256,
+          "reallocationCount": 8
+        },
+        "itemCount": 8,
+        "mode": "individual",
+        "order": "leading-batch-then-individual",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 1
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 2200,
+          "inputMaterializations": 8,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 16400,
+          "outputMaterializations": 8
+        },
+        "elapsedNanos": 64400,
+        "executionCount": 8,
+        "hostAllocations": {
+          "allocatedBytes": 277272,
+          "allocationCount": 233,
+          "reallocatedBytes": 256,
+          "reallocationCount": 8
+        },
+        "itemCount": 8,
+        "mode": "individual",
+        "order": "individual-then-leading-batch",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 2
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 400,
+          "inputMaterializations": 1,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 55900,
+          "outputMaterializations": 1
+        },
+        "elapsedNanos": 233500,
+        "executionCount": 1,
+        "hostAllocations": {
+          "allocatedBytes": 526731,
+          "allocationCount": 50,
+          "reallocatedBytes": 32,
+          "reallocationCount": 1
+        },
+        "itemCount": 8,
+        "mode": "leading-batch",
+        "order": "individual-then-leading-batch",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 2
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 200,
+          "inputMaterializations": 1,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 72600,
+          "outputMaterializations": 1
+        },
+        "elapsedNanos": 262600,
+        "executionCount": 1,
+        "hostAllocations": {
+          "allocatedBytes": 526731,
+          "allocationCount": 50,
+          "reallocatedBytes": 32,
+          "reallocationCount": 1
+        },
+        "itemCount": 8,
+        "mode": "leading-batch",
+        "order": "leading-batch-then-individual",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 3
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 2500,
+          "inputMaterializations": 8,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 18600,
+          "outputMaterializations": 8
+        },
+        "elapsedNanos": 68200,
+        "executionCount": 8,
+        "hostAllocations": {
+          "allocatedBytes": 277272,
+          "allocationCount": 233,
+          "reallocatedBytes": 256,
+          "reallocationCount": 8
+        },
+        "itemCount": 8,
+        "mode": "individual",
+        "order": "leading-batch-then-individual",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 3
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 2400,
+          "inputMaterializations": 8,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 16900,
+          "outputMaterializations": 8
+        },
+        "elapsedNanos": 64900,
+        "executionCount": 8,
+        "hostAllocations": {
+          "allocatedBytes": 277272,
+          "allocationCount": 233,
+          "reallocatedBytes": 256,
+          "reallocationCount": 8
+        },
+        "itemCount": 8,
+        "mode": "individual",
+        "order": "individual-then-leading-batch",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 4
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 500,
+          "inputMaterializations": 1,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 58000,
+          "outputMaterializations": 1
+        },
+        "elapsedNanos": 254500,
+        "executionCount": 1,
+        "hostAllocations": {
+          "allocatedBytes": 526731,
+          "allocationCount": 50,
+          "reallocatedBytes": 32,
+          "reallocationCount": 1
+        },
+        "itemCount": 8,
+        "mode": "leading-batch",
+        "order": "individual-then-leading-batch",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 4
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 300,
+          "inputMaterializations": 1,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 55300,
+          "outputMaterializations": 1
+        },
+        "elapsedNanos": 232800,
+        "executionCount": 1,
+        "hostAllocations": {
+          "allocatedBytes": 526731,
+          "allocationCount": 50,
+          "reallocatedBytes": 32,
+          "reallocationCount": 1
+        },
+        "itemCount": 8,
+        "mode": "leading-batch",
+        "order": "leading-batch-then-individual",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 5
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 2300,
+          "inputMaterializations": 8,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 18900,
+          "outputMaterializations": 8
+        },
+        "elapsedNanos": 68000,
+        "executionCount": 8,
+        "hostAllocations": {
+          "allocatedBytes": 277272,
+          "allocationCount": 233,
+          "reallocatedBytes": 256,
+          "reallocationCount": 8
+        },
+        "itemCount": 8,
+        "mode": "individual",
+        "order": "leading-batch-then-individual",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 5
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 2200,
+          "inputMaterializations": 8,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 16800,
+          "outputMaterializations": 8
+        },
+        "elapsedNanos": 64700,
+        "executionCount": 8,
+        "hostAllocations": {
+          "allocatedBytes": 277272,
+          "allocationCount": 233,
+          "reallocatedBytes": 256,
+          "reallocationCount": 8
+        },
+        "itemCount": 8,
+        "mode": "individual",
+        "order": "individual-then-leading-batch",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 6
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 300,
+          "inputMaterializations": 1,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 68600,
+          "outputMaterializations": 1
+        },
+        "elapsedNanos": 258900,
+        "executionCount": 1,
+        "hostAllocations": {
+          "allocatedBytes": 526731,
+          "allocationCount": 50,
+          "reallocatedBytes": 32,
+          "reallocationCount": 1
+        },
+        "itemCount": 8,
+        "mode": "leading-batch",
+        "order": "individual-then-leading-batch",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 6
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 400,
+          "inputMaterializations": 1,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 55600,
+          "outputMaterializations": 1
+        },
+        "elapsedNanos": 243100,
+        "executionCount": 1,
+        "hostAllocations": {
+          "allocatedBytes": 526731,
+          "allocationCount": 50,
+          "reallocatedBytes": 32,
+          "reallocationCount": 1
+        },
+        "itemCount": 8,
+        "mode": "leading-batch",
+        "order": "leading-batch-then-individual",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 7
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 2200,
+          "inputMaterializations": 8,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 18400,
+          "outputMaterializations": 8
+        },
+        "elapsedNanos": 67600,
+        "executionCount": 8,
+        "hostAllocations": {
+          "allocatedBytes": 277272,
+          "allocationCount": 233,
+          "reallocatedBytes": 256,
+          "reallocationCount": 8
+        },
+        "itemCount": 8,
+        "mode": "individual",
+        "order": "leading-batch-then-individual",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 7
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 2300,
+          "inputMaterializations": 8,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 16000,
+          "outputMaterializations": 8
+        },
+        "elapsedNanos": 64200,
+        "executionCount": 8,
+        "hostAllocations": {
+          "allocatedBytes": 277272,
+          "allocationCount": 233,
+          "reallocatedBytes": 256,
+          "reallocationCount": 8
+        },
+        "itemCount": 8,
+        "mode": "individual",
+        "order": "individual-then-leading-batch",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 8
+      },
+      {
+        "boundary": {
+          "deviceToHostCopyOperations": 0,
+          "hostToDeviceCopyOperations": 0,
+          "inputHostBytes": 131072,
+          "inputMaterializationNanos": 300,
+          "inputMaterializations": 1,
+          "outputHostBytes": 131072,
+          "outputMaterializationNanos": 55300,
+          "outputMaterializations": 1
+        },
+        "elapsedNanos": 235000,
+        "executionCount": 1,
+        "hostAllocations": {
+          "allocatedBytes": 526731,
+          "allocationCount": 50,
+          "reallocatedBytes": 32,
+          "reallocationCount": 1
+        },
+        "itemCount": 8,
+        "mode": "leading-batch",
+        "order": "individual-then-leading-batch",
+        "outputSha256": "5d8fa7101c46a39138cd4e3bb9b7591365d2c018c9c8080da8819a7a77727840",
+        "round": 8
+      }
+    ],
+    "schema": "a3s.power.tensor-batch-benchmark.v1",
+    "sha256": "c25a45cd4d3f03c82b02efae66a286026c5828a35bd415b262875e461d005431",
+    "summaries": [
+      {
+        "medianElapsedNanos": 67200,
+        "medianHostAllocatedBytes": 277272,
+        "medianHostAllocationCount": 233,
+        "medianHostReallocatedBytes": 256,
+        "medianHostReallocationCount": 8,
+        "medianInputMaterializationNanos": 2300,
+        "medianOutputMaterializationNanos": 17500,
+        "mode": "individual",
+        "sampleCount": 9
+      },
+      {
+        "medianElapsedNanos": 254500,
+        "medianHostAllocatedBytes": 526731,
+        "medianHostAllocationCount": 50,
+        "medianHostReallocatedBytes": 32,
+        "medianHostReallocationCount": 1,
+        "medianInputMaterializationNanos": 300,
+        "medianOutputMaterializationNanos": 58000,
+        "mode": "leading-batch",
+        "sampleCount": 9
+      }
+    ],
+    "system": {
+      "architecture": "x86_64",
+      "cpuModel": "Intel(R) Xeon(R) w5-2445",
+      "deviceClass": "Intel Xeon w5-2445 CPU",
+      "filesystemClass": "ntfs",
+      "logicalCpus": 20,
+      "os": "windows",
+      "ramBytes": 137071693824
+    },
+    "warmupRounds": 2
+  }
+}

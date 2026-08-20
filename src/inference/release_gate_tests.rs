@@ -11,6 +11,7 @@ use super::{
 };
 
 const POWER_COMMIT: &str = "1a9504e58fc2751e016efede2fc006615a0b8cc2";
+const COMPLETE_CAPTURE_COMMIT: &str = "6b7d6e5265b34c3e9e812c830ce22cc4a35940e5";
 
 struct Fixture {
     report: TensorBatchBenchmarkReport,
@@ -382,6 +383,37 @@ fn published_clean_revision_reports_replay_successfully() {
         assert_eq!(report.binding.power_commit, POWER_COMMIT);
         assert!(report.exact_output_parity);
     }
+}
+
+#[test]
+fn published_complete_cpu_cuda_contracts_replay_as_one_partial_policy() {
+    let captures = [
+        include_str!("../../docs/benchmarks/release-contract-windows-20260821/cpu.json"),
+        include_str!("../../docs/benchmarks/release-contract-windows-20260821/cuda.json"),
+    ]
+    .map(|source| serde_json::from_str::<ReleaseCapture>(source).unwrap());
+    for capture in &captures {
+        capture.verify().unwrap();
+        assert_eq!(
+            capture.tensor_batch.binding.power_commit,
+            COMPLETE_CAPTURE_COMMIT
+        );
+    }
+    assert_eq!(captures[0].platform().unwrap(), ReleasePlatform::Cpu);
+    assert_eq!(captures[1].platform().unwrap(), ReleasePlatform::Cuda);
+
+    let revision = ReleaseRevisionBinding::from_capture(&captures[0]).unwrap();
+    assert_eq!(
+        ReleaseRevisionBinding::from_capture(&captures[1]).unwrap(),
+        revision
+    );
+    let platform_bindings = captures
+        .iter()
+        .map(|capture| capture.platform_binding().unwrap())
+        .collect();
+    let policy = ReleaseEvidencePolicy::new(revision, platform_bindings).unwrap();
+    let bundle = ReleaseEvidenceBundle::build(policy, captures.into_iter().collect()).unwrap();
+    bundle.verify().unwrap();
 }
 
 #[test]

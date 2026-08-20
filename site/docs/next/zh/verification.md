@@ -85,6 +85,12 @@ model_hash "your-model" {
 
 严格策略拒绝模拟报告。CPU TEE 放置也不会自动让 GPU offload 具备机密性；GPU 路径需要经过验证的 `gpu-confidential` 声明。
 
+## 模型中立的运行时发布契约
+
+发布门禁与具体模型的质量评测相互独立。它把同一个 Power revision、精确权重和已审查图绑定到各平台自己的 shape profile 与 TEE 策略，并验证标量／批处理一致性、有界峰值内存、活动任务取消清理、队列超时、replica 恢复和显式精确回退。证据结构中没有 Qwen、GGUF、分词器、解码器或模型族分发字段。
+
+当前[干净 revision 的 CPU/CUDA 完整捕获](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/release-contract-windows-20260821/README.md)可回放为一个经过验证的两平台部分 bundle。在 Metal 与机密 GPU 捕获补齐前，严格的四平台 v1 策略仍不会通过。
+
 ## 生产阻断条件
 
 - 严格验证器未包含硬件验证能力；

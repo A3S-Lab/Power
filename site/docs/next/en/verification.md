@@ -95,6 +95,19 @@ model_hash "your-model" {
 Strict policy rejects simulated reports. CPU TEE placement also does not make
 GPU offload confidential; a GPU path needs verified `gpu-confidential` claims.
 
+## Model-neutral runtime release contracts
+
+The release gate is separate from model-specific quality evaluation. It binds
+one Power revision, exact weights, and one reviewed graph to platform-specific
+shape profiles and TEE policies, then verifies scalar/batch parity, bounded
+peak memory, active cancellation cleanup, queue expiry, replica recovery, and
+an explicit exact fallback. The schema contains no Qwen, GGUF, tokenizer,
+decoder, or model-family dispatch field.
+
+The current [clean-revision CPU/CUDA captures](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/release-contract-windows-20260821/README.md)
+replay as one verified two-platform partial bundle. Metal and confidential-GPU
+captures remain required before the strict four-platform v1 policy can pass.
+
 ## Production-blocking failures
 
 - Missing hardware-verification support in a strict verifier build.

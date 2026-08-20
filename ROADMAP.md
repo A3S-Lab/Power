@@ -126,10 +126,10 @@ deadline-drop, and recycle behavior.
 
 The model-neutral, fail-closed evidence schema, platform-specific profile/TEE
 bindings, strict four-platform policy, and isolated complete-contract collector
-are implemented. The 2026-08-21 Windows CPU/CUDA pre-captures cover only
-scalar/batch parity and cost; the unchecked publication items remain release
-blockers until complete runtime-contract, Metal, and supported
-confidential-GPU captures exist for one clean immutable release revision.
+are implemented. Clean-revision Windows CPU/CUDA captures now replay the full
+contract and form one verified two-platform partial bundle. The unchecked
+publication items remain release blockers until Metal and supported
+confidential-GPU captures exist for the same immutable release revision.
 
 - [x] Drive the real resident graph, cancellation lifecycle, bounded queue,
       replica pool, and explicit shape fallback from both a generic calibration
@@ -138,6 +138,9 @@ confidential-GPU captures exist for one clean immutable release revision.
 
 - [ ] Publish CPU, Metal, CUDA, and supported confidential-GPU captures from a
       clean immutable revision.
+- [x] Publish clean-revision CPU and CUDA complete-contract captures with raw
+      JSON, byte-stable policy input, exact artifact hashes, negative results,
+      and replay commands.
 - [ ] Prove scalar/batch numerical equivalence, bounded peak host/device memory,
       cancellation, queue expiry, replica recovery, and explicit fallback.
 - [ ] Bind benchmark artifacts to weights, graph declarations, runtime/device,

@@ -454,6 +454,7 @@ production certificate caching and failure policy.
 | [Storage Benchmark](docs/storage-benchmark.md) | Verified storage and residency measurements |
 | [Tensor Batch Cost Benchmark](docs/tensor-batch-benchmark.md) | Model-neutral allocation, host-boundary copy cost, parity, and named-hardware reproduction |
 | [Production Release Evidence Gate](docs/release-evidence-gate.md) | Platform-specific bindings, complete contract capture, verification, and trust-root boundary |
+| [Windows CPU/CUDA complete contract captures](docs/benchmarks/release-contract-windows-20260821/README.md) | Clean-revision peak memory, cancellation, queue expiry, replica recovery, fallback parity, raw JSON, and exact reproduction |
 | [Windows CPU/CUDA P5 pre-captures](docs/benchmarks/release-gate-windows-20260821/README.md) | Clean-revision raw samples, hashes, negative evidence, reproduction, and explicit remaining gaps |
 | [Roadmap](ROADMAP.md) | Acceptance gates and remaining work |
 | [Changelog](CHANGELOG.md) | Released behavior |

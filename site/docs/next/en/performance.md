@@ -10,6 +10,11 @@ its execution contract. The published Qwen3.8 captures therefore use the real
 streaming API, pin artifact and binary identities, verify deterministic output,
 and report quality and workload throughput beside steady decode.
 
+This page documents one backend/model/hardware integration, not the scope of
+the engine. Power's shared execution, admission, memory, cancellation, and
+evidence contracts are model-neutral and also serve vision, OCR, embedding,
+audio, multimodal, scientific, and caller-owned reviewed graphs.
+
 To verify the numbers directly, open [Reproduction](./reproduction): run the
 model-free one-command verifier first, then replay the full RTX 4090 protocol
 against the same input identities.
