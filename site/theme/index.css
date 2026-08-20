@@ -72,6 +72,11 @@ html .rp-nav {
   backdrop-filter: blur(18px) saturate(1.25);
 }
 
+html .rp-nav__left {
+  gap: 32px;
+  align-items: center;
+}
+
 .rp-nav__title__link {
   gap: 9px;
   letter-spacing: -0.025em;
@@ -184,7 +189,6 @@ html .rp-switch-appearance {
   justify-content: center;
 }
 
-.power-kicker,
 .power-section__header > p,
 .power-contract__copy > p:first-child,
 .power-cta > div > p {
@@ -194,19 +198,6 @@ html .rp-switch-appearance {
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.13em;
-}
-
-.power-kicker {
-  display: flex;
-  gap: 11px;
-  align-items: center;
-}
-
-.power-brand-mark {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px color-mix(in srgb, #2864e8 24%, transparent);
 }
 
 .power-hero__copy > h1 {

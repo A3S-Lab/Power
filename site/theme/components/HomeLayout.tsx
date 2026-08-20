@@ -5,7 +5,7 @@ import {
   withBase,
 } from "@rspress/core/runtime";
 
-import { CodeExecutionDemo } from "./CodeExecutionDemo";
+import { SpeculativeDecodingDemo } from "./SpeculativeDecodingDemo";
 import "./PerformanceProof.css";
 
 type Locale = "zh" | "en";
@@ -36,35 +36,35 @@ const benchmarkMetricValues = ["175.2089", "83.228", "76 / 66", "51.33%"];
 
 const homeCopy = {
   zh: {
-    kicker: "A3S 可验证推理运行时",
-    title: "运行模型。",
-    titleAccent: "证明边界。",
+    titleFull: "Rust 模型推理运行时。",
+    title: "Rust 模型推理",
+    titleAccent: "运行时。",
     summary:
-      "面向有界执行、规范化回执与验证方自主信任的模型中立 Rust 运行时，可嵌入，也兼容 OpenAI API。",
-    primaryAction: "从运行时开始",
-    evidenceAction: "查看实测证据",
+      "Power 统一管理模型制品、GPU 资源、请求准入和执行回执，可嵌入 Rust 进程，也可提供 OpenAI 兼容接口。",
+    primaryAction: "查看运行时架构",
+    evidenceAction: "查看性能数据",
     cargoLabel: "Cargo 依赖",
     facts: [
       "K7/S7 稳态解码 token/s",
       "K7/S7 请求全程 token/s",
       "100 题 × 3 轮完成请求",
     ],
-    principlesTitle: "当推理中的隐含假设成为显式契约，系统才值得信任。",
+    principlesTitle: "资源限制、执行身份和验收规则都写进接口。",
     principles: [
       {
-        title: "约束每一项资源",
-        body: "有限的内存、算力与队列容量，被转化为明确的准入、放置、微批处理与取消契约。",
+        title: "先做资源准入",
+        body: "请求进入执行前检查内存、算力和队列容量；取消与微批处理使用同一组限制。",
       },
       {
-        title: "绑定执行身份",
-        body: "模型字节、运行策略、设备路径、输入与输出，共同写入一份规范化回执。",
+        title: "记录本次执行",
+        body: "回执绑定模型字节、运行策略、设备路径、输入与输出，可由调用方独立校验。",
       },
       {
-        title: "把信任交给验证方",
-        body: "由客户端选择接受哪些度量、哈希、证据与回执字段，服务端无法降低标准。",
+        title: "由客户端验收",
+        body: "客户端定义允许的度量、哈希和证据字段，服务端不能降低验收门槛。",
       },
     ],
-    measuredTitle: "性能边界必须附带可复验回执，而不是脱离语境的数字。",
+    measuredTitle: "同一模型、同一输入、同一测试协议。",
     reproduce: "复现基准测试",
     benchmarkContext:
       "RTX 4090 · Qwen3.8-27B · Q6_K 衍生 TBQ4 + 全词表 MTP K7/S7 · 1 次预热 + 9 × 1,024 token",
@@ -78,30 +78,30 @@ const homeCopy = {
     current: "当前",
     note:
       "* 较早的稳态记录。175+ 是 Q6_K 衍生混合制品的稳态解码边界，不是原始 6-bit 模型的服务下限；质量值是固定任务代理指标，而非通用智力分数。",
-    surfacesTitle: "选择推理从哪里进入，但始终保留同一执行契约。",
+    surfacesTitle: "库、服务和制品安装器共用同一套运行时约束。",
     surfaces: [
       {
         label: "库",
-        title: "嵌入已审查的模型图",
-        body: "使用无监听器运行时共享设备、准入、放置、状态与证据；模型 crate 继续拥有语义。",
+        title: "嵌入模型运行时",
+        body: "在进程内复用 GPU、准入、放置、状态与回执；模型 crate 保留拓扑、分词和预处理。",
         meta: "embedded-inference",
       },
       {
         label: "服务",
         title: "暴露 OpenAI 兼容 API",
-        body: "通过显式 HTTP、RA-TLS 或 vsock 传输承载对话、补全、嵌入、模型生命周期、指标与证明。",
+        body: "通过 HTTP、RA-TLS 或 vsock 提供对话、补全、嵌入、模型生命周期、指标与证明接口。",
         meta: "server + backend",
       },
       {
         label: "制品安装器",
         title: "安装精确的制品包",
-        body: "流式写入私有暂存区，校验字节上限与 SHA-256 身份，再在跨进程锁下原子提交。",
+        body: "把制品流式写入私有暂存区，检查大小和 SHA-256，再在跨进程锁内原子提交。",
         meta: "artifact-provisioning",
       },
     ],
-    boundaryTitle: "Power 负责执行，模型 crate 负责语义。",
+    boundaryTitle: "Power 管执行，模型 crate 管模型逻辑。",
     boundaryBody:
-      "Power 不复制拓扑、分词、预处理或质量策略；它围绕已审查的模型代码，提供共享设备、资源、完整性、状态、隐私与证据机制。",
+      "Power 不接管拓扑、分词、预处理或质量策略。它只为模型代码提供共享设备、资源、完整性、状态、隐私与证据机制。",
     architectureAction: "阅读架构设计",
     trace: [
       ["准入", "约束队列与内存"],
@@ -109,19 +109,19 @@ const homeCopy = {
       ["提交", "绑定制品、策略与输入输出"],
       ["验证", "按客户端策略接受"],
     ],
-    ctaTitle: "优化执行路径，而不移动信任边界。",
-    ctaBody: "原生 MTP、完整回滚验证、可复现实验矩阵与诚实的适用边界。",
+    ctaTitle: "继续看 MTP 如何让一次目标模型前向验证多个 token。",
+    ctaBody: "文档逐步说明 proposal、快照、精确验证、回滚和提交。",
     speculationAction: "阅读推测解码",
     sourceAction: "查看源码",
   },
   en: {
-    kicker: "A3S VERIFIABLE INFERENCE RUNTIME",
-    title: "Run the model.",
-    titleAccent: "Prove the boundary.",
+    titleFull: "A Rust runtime for model inference.",
+    title: "A Rust runtime",
+    titleAccent: "for model inference.",
     summary:
-      "A model-neutral Rust runtime for bounded execution, canonical receipts, and verifier-owned trust, embedded or OpenAI-compatible.",
-    primaryAction: "Start with the runtime",
-    evidenceAction: "Inspect the evidence",
+      "Power manages model artifacts, GPU resources, admission, and receipts behind an embedded or OpenAI-compatible API.",
+    primaryAction: "Read runtime architecture",
+    evidenceAction: "View benchmark data",
     cargoLabel: "Cargo dependency",
     facts: [
       "K7/S7 steady-decode token/s",
@@ -129,23 +129,22 @@ const homeCopy = {
       "100 tasks × 3 runs completed",
     ],
     principlesTitle:
-      "Inference becomes trustworthy when its hidden assumptions become contracts.",
+      "Resource limits, execution identity, and acceptance rules are explicit in the interface.",
     principles: [
       {
-        title: "Bound every resource",
-        body: "Finite memory, compute, and queue capacity become explicit admission, placement, microbatch, and cancellation contracts.",
+        title: "Check resources first",
+        body: "Memory, compute, and queue capacity are checked before execution. Cancellation and microbatching use the same limits.",
       },
       {
-        title: "Bind execution identity",
-        body: "Artifact bytes, runtime policy, device path, input, and output are committed into one canonical receipt.",
+        title: "Record each execution",
+        body: "The receipt binds artifact bytes, runtime policy, device path, input, and output for independent verification.",
       },
       {
-        title: "Move trust to the verifier",
-        body: "The client selects accepted measurements, hashes, evidence, and receipt fields; the server cannot weaken them.",
+        title: "Let clients verify",
+        body: "Clients define accepted measurements, hashes, and evidence fields. The server cannot lower that threshold.",
       },
     ],
-    measuredTitle:
-      "A performance boundary with receipts, not a headline without context.",
+    measuredTitle: "The same model, input, and benchmark protocol.",
     reproduce: "Reproduce the benchmark",
     benchmarkContext:
       "RTX 4090 · Qwen3.8-27B · Q6_K-derived TBQ4 + full-vocabulary MTP K7/S7 · 1 warm-up + 9 × 1,024 tokens",
@@ -164,30 +163,31 @@ const homeCopy = {
     current: "CURRENT",
     note:
       "* Earlier steady capture. The 175+ result is a steady-decode boundary for a Q6_K-derived mixed artifact, not an untouched 6-bit service floor. Quality values are fixed-task proxies, not general intelligence scores.",
-    surfacesTitle: "Choose where inference enters. Keep the execution contract.",
+    surfacesTitle:
+      "Library, service, and provisioner paths use the same runtime constraints.",
     surfaces: [
       {
         label: "LIBRARY",
-        title: "Embed a reviewed model graph",
-        body: "Use the listener-free runtime for shared devices, admission, placement, state, and evidence while the model crate retains semantics.",
+        title: "Embed the model runtime",
+        body: "Reuse GPU access, admission, placement, state, and receipts in process. The model crate keeps topology, tokenization, and preprocessing.",
         meta: "embedded-inference",
       },
       {
         label: "SERVICE",
         title: "Expose an OpenAI-compatible API",
-        body: "Host chat, completions, embeddings, model lifecycle, metrics, and attestation over explicit HTTP, RA-TLS, or vsock transport.",
+        body: "Serve chat, completions, embeddings, model lifecycle, metrics, and attestation over HTTP, RA-TLS, or vsock.",
         meta: "server + backend",
       },
       {
         label: "PROVISIONER",
         title: "Install an exact artifact bundle",
-        body: "Stream into private staging, enforce byte limits and SHA-256 identity, then commit atomically under a cross-process lock.",
+        body: "Stream artifacts into private staging, check size and SHA-256, then commit atomically under a cross-process lock.",
         meta: "artifact-provisioning",
       },
     ],
-    boundaryTitle: "Power owns execution. Model crates own meaning.",
+    boundaryTitle: "Power handles execution. Model crates handle model logic.",
     boundaryBody:
-      "Power does not duplicate topology, tokenization, preprocessing, or quality policy. It supplies the shared device, resource, integrity, state, privacy, and evidence mechanisms around reviewed model code.",
+      "Power does not take over topology, tokenization, preprocessing, or quality policy. It supplies shared device, resource, integrity, state, privacy, and evidence mechanisms.",
     architectureAction: "Read the architecture",
     trace: [
       ["ADMIT", "Bound queue and memory"],
@@ -195,9 +195,10 @@ const homeCopy = {
       ["COMMIT", "Bind artifacts, policy, and I/O"],
       ["VERIFY", "Accept against client policy"],
     ],
-    ctaTitle: "Optimize the path without moving the trust boundary.",
+    ctaTitle:
+      "See how MTP verifies several tokens in one target-model pass.",
     ctaBody:
-      "Native MTP, rollback-complete verification, reproducible matrices, and honest limits.",
+      "The design covers proposals, snapshots, exact verification, rollback, and commit.",
     speculationAction: "Read speculative decoding",
     sourceAction: "View source",
   },
@@ -239,18 +240,7 @@ export function HomeLayout() {
     <main className="power-home">
       <section className="power-hero" aria-labelledby="power-title">
         <div className="power-hero__copy">
-          <p className="power-kicker">
-            <img
-              alt=""
-              aria-hidden="true"
-              className="power-brand-mark"
-              height="30"
-              src={withBase("/a3s-os-logo.png")}
-              width="30"
-            />
-            {copy.kicker}
-          </p>
-          <h1 id="power-title">
+          <h1 aria-label={copy.titleFull} id="power-title">
             {copy.title}
             <span>{copy.titleAccent}</span>
           </h1>
@@ -275,7 +265,7 @@ export function HomeLayout() {
         </div>
 
         <div className="power-hero__specimen">
-          <CodeExecutionDemo locale={locale} />
+          <SpeculativeDecodingDemo locale={locale} />
         </div>
       </section>
 

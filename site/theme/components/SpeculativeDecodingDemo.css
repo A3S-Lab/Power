@@ -1,0 +1,730 @@
+.power-hero__specimen {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  padding: 44px 38px 38px;
+  background:
+    radial-gradient(
+      circle at 52% 45%,
+      color-mix(in srgb, var(--power-blue) 11%, transparent),
+      transparent 50%
+    ),
+    var(--power-panel);
+  flex-direction: column;
+  justify-content: center;
+}
+
+.power-mtp-demo {
+  width: 100%;
+  min-width: 0;
+}
+
+.power-mtp-demo__label {
+  display: flex;
+  margin-bottom: 18px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.power-mtp-demo__label > div {
+  display: grid;
+  gap: 3px;
+}
+
+.power-mtp-demo__label strong {
+  color: var(--power-ink);
+  font-size: 13px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+}
+
+.power-mtp-demo__label span {
+  color: var(--power-muted);
+  font-family: var(--power-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.power-mtp-demo__label button {
+  min-height: 32px;
+  padding: 0 10px;
+  flex: 0 0 auto;
+  border: 1px solid var(--power-line);
+  border-radius: 8px;
+  background: var(--power-paper);
+  color: var(--power-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 580;
+  transition:
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.power-mtp-demo__label button:hover {
+  border-color: var(--power-line-strong);
+  color: var(--power-ink);
+  transform: translateY(-1px);
+}
+
+.power-mtp-demo__label button:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.power-mtp-demo__label button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--power-blue) 38%, transparent);
+  outline-offset: 3px;
+}
+
+.power-mtp-frame {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--power-line-strong);
+  border-radius: 18px;
+  background: var(--power-paper);
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--power-ink) 17%, transparent);
+  contain: paint;
+}
+
+.power-mtp-frame__bar {
+  display: flex;
+  min-height: 42px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--power-line);
+  background: var(--power-panel);
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.power-mtp-frame__bar > span {
+  color: var(--power-ink);
+  font-size: 11px;
+  font-weight: 640;
+}
+
+.power-mtp-frame__bar > code {
+  color: var(--power-muted);
+  font-family: var(--power-mono);
+  font-size: 9px;
+}
+
+.power-mtp-phases {
+  position: relative;
+  display: grid;
+  margin: 0;
+  padding: 13px 16px 12px;
+  border-bottom: 1px solid var(--power-line);
+  background: color-mix(in srgb, var(--power-panel) 56%, var(--power-paper));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  list-style: none;
+}
+
+.power-mtp-phases::before {
+  position: absolute;
+  top: 18px;
+  right: calc(10% + 16px);
+  left: calc(10% + 16px);
+  height: 1px;
+  background: var(--power-line-strong);
+  content: "";
+}
+
+.power-mtp-phases > li {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  color: var(--power-faint);
+}
+
+.power-mtp-phases > li > span {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--power-line-strong);
+  border-radius: 50%;
+  background: var(--power-paper);
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.power-mtp-phases > li > small {
+  font-family: var(--power-mono);
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.power-mtp-phases > li.is-complete {
+  color: var(--power-green-deep);
+}
+
+.power-mtp-phases > li.is-complete > span {
+  border-color: var(--power-green);
+  background: var(--power-green);
+}
+
+.power-mtp-phases > li.is-current {
+  color: var(--power-blue-deep);
+}
+
+.power-mtp-phases > li.is-current > span {
+  border-color: var(--power-blue);
+  background: var(--power-blue);
+  transform: scale(1.24);
+}
+
+.power-mtp-frame__body {
+  min-width: 0;
+  padding: 18px 16px 16px;
+}
+
+.power-mtp-state {
+  display: grid;
+  min-height: 77px;
+  align-content: start;
+  animation: power-mtp-state-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.power-mtp-state > small {
+  margin-bottom: 4px;
+  color: var(--power-blue-deep);
+  font-family: var(--power-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.power-mtp-state > strong {
+  color: var(--power-ink);
+  font-size: 14px;
+  font-weight: 680;
+  letter-spacing: -0.015em;
+}
+
+.power-mtp-state > p {
+  max-width: 66ch;
+  margin: 5px 0 0;
+  color: var(--power-muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.power-mtp-lanes {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.power-mtp-lane {
+  display: grid;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--power-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--power-panel) 44%, var(--power-paper));
+  grid-template-columns: 104px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.power-mtp-lane__label {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.power-mtp-lane__label > strong {
+  color: var(--power-ink);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.power-mtp-lane__label > small {
+  color: var(--power-faint);
+  font-family: var(--power-mono);
+  font-size: 8px;
+  line-height: 1.35;
+}
+
+.power-mtp-lane > ol {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  grid-template-columns: repeat(7, minmax(44px, 1fr));
+  gap: 5px;
+  list-style: none;
+}
+
+.power-mtp-token {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 48px;
+  padding: 5px 3px;
+  overflow: hidden;
+  border: 1px solid var(--power-line-strong);
+  border-radius: 8px;
+  background: var(--power-paper);
+  align-content: center;
+  justify-items: center;
+  gap: 1px;
+  color: var(--power-muted);
+}
+
+.power-mtp-token > span {
+  font-family: var(--power-mono);
+  font-size: 9px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.power-mtp-token > small {
+  color: var(--power-faint);
+  font-family: var(--power-mono);
+  font-size: 8px;
+}
+
+.power-mtp-token > em {
+  display: none;
+  font-size: 7px;
+  font-style: normal;
+  line-height: 1;
+}
+
+.power-mtp-lane--proposal .power-mtp-token {
+  opacity: 0.38;
+}
+
+.is-phase-draft .power-mtp-lane--proposal .power-mtp-token,
+.is-phase-verify .power-mtp-lane--proposal .power-mtp-token,
+.is-phase-rollback .power-mtp-lane--proposal .power-mtp-token,
+.is-phase-commit .power-mtp-lane--proposal .power-mtp-token {
+  opacity: 1;
+}
+
+.is-phase-draft .power-mtp-lane--proposal .power-mtp-token {
+  animation: power-mtp-proposal-in 460ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.is-phase-draft .power-mtp-lane--proposal .power-mtp-token:nth-child(2) {
+  animation-delay: 70ms;
+}
+
+.is-phase-draft .power-mtp-lane--proposal .power-mtp-token:nth-child(3) {
+  animation-delay: 140ms;
+}
+
+.is-phase-draft .power-mtp-lane--proposal .power-mtp-token:nth-child(4) {
+  animation-delay: 210ms;
+}
+
+.is-phase-draft .power-mtp-lane--proposal .power-mtp-token:nth-child(5) {
+  animation-delay: 280ms;
+}
+
+.is-phase-draft .power-mtp-lane--proposal .power-mtp-token:nth-child(6) {
+  animation-delay: 350ms;
+}
+
+.is-phase-draft .power-mtp-lane--proposal .power-mtp-token:nth-child(7) {
+  animation-delay: 420ms;
+}
+
+.power-mtp-lane--target .power-mtp-token,
+.power-mtp-lane--output .power-mtp-token {
+  opacity: 0.2;
+}
+
+.is-phase-verify .power-mtp-lane--target .power-mtp-token,
+.is-phase-rollback .power-mtp-lane--target .power-mtp-token,
+.is-phase-commit .power-mtp-lane--target .power-mtp-token {
+  opacity: 1;
+}
+
+.is-phase-verify .power-mtp-lane--target .power-mtp-token {
+  animation: power-mtp-verify-in 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.is-phase-verify .power-mtp-lane--target .power-mtp-token:nth-child(2) {
+  animation-delay: 65ms;
+}
+
+.is-phase-verify .power-mtp-lane--target .power-mtp-token:nth-child(3) {
+  animation-delay: 130ms;
+}
+
+.is-phase-verify .power-mtp-lane--target .power-mtp-token:nth-child(4) {
+  animation-delay: 195ms;
+}
+
+.is-phase-verify .power-mtp-lane--target .power-mtp-token:nth-child(5) {
+  animation-delay: 260ms;
+}
+
+.is-phase-verify .power-mtp-lane--target .power-mtp-token:nth-child(6) {
+  animation-delay: 325ms;
+}
+
+.is-phase-verify .power-mtp-lane--target .power-mtp-token:nth-child(7) {
+  animation-delay: 390ms;
+}
+
+.is-phase-verify .power-mtp-lane--target .is-accepted,
+.is-phase-rollback .power-mtp-lane--target .is-accepted,
+.is-phase-commit .power-mtp-lane--target .is-accepted,
+.is-phase-commit .power-mtp-lane--output .is-accepted {
+  border-color: color-mix(in srgb, var(--power-green) 58%, var(--power-line));
+  background: color-mix(in srgb, var(--power-green) 9%, var(--power-paper));
+  color: var(--power-green-deep);
+}
+
+.is-phase-verify .power-mtp-lane--target .is-accepted > em,
+.is-phase-rollback .power-mtp-lane--target .is-accepted > em,
+.is-phase-commit .power-mtp-lane--target .is-accepted > em,
+.is-phase-commit .power-mtp-lane--output .power-mtp-token > em {
+  display: block;
+}
+
+.is-phase-verify .power-mtp-lane--target .is-correction,
+.is-phase-rollback .power-mtp-lane--target .is-correction,
+.is-phase-commit .power-mtp-lane--target .is-correction,
+.is-phase-commit .power-mtp-lane--output .is-correction {
+  border-color: color-mix(in srgb, var(--power-blue) 62%, var(--power-line));
+  background: color-mix(in srgb, var(--power-blue) 9%, var(--power-paper));
+  color: var(--power-blue-deep);
+}
+
+.is-phase-verify .power-mtp-lane--target .is-correction > em,
+.is-phase-rollback .power-mtp-lane--target .is-correction > em,
+.is-phase-commit .power-mtp-lane--target .is-correction > em {
+  display: block;
+}
+
+.is-phase-verify .power-mtp-lane--target .is-skipped,
+.is-phase-rollback .power-mtp-lane--target .is-skipped,
+.is-phase-commit .power-mtp-lane--target .is-skipped {
+  border-style: dashed;
+  color: var(--power-faint);
+  opacity: 0.48;
+}
+
+.is-phase-verify .power-mtp-lane--target .is-skipped > em,
+.is-phase-rollback .power-mtp-lane--target .is-skipped > em,
+.is-phase-commit .power-mtp-lane--target .is-skipped > em {
+  display: block;
+}
+
+.is-phase-rollback .power-mtp-lane--proposal .is-rejected,
+.is-phase-commit .power-mtp-lane--proposal .is-rejected {
+  animation: power-mtp-rollback 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  border-style: dashed;
+  opacity: 0.42;
+}
+
+.is-phase-rollback .power-mtp-lane--proposal .is-rejected::after,
+.is-phase-commit .power-mtp-lane--proposal .is-rejected::after {
+  position: absolute;
+  width: 140%;
+  height: 1px;
+  background: var(--power-faint);
+  content: "";
+  transform: rotate(-24deg);
+}
+
+.is-phase-commit .power-mtp-lane--output .power-mtp-token {
+  opacity: 1;
+  animation: power-mtp-commit-in 470ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.is-phase-commit .power-mtp-lane--output .power-mtp-token:nth-child(2) {
+  animation-delay: 70ms;
+}
+
+.is-phase-commit .power-mtp-lane--output .power-mtp-token:nth-child(3) {
+  animation-delay: 140ms;
+}
+
+.is-phase-commit .power-mtp-lane--output .power-mtp-token:nth-child(4) {
+  animation-delay: 210ms;
+}
+
+.is-phase-commit .power-mtp-lane--output .power-mtp-token:nth-child(5) {
+  animation-delay: 280ms;
+}
+
+.is-phase-commit .power-mtp-lane--output .power-mtp-token:nth-child(6) {
+  animation-delay: 350ms;
+}
+
+.power-mtp-snapshots {
+  display: grid;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--power-line);
+  border-radius: 12px;
+  background: var(--power-paper);
+  grid-template-columns: 104px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.power-mtp-snapshots > div {
+  display: grid;
+  gap: 3px;
+}
+
+.power-mtp-snapshots strong {
+  color: var(--power-ink);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.power-mtp-snapshots small {
+  color: var(--power-faint);
+  font-family: var(--power-mono);
+  font-size: 8px;
+}
+
+.power-mtp-snapshots > ol {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+  list-style: none;
+}
+
+.power-mtp-snapshots li {
+  display: grid;
+  min-height: 24px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--power-blue) 40%, var(--power-line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--power-blue) 7%, var(--power-paper));
+  color: var(--power-blue-deep);
+  font-family: var(--power-mono);
+  font-size: 8px;
+  font-weight: 650;
+  transition:
+    opacity 200ms ease,
+    transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.is-phase-rollback .power-mtp-snapshots .is-discarded,
+.is-phase-commit .power-mtp-snapshots .is-discarded {
+  text-decoration: line-through;
+  opacity: 0.34;
+  transform: translateX(-3px);
+}
+
+.power-mtp-frame > footer {
+  display: flex;
+  min-height: 48px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--power-line);
+  background: var(--power-panel);
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.power-mtp-frame > footer > strong {
+  color: var(--power-muted);
+  font-size: 9px;
+  font-weight: 590;
+  line-height: 1.45;
+}
+
+.power-mtp-frame > footer > small {
+  flex: 0 0 auto;
+  color: var(--power-faint);
+  font-family: var(--power-mono);
+  font-size: 8px;
+}
+
+@keyframes power-mtp-state-in {
+  from {
+    clip-path: inset(0 16% 0 0);
+    filter: blur(2px);
+    opacity: 0.58;
+  }
+
+  to {
+    clip-path: inset(0 0 0 0);
+    filter: blur(0);
+    opacity: 1;
+  }
+}
+
+@keyframes power-mtp-proposal-in {
+  from {
+    clip-path: inset(0 100% 0 0);
+    filter: blur(3px);
+    opacity: 0.3;
+  }
+
+  to {
+    clip-path: inset(0 0 0 0);
+    filter: blur(0);
+    opacity: 1;
+  }
+}
+
+@keyframes power-mtp-verify-in {
+  from {
+    filter: blur(3px);
+    opacity: 0.22;
+    transform: translateY(3px);
+  }
+
+  to {
+    filter: blur(0);
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes power-mtp-rollback {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  to {
+    opacity: 0.42;
+    transform: translateX(-4px);
+  }
+}
+
+@keyframes power-mtp-commit-in {
+  from {
+    clip-path: inset(0 100% 0 0);
+    filter: blur(3px);
+    opacity: 0.2;
+  }
+
+  to {
+    clip-path: inset(0 0 0 0);
+    filter: blur(0);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 1180px) {
+  .power-hero__specimen {
+    padding: 56px 24px 48px;
+  }
+
+  .power-mtp-lane {
+    grid-template-columns: 94px minmax(0, 1fr);
+  }
+
+  .power-mtp-snapshots {
+    grid-template-columns: 94px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .power-hero__specimen {
+    min-height: auto;
+    padding: 20px 24px 64px;
+  }
+}
+
+@media (max-width: 640px) {
+  .power-hero__specimen {
+    min-height: auto;
+    padding: 28px 0 52px;
+  }
+
+  .power-mtp-demo__label {
+    padding-inline: 2px;
+  }
+
+  .power-mtp-frame {
+    border-radius: 14px;
+  }
+
+  .power-mtp-phases {
+    padding-inline: 8px;
+  }
+
+  .power-mtp-phases::before {
+    right: calc(10% + 8px);
+    left: calc(10% + 8px);
+  }
+
+  .power-mtp-phases > li > small {
+    font-size: 7px;
+    letter-spacing: 0;
+  }
+
+  .power-mtp-frame__body {
+    padding: 14px 12px 12px;
+  }
+
+  .power-mtp-state {
+    min-height: 88px;
+  }
+
+  .power-mtp-lanes {
+    overflow-x: auto;
+    scrollbar-color: var(--power-line-strong) transparent;
+    scrollbar-width: thin;
+  }
+
+  .power-mtp-lane {
+    display: block;
+    min-width: 450px;
+  }
+
+  .power-mtp-lane__label {
+    display: flex;
+    margin-bottom: 7px;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .power-mtp-token {
+    min-height: 45px;
+  }
+
+  .power-mtp-snapshots {
+    grid-template-columns: 1fr;
+  }
+
+  .power-mtp-snapshots > div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .power-mtp-frame > footer {
+    display: grid;
+    gap: 3px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .power-mtp-demo__label button,
+  .power-mtp-phases > li > span,
+  .power-mtp-snapshots li {
+    transition: none;
+  }
+
+  .power-mtp-state,
+  .power-mtp-token {
+    animation: none !important;
+  }
+}
