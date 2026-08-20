@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added model-neutral, device-resident chaining for adjacent reviewed static
+  graphs. `ResidentGraphTensor` is non-cloneable, retains the exact request
+  permit, enforces F32/fixed-or-symbolic-shape/device identity, and consumes a
+  shared runtime byte reservation. Final materialization performs one owned
+  copy and returns canonical initial/final tensor digests plus boundary
+  measurements; explicit owned fallback preserves the intermediate digest
+  without an implicit cross-runtime copy.
 - Added policy-bounded, lazily initialized exclusive session replicas for any
   model-owned backend state. Replicas for one exact model identity remain
   independently mutable while sharing one resolved runtime, physical-device

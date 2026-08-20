@@ -89,7 +89,7 @@ pub struct GraphExecutionBoundaryMeasurement {
 }
 
 impl GraphExecutionBoundaryMeasurement {
-    pub(super) fn checked_add(self, other: Self) -> Result<Self> {
+    pub(crate) fn checked_add(self, other: Self) -> Result<Self> {
         Ok(Self {
             input_materializations: add(
                 self.input_materializations,
@@ -137,7 +137,7 @@ impl GraphExecutionBoundaryMeasurement {
 
 fn add(left: u64, right: u64, label: &str) -> Result<u64> {
     left.checked_add(right).ok_or_else(|| {
-        PowerError::InferenceFailed(format!("tensor batch benchmark {label} overflowed"))
+        PowerError::InferenceFailed(format!("graph execution boundary {label} overflowed"))
     })
 }
 

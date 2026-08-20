@@ -25,13 +25,17 @@ device/model session pool with declared resident-byte bounds, a shared physical
 device gate, policy-bounded exclusive mutable session replicas with worst-case
 residency admission, safe-boundary health retirement with lazy reconstruction,
 monotonic queue deadlines with aggregate expiry evidence, deterministic
-memory-aware microbatch plans with live-pressure revalidation, and digest-only
-receipt evidence. Language,
+memory-aware microbatch plans with live-pressure revalidation, same-request
+device-resident reviewed-graph chains with aggregate handle-byte admission, and
+digest-only receipt evidence. Language,
 vision, OCR, embedding, and multimodal crates use the same runtime contracts.
 OCR stage semantics, image
 pre/postprocessing, document target identity, cross-page structure, and retry
 policy remain in their owning crates. Ready pool entries intentionally have no
 implicit eviction; the owning service controls pool lifetime.
+Resident graph handles contain no family dispatch or model topology: they
+validate only reviewed F32 shape contracts, runtime/device/permit identity,
+aggregate bytes, cancellation, and canonical initial/final tensor digests.
 
 ### 2026 Attestation Soundness Reopen
 

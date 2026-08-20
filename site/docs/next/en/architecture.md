@@ -12,7 +12,7 @@ verified. It does not treat a model name as an execution contract.
 
 | Constraint | Required contract | Runtime mechanism |
 | --- | --- | --- |
-| Memory, compute, and queue capacity are finite. | Every request needs explicit limits and cancellation. | Bounded admission, deterministic microbatching, placement plans, and session pools. |
+| Memory, compute, queue, and transfer capacity are finite. | Every request needs explicit limits and cancellation; adjacent graph calls should not require an avoidable host round trip. | Bounded admission, deterministic microbatching, aggregate resident-tensor budgets, placement plans, and session pools. |
 | A filename or model alias does not identify executed bytes. | Artifact identity must survive storage, mirrors, and device placement. | SHA-256 descriptors, signed identities, verified mirrors, and residency evidence. |
 | A response alone does not reveal the path that produced it. | Runtime policy, device path, input, and output must be committed together. | Canonical execution receipts and accelerator evidence. |
 | The service cannot be trusted to approve its own claims. | Acceptance policy belongs outside the execution boundary. | Nonce-bound TEE evidence and an independent verifier. |
@@ -44,7 +44,7 @@ from executing it.
 
 | Power owns | Model-owning crates own |
 | --- | --- |
-| Typed CPU, CUDA, and Metal devices; bounded graph execution | Architecture, topology, layers, kernels, and arithmetic |
+| Typed CPU, CUDA, and Metal devices; bounded graph execution and opaque resident-tensor boundaries | Architecture, topology, layers, kernels, and arithmetic |
 | Admission, session pools, microbatching, cancellation, and limits | Tokenizer, preprocessing, postprocessing, and generation policy |
 | Artifact identity, replicas, mirrors, placement, and residency | Revision pins, conversion, tensor contracts, and quality gates |
 | TEE privacy, attestation binding, sealed state, and receipts | KV/recurrent layout and semantic state |
@@ -89,6 +89,20 @@ health check rejects mutable state. Power replaces that anonymous generation
 before returning the slot and reconstructs it lazily; failed or cancelled
 reconstruction remains retryable and cannot disturb healthy peers. Telemetry
 contains only current pending-reconstruction and cumulative lifecycle counts.
+
+### Device-resident reviewed graph chains
+
+Adjacent reviewed graphs can pass an opaque `ResidentGraphTensor` without an
+intermediate owned host copy. The non-cloneable handle retains the exact request
+permit and a shared runtime byte reservation. The next graph must use the same
+runtime, logical device, permit, F32 dtype, and a compatible reviewed
+fixed/symbolic shape. Errors, cancellation, and drops release the reservation.
+
+Power hashes the initial owned input and the one final materialized output. It
+does not invent an intermediate digest or silently copy across runtimes. This is
+a generic graph boundary, not a language-model engine: model crates still own
+architecture, quantization, attention, tokenization, decoding, image geometry,
+and the choice of graphs to compose.
 
 ### Verified weights
 
@@ -142,5 +156,6 @@ prefetch hints, heterogeneous meshes, sealed state, and tuning evidence. Read
 the [canonical architecture document](https://github.com/A3S-Lab/Power/blob/main/docs/embedded-inference-architecture.md)
 for the complete APIs, invariants, and validation gates. The
 [shape-profile contract](https://github.com/A3S-Lab/Power/blob/main/docs/shape-profiles.md)
-and [session-replica contract](https://github.com/A3S-Lab/Power/blob/main/docs/session-replicas.md)
+[session-replica contract](https://github.com/A3S-Lab/Power/blob/main/docs/session-replicas.md),
+and [resident-graph contract](https://github.com/A3S-Lab/Power/blob/main/docs/device-resident-graphs.md)
 document their model-neutral ownership boundaries and reproduction commands.

@@ -119,7 +119,7 @@ pub use residency::{
     StagedWeightGroupRequest, WeightHierarchy, WeightKey, WeightRequest, WeightTier,
 };
 pub use routing::{ExpertAssignment, ExpertKey, RoutedExpert, RoutedExpertBatch};
-pub use runtime::{EmbeddedRuntime, ExecutionPermit};
+pub use runtime::{EmbeddedRuntime, ExecutionPermit, ResidentTensorSnapshot};
 pub use sealed_state::{
     OpenedSealedState, RecoveredSealedState, SealedStateBinding, SealedStateEnvelope,
     SealedStateExportScope, SealedStateKey, SealedStateRecoverySource, SealedStateRollbackPolicy,

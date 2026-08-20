@@ -10,6 +10,10 @@ use super::super::{InferenceLimits, TensorDescriptor, WeightStore};
 const GRAPH_SCHEMA_VERSION: u32 = 1;
 const MAX_NODE_ATTRIBUTES: usize = 32;
 
+mod shape;
+
+pub(super) use shape::GraphShapeBindings;
+
 /// Model-owned identity expected for a reviewed static graph.
 ///
 /// Power validates this identity but does not define model families, graph
@@ -124,7 +128,6 @@ struct GraphSource {
 #[serde(deny_unknown_fields)]
 pub(super) struct GraphTensor {
     pub(super) name: String,
-    #[allow(dead_code)]
     shape: Vec<serde_json::Value>,
 }
 
@@ -210,6 +213,27 @@ impl GraphPlan {
         }
     }
 
+    pub(super) fn validate_input_shape(
+        &self,
+        shape: &[usize],
+        limits: &InferenceLimits,
+    ) -> Result<GraphShapeBindings> {
+        limits.checked_elements(shape, "static graph input")?;
+        let mut bindings = GraphShapeBindings::new();
+        self.inputs[0].bind_shape(shape, &mut bindings, false)?;
+        Ok(bindings)
+    }
+
+    pub(super) fn validate_output_shape(
+        &self,
+        shape: &[usize],
+        bindings: &mut GraphShapeBindings,
+        limits: &InferenceLimits,
+    ) -> Result<()> {
+        limits.checked_elements(shape, "static graph output")?;
+        self.outputs[0].bind_shape(shape, bindings, true)
+    }
+
     fn validate(
         &self,
         expected: &GraphIdentity,
@@ -250,8 +274,8 @@ impl GraphPlan {
             )));
         }
         let mut available = BTreeSet::new();
-        validate_name(&self.inputs[0].name, limits)?;
-        validate_name(&self.outputs[0].name, limits)?;
+        self.inputs[0].validate(limits)?;
+        self.outputs[0].validate(limits)?;
         available.insert(self.inputs[0].name.as_str());
         for initializer in &self.initializers {
             validate_name(&initializer.name, limits)?;
@@ -410,5 +434,48 @@ mod tests {
         }
         let uppercase_source = GraphIdentity::new("model", "encoder", "onnx", "A".repeat(64), 17);
         assert_eq!(uppercase_source.binding_sha256().unwrap(), expected);
+    }
+
+    #[test]
+    fn graph_tensor_shape_contract_accepts_fixed_symbolic_and_dynamic_dimensions() {
+        let limits = InferenceLimits::default();
+        let tensor = GraphTensor {
+            name: "input".to_string(),
+            shape: vec![
+                serde_json::json!("batch"),
+                serde_json::Value::Null,
+                serde_json::json!(4),
+            ],
+        };
+
+        tensor.validate(&limits).unwrap();
+        let mut bindings = GraphShapeBindings::new();
+        tensor.bind_shape(&[2, 7, 4], &mut bindings, false).unwrap();
+        assert_eq!(bindings.get("batch"), Some(&2));
+    }
+
+    #[test]
+    fn graph_tensor_shape_contract_rejects_invalid_and_mismatched_dimensions() {
+        let limits = InferenceLimits::default();
+        for shape in [
+            vec![],
+            vec![serde_json::json!(0)],
+            vec![serde_json::json!(-1)],
+            vec![serde_json::json!(true)],
+            vec![serde_json::json!("")],
+        ] {
+            let tensor = GraphTensor {
+                name: "input".to_string(),
+                shape,
+            };
+            assert!(tensor.validate(&limits).is_err());
+        }
+
+        let tensor = GraphTensor {
+            name: "input".to_string(),
+            shape: vec![serde_json::json!("side"), serde_json::json!("side")],
+        };
+        let mut bindings = GraphShapeBindings::new();
+        assert!(tensor.bind_shape(&[2, 3], &mut bindings, false).is_err());
     }
 }

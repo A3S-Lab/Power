@@ -114,12 +114,12 @@ deadline-drop, and recycle behavior.
 
 ### P4 — Device-resident batch boundaries
 
-- [ ] Add bounded device-resident input/output handles for adjacent reviewed
+- [x] Add bounded device-resident input/output handles for adjacent reviewed
       graph calls, with exact dtype/shape/device validation and owned fallback
       copies.
-- [ ] Preserve cancellation checks and receipt digests across fused or retained
+- [x] Preserve cancellation checks and receipt digests across fused or retained
       buffers.
-- [ ] Expose only generic reviewed operators. OCR resize/normalize, ROI warp,
+- [x] Expose only generic reviewed operators. OCR resize/normalize, ROI warp,
       DB postprocessing, and CTC decoding remain in A3S OCR.
 
 ### P5 — Confidential performance release gate

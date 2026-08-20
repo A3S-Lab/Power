@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use candle_core::{DType, Device, Tensor};
 use tokio_util::sync::CancellationToken;
@@ -16,13 +16,20 @@ use super::plan::{GraphNode, GraphOp, GraphPlan};
 use super::value::GraphValue;
 
 mod biased_activation;
+mod boundary;
 mod depthwise;
 mod gated_hard_sigmoid;
 mod gelu_erf;
 mod layer_norm_affine;
 mod liveness;
+mod resident;
 mod support;
 
+pub use resident::{
+    GraphTensorDType, GraphTensorDescriptor, ResidentGraphMaterialization, ResidentGraphTensor,
+};
+
+use boundary::{duration_nanos, tensor_bytes};
 use support::{
     axis_index, convolution_pads, execution_error, nonnegative_usize, normalized_axes, pad_spatial,
     pair, pool_pads, positive_usize, quad, resolve_reshape, slice_bounds, slice_tensor,
@@ -137,11 +144,19 @@ impl GraphExecutor {
             ));
         }
         input.validate(self.runtime.limits())?;
+        let mut shape_bindings = self
+            .plan
+            .validate_input_shape(&input.shape, self.runtime.limits())?;
         let input_host_bytes = tensor_bytes(input.values.len(), "input")?;
         let input_started = Instant::now();
         let input = input.into_candle(self.runtime.device().tensor_device())?;
         let input_materialization_nanos = duration_nanos(input_started.elapsed());
         let output = self.run_tensor(input, cancellation)?;
+        self.plan.validate_output_shape(
+            output.dims(),
+            &mut shape_bindings,
+            self.runtime.limits(),
+        )?;
         let projected = projection(&output)?;
         if cancellation.is_cancelled() {
             return Err(PowerError::InferenceFailed(
@@ -161,6 +176,11 @@ impl GraphExecutor {
         let output_started = Instant::now();
         let output = TensorOutput::from_candle(&projected, self.runtime.limits())?;
         let output_materialization_nanos = duration_nanos(output_started.elapsed());
+        if cancellation.is_cancelled() {
+            return Err(PowerError::InferenceFailed(
+                "static graph execution was cancelled".to_string(),
+            ));
+        }
         let device_copy_operations =
             u64::from(self.runtime.device().kind() != RuntimeDeviceKind::Cpu);
         Ok((
@@ -365,25 +385,6 @@ impl GraphExecutor {
             .tensor("graph output")
             .cloned()
     }
-}
-
-fn tensor_bytes(elements: usize, label: &str) -> Result<u64> {
-    let bytes = elements
-        .checked_mul(std::mem::size_of::<f32>())
-        .ok_or_else(|| {
-            PowerError::InferenceFailed(format!(
-                "static graph {label} tensor byte count overflowed"
-            ))
-        })?;
-    u64::try_from(bytes).map_err(|_| {
-        PowerError::InferenceFailed(format!(
-            "static graph {label} tensor byte count exceeds u64"
-        ))
-    })
-}
-
-fn duration_nanos(duration: Duration) -> u64 {
-    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn commit_node_output(

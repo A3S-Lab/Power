@@ -8,8 +8,13 @@ mod executor;
 mod plan;
 mod value;
 
-pub use executor::GraphExecutor;
+pub use executor::{
+    GraphExecutor, GraphTensorDType, GraphTensorDescriptor, ResidentGraphMaterialization,
+    ResidentGraphTensor,
+};
 pub use plan::{GraphIdentity, GraphPlan};
 
+#[cfg(test)]
+mod resident_tests;
 #[cfg(test)]
 mod tests;

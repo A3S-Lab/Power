@@ -6,6 +6,11 @@ use tokio_util::sync::CancellationToken;
 use crate::admission::{AdmissionController, AdmissionError, AdmissionPermit, AdmissionSnapshot};
 use crate::error::{PowerError, Result};
 
+mod resident_budget;
+
+pub use resident_budget::ResidentTensorSnapshot;
+pub(crate) use resident_budget::{ResidentTensorBudget, ResidentTensorReservation};
+
 #[cfg(test)]
 use super::RuntimeDeviceKind;
 use super::{
@@ -29,6 +34,7 @@ struct RuntimeInner {
     limits: InferenceLimits,
     admission: AdmissionController,
     device_admission: Option<AdmissionController>,
+    resident_tensors: ResidentTensorBudget,
 }
 
 impl EmbeddedRuntime {
@@ -54,6 +60,7 @@ impl EmbeddedRuntime {
         device_admission: Option<AdmissionController>,
     ) -> Result<Self> {
         limits.validate()?;
+        let resident_tensors = ResidentTensorBudget::for_f32_elements(limits.max_tensor_elements)?;
         Ok(Self {
             inner: Arc::new(RuntimeInner {
                 device,
@@ -62,6 +69,7 @@ impl EmbeddedRuntime {
                     limits.max_queued_requests,
                 ),
                 device_admission,
+                resident_tensors,
                 limits,
             }),
         })
@@ -96,6 +104,16 @@ impl EmbeddedRuntime {
             .device_admission
             .as_ref()
             .map(AdmissionController::snapshot)
+    }
+
+    /// Returns aggregate, content-free accounting for opaque graph tensors
+    /// retained on this runtime's execution device.
+    pub fn resident_tensor_snapshot(&self) -> ResidentTensorSnapshot {
+        self.inner.resident_tensors.snapshot()
+    }
+
+    pub(crate) fn reserve_resident_tensor(&self, bytes: u64) -> Result<ResidentTensorReservation> {
+        self.inner.resident_tensors.reserve(bytes)
     }
 
     /// Discovers memory for the resolved device without spawning a process.
@@ -384,6 +402,7 @@ impl std::fmt::Debug for EmbeddedRuntime {
             .field("limits", &self.inner.limits)
             .field("admission", &self.inner.admission)
             .field("device_admission", &self.inner.device_admission)
+            .field("resident_tensors", &self.inner.resident_tensors)
             .finish_non_exhaustive()
     }
 }

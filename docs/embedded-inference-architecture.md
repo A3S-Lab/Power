@@ -19,6 +19,7 @@ and receipt features. No Colibri source code is copied into Power.
 | Tensor kernels, typed devices, admission, cancellation, limits | `a3s-power` |
 | Bounded exact model/device session pools and memory-aware microbatch plans | `a3s-power` |
 | Static graph validation and reviewed operator execution | `a3s-power` |
+| Same-request opaque resident graph tensors and aggregate handle-byte accounting | `a3s-power` |
 | Storage/RAM/device weight placement and telemetry policy | `a3s-power` |
 | Opaque state sealing, bounds, export authorization, and crash recovery | `a3s-power` |
 | Model family, topology, graph identity, and revision | Model crate |
@@ -44,6 +45,7 @@ model crate
   └─ shared request-scoped execution
        │
        ├─ GraphExecutor ───────── validated dense/static graphs
+       │    └─ ResidentGraphTensor ─ same permit/device, no intermediate host copy
        ├─ RoutedExpertBatch ───── exact batch union, no route changes
        └─ WeightHierarchy
             ├─ route coupling ─── private bounded hints, measured against truth
@@ -95,6 +97,22 @@ Model crates continue to own the state type and its mutation semantics; see
   compatible trailing shapes, exact positive partitions, finite values, caller
   order, and the shared tensor limit. The model crate still owns padding,
   valid extents, bucketing, and per-slot semantics.
+- `GraphExecutor::run_to_resident` and `run_resident` form an affine,
+  model-neutral chain for adjacent reviewed graphs. A non-cloneable
+  `ResidentGraphTensor` retains the exact request permit and a runtime-level
+  byte reservation. The next graph must use that same permit, runtime, Candle
+  device, F32 dtype, and a shape accepted by its reviewed fixed/symbolic shape
+  contract. Live handles share a budget of
+  `max_tensor_elements * sizeof(f32)`; replacement output reservations resize
+  atomically, and every error, cancellation, or drop releases the reservation.
+  No automatic cross-runtime copy exists.
+- The resident chain hashes the validated initial owned F32 tensor before its
+  upload. `ResidentGraphTensor::materialize` performs the one final owned
+  output copy, verifies finite F32 output, and returns the initial and final
+  canonical v1 tensor digests with aggregate boundary measurements.
+  Cancellation is checked around upload, graph execution, output copy, and
+  hashing. A caller that needs an intermediate receipt must materialize that
+  boundary; Power never invents a digest for bytes it did not read.
 - `ShapeProfileDeclaration` admits at most 256 model-owned opaque shape-class
   digests. Each class binds an exact implementation to aggregate batch,
   tensor-element, and scratch bounds; Power never derives or interprets a
@@ -112,6 +130,12 @@ Model crates continue to own the state type and its mutation semantics; see
   exact runner-artifact digest, typed device, and named hardware. It does not
   claim access to driver/device allocator internals or infer a model-level
   speedup from a micrograph.
+- `EmbeddedRuntime::resident_tensor_snapshot` is an explicit aggregate
+  accounting surface for maximum/current/peak retained bytes, active handles,
+  and rejected reservations. It contains no values, shapes, graph/model
+  identity, or request identity and is never exported automatically. The
+  resident handle's debug representation also omits shapes, values, digests,
+  and boundary timings.
 - Storage, host RAM, and accelerator memory form one typed weight hierarchy.
   Placement changes latency only; tensor dtype and shape are checked after each
   transfer and are never silently converted.

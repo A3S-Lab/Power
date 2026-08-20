@@ -46,7 +46,7 @@ Start from three constraints:
 
 | First principle | Engineering consequence | Power mechanism |
 | --- | --- | --- |
-| Inference consumes finite memory, compute, and queue capacity. | Every request must enter through explicit limits and remain cancellable. | Bounded admission, deterministic microbatching, model-owned finite shape profiles, placement plans, session pools, and cancellation-safe queues. |
+| Inference consumes finite memory, compute, queue, and transfer capacity. | Every request must enter through explicit limits and remain cancellable; adjacent graph calls should not bounce unchanged tensors through host memory. | Bounded admission, deterministic microbatching, model-owned finite shape profiles, aggregate resident-tensor budgets, placement plans, session pools, and cancellation-safe queues. |
 | A model name does not identify the bytes or policy that produced an answer. | Execution identity must bind artifacts, runtime policy, device path, input, and output. | SHA-256 identities, verified mirrors, accelerator evidence, and canonical receipts. |
 | The server operator cannot be the root of trust for its own claims. | Acceptance policy belongs to the client or verifier. | Nonce-bound CPU TEE reports, optional confidential-GPU claims, RA-TLS, and an independent verifier CLI. |
 
@@ -177,7 +177,7 @@ revision-locked bundle       model-owned graph       API client
 
 | Power owns | Model-owning crates own |
 | --- | --- |
-| Typed CPU, CUDA, and Metal devices; bounded graph execution | Architecture, topology, layers, kernels, and arithmetic |
+| Typed CPU, CUDA, and Metal devices; bounded graph execution and opaque resident-tensor boundaries | Architecture, topology, layers, kernels, and arithmetic |
 | Admission, session pools, microbatching, cancellation, and limits | Tokenizer, preprocessing, postprocessing, and generation policy |
 | Artifact identity, mirrors, placement, and residency | Asset revisions, conversion, tensor contracts, and quality gates |
 | TEE privacy, attestation binding, sealed state, and receipts | KV/recurrent layout and semantic state |
@@ -216,6 +216,22 @@ an exclusive lease with `retire()` after it determines that mutable state is no
 longer reusable; Power replaces that anonymous generation before releasing the
 slot and reconstructs it lazily without changing the declaration identity. See
 [Model-Neutral Session Replicas](docs/session-replicas.md).
+
+### Resident graph chains do not give Power a model architecture
+
+`GraphExecutor::run_to_resident` can keep one reviewed graph output on the
+resolved runtime device, and `run_resident` can consume it in the next reviewed
+graph under the same request permit. The opaque `ResidentGraphTensor` is
+non-cloneable, F32-only, exact-shape checked, bound to one runtime/device, and
+charged to a shared aggregate byte budget derived from `max_tensor_elements`.
+It contains no tokenizer, layer, attention, image, OCR, or model-family switch.
+
+The first owned tensor is hashed before upload. `materialize` performs the one
+final owned output copy, rechecks cancellation, and returns both canonical v1
+tensor digests plus aggregate boundary counts. Incompatible runtimes never
+trigger an implicit copy: materialize explicitly, move the owned output through
+`TensorOutput::into_input`, and acquire the target permit afterward. See
+[Device-Resident Reviewed Graph Chains](docs/device-resident-graphs.md).
 
 ## Backends are capabilities, not architecture
 
@@ -402,6 +418,7 @@ production certificate caching and failure policy.
 | [Embedded Inference Architecture](docs/embedded-inference-architecture.md) | Graph execution, placement, scheduling, state, and receipts |
 | [Model-Owned Shape Profiles](docs/shape-profiles.md) | Finite opaque classes, stale-binding rejection, fallback, and receipt v5 |
 | [Model-Neutral Session Replicas](docs/session-replicas.md) | Exclusive mutable contexts, shared device admission, residency bounds, and cancellation |
+| [Device-Resident Reviewed Graph Chains](docs/device-resident-graphs.md) | Same-request opaque handles, exact boundary validation, digest continuity, and explicit owned fallback |
 | [Model-neutral Speculative Decoding](docs/speculative-decoding.md) | Strategies, native MTP, patching, protocol, and acceptance |
 | [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | Performance gates, artifact identity, quality, and raw evidence |
 | [Reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) | CUDA build, pinned inputs, replay, audit, and validation |

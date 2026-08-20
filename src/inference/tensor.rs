@@ -167,6 +167,16 @@ impl TensorOutput {
         Ok(Self { shape, values })
     }
 
+    /// Reuses an owned output as the input for an explicit host-copy fallback.
+    ///
+    /// The device-to-host copy has already happened when this output was
+    /// materialized. This conversion moves the owned shape and values without
+    /// allocating a second payload, while revalidating the public input
+    /// contract against the target runtime's limits.
+    pub fn into_input(self, limits: &InferenceLimits) -> Result<TensorInput> {
+        TensorInput::new(self.shape, self.values, limits)
+    }
+
     /// Splits a tensor into exact, ordered leading-axis partitions.
     ///
     /// The partition sizes must be positive and cover the complete leading
