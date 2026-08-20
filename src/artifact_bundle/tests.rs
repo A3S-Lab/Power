@@ -35,6 +35,9 @@ impl OneShotServer {
                 }
             };
             worker_calls.fetch_add(1, Ordering::SeqCst);
+            // Windows may propagate the listener's nonblocking mode to the
+            // accepted socket. The request reader is intentionally blocking.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
