@@ -5,7 +5,8 @@ use crate::error::{PowerError, Result};
 use super::super::RuntimeDeviceKind;
 use super::types::{
     BoundedMemoryEvidence, PeakMemoryMethod, ReleaseCapture, ReleaseCaptureSecurity,
-    ReleaseEvidenceBundle, ReleaseEvidencePolicy, ReleasePlatform, ReleaseRevisionBinding,
+    ReleaseEvidenceBundle, ReleaseEvidencePolicy, ReleasePlatform, ReleasePlatformBinding,
+    ReleaseRevisionBinding,
 };
 
 const MAX_LABEL_BYTES: usize = 512;
@@ -23,15 +24,18 @@ pub(super) fn validate_revision_binding(binding: &ReleaseRevisionBinding) -> Res
             &binding.graph_declaration_sha256,
             "release graph declaration",
         ),
-        (
-            &binding.shape_profile_declaration_sha256,
-            "release shape-profile declaration",
-        ),
-        (&binding.tee_policy_sha256, "release TEE policy"),
     ] {
         validate_sha256(value, label)?;
     }
     Ok(())
+}
+
+pub(super) fn validate_platform_binding(binding: &ReleasePlatformBinding) -> Result<()> {
+    validate_sha256(
+        &binding.shape_profile_declaration_sha256,
+        "release platform shape-profile declaration",
+    )?;
+    validate_sha256(&binding.tee_policy_sha256, "release platform TEE policy")
 }
 
 pub(super) fn validate_policy(policy: &ReleaseEvidencePolicy) -> Result<()> {
@@ -44,10 +48,13 @@ pub(super) fn validate_policy(policy: &ReleaseEvidencePolicy) -> Result<()> {
     {
         return invalid("release evidence policy must require between one and four platforms");
     }
+    for binding in &policy.required_platforms {
+        validate_platform_binding(binding)?;
+    }
     if !policy
         .required_platforms
         .windows(2)
-        .all(|pair| pair[0] < pair[1])
+        .all(|pair| pair[0].platform < pair[1].platform)
     {
         return invalid("release evidence policy platforms must be unique and canonically ordered");
     }
@@ -161,9 +168,10 @@ pub(super) fn validate_capture_structure(capture: &ReleaseCapture) -> Result<()>
     if let ReleaseCaptureSecurity::ConfidentialGpu { binding } = &capture.security {
         if binding.weights_sha256 != capture.shape_binding.weights_sha256
             || binding.runtime_device != capture.shape_binding.runtime_device
+            || binding.execution_policy_sha256 != capture.shape_binding.tee_policy_sha256
         {
             return invalid(
-                "confidential-GPU binding does not share the capture's weights and runtime device",
+                "confidential-GPU binding does not share the capture's weights, runtime device, and TEE policy",
             );
         }
     }
@@ -207,7 +215,13 @@ pub(super) fn validate_bundle_structure(bundle: &ReleaseEvidenceBundle) -> Resul
             );
         }
     }
-    if platforms != bundle.policy.required_platforms {
+    let required_platforms = bundle
+        .policy
+        .required_platforms
+        .iter()
+        .map(|binding| binding.platform)
+        .collect::<Vec<_>>();
+    if platforms != required_platforms {
         return invalid(
             "release evidence platforms are missing, duplicated, undeclared, or not canonically ordered",
         );
@@ -252,11 +266,26 @@ fn validate_capture_against_policy(
         || batch.graph_source_sha256 != expected.graph_source_sha256
         || shape.weights_sha256 != expected.weights_sha256
         || shape.graph_sha256 != expected.graph_declaration_sha256
-        || shape.tee_policy_sha256 != expected.tee_policy_sha256
-        || fallback.declaration_sha256 != expected.shape_profile_declaration_sha256
     {
         return invalid(
             "release capture does not match the policy's immutable revision and workload binding",
+        );
+    }
+    let platform = capture_platform(capture)?;
+    let platform_binding = policy
+        .required_platforms
+        .iter()
+        .find(|binding| binding.platform == platform)
+        .ok_or_else(|| {
+            PowerError::InvalidFormat(
+                "release capture platform is not declared by its policy".to_string(),
+            )
+        })?;
+    if fallback.declaration_sha256 != platform_binding.shape_profile_declaration_sha256
+        || shape.tee_policy_sha256 != platform_binding.tee_policy_sha256
+    {
+        return invalid(
+            "release capture does not match its platform-specific shape-profile and TEE binding",
         );
     }
     Ok(())

@@ -174,6 +174,99 @@ device-side output projection can use
 `GraphExecutor::run_with_output_projection_measured` and must bind that
 projection into its own reviewed execution identity.
 
+## Capture the complete runtime contract
+
+`fixture` and `run` emit only tensor batch reports. Their corresponding
+`release-fixture` and `release-run` commands additionally execute and verify
+peak memory, active cancellation cleanup, queue deadline expiry, replica
+retirement/reconstruction, and exact explicit fallback.
+
+The generic calibration command is reproducible from an isolated checkout:
+
+```powershell
+$powerCommit = (git rev-parse HEAD).Trim()
+$teePolicySha256 = "<64 lowercase hex characters for the reviewed policy>"
+cargo run --release --no-default-features `
+  --features embedded-inference `
+  --bin a3s-power-tensor-batch-bench -- release-fixture `
+  --output release-cpu.json `
+  --device cpu `
+  --power-commit $powerCommit `
+  --filesystem-class ntfs `
+  --device-class "named CPU host" `
+  --cpu-model "exact CPU model" `
+  --ram-bytes 68719476736 `
+  --tee-policy-sha256 $teePolicySha256 `
+  --host-fixed-bytes 67108864 `
+  --host-scratch-bytes 67108864 `
+  --device-fixed-bytes 0 `
+  --device-scratch-bytes 0 `
+  --items 8 `
+  --width 4096 `
+  --warmup-rounds 2 `
+  --measured-rounds 9
+```
+
+Memory values are predeclared bounds, not observed values copied back into the
+command. A capture fails if its measured additional peak exceeds
+fixed-plus-scratch or if its final retained increase exceeds fixed. CUDA and
+Metal require positive device bounds and emit sampled device-pool evidence;
+CPU requires both device values to be zero.
+
+For any caller-owned reviewed graph, prepare a bounded `TensorOutput` JSON file
+from an independent reviewed implementation for the first input:
+
+```json
+{ "shape": [1, 2], "values": [1.5, 2.5] }
+```
+
+Then run the same collector. The four profile values are opaque SHA-256
+identities owned by the integrating crate; Power validates and binds them but
+does not interpret their architecture or modality.
+
+```bash
+power_commit="$(git rev-parse HEAD)"
+cargo run --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- release-run \
+  --output release-capture.json \
+  --weights /verified/model/root \
+  --plan /reviewed/graph-plan.json \
+  --inputs /private/tensor-items.json \
+  --reference-output /private/reference-output.json \
+  --family model-owned-family \
+  --role model-owned-role \
+  --source-format reviewed-format \
+  --source-sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --opset 1 \
+  --profile-implementation-sha256 1111111111111111111111111111111111111111111111111111111111111111 \
+  --profile-shape-class-sha256 2222222222222222222222222222222222222222222222222222222222222222 \
+  --fallback-implementation-sha256 3333333333333333333333333333333333333333333333333333333333333333 \
+  --fallback-request-class-sha256 4444444444444444444444444444444444444444444444444444444444444444 \
+  --tee-policy-sha256 5555555555555555555555555555555555555555555555555555555555555555 \
+  --host-fixed-bytes 67108864 \
+  --host-scratch-bytes 67108864 \
+  --device-fixed-bytes 0 \
+  --device-scratch-bytes 0 \
+  --device cpu \
+  --power-commit "$power_commit" \
+  --filesystem-class ext4 \
+  --device-class "named CPU host" \
+  --cpu-model "exact CPU model" \
+  --ram-bytes 68719476736 \
+  --warmup-rounds 2 \
+  --measured-rounds 9
+```
+
+The emitted JSON includes digests and aggregate counters, not any supplied
+path, tensor value, family, role, tokenizer, model format, or architecture
+switch. `ReleaseCapture::verify()` can replay it after deserialization. A
+production policy uses one `ReleasePlatformBinding` per platform because shape
+profiles and TEE policies are device-specific.
+
+`--output` writes UTF-8 JSON with create-new semantics and refuses to overwrite
+an existing capture. Omit it to keep stdout output for pipelines.
+
 ## Interpretation and promotion gate
 
 Compare raw samples and lower medians rather than one best run. Fewer allocation

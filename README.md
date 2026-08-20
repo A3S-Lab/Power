@@ -50,9 +50,10 @@ Start from three constraints:
 | A model name does not identify the bytes or policy that produced an answer. | Execution identity must bind artifacts, runtime policy, device path, input, and output. | SHA-256 identities, verified mirrors, accelerator evidence, and canonical receipts. |
 | The server operator cannot be the root of trust for its own claims. | Acceptance policy belongs to the client or verifier. | Nonce-bound CPU TEE reports, optional confidential-GPU claims, RA-TLS, and an independent verifier CLI. |
 
-The result is deliberately model-neutral: Power contains no product model
-assets and does not absorb model-specific topology from language, vision, OCR,
-or embedding crates.
+The shared runtime is deliberately model-neutral: Power contains no product
+model assets, and its execution contracts do not dispatch on language, vision,
+OCR, embedding, or any other model family. Architecture-specific adapters may
+live behind those contracts without changing the core scheduler or verifier.
 
 ## Measured boundary
 
@@ -243,13 +244,20 @@ prove bounded host/device peak memory, active-work cancellation cleanup, queue
 deadline expiry, replica retirement and reconstruction, and an explicit exact
 fallback.
 
-The policy binds the Power revision, runtime executable, weights, reviewed graph
-source and declaration, finite shape-profile declaration, resolved device, TEE
-policy, and verified confidential-GPU claims where applicable. None of its
-types contain a tokenizer, container format, generation mode, model family, or
-architecture dispatch key. Qwen is one workload that can produce these
-artifacts; language, vision, embedding, audio, scientific, and custom graphs use
-the same gate. See [Production Release Evidence Gate](docs/release-evidence-gate.md).
+The policy separates identities that can be shared honestly from those that
+cannot. Power revision, weights, and reviewed graph are common; each platform
+binds its own finite shape-profile declaration and TEE policy because device
+topology and memory reservations differ. The exact runtime executable remains
+capture-specific, and confidential GPU claims are required where applicable.
+
+`a3s-power-tensor-batch-bench release-run` applies the same collector to any
+caller-owned reviewed graph, typed tensors, opaque profile identities, and
+independent reference output. `release-fixture` is only a reproducible Add-graph
+calibration path. Neither the collector nor the evidence schema contains a
+tokenizer, container format, generation mode, model family, or architecture
+dispatch key. Qwen is one possible workload; language, vision, embedding,
+audio, scientific, and custom graphs use the same contract. See
+[Production Release Evidence Gate](docs/release-evidence-gate.md).
 
 ## Backends are capabilities, not architecture
 
@@ -445,6 +453,7 @@ production certificate caching and failure policy.
 | [Supply-chain Audit](docs/supply-chain.md) | Feature profiles, native code, and threat model |
 | [Storage Benchmark](docs/storage-benchmark.md) | Verified storage and residency measurements |
 | [Tensor Batch Cost Benchmark](docs/tensor-batch-benchmark.md) | Model-neutral allocation, host-boundary copy cost, parity, and named-hardware reproduction |
+| [Production Release Evidence Gate](docs/release-evidence-gate.md) | Platform-specific bindings, complete contract capture, verification, and trust-root boundary |
 | [Windows CPU/CUDA P5 pre-captures](docs/benchmarks/release-gate-windows-20260821/README.md) | Clean-revision raw samples, hashes, negative evidence, reproduction, and explicit remaining gaps |
 | [Roadmap](ROADMAP.md) | Acceptance gates and remaining work |
 | [Changelog](CHANGELOG.md) | Released behavior |

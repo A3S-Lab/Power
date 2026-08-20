@@ -6,6 +6,11 @@ not complete P5: peak-memory, cancellation, queue-expiry, replica-recovery,
 explicit-fallback, Metal, and confidential-GPU captures are still required by
 `ReleaseEvidencePolicy::strict_v1`.
 
+Later source revisions provide `release-fixture` and model-neutral
+`release-run` complete-contract collectors. That implementation does not
+retroactively add observations to these immutable reports; CPU and CUDA must be
+recaptured from the same new clean revision with predeclared memory bounds.
+
 The fixture is a reviewed broadcast Add graph over opaque F32 tensors. It does
 not load Qwen, GGUF, a tokenizer, a decoder, or any language-model architecture.
 Qwen workloads can consume the same contracts later, as can vision, embedding,

@@ -1,0 +1,7 @@
+{
+  "schema": "a3s.power.local-release-execution-policy.v1",
+  "securityClass": "local-unattested",
+  "attestationRequired": false,
+  "confidentialGpuRequired": false,
+  "description": "Model-neutral runtime contract calibration on a named local host; this policy makes no TEE or confidential-GPU claim."
+}

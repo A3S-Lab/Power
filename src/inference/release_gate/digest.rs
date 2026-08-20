@@ -24,7 +24,7 @@ struct BundleDigestView<'a> {
 }
 
 pub(super) fn policy_sha256(policy: &ReleaseEvidencePolicy) -> Result<String> {
-    canonical_sha256(b"a3s-power-release-evidence-policy-v1\0", policy)
+    canonical_sha256(b"a3s-power-release-evidence-policy-v2\0", policy)
 }
 
 pub(super) fn capture_sha256(capture: &ReleaseCapture) -> Result<String> {
@@ -42,7 +42,7 @@ pub(super) fn capture_sha256(capture: &ReleaseCapture) -> Result<String> {
 
 pub(super) fn bundle_sha256(bundle: &ReleaseEvidenceBundle) -> Result<String> {
     canonical_sha256(
-        b"a3s-power-release-evidence-bundle-v1\0",
+        b"a3s-power-release-evidence-bundle-v2\0",
         &BundleDigestView {
             schema: &bundle.schema,
             policy: &bundle.policy,

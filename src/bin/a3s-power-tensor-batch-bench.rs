@@ -17,8 +17,20 @@ const FIXTURE_PREFIX: &str = "a3s-power-tensor-batch-fixture-";
 
 #[path = "tensor_batch_bench/allocator.rs"]
 mod allocator;
+#[path = "tensor_batch_bench/arguments.rs"]
+mod arguments;
+#[path = "tensor_batch_bench/output.rs"]
+mod output;
+#[path = "tensor_batch_bench/release_contract.rs"]
+mod release_contract;
+#[path = "tensor_batch_bench/release_fixture.rs"]
+mod release_fixture;
+#[path = "tensor_batch_bench/release_run.rs"]
+mod release_run;
 
 use allocator::ProcessAllocationCounter;
+use arguments::Arguments;
+use output::write_json_output;
 
 const USAGE: &str = r#"A3S Power model-neutral tensor batch benchmark
 
@@ -41,6 +53,20 @@ Run a caller-owned reviewed graph:
     [--warmup-rounds <count>] \
     [--measured-rounds <count>]
 
+Capture the complete contract for a caller-owned reviewed graph:
+  a3s-power-tensor-batch-bench release-run \
+    <all run arguments above> \
+    --reference-output <tensor-output.json> \
+    --profile-implementation-sha256 <lowercase-sha256> \
+    --profile-shape-class-sha256 <lowercase-sha256> \
+    --fallback-implementation-sha256 <lowercase-sha256> \
+    --fallback-request-class-sha256 <lowercase-sha256> \
+    --tee-policy-sha256 <lowercase-sha256> \
+    --host-fixed-bytes <bytes> \
+    --host-scratch-bytes <bytes> \
+    --device-fixed-bytes <bytes> \
+    --device-scratch-bytes <bytes>
+
 Run the built-in generic Add graph fixture:
   a3s-power-tensor-batch-bench fixture \
     --device <cpu|cuda:N|metal:N> \
@@ -54,10 +80,31 @@ Run the built-in generic Add graph fixture:
     [--warmup-rounds <count>] \
     [--measured-rounds <count>]
 
+Capture the complete model-neutral runtime contract with the same fixture:
+  a3s-power-tensor-batch-bench release-fixture \
+    --device <cpu|cuda:N|metal:N> \
+    --power-commit <lowercase-git-revision> \
+    --filesystem-class <label> \
+    --device-class <named-hardware-label> \
+    --cpu-model <label> \
+    --ram-bytes <bytes> \
+    --tee-policy-sha256 <lowercase-sha256> \
+    --host-fixed-bytes <bytes> \
+    --host-scratch-bytes <bytes> \
+    --device-fixed-bytes <bytes> \
+    --device-scratch-bytes <bytes> \
+    [--items <count>] \
+    [--width <elements>] \
+    [--warmup-rounds <count>] \
+    [--measured-rounds <count>]
+
 The JSON report is written to stdout. It contains named hardware and digests,
 but no model path, graph path, tensor values, tensor names, or model-family
 label. Allocation counters cover successful host heap allocations in this
 isolated process; they do not claim visibility into device or driver allocators.
+
+Add --output <new-json-file> to any command to write UTF-8 JSON directly. The
+runner creates the file once and refuses to replace an existing path.
 "#;
 
 #[derive(Deserialize)]
@@ -96,10 +143,13 @@ fn run() -> Result<()> {
     })?;
     values.remove(0);
     let mut arguments = Arguments::new(values);
+    let output_path = arguments.optional_path("--output")?;
     let common = parse_common(&mut arguments)?;
-    let report = match command.as_str() {
-        "run" => run_reviewed_graph(&mut arguments, &common)?,
-        "fixture" => run_fixture(&mut arguments, &common)?,
+    let output = match command.as_str() {
+        "run" => serde_json::to_value(run_reviewed_graph(&mut arguments, &common)?)?,
+        "fixture" => serde_json::to_value(run_fixture(&mut arguments, &common)?)?,
+        "release-run" => serde_json::to_value(release_run::run(&mut arguments, &common)?)?,
+        "release-fixture" => serde_json::to_value(release_fixture::run(&mut arguments, &common)?)?,
         _ => {
             return Err(PowerError::InvalidRequest(format!(
                 "unsupported tensor batch benchmark command '{command}'"
@@ -107,7 +157,7 @@ fn run() -> Result<()> {
         }
     };
     arguments.finish()?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    write_json_output(&output, output_path.as_deref())?;
     Ok(())
 }
 
@@ -144,6 +194,14 @@ fn run_reviewed_graph(
     arguments: &mut Arguments,
     common: &CommonOptions,
 ) -> Result<a3s_power::inference::TensorBatchBenchmarkReport> {
+    let workload = build_reviewed_graph(arguments, common)?;
+    benchmark(&workload.graph, &workload.inputs, common)
+}
+
+fn build_reviewed_graph(
+    arguments: &mut Arguments,
+    common: &CommonOptions,
+) -> Result<BenchmarkWorkload> {
     let weights = arguments.required_path("--weights")?;
     let plan_path = arguments.required_path("--plan")?;
     let inputs_path = arguments.required_path("--inputs")?;
@@ -169,14 +227,31 @@ fn run_reviewed_graph(
     let store = std::sync::Arc::new(WeightStore::open(weights, &limits)?);
     let plan = GraphPlan::parse(&plan_source, &identity, &store, &limits)?;
     let runtime = EmbeddedRuntime::new(common.device, limits)?;
-    let graph = GraphExecutor::new(plan, store, runtime)?;
-    benchmark(&graph, &inputs, common)
+    let graph = GraphExecutor::new(plan, store, runtime.clone())?;
+    Ok(BenchmarkWorkload {
+        _fixture_directory: None,
+        graph,
+        runtime,
+        inputs,
+    })
 }
 
 fn run_fixture(
     arguments: &mut Arguments,
     common: &CommonOptions,
 ) -> Result<a3s_power::inference::TensorBatchBenchmarkReport> {
+    let fixture = build_fixture(arguments, common)?;
+    benchmark(&fixture.graph, &fixture.inputs, common)
+}
+
+struct BenchmarkWorkload {
+    _fixture_directory: Option<FixtureDirectory>,
+    graph: GraphExecutor,
+    runtime: EmbeddedRuntime,
+    inputs: Vec<TensorInput>,
+}
+
+fn build_fixture(arguments: &mut Arguments, common: &CommonOptions) -> Result<BenchmarkWorkload> {
     let item_count = arguments.optional_number("--items")?.unwrap_or(8_usize);
     let width = arguments.optional_number("--width")?.unwrap_or(4_096_usize);
     if !(2..=1_024).contains(&item_count) || width == 0 {
@@ -214,7 +289,7 @@ fn run_fixture(
     let store = std::sync::Arc::new(WeightStore::open(&fixture.path, &limits)?);
     let plan = GraphPlan::parse(&plan_source, &identity, &store, &limits)?;
     let runtime = EmbeddedRuntime::new(common.device, limits.clone())?;
-    let graph = GraphExecutor::new(plan, store, runtime)?;
+    let graph = GraphExecutor::new(plan, store, runtime.clone())?;
     let inputs = (0..item_count)
         .map(|item| {
             let values = (0..width)
@@ -223,7 +298,12 @@ fn run_fixture(
             TensorInput::new(vec![1, width], values, &limits)
         })
         .collect::<Result<Vec<_>>>()?;
-    benchmark(&graph, &inputs, common)
+    Ok(BenchmarkWorkload {
+        _fixture_directory: Some(fixture),
+        graph,
+        runtime,
+        inputs,
+    })
 }
 
 fn benchmark(
@@ -369,75 +449,6 @@ impl Drop for FixtureDirectory {
     }
 }
 
-struct Arguments {
-    values: Vec<String>,
-}
-
-impl Arguments {
-    fn new(values: Vec<String>) -> Self {
-        Self { values }
-    }
-
-    fn required(&mut self, name: &str) -> Result<String> {
-        self.optional(name)?
-            .ok_or_else(|| PowerError::InvalidRequest(format!("missing required argument {name}")))
-    }
-
-    fn required_path(&mut self, name: &str) -> Result<PathBuf> {
-        self.required(name).map(PathBuf::from)
-    }
-
-    fn required_number<T>(&mut self, name: &str) -> Result<T>
-    where
-        T: std::str::FromStr,
-    {
-        parse_number(name, &self.required(name)?)
-    }
-
-    fn optional_number<T>(&mut self, name: &str) -> Result<Option<T>>
-    where
-        T: std::str::FromStr,
-    {
-        self.optional(name)?
-            .map(|value| parse_number(name, &value))
-            .transpose()
-    }
-
-    fn optional(&mut self, name: &str) -> Result<Option<String>> {
-        let Some(index) = self.values.iter().position(|value| value == name) else {
-            return Ok(None);
-        };
-        if index.saturating_add(1) >= self.values.len() || self.values[index + 1].starts_with("--")
-        {
-            return Err(PowerError::InvalidRequest(format!(
-                "argument {name} requires a value"
-            )));
-        }
-        self.values.remove(index);
-        Ok(Some(self.values.remove(index)))
-    }
-
-    fn finish(self) -> Result<()> {
-        if self.values.is_empty() {
-            Ok(())
-        } else {
-            Err(PowerError::InvalidRequest(format!(
-                "unknown tensor batch benchmark argument '{}'",
-                self.values[0]
-            )))
-        }
-    }
-}
-
-fn parse_number<T>(name: &str, value: &str) -> Result<T>
-where
-    T: std::str::FromStr,
-{
-    value
-        .parse()
-        .map_err(|_| PowerError::InvalidRequest(format!("argument {name} must be a valid number")))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +463,24 @@ mod tests {
         assert!(parse_device("auto").is_err());
         assert!(parse_device("cuda").is_err());
         assert!(parse_device("cuda:-1").is_err());
+    }
+
+    #[test]
+    fn direct_output_is_utf8_and_never_overwrites() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("capture.json");
+        let value = serde_json::json!({"label": "model-neutral"});
+
+        write_json_output(&value, Some(&output)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap(),
+            "{\n  \"label\": \"model-neutral\"\n}\n"
+        );
+        assert!(write_json_output(&serde_json::json!({}), Some(&output)).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap(),
+            "{\n  \"label\": \"model-neutral\"\n}\n"
+        );
     }
 
     #[test]

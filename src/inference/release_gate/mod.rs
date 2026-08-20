@@ -13,7 +13,8 @@ pub use types::{
     BoundedMemoryEvidence, CancellationContractEvidence, ConfidentialReleaseBinding,
     ExactFallbackEvidence, PeakMemoryEvidence, PeakMemoryMethod, QueueExpiryEvidence,
     ReleaseCapture, ReleaseCaptureSecurity, ReleaseContractEvidence, ReleaseEvidenceBundle,
-    ReleaseEvidencePolicy, ReleasePlatform, ReleaseRevisionBinding, ReplicaRecoveryEvidence,
+    ReleaseEvidencePolicy, ReleasePlatform, ReleasePlatformBinding, ReleaseRevisionBinding,
+    ReplicaRecoveryEvidence,
 };
 
 use crate::error::Result;

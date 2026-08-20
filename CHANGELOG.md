@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scalar/batch parity plus bounded peak memory, cancellation cleanup, queue
   expiry, replica retirement/reconstruction, and explicit exact fallback;
   missing, duplicate, relabeled, or mutated evidence fails closed.
+- Added isolated `release-fixture` and `release-run` capture paths to the tensor
+  benchmark runner. Both collect live host allocation peaks, sampled accelerator
+  pool use, active cancellation cleanup, real queue expiry, replica
+  retirement/reconstruction, and independent exact fallback parity. The
+  caller-owned path accepts any reviewed graph and never serializes its paths,
+  tensor values, family, or role.
+- Revised the unreleased release policy to schema v2 so common Power, weight,
+  and graph identities remain revision-wide while every platform binds its own
+  shape-profile declaration and TEE policy. This removes an impossible
+  cross-device invariant and also requires confidential accelerator execution
+  policy to match the capture's TEE binding.
 - Added model-neutral, device-resident chaining for adjacent reviewed static
   graphs. `ResidentGraphTensor` is non-cloneable, retains the exact request
   permit, enforces F32/fixed-or-symbolic-shape/device identity, and consumes a

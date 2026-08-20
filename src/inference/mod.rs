@@ -118,7 +118,8 @@ pub use release_gate::{
     BoundedMemoryEvidence, CancellationContractEvidence, ConfidentialReleaseBinding,
     ExactFallbackEvidence, PeakMemoryEvidence, PeakMemoryMethod, QueueExpiryEvidence,
     ReleaseCapture, ReleaseCaptureSecurity, ReleaseContractEvidence, ReleaseEvidenceBundle,
-    ReleaseEvidencePolicy, ReleasePlatform, ReleaseRevisionBinding, ReplicaRecoveryEvidence,
+    ReleaseEvidencePolicy, ReleasePlatform, ReleasePlatformBinding, ReleaseRevisionBinding,
+    ReplicaRecoveryEvidence,
 };
 pub use residency::{
     CacheEvictionPolicy, PlacementPreference, PlannedResidencyGroup, PrefetchReport, PrefetchTask,

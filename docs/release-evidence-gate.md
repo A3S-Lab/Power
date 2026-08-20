@@ -12,19 +12,32 @@ artifact identities.
 
 ## Coverage model
 
-`ReleaseEvidencePolicy::strict_v1` requires exactly four distinct captures:
+`ReleaseEvidencePolicy::strict_v1` requires exactly four distinct platform
+bindings and captures:
 
-| Platform class | Device requirement | Additional binding |
+| Platform class | Device requirement | Platform-specific binding |
 | --- | --- | --- |
-| CPU | `RuntimeDeviceKind::Cpu` | Local execution |
-| CUDA | `RuntimeDeviceKind::Cuda` | Local execution |
-| Metal | `RuntimeDeviceKind::Metal` | Local execution |
-| Confidential GPU | `RuntimeDeviceKind::Cuda` | Verified claims digest and accelerator declaration digest |
+| CPU | `RuntimeDeviceKind::Cpu` | Shape-profile declaration, TEE policy, local execution |
+| CUDA | `RuntimeDeviceKind::Cuda` | Shape-profile declaration, TEE policy, local execution |
+| Metal | `RuntimeDeviceKind::Metal` | Shape-profile declaration, TEE policy, local execution |
+| Confidential GPU | `RuntimeDeviceKind::Cuda` | Shape-profile declaration, TEE policy, verified claims and accelerator declaration |
 
 Missing, duplicate, or undeclared classes fail. Captures are canonically ordered
 and one tensor benchmark digest cannot be reused for two platform classes. This
 prevents an ordinary CUDA measurement from being relabeled as confidential-GPU
 performance.
+
+Shape-profile declarations are platform-specific by construction: each one
+commits to a typed device, topology, and host/device memory reservations. TEE
+policies may also differ between local and confidential execution. Policy schema
+v2 therefore keeps Power revision, weights, and graph identities in the common
+`ReleaseRevisionBinding`, while `ReleasePlatformBinding` pins the profile and
+TEE digests for exactly one platform. Requiring one shared profile digest would
+make honest CPU/CUDA/Metal coverage impossible.
+
+After replaying a capture, `ReleaseRevisionBinding::from_capture` and
+`ReleaseCapture::platform_binding` project the common and platform-specific
+identities for explicit policy review without manual nested-field copying.
 
 The Rust construction path does not accept loose confidential digest strings.
 `ReleaseCaptureSecurity::from_verified_confidential_gpu` requires a
@@ -41,26 +54,20 @@ coverage.
 ## Evidence flow
 
 ```text
-ReleaseRevisionBinding
-  ├─ Power version + immutable commit
-  ├─ weights + graph source + graph declaration
-  ├─ finite shape-profile declaration
-  └─ TEE policy
-             │
-             ▼
-ReleaseEvidencePolicy ── exact required platform set
-             │
-             ├───────────────┬───────────────┬──────────────────┐
-             ▼               ▼               ▼                  ▼
-        CPU capture     CUDA capture     Metal capture   confidential capture
-             │               │               │                  │
-             └───────────────┴───────────────┴──────────────────┘
-                                     │
-                                     ▼
-                         ReleaseEvidenceBundle SHA-256
-                                     │
-                                     ▼
-                        caller-owned signed trust root
+common revision: Power + weights + reviewed graph
+                         |
+                         v
+release policy: CPU/CUDA/Metal/confidential platform bindings
+                |          |          |          |
+                v          v          v          v
+             capture    capture    capture    capture
+                \__________|__________|__________/
+                           |
+                           v
+                canonical bundle SHA-256
+                           |
+                           v
+                 caller-owned trust root
 ```
 
 The bundle digest detects mutation. It does not establish authorship. A release
@@ -144,6 +151,32 @@ The policy and captures jointly bind:
 The outer bundle, each capture, the tensor report, and the shape binding use
 domain-separated canonical digests. Deserialization denies unknown fields.
 
+## Capture runners
+
+The isolated `a3s-power-tensor-batch-bench` process now has two complete
+contract paths:
+
+- `release-fixture` creates a temporary generic Add graph for runtime and
+  hardware calibration;
+- `release-run` accepts caller-owned verified weights, a reviewed graph, at
+  least two compatible F32 inputs, opaque profile/fallback implementation
+  digests, and one independently produced typed reference output.
+
+Both paths first record alternating scalar/batch evidence, then drive the real
+resident graph, execution-batch lifecycle, bounded admission queue, session
+replica pool, and shape-profile selector. Host peak memory comes from the
+process-global live-byte allocator in that isolated process. CUDA and Metal use
+sampled device-pool availability. Declared fixed and scratch reservations are
+parsed before the workload is constructed; exceeding them fails the capture
+instead of rewriting the bounds after measurement.
+
+The reference file is read only to compute an `ExecutionDigest`; paths, tensor
+values, model family, and graph role are absent from the emitted capture. The
+caller remains responsible for proving that the reference was produced by an
+independent reviewed implementation rather than copying the tested output.
+Complete commands and input formats are in the
+[Tensor Batch Cost Benchmark Protocol](tensor-batch-benchmark.md).
+
 ## Model and backend boundary
 
 Architecture-specific implementations are adapters behind the evidence hashes.
@@ -164,6 +197,11 @@ were produced from clean revision
 `1a9504e58fc2751e016efede2fc006615a0b8cc2`. They replay exact scalar/batch
 parity and retain the CPU negative result. They predate the complete runtime
 contract capture and therefore cannot form a strict v1 bundle.
+
+The complete model-neutral collector and isolated CPU regression coverage now
+exist in source. Those regression runs are development checks, not published
+release evidence. New CPU and CUDA captures must be generated from a clean
+immutable collector revision before they can replace the earlier pre-captures.
 
 Metal and confidential-GPU results cannot be inferred from this Windows RTX
 4090 host. They remain explicit release blockers until captured on appropriate

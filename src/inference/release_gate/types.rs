@@ -31,8 +31,6 @@ pub struct ReleaseRevisionBinding {
     pub weights_sha256: String,
     pub graph_source_sha256: String,
     pub graph_declaration_sha256: String,
-    pub shape_profile_declaration_sha256: String,
-    pub tee_policy_sha256: String,
 }
 
 impl ReleaseRevisionBinding {
@@ -43,8 +41,6 @@ impl ReleaseRevisionBinding {
         weights_sha256: impl Into<String>,
         graph_source_sha256: impl Into<String>,
         graph_declaration_sha256: impl Into<String>,
-        shape_profile_declaration_sha256: impl Into<String>,
-        tee_policy_sha256: impl Into<String>,
     ) -> Result<Self> {
         let binding = Self {
             power_version: power_version.into(),
@@ -52,11 +48,21 @@ impl ReleaseRevisionBinding {
             weights_sha256: weights_sha256.into(),
             graph_source_sha256: graph_source_sha256.into(),
             graph_declaration_sha256: graph_declaration_sha256.into(),
-            shape_profile_declaration_sha256: shape_profile_declaration_sha256.into(),
-            tee_policy_sha256: tee_policy_sha256.into(),
         };
         super::validation::validate_revision_binding(&binding)?;
         Ok(binding)
+    }
+
+    /// Projects the revision-wide identities from one verified capture.
+    pub fn from_capture(capture: &ReleaseCapture) -> Result<Self> {
+        capture.verify()?;
+        Self::new(
+            &capture.tensor_batch.binding.power_version,
+            &capture.tensor_batch.binding.power_commit,
+            &capture.tensor_batch.binding.weights_sha256,
+            &capture.tensor_batch.binding.graph_source_sha256,
+            &capture.shape_binding.graph_sha256,
+        )
     }
 }
 
@@ -69,6 +75,45 @@ impl std::fmt::Debug for ReleaseRevisionBinding {
             .field("weights", &"sha256")
             .field("graph_source", &"sha256")
             .field("graph_declaration", &"sha256")
+            .finish()
+    }
+}
+
+/// Platform-specific release identities that cannot truthfully be shared
+/// across CPU, CUDA, Metal, and confidential acceleration.
+///
+/// A shape-profile declaration commits to its typed device, topology, memory
+/// reservations, and TEE policy. Keeping these digests beside the platform
+/// prevents a policy from requiring one impossible cross-device declaration.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReleasePlatformBinding {
+    pub platform: ReleasePlatform,
+    pub shape_profile_declaration_sha256: String,
+    pub tee_policy_sha256: String,
+}
+
+impl ReleasePlatformBinding {
+    pub fn new(
+        platform: ReleasePlatform,
+        shape_profile_declaration_sha256: impl Into<String>,
+        tee_policy_sha256: impl Into<String>,
+    ) -> Result<Self> {
+        let binding = Self {
+            platform,
+            shape_profile_declaration_sha256: shape_profile_declaration_sha256.into(),
+            tee_policy_sha256: tee_policy_sha256.into(),
+        };
+        super::validation::validate_platform_binding(&binding)?;
+        Ok(binding)
+    }
+}
+
+impl std::fmt::Debug for ReleasePlatformBinding {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReleasePlatformBinding")
+            .field("platform", &self.platform)
             .field("shape_profile_declaration", &"sha256")
             .field("tee_policy", &"sha256")
             .finish()
@@ -82,16 +127,17 @@ impl std::fmt::Debug for ReleaseRevisionBinding {
 pub struct ReleaseEvidencePolicy {
     pub schema: String,
     pub revision: ReleaseRevisionBinding,
-    pub required_platforms: Vec<ReleasePlatform>,
+    pub required_platforms: Vec<ReleasePlatformBinding>,
 }
 
 impl ReleaseEvidencePolicy {
-    pub const SCHEMA: &'static str = "a3s.power.release-evidence-policy.v1";
+    pub const SCHEMA: &'static str = "a3s.power.release-evidence-policy.v2";
 
     pub fn new(
         revision: ReleaseRevisionBinding,
-        required_platforms: Vec<ReleasePlatform>,
+        mut required_platforms: Vec<ReleasePlatformBinding>,
     ) -> Result<Self> {
+        required_platforms.sort_by_key(|binding| binding.platform);
         let policy = Self {
             schema: Self::SCHEMA.to_string(),
             revision,
@@ -103,16 +149,29 @@ impl ReleaseEvidencePolicy {
 
     /// Production v1 coverage: ordinary CPU, CUDA, and Metal plus a separately
     /// attested confidential-GPU capture.
-    pub fn strict_v1(revision: ReleaseRevisionBinding) -> Result<Self> {
-        Self::new(
-            revision,
-            vec![
-                ReleasePlatform::Cpu,
-                ReleasePlatform::Cuda,
-                ReleasePlatform::Metal,
-                ReleasePlatform::ConfidentialGpu,
-            ],
-        )
+    pub fn strict_v1(
+        revision: ReleaseRevisionBinding,
+        required_platforms: Vec<ReleasePlatformBinding>,
+    ) -> Result<Self> {
+        let policy = Self::new(revision, required_platforms)?;
+        let actual = policy
+            .required_platforms
+            .iter()
+            .map(|binding| binding.platform)
+            .collect::<Vec<_>>();
+        let required = vec![
+            ReleasePlatform::Cpu,
+            ReleasePlatform::Cuda,
+            ReleasePlatform::Metal,
+            ReleasePlatform::ConfidentialGpu,
+        ];
+        if actual != required {
+            return Err(crate::error::PowerError::InvalidRequest(
+                "strict v1 release evidence requires CPU, CUDA, Metal, and confidential-GPU platform bindings"
+                    .to_string(),
+            ));
+        }
+        Ok(policy)
     }
 
     pub fn policy_sha256(&self) -> Result<String> {
@@ -373,6 +432,17 @@ impl ReleaseCapture {
         super::validation::capture_platform(self)
     }
 
+    /// Projects the platform-specific profile and TEE identities for policy
+    /// review without asking a caller to copy nested digest fields manually.
+    pub fn platform_binding(&self) -> Result<ReleasePlatformBinding> {
+        self.verify()?;
+        ReleasePlatformBinding::new(
+            self.platform()?,
+            &self.contracts.exact_fallback.selection.declaration_sha256,
+            &self.shape_binding.tee_policy_sha256,
+        )
+    }
+
     pub fn verify(&self) -> Result<()> {
         super::validation::verify_capture(self)
     }
@@ -406,7 +476,7 @@ pub struct ReleaseEvidenceBundle {
 }
 
 impl ReleaseEvidenceBundle {
-    pub const SCHEMA: &'static str = "a3s.power.release-evidence-bundle.v1";
+    pub const SCHEMA: &'static str = "a3s.power.release-evidence-bundle.v2";
 
     pub fn build(policy: ReleaseEvidencePolicy, captures: Vec<ReleaseCapture>) -> Result<Self> {
         super::build_bundle(policy, captures)

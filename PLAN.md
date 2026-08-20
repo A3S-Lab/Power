@@ -3,19 +3,32 @@
 ## First Principles Analysis
 
 ### Core Mission
-A3S Power exists to solve one problem: **LLM inference where the infrastructure operator cannot see your data**. Hardware TEE (SEV-SNP / TDX) enforces memory encryption; Power provides the cryptographic proof chain that lets clients verify it.
+A3S Power provides a **model-neutral, bounded, and verifiable inference runtime**.
+Language, vision, OCR, embedding, audio, multimodal, and scientific model crates
+retain their own topology and semantics. Power owns shared execution concerns:
+artifact integrity, devices, admission, placement, mutable state, cancellation,
+privacy, evidence, and independent verification. Hardware TEE support is one
+deployment boundary, not a restriction to LLMs or to a particular model family.
 
 ### What Makes Power Unique (The Moat)
 1. **Hardware-enforced privacy** — not policy promises, but CPU-level memory encryption
-2. **Verifiable inference** — client can cryptographically prove which model ran, unmodified
+2. **Verifiable inference** — clients can bind exact artifacts, reviewed graphs,
+   runtime policy, devices, inputs, and outputs
 3. **tee-minimal build** — ~1,220 deps, no C++ inference engine, reduced auditable supply chain
 4. **Layer-streaming** — O(layer_size) peak RAM, runs 7B+ models in 512MB EPC
+5. **Model-neutral execution contracts** — one bounded runtime serves language,
+   vision, OCR, embedding, audio, multimodal, and custom reviewed graphs without
+   family dispatch in the core
 
-### Current State (v0.4.2)
+### Current State (v0.9.0 development line)
 - 3 backends (mistralrs, llamacpp, picolm) — all functional
 - Full TEE stack (attestation, encrypted models, RA-TLS, privacy, audit)
 - OpenAI-compatible API with streaming
-- picolm: 14+ tok/s decode, pure Rust, layer-streaming, 900+ tests across current validation profiles
+- Listener-free embedded runtime with typed CPU, CUDA, and Metal devices
+- Model-owned reviewed graphs, finite shape profiles, session replicas,
+  cancellation-safe execution batches, and device-resident graph boundaries
+- A model-neutral release-evidence gate and complete-contract collector;
+  immutable cross-platform publication remains a v1 release blocker
 
 ### 2026 Shared Document Inference Substrate (TO2)
 

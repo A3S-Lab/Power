@@ -1114,6 +1114,13 @@ cleanup, queue expiry, replica retirement/reconstruction, and explicit exact
 fallback. Missing coverage, reused platform reports, stale bindings, and
 canonical-digest mutation fail closed.
 
+Policy schema v2 separates the revision-wide Power, weight, and graph identity
+from `ReleasePlatformBinding`. Each platform pins its own shape-profile
+declaration and TEE policy because those declarations include typed device
+topology and memory reservations. `release-run` drives the same collector over
+any caller-owned reviewed graph and independent typed reference output;
+`release-fixture` is only the generic calibration adapter.
+
 The release schema contains no architecture, tokenizer, container, modality, or
 generation-mode switch. Architecture integrations own the implementations
 behind the graph and weight digests. See

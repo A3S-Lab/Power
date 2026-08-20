@@ -4,8 +4,8 @@ use super::{
     BoundedMemoryEvidence, CancellationContractEvidence, ExactFallbackEvidence,
     ExecutionBatchLifecycleEvidence, ExecutionDigest, ModelSessionPoolSnapshot, PeakMemoryEvidence,
     QueueExpiryEvidence, ReleaseCapture, ReleaseCaptureSecurity, ReleaseContractEvidence,
-    ReleaseEvidenceBundle, ReleaseEvidencePolicy, ReleasePlatform, ReleaseRevisionBinding,
-    ReplicaRecoveryEvidence, ResidentTensorSnapshot, RuntimeDeviceIdentity,
+    ReleaseEvidenceBundle, ReleaseEvidencePolicy, ReleasePlatform, ReleasePlatformBinding,
+    ReleaseRevisionBinding, ReplicaRecoveryEvidence, ResidentTensorSnapshot, RuntimeDeviceIdentity,
     RuntimeMemoryReservations, ShapeProfileBinding, ShapeProfileExecutionEvidence,
     ShapeProfileExecutionPath, ShapeProfileFallbackReason, TensorBatchBenchmarkReport,
 };
@@ -161,6 +161,21 @@ fn fixture() -> Fixture {
 }
 
 fn policy(fixture: &Fixture, platforms: Vec<ReleasePlatform>) -> ReleaseEvidencePolicy {
+    let required_platforms = platforms
+        .into_iter()
+        .map(|platform| {
+            ReleasePlatformBinding::new(
+                platform,
+                &fixture
+                    .contracts
+                    .exact_fallback
+                    .selection
+                    .declaration_sha256,
+                &fixture.shape.tee_policy_sha256,
+            )
+            .unwrap()
+        })
+        .collect();
     ReleaseEvidencePolicy::new(
         ReleaseRevisionBinding::new(
             fixture.report.binding.power_version.clone(),
@@ -168,16 +183,9 @@ fn policy(fixture: &Fixture, platforms: Vec<ReleasePlatform>) -> ReleaseEvidence
             fixture.report.binding.weights_sha256.clone(),
             fixture.report.binding.graph_source_sha256.clone(),
             fixture.shape.graph_sha256.clone(),
-            fixture
-                .contracts
-                .exact_fallback
-                .selection
-                .declaration_sha256
-                .clone(),
-            fixture.shape.tee_policy_sha256.clone(),
         )
         .unwrap(),
-        platforms,
+        required_platforms,
     )
     .unwrap()
 }
@@ -195,11 +203,18 @@ fn capture(fixture: &Fixture) -> ReleaseCapture {
 #[test]
 fn model_neutral_release_bundle_round_trips_and_verifies_a_pin() {
     let fixture = fixture();
-    let bundle = ReleaseEvidenceBundle::build(
-        policy(&fixture, vec![ReleasePlatform::Cpu]),
-        vec![capture(&fixture)],
-    )
-    .unwrap();
+    let capture = capture(&fixture);
+    assert_eq!(
+        ReleaseRevisionBinding::from_capture(&capture).unwrap(),
+        policy(&fixture, vec![ReleasePlatform::Cpu]).revision
+    );
+    assert_eq!(
+        capture.platform_binding().unwrap().platform,
+        ReleasePlatform::Cpu
+    );
+    let bundle =
+        ReleaseEvidenceBundle::build(policy(&fixture, vec![ReleasePlatform::Cpu]), vec![capture])
+            .unwrap();
     bundle.verify().unwrap();
     bundle.verify_pinned(&bundle.sha256).unwrap();
 
@@ -213,13 +228,34 @@ fn model_neutral_release_bundle_round_trips_and_verifies_a_pin() {
 }
 
 #[test]
-fn strict_v1_policy_rejects_partial_platform_coverage() {
+fn strict_v1_policy_requires_and_binds_all_platform_profiles() {
     let fixture = fixture();
     let revision = policy(&fixture, vec![ReleasePlatform::Cpu]).revision;
-    let strict = ReleaseEvidencePolicy::strict_v1(revision).unwrap();
-    let error = ReleaseEvidenceBundle::build(strict, vec![capture(&fixture)]).unwrap_err();
+    let bindings = [
+        ReleasePlatform::Cpu,
+        ReleasePlatform::Cuda,
+        ReleasePlatform::Metal,
+        ReleasePlatform::ConfidentialGpu,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, platform)| {
+        ReleasePlatformBinding::new(
+            platform,
+            format!("{:064x}", index + 1),
+            format!("{:064x}", index + 5),
+        )
+        .unwrap()
+    })
+    .collect();
+    let strict = ReleaseEvidencePolicy::strict_v1(revision.clone(), bindings).unwrap();
+    assert_eq!(strict.required_platforms.len(), 4);
 
-    assert!(error.to_string().contains("coverage"));
+    let partial =
+        vec![ReleasePlatformBinding::new(ReleasePlatform::Cpu, digest('e'), digest('d')).unwrap()];
+    let error = ReleaseEvidencePolicy::strict_v1(revision, partial).unwrap_err();
+
+    assert!(error.to_string().contains("requires CPU"));
 }
 
 #[test]
@@ -295,7 +331,10 @@ fn policy_and_security_mismatches_fail_closed() {
     let fixture = fixture();
     assert!(ReleaseEvidencePolicy::new(
         policy(&fixture, vec![ReleasePlatform::Cpu]).revision,
-        vec![ReleasePlatform::Cpu, ReleasePlatform::Cpu],
+        vec![
+            ReleasePlatformBinding::new(ReleasePlatform::Cpu, digest('e'), digest('d')).unwrap(),
+            ReleasePlatformBinding::new(ReleasePlatform::Cpu, digest('f'), digest('d')).unwrap(),
+        ],
     )
     .is_err());
 
@@ -321,6 +360,18 @@ fn policy_and_security_mismatches_fail_closed() {
 }
 
 #[test]
+fn bundle_requires_the_capture_specific_profile_and_tee_policy() {
+    let fixture = fixture();
+    let mut wrong_profile = policy(&fixture, vec![ReleasePlatform::Cpu]);
+    wrong_profile.required_platforms[0].shape_profile_declaration_sha256 = digest('9');
+    assert!(ReleaseEvidenceBundle::build(wrong_profile, vec![capture(&fixture)]).is_err());
+
+    let mut wrong_tee = policy(&fixture, vec![ReleasePlatform::Cpu]);
+    wrong_tee.required_platforms[0].tee_policy_sha256 = digest('8');
+    assert!(ReleaseEvidenceBundle::build(wrong_tee, vec![capture(&fixture)]).is_err());
+}
+
+#[test]
 fn published_clean_revision_reports_replay_successfully() {
     for source in [
         include_str!("../../docs/benchmarks/release-gate-windows-20260821/cpu.json"),
@@ -338,6 +389,7 @@ fn release_evidence_types_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
 
     assert_send_sync::<ReleaseRevisionBinding>();
+    assert_send_sync::<ReleasePlatformBinding>();
     assert_send_sync::<ReleaseEvidencePolicy>();
     assert_send_sync::<ReleaseContractEvidence>();
     assert_send_sync::<ReleaseCapture>();
