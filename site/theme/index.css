@@ -439,7 +439,7 @@ a:hover > .power-arrow {
   display: grid;
   margin-top: 42px;
   grid-template-columns: minmax(0, 1.18fr) minmax(0, 0.82fr);
-  grid-template-rows: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(230px, auto));
   gap: 12px;
 }
 
@@ -543,11 +543,13 @@ a:hover > .power-arrow {
 
 .power-surfaces article {
   position: relative;
-  min-height: 220px;
+  display: flex;
+  min-height: 230px;
   padding: 24px;
   border: 1px solid var(--power-line);
   border-radius: 14px;
   background: color-mix(in srgb, var(--power-panel) 48%, var(--power-paper));
+  flex-direction: column;
 }
 
 .power-surfaces article:first-child {
@@ -579,15 +581,18 @@ a:hover > .power-arrow {
 }
 
 .power-surfaces article > code {
-  position: absolute;
-  right: 24px;
-  bottom: 24px;
-  left: 24px;
+  display: block;
+  margin-top: auto;
   padding-top: 14px;
   border-top: 1px solid var(--power-line);
   color: var(--power-faint);
   font-family: var(--power-mono);
   font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.power-surfaces article > p {
+  margin-bottom: 26px;
 }
 
 .power-contract {
@@ -779,6 +784,17 @@ html.dark .power-cta {
     gap: 36px;
   }
 
+  .power-surfaces__grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+  }
+
+  .power-surfaces article,
+  .power-surfaces article:first-child {
+    min-height: 230px;
+    grid-row: auto;
+  }
+
   .power-contract {
     grid-template-columns: 1fr;
     gap: 54px;
@@ -884,23 +900,6 @@ html.dark .power-cta {
     padding: 22px 0;
     grid-template-columns: 1fr;
     gap: 8px;
-  }
-
-  .power-surfaces__grid {
-    grid-template-columns: 1fr;
-    grid-template-rows: none;
-  }
-
-  .power-surfaces article,
-  .power-surfaces article:first-child {
-    min-height: 210px;
-    grid-row: auto;
-  }
-
-  .power-surfaces article > code {
-    position: static;
-    display: block;
-    margin-top: 26px;
   }
 
   .power-contract {
