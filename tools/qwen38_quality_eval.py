@@ -403,6 +403,8 @@ def parse_mtp_log(path: Path, task_count: int) -> dict[str, Any] | None:
         "fallback_replays",
     )
     optional_fields = (
+        "rollback_guard_activations",
+        "rollback_guard_draft_limit",
         "target_only_tokens",
         "fr_target_samples",
         "fr_target_samples_in_token_id_prefix",
@@ -491,6 +493,12 @@ def parse_mtp_log(path: Path, task_count: int) -> dict[str, Any] | None:
             )
             / sum(row["rounds"] for row in selected),
             "fallback_replays": int(sum(row["fallback_replays"] for row in selected)),
+            "rollback_guard_requests": sum(
+                row["rollback_guard_activations"] > 0 for row in selected
+            ),
+            "rollback_guard_activations": int(
+                sum(row["rollback_guard_activations"] for row in selected)
+            ),
             "target_only_requests": sum(
                 row["target_only_after_round"] is not None for row in selected
             ),

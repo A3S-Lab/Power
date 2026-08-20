@@ -4,6 +4,7 @@
 //! negotiation, block verification, and metrics remain in `crate::speculative`.
 
 mod metrics;
+mod rollback_guard;
 
 use llama_cpp_2::context::{
     params::{LlamaContextParams, LlamaContextType},
@@ -23,6 +24,7 @@ use crate::speculative::{
 };
 
 use self::metrics::{elapsed_ns, log_metrics, MtpPhaseTimings};
+use self::rollback_guard::RollbackReplayGuard;
 
 fn metadata_entry_enables_mtp(key: &str, value: &str) -> bool {
     key.ends_with(".nextn_predict_layers")
@@ -568,6 +570,9 @@ pub(super) fn run_mtp_completion(
             recurrent_snapshots as usize,
         )
     });
+    let mut rollback_guard = (!settings.adaptive).then(|| {
+        RollbackReplayGuard::new(settings.draft_max as usize, recurrent_snapshots as usize)
+    });
     let decode_started = std::time::Instant::now();
     let target_context_size = speculative.target_context().n_ctx() as usize;
     let mtp_fr_vocab_size = context_settings.mtp_fr_vocab_size;
@@ -697,6 +702,11 @@ pub(super) fn run_mtp_completion(
         let requested_draft_limit = adaptive
             .as_ref()
             .and_then(AdaptiveSpeculationController::draft_limit)
+            .or_else(|| {
+                rollback_guard
+                    .as_ref()
+                    .map(RollbackReplayGuard::draft_limit)
+            })
             .unwrap_or(settings.draft_max as usize);
         let draft_limit =
             bounded_draft_len(requested_draft_limit, remaining_tokens, remaining_context);
@@ -861,6 +871,14 @@ pub(super) fn run_mtp_completion(
         timings.accepted_prefix_histogram[verified.accepted.min(64)] =
             timings.accepted_prefix_histogram[verified.accepted.min(64)].saturating_add(1);
         timings.max_rejected_suffix = timings.max_rejected_suffix.max(rejected_suffix);
+        if let Some(guard) = rollback_guard.as_mut() {
+            if guard.observe_rejected_suffix(rejected_suffix, metrics.rounds.saturating_add(1)) {
+                timings.rollback_guard_activations =
+                    timings.rollback_guard_activations.saturating_add(1);
+                timings.rollback_guard_draft_limit = guard.draft_limit();
+                timings.rollback_guard_after_round = guard.activated_after_round();
+            }
+        }
         if rejected_suffix > recurrent_snapshots as usize {
             timings.fallback_replays = timings.fallback_replays.saturating_add(1);
             replay_target_prefix(&mut speculative, &committed_tokens, &mut sync_batch)?;

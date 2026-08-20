@@ -207,25 +207,29 @@ def aggregate_reports(
             modes[mode]["speculative_runtime"] = {
                 "overall": {
                     field: describe(
-                        report["overall"][field] for report in runtime_reports
+                        report["overall"].get(field, 0) for report in runtime_reports
                     )
                     for field in (
                         "weighted_acceptance_rate",
                         "verified_tokens_per_target_pass",
                         "fallback_replays",
+                        "rollback_guard_requests",
+                        "rollback_guard_activations",
                         "aggregate_reported_tokens_per_second",
                     )
                 },
                 "by_benchmark": {
                     benchmark: {
                         field: describe(
-                            report["by_benchmark"][benchmark][field]
+                            report["by_benchmark"][benchmark].get(field, 0)
                             for report in runtime_reports
                         )
                         for field in (
                             "weighted_acceptance_rate",
                             "verified_tokens_per_target_pass",
                             "fallback_replays",
+                            "rollback_guard_requests",
+                            "rollback_guard_activations",
                             "aggregate_reported_tokens_per_second",
                         )
                     }
@@ -273,6 +277,8 @@ def aggregate_sweep_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
         "weighted_acceptance_rate",
         "verified_tokens_per_target_pass",
         "fallback_replays",
+        "rollback_guard_requests",
+        "rollback_guard_activations",
         "aggregate_reported_tokens_per_second",
         "target_only_requests",
         "target_only_tokens",

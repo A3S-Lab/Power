@@ -257,6 +257,7 @@ class RuntimeLogTests(unittest.TestCase):
             'speculative completion finished strategy="mtp" rounds=12 '
             "drafted_tokens=24 accepted_tokens=6 emitted_tokens=18 "
             "verified_emitted_tokens=18 tokens_per_second=45.0 fallback_replays=0 "
+            "rollback_guard_activations=1 rollback_guard_draft_limit=6 "
             "target_only_tokens=9 target_only_after_round=Some(12) "
             "fr_target_samples=30 fr_target_samples_in_token_id_prefix=24 "
             "fr_rejected_rounds=10 fr_corrections_outside_token_id_prefix=4 "
@@ -271,6 +272,8 @@ class RuntimeLogTests(unittest.TestCase):
         overall = metrics["overall"]
         self.assertEqual(overall["target_only_requests"], 1)
         self.assertEqual(overall["target_only_tokens"], 9)
+        self.assertEqual(overall["rollback_guard_requests"], 1)
+        self.assertEqual(overall["rollback_guard_activations"], 1)
         self.assertAlmostEqual(overall["fr_target_token_id_prefix_fraction"], 0.8)
         self.assertAlmostEqual(
             overall["fr_correction_outside_token_id_prefix_fraction"], 0.4
