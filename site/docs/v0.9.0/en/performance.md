@@ -10,6 +10,10 @@ its execution contract. The published Qwen3.8 captures therefore use the real
 streaming API, pin artifact and binary identities, verify deterministic output,
 and report quality and workload throughput beside steady decode.
 
+To verify the numbers directly, open [Reproduction](./reproduction): run the
+model-free one-command verifier first, then replay the full RTX 4090 protocol
+against the same input identities.
+
 ## Quality and speed by mode
 
 | Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
@@ -64,6 +68,10 @@ to 27.951 token/s, and C-Eval acceptance was only 14.21%. Full-vocabulary K7/S7
 removes that draft-coverage bottleneck.
 
 ## Reproduce the boundary
+
+The dedicated [Reproduction page](./reproduction) provides copyable commands,
+the fixed environment, input SHA-256 values, complete runner arguments, output
+files, and pass criteria.
 
 The full replay has two levels:
 

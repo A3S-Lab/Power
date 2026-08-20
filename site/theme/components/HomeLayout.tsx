@@ -6,6 +6,7 @@ import {
 } from "@rspress/core/runtime";
 
 import { CodeExecutionDemo } from "./CodeExecutionDemo";
+import "./PerformanceProof.css";
 
 type Locale = "zh" | "en";
 
@@ -23,13 +24,15 @@ const modeData = [
     steady: "-",
   },
   {
-    mode: "TBQ4 + MTP / K7-S7",
+    mode: "TBQ4 + MTP / K7/S7",
     quality: "76 / 66",
     request: "83.228",
     steady: "175.2089",
     current: true,
   },
 ];
+
+const benchmarkMetricValues = ["175.2089", "83.228", "76 / 66", "51.33%"];
 
 const homeCopy = {
   zh: {
@@ -41,7 +44,11 @@ const homeCopy = {
     primaryAction: "从运行时开始",
     evidenceAction: "查看实测证据",
     cargoLabel: "Cargo 依赖",
-    facts: ["稳态 token/s 边界", "请求全程 token/s", "矩阵请求全部完成"],
+    facts: [
+      "K7/S7 稳态解码 token/s",
+      "K7/S7 请求全程 token/s",
+      "100 题 × 3 轮完成请求",
+    ],
     principlesTitle: "当推理中的隐含假设成为显式契约，系统才值得信任。",
     principles: [
       {
@@ -59,6 +66,14 @@ const homeCopy = {
     ],
     measuredTitle: "性能边界必须附带可复验回执，而不是脱离语境的数字。",
     reproduce: "复现基准测试",
+    benchmarkContext:
+      "RTX 4090 · Qwen3.8-27B · Q6_K 衍生 TBQ4 + 全词表 MTP K7/S7 · 1 次预热 + 9 × 1,024 token",
+    metrics: [
+      "稳态解码中位数 token/s",
+      "请求全程平均 token/s",
+      "宽松 / 严格质量分",
+      "proposal 加权接受率",
+    ],
     columns: ["模型制品 / 模式", "宽松 / 严格", "请求全程 t/s", "稳态 t/s"],
     current: "当前",
     note:
@@ -109,9 +124,9 @@ const homeCopy = {
     evidenceAction: "Inspect the evidence",
     cargoLabel: "Cargo dependency",
     facts: [
-      "steady token/s boundary",
-      "request-wide token/s",
-      "matrix requests completed",
+      "K7/S7 steady-decode token/s",
+      "K7/S7 request-wide token/s",
+      "100 tasks × 3 runs completed",
     ],
     principlesTitle:
       "Inference becomes trustworthy when its hidden assumptions become contracts.",
@@ -132,6 +147,14 @@ const homeCopy = {
     measuredTitle:
       "A performance boundary with receipts, not a headline without context.",
     reproduce: "Reproduce the benchmark",
+    benchmarkContext:
+      "RTX 4090 · Qwen3.8-27B · Q6_K-derived TBQ4 + full-vocabulary MTP K7/S7 · 1 warm-up + 9 × 1,024 tokens",
+    metrics: [
+      "median steady-decode token/s",
+      "mean request-wide token/s",
+      "lenient / strict quality",
+      "weighted proposal acceptance",
+    ],
     columns: [
       "Artifact / mode",
       "Lenient / strict",
@@ -209,7 +232,7 @@ export function HomeLayout() {
 
   const architectureHref = route("/architecture");
   const benchmarkHref = route("/performance");
-  const reproduceHref = route("/performance#reproduce-the-boundary");
+  const reproduceHref = route("/reproduction");
   const speculationHref = route("/speculative-decoding");
 
   return (
@@ -271,9 +294,20 @@ export function HomeLayout() {
 
       <section className="power-section power-proof" aria-labelledby="proof-title">
         <header className="power-section__header power-section__header--split">
-          <div><h2 id="proof-title">{copy.measuredTitle}</h2></div>
+          <div>
+            <h2 id="proof-title">{copy.measuredTitle}</h2>
+            <p className="power-proof__context">{copy.benchmarkContext}</p>
+          </div>
           <a href={reproduceHref}>{copy.reproduce} <ArrowIcon /></a>
         </header>
+        <dl className="power-proof__metrics">
+          {benchmarkMetricValues.map((value, index) => (
+            <div key={value}>
+              <dt>{value}</dt>
+              <dd>{copy.metrics[index]}</dd>
+            </div>
+          ))}
+        </dl>
         <div className="power-proof__table-wrap">
           <table>
             <thead><tr>{copy.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>

@@ -1,8 +1,94 @@
 import * as path from "node:path";
-import { defineConfig, type UserConfig } from "@rspress/core";
+import {
+  defineConfig,
+  type Nav,
+  type NavItem,
+  type UserConfig,
+} from "@rspress/core";
 
 const base = process.env.DOCS_BASE ?? "/Power/";
 const siteOrigin = process.env.DOCS_ORIGIN ?? "https://a3s-lab.github.io";
+const docVersions = ["next", "v0.9.0"] as const;
+
+interface NavigationLabels {
+  architecture: string;
+  docs: string;
+  gettingStarted: string;
+  operations: string;
+  performance: string;
+  reproduce: string;
+  speculativeDecoding: string;
+  verification: string;
+}
+
+function createNavigation(
+  localePath: "" | "en",
+  labels: NavigationLabels,
+): Nav {
+  const navigation: Record<string, NavItem[]> = {};
+
+  for (const version of docVersions) {
+    const routePrefix = [version === "next" ? "" : version, localePath]
+      .filter(Boolean)
+      .join("/");
+    const route = (page: string) =>
+      `/${[routePrefix, page].filter(Boolean).join("/")}`;
+
+    navigation[version] = [
+      {
+        text: labels.docs,
+        link: route("getting-started"),
+        position: "left",
+        items: [
+          { text: labels.gettingStarted, link: route("getting-started") },
+          { text: labels.architecture, link: route("architecture") },
+          {
+            text: labels.speculativeDecoding,
+            link: route("speculative-decoding"),
+          },
+          { text: labels.verification, link: route("verification") },
+          { text: labels.operations, link: route("operations") },
+        ],
+      },
+      {
+        text: labels.performance,
+        link: route("performance"),
+        activeMatch: "/performance",
+        position: "left",
+      },
+      {
+        text: labels.reproduce,
+        link: route("reproduction"),
+        activeMatch: "/reproduction",
+        position: "left",
+      },
+    ];
+  }
+
+  return navigation;
+}
+
+const zhNavigation = createNavigation("", {
+  architecture: "架构设计",
+  docs: "文档",
+  gettingStarted: "快速开始",
+  operations: "部署运维",
+  performance: "性能",
+  reproduce: "复现实验",
+  speculativeDecoding: "推测解码",
+  verification: "独立验证",
+});
+
+const enNavigation = createNavigation("en", {
+  architecture: "Architecture",
+  docs: "Docs",
+  gettingStarted: "Getting started",
+  operations: "Operations",
+  performance: "Performance",
+  reproduce: "Reproduce",
+  speculativeDecoding: "Speculative decoding",
+  verification: "Verification",
+});
 
 const config: UserConfig = {
   root: path.join(__dirname, "docs"),
@@ -62,6 +148,10 @@ const config: UserConfig = {
   themeConfig: {
     search: true,
     enableContentAnimation: true,
+    locales: [
+      { lang: "zh", label: "简体中文", nav: zhNavigation },
+      { lang: "en", label: "English", nav: enNavigation },
+    ],
     editLink: {
       docRepoBaseUrl: "https://github.com/A3S-Lab/Power/tree/main/site/docs",
     },

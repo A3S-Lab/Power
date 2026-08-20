@@ -37,6 +37,10 @@ const routeChecks = [
       "EmbeddedRuntime::new",
       "begin_wait",
       "规范化回执",
+      "文档",
+      "性能",
+      "复现实验",
+      "51.33%",
     ],
   },
   {
@@ -50,6 +54,10 @@ const routeChecks = [
       "EmbeddedRuntime::new",
       "begin_wait",
       "Canonical receipt",
+      "Docs",
+      "Performance",
+      "Reproduce",
+      "51.33%",
     ],
   },
   {
@@ -63,6 +71,10 @@ const routeChecks = [
       "EmbeddedRuntime::new",
       "begin_wait",
       "规范化回执",
+      "文档",
+      "性能",
+      "复现实验",
+      "51.33%",
     ],
   },
   {
@@ -76,6 +88,10 @@ const routeChecks = [
       "EmbeddedRuntime::new",
       "begin_wait",
       "Canonical receipt",
+      "Docs",
+      "Performance",
+      "Reproduce",
+      "51.33%",
     ],
   },
   {
@@ -98,6 +114,44 @@ const routeChecks = [
     lang: "en",
     copy: ["Performance evidence", "175.2089"],
   },
+  {
+    file: "reproduction.html",
+    lang: "zh",
+    copy: [
+      "复现实验",
+      "verify-qwen38-q6k-evidence.ps1",
+      "run-qwen38-q6k-benchmark.ps1",
+      "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+    ],
+  },
+  {
+    file: path.join("en", "reproduction.html"),
+    lang: "en",
+    copy: [
+      "Reproduction",
+      "verify-qwen38-q6k-evidence.ps1",
+      "run-qwen38-q6k-benchmark.ps1",
+      "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+    ],
+  },
+  {
+    file: path.join("v0.9.0", "reproduction.html"),
+    lang: "zh",
+    copy: [
+      "复现实验",
+      "verify-qwen38-q6k-evidence.ps1",
+      "run-qwen38-q6k-benchmark.ps1",
+    ],
+  },
+  {
+    file: path.join("v0.9.0", "en", "reproduction.html"),
+    lang: "en",
+    copy: [
+      "Reproduction",
+      "verify-qwen38-q6k-evidence.ps1",
+      "run-qwen38-q6k-benchmark.ps1",
+    ],
+  },
 ];
 
 for (const route of routeChecks) {
@@ -107,6 +161,7 @@ for (const route of routeChecks) {
   }
 
   const html = readFileSync(renderedPath, "utf8");
+  const renderedText = html.replace(/<[^>]+>/g, "");
   if (!html.includes(`<html lang="${route.lang}">`)) {
     throw new Error(`Rendered route has the wrong language: ${route.file}`);
   }
@@ -114,7 +169,7 @@ for (const route of routeChecks) {
     throw new Error(`Rendered route is missing the A3S OS logo: ${route.file}`);
   }
   for (const copy of route.copy) {
-    if (!html.includes(copy)) {
+    if (!html.includes(copy) && !renderedText.includes(copy)) {
       throw new Error(`Rendered route ${route.file} is missing copy: ${copy}`);
     }
   }
@@ -136,9 +191,9 @@ if (logoHash !== expectedLogoHash) {
   throw new Error(`Built A3S OS logo has an unexpected SHA-256: ${logoHash}`);
 }
 
-if (htmlFiles.length < 29) {
+if (htmlFiles.length < 33) {
   throw new Error(
-    `Expected 28 localized/versioned pages plus 404, found ${htmlFiles.length}`,
+    `Expected 32 localized/versioned pages plus 404, found ${htmlFiles.length}`,
   );
 }
 

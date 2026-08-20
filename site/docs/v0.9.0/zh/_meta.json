@@ -16,6 +16,11 @@
   },
   {
     "type": "file",
+    "name": "reproduction",
+    "label": "复现实验"
+  },
+  {
+    "type": "file",
     "name": "speculative-decoding",
     "label": "推测解码"
   },

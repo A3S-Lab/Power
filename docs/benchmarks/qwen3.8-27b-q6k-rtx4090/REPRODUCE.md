@@ -173,6 +173,19 @@ contention from other WDDM clients on a shared display GPU.
 
 ## 4. Verify the archived performance evidence offline
 
+Run the checked-in verifier first. It requires neither the model nor an NVIDIA
+GPU, verifies six pinned file hashes, and recomputes the current quality and
+steady-decode acceptance values shown below:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\verify-qwen38-q6k-evidence.ps1 -Json
+```
+
+A passing run exits with code zero and reports `"status": "passed"`. The
+expanded commands below document the individual assertions implemented by the
+verifier and remain useful when diagnosing a mismatch.
+
 First verify the current compact evidence and its distinction between
 request-wide workload throughput and steady decode:
 
@@ -260,7 +273,7 @@ following checks on 2026-08-20:
 | Python harness tests | 28 passed, 0 failed |
 | Rust formatting | Passed |
 | PowerShell syntax | 3 current benchmark runners parsed |
-| Benchmark evidence | Current compact assertions passed; historical final report and 4 pinned hashes verified |
+| Benchmark evidence | One-command verifier passed; current compact assertions and 6 pinned file hashes verified |
 | Quality archive | 900 current requests completed; aggregate, environment, manifest, ACL, and source hashes pinned |
 | Documentation links | All local links in changed documents resolved, 0 missing |
 

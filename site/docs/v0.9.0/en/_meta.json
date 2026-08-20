@@ -16,6 +16,11 @@
   },
   {
     "type": "file",
+    "name": "reproduction",
+    "label": "Reproduction"
+  },
+  {
+    "type": "file",
     "name": "speculative-decoding",
     "label": "Speculative decoding"
   },
