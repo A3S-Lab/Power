@@ -1,5 +1,6 @@
 host = "127.0.0.1"
-port = 11436
+port = 11434
+data_dir = "D:/models/a3s-power/qwen38/power-home-tbq4-0-ffn"
 max_loaded_models = 1
 spec_mode = "mtp"
 spec_draft_max = 7
