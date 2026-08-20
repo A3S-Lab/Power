@@ -75,8 +75,11 @@ pub(super) fn verify_report(report: &TensorBatchBenchmarkReport) -> Result<()> {
             "tensor batch benchmark does not contain two samples per measured round".to_string(),
         ));
     }
-    for (round, pair) in report.samples.chunks_exact(2).enumerate() {
-        validate_pair(report, round, pair)?;
+    for round in 0..report.measured_rounds {
+        let pair_start = round.checked_mul(2).ok_or_else(|| {
+            PowerError::InvalidFormat("benchmark sample index overflowed".to_string())
+        })?;
+        validate_pair(report, round, &report.samples[pair_start..pair_start + 2])?;
     }
     let expected_summaries = summaries(&report.samples)?;
     if report.summaries != expected_summaries {

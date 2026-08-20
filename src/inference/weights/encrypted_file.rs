@@ -38,7 +38,8 @@ impl SeekableWeightKey {
             ));
         }
         let mut bytes = Zeroizing::new([0_u8; 32]);
-        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        for (index, pair_start) in (0..value.len()).step_by(2).enumerate() {
+            let pair = &value.as_bytes()[pair_start..pair_start + 2];
             let pair = std::str::from_utf8(pair).map_err(|_| {
                 PowerError::Config("seekable weight key contains invalid hexadecimal".to_string())
             })?;
