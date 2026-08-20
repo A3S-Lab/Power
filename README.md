@@ -42,12 +42,12 @@ streaming API, not a standalone llama.cpp microbenchmark.
 
 | Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Mean request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
-| Untouched Q6_K, autoregressive | 66/100 lenient; 59/100 strict (100 tasks, 3x) | 34.551 token/s | 35.5793 token/s |
+| Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
 | Untouched Q6_K, native MTP | Matrix not run; fixed peak prompt has exact greedy parity | -- | 140.1600 token/s |
-| TBQ4 mixed, autoregressive | 72/100 lenient; 64/100 strict (100 tasks, 3x) | **41.745 token/s** | -- |
-| TBQ4 mixed + MTP + prefix FR | 72/100 lenient; 60/100 strict (100 tasks, 3x) | 27.951 token/s | 184.3665 token/s |
-| TBQ4 mixed + full-vocabulary fixed MTP, K7/S7 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | **68.211 token/s** | -- |
-| TBQ4 mixed + full-vocabulary fixed MTP, host-staged K7/S6 with affinity | Matrix not run | -- | **177.3062 token/s** |
+| TBQ4 mixed, autoregressive | 70/100 lenient; 64/100 strict (100 tasks, 3x) | 38.724 token/s | -- |
+| TBQ4 mixed + full-vocabulary fixed MTP, K7/S7 | **76/100 lenient; 66/100 strict** (100 tasks, 3x) | **83.228 token/s** | **175.2089 token/s** |
+| TBQ4 mixed + full-vocabulary guarded MTP, K7/S6 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | 54.060 token/s | **177.7165 token/s** |
+| TBQ4 mixed + MTP + prefix FR (historical) | 72/100 lenient; 60/100 strict (100 tasks, 3x) | 27.951 token/s | 184.3665 token/s |
 | UD-Q8_K_XL, autoregressive heterogeneous placement | Matrix not run | -- | 6.3484 token/s |
 | UD-Q8_K_XL, native MTP K4/S4 heterogeneous placement | Matrix not run; cross-mode output hashes differ | -- | 9.7577 token/s |
 
@@ -59,20 +59,26 @@ decode is a warmed-up repetitive long-output measurement. See the
 [consolidated mode table](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md#quality-and-speed-by-mode)
 for the omitted calibration modes, limitations, and evidence links.
 
-The current captured binary reached a 177.3062 token/s median and 175.5958 minimum
-across nine 1,024-token samples. All nine passed 175 token/s. An order-balanced
-A/B pinned ten worker threads to one logical processor per physical Xeon
-W5-2445 core and raised the combined median from 173.0114 to 176.8276 token/s
-(2.21%). The topology-specific mask is recorded by the benchmark runner and is
-not a portable product default. Earlier quiet-WDDM captures reached 187.6094
-and 188.2972 token/s, while a contended 256-token run fell to 159.8593, so 175
-remains an observed boundary rather than a guaranteed floor on this shared
-display GPU. These results used an RTX 4090, Flash Attention, full CUDA layer
-offload, a high-performance host power plan, and a Q6_K-derived artifact whose
-main FFN tensors were requantized to Q4_0. It is **not** an untouched 6-bit
-result. The full target output and MTP block remain Q6_K, the separate draft
-head retains all vocabulary rows in Q4_K, the target verifies every proposal,
-and every archived sample produced its expected deterministic output digest.
+The current rollback-complete K7/S7 profile reached a 175.2089 token/s median
+across nine 1,024-token samples, with a 174.2211 token/s minimum and five of
+nine samples at or above 175. The guarded K7/S6 peak profile reached a 177.7165
+token/s median and a 176.7287 token/s minimum, with all nine samples above 175.
+K7/S6 preserves its high-acceptance fast path; after the first exact replay in
+a low-acceptance request, the request-local guard permanently clamps proposals
+to the six-snapshot rollback window. K7/S7 is the balanced mixed-workload
+default because it needs no replay or clamp. The topology-specific `0x55555`
+mask pins ten worker threads to one logical processor per physical Xeon
+W5-2445 core and is not a portable product default.
+
+These are observed steady-decode boundaries, not a 175 token/s service floor.
+Earlier quiet-WDDM captures reached 187.6094 and 188.2972 token/s, while a
+contended 256-token run fell to 159.8593. All current results used an RTX 4090,
+Flash Attention, full CUDA layer offload, a high-performance host power plan,
+and a Q6_K-derived artifact whose main FFN tensors were requantized to Q4_0.
+It is **not** an untouched 6-bit result. The target output and MTP block remain
+Q6_K, the separate draft head retains all vocabulary rows in Q4_K, the target
+verifies every proposal, and every current peak sample produced the expected
+deterministic output digest.
 
 A separate representative matrix fixes 100 MMLU, GSM8K, and C-Eval tasks,
 rotates mode order, and repeats every mode three times. Its throughput includes
@@ -81,21 +87,25 @@ steady-state decode:
 
 | Qwen3.8-27B mode | Lenient score | Strict score | Mean workload throughput |
 | --- | ---: | ---: | ---: |
-| Autoregressive, untouched Q6_K | 66/100 | 59/100 | 34.551 token/s |
-| Autoregressive, TBQ4 mixed artifact | 72/100 | 64/100 | **41.745 token/s** |
-| TBQ4 + MTP + prefix FR (earlier build) | 72/100 | 60/100 | 27.951 token/s |
+| Autoregressive, untouched Q6_K | 67/100 | 60/100 | 30.883 token/s |
+| Autoregressive, TBQ4 mixed artifact | 70/100 | 64/100 | 38.724 token/s |
+| TBQ4 + full-vocabulary MTP, fixed K7/S7 | **76/100** | **66/100** | **83.228 token/s** |
 
-TBQ4 without speculation was 20.8% faster than untouched Q6_K on that
-workload. The earlier prefix-FR MTP build was 33.0% slower than TBQ4-off
-overall: it improved GSM8K throughput by 6.9%, but C-Eval draft acceptance fell
-to 14.21%. The repeated matrix therefore selects TBQ4-off for that
-representative workload. A newer three-run, 12-task calibration of the
-full-vocabulary path reached 68.211 token/s with fixed K7/S7 versus 35.048
-token/s with TBQ4-off, with zero fallback replays and the same 5/12 lenient and
-3/12 strict scores. Fixed K7/S6 instead triggered 46 exact prefix replays per
-run and fell to 28.226 token/s. This establishes the rollback-safe
-configuration but remains too small to replace the 100-task release matrix;
-the 188.2972 token/s long-window result is still a workload-sensitive peak.
+On the current binary, TBQ4-off was 25.4% faster than untouched Q6_K and K7/S7
+was 114.9% faster than TBQ4-off on the same request-wide workload. K7/S7 moved
+from 70 to 76 lenient answers and from 64 to 66 strict answers. The paired
+TBQ4-off comparison had seven lenient gains and one loss (`p=0.0703`) and three
+strict gains and one loss (`p=0.625`, exact McNemar). This is **no observed
+intelligence regression** on the fixed sample, but neither comparison reaches
+the conventional 0.05 threshold, so it is not proof that MTP improves general
+model intelligence. All 100 task predictions were stable across the three
+repetitions, all 900 requests completed without errors, acceptance was 51.33%,
+and fallback replay and rollback-guard activation were both zero.
+
+The earlier prefix-FR matrix remains archived as a rejected universal default:
+its workload-wide acceptance fell to 25.55% and its 27.951 token/s request-wide
+rate was 33.0% below that historical TBQ4-off capture. Full-vocabulary K7/S7
+removes that domain-coverage failure while retaining exact target verification.
 
 The larger 31.46 GB UD-Q8_K_XL artifact also ran through exact CPU/GPU tensor
 placement, reaching 9.7577 token/s with MTP. Its cross-mode output hashes
@@ -295,23 +305,27 @@ backend-supported default.
 ```acl
 spec_mode = "mtp"
 spec_draft_max = 7
-spec_mtp_recurrent_snapshots = 6
+spec_mtp_recurrent_snapshots = 7
 
 # Optional and experimental; requires the patched llamacpp-mtp-fr build.
 # A compact d2t head uses ranked rows; omit this key for the full draft head.
 # spec_mtp_fr_vocab_size = 8192
 ```
 
-Recurrent snapshots trade memory for rollback cost. When a rejected suffix is
-longer than the resident snapshot window, Power replays the exact accepted
-target prefix. Reduced-vocabulary projection affects only the MTP draft head;
-it is workload-sensitive and must be retuned across languages and domains.
-The current 175 token/s gate keeps the full draft vocabulary.
+Recurrent snapshots trade memory for rollback cost. K7/S7 is the balanced
+default because every proposal has a resident rollback point. A deliberately
+narrow K7/S6 profile may replay the exact accepted target prefix once; its
+request-local guard then clamps later rounds to six proposals. Reduced-
+vocabulary projection affects only the MTP draft head; it is workload-sensitive
+and must be retuned across languages and domains. The current gates keep the
+full draft vocabulary.
 
 TBQ4 is an artifact construction choice, not a generic runtime switch. The
-current long-window 188.2972 token/s capture combines that mixed artifact with
-native MTP, full-vocabulary drafting, batched target/draft greedy CUDA sampling, Flash
-Attention, and host/GPU tuning.
+current K7/S7 capture combines that mixed artifact with native MTP,
+full-vocabulary drafting, batched target/draft greedy CUDA sampling, Flash
+Attention, and host/GPU tuning. It reached 175.2089 token/s steady decode and
+83.228 token/s request-wide throughput on the fixed 100-task workload. The
+188.2972 token/s capture is retained as a historical quiet-WDDM high-water mark.
 
 ## Configuration
 

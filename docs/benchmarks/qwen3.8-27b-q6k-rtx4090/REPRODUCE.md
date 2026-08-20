@@ -12,7 +12,28 @@ capture was made on Windows 11 with an RTX 4090 and a 10-core / 20-thread Intel
 Xeon w5-2445. The CPU affinity mask and GPU clock control are specific to that
 host; do not copy them to a different topology without a new A/B measurement.
 
-## Published acceptance target
+## Current acceptance targets
+
+| Input or result | Current value |
+| --- | --- |
+| Model | Q6_K-derived mixed TBQ4 artifact, 19,187,686,464 bytes |
+| Model SHA-256 | `5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6` |
+| Server SHA-256 | `2beb4cd460eee49ea8ab350bf19b4941e2cd121faa62a44a26846eec6eb66082` |
+| Prompt SHA-256 | `d95a5e4dad822ba9c84138f7a120017318bcb3a6a90e77246a8ec4ede0e65d89` |
+| Workload | 1 warm-up, 9 measured requests, 1,024 generated tokens each, batch 14 |
+| Guarded K7/S6 | 177.7165 token/s median; 176.7287 minimum; 9 / 9 at least 175 |
+| Rollback-complete K7/S7 | 175.2089 token/s median; 174.2211 minimum; median gate passed, 5 / 9 at least 175 |
+| Output SHA-256 | `a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523` |
+| Current 3x100 K7/S7 quality | 76/100 lenient; 66/100 strict; 83.228 token/s request-wide; zero replay |
+| Compact evidence | [`quality/full-vocabulary-s7-current-rtx4090-3x.json`](quality/full-vocabulary-s7-current-rtx4090-3x.json) |
+
+K7/S7 is the balanced mixed-workload profile. Guarded K7/S6 is the peak
+profile: it preserves the high-acceptance fast path, but a low-acceptance
+request may perform one exact replay before being clamped to six proposals.
+The performance threshold is median-based; only the guarded S6 capture kept
+every current sample above 175 token/s.
+
+## Historical checked-in raw acceptance capture
 
 | Input or result | Published value |
 | --- | --- |
@@ -27,14 +48,14 @@ host; do not copy them to a different topology without a new A/B measurement.
 | Report SHA-256 | `ad478dfdb3df7d3560fb39eeb2be854715bbb483a985c8e10793df053c0c2d72` |
 | Environment SHA-256 | `c0cb352e99dcdd2c9bd487cb7501a1f231c97ef5a661c26446ef3c2e4f5eda8d` |
 
-The archived environment discloses a dirty worktree based on commit
+The historical environment discloses a dirty worktree based on commit
 `955b4552ca091af07818573e803f9369488a63f9`; its server and client executable
 digests are therefore the exact historical binary identities. A replay from
 the merged clean commit is a new capture. Its Git revision, executable hashes,
 timestamps, and report hash will differ even when the measured behavior is the
 same.
 
-The evidence JSON, ACL, and prompt files are marked `-text` in
+The historical evidence JSON, ACL, and prompt files are marked `-text` in
 `.gitattributes`. Git therefore preserves their captured bytes instead of
 applying platform line-ending conversion, so the published SHA-256 values are
 stable across clones.
@@ -86,18 +107,23 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $modelFile.FullName).Hash -ne
 }
 
 $promptPath = '.\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\prompt.txt'
-$configPath = '.\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\mtp7-snap6-full-vocab-cpu-embedding.acl'
+$peakConfigPath = '.\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\mtp7-snap6-full-vocab-cpu-embedding.acl'
+$balancedConfigPath = '.\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\mtp7-snap7-full-vocab-cpu-embedding.acl'
 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $promptPath).Hash -ne
     'D95A5E4DAD822BA9C84138F7A120017318BCB3A6A90E77246A8EC4EDE0E65D89') {
   throw 'Unexpected prompt hash'
 }
-if ((Get-FileHash -Algorithm SHA256 -LiteralPath $configPath).Hash -ne
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $peakConfigPath).Hash -ne
     '2F348CCA96282A22650D9766CFFA81251EA10A5E34A089BCC91B0822AB5C1D0E') {
-  throw 'Unexpected ACL hash'
+  throw 'Unexpected K7/S6 ACL hash'
+}
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $balancedConfigPath).Hash -ne
+    '759EF6E5E60A08939ED747558992FA3031D63D2ECD59DACFDAE59790CC6FF79A') {
+  throw 'Unexpected K7/S7 ACL hash'
 }
 ```
 
-## 3. Run the 175 token/s gate
+## 3. Run the current 175 token/s gates
 
 Use an otherwise idle GPU. The clock-lock operation may require an elevated
 terminal and is reset by the runner in its `finally` block. The runner records
@@ -107,8 +133,22 @@ process snapshot in a companion environment file.
 
 ```powershell
 .\tools\run-qwen38-q6k-benchmark.ps1 `
-  -Label final-affinity-1024-9x-replay `
+  -Label rollback-guard-s6-affinity-1024-9x-replay `
   -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\mtp7-snap6-full-vocab-cpu-embedding.acl `
+  -PromptFile .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\prompt.txt `
+  -BenchmarkRoot D:\models\a3s-power\qwen38\benchmark `
+  -PowerHome D:\models\a3s-power\qwen38\power-home-tbq4-0-ffn `
+  -ModelHash 5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6 `
+  -MaxTokens 1024 -NumBatch 14 -WarmupRuns 1 -Samples 9 `
+  -MinimumTokensPerSecond 175 -ProcessPriority High `
+  -ProcessorAffinityMask 349525 `
+  -LockGpuClockMHz 2745 `
+  -TargetDirectory target-native-sm89-ninja `
+  -RequireHighPerformancePowerPlan -RequireCleanTree
+
+.\tools\run-qwen38-q6k-benchmark.ps1 `
+  -Label rollback-complete-s7-affinity-1024-9x-replay `
+  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\mtp7-snap7-full-vocab-cpu-embedding.acl `
   -PromptFile .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\prompt.txt `
   -BenchmarkRoot D:\models\a3s-power\qwen38\benchmark `
   -PowerHome D:\models\a3s-power\qwen38\power-home-tbq4-0-ffn `
@@ -124,7 +164,8 @@ process snapshot in a companion environment file.
 The command returns nonzero when the median misses 175 token/s, the model
 identity changes, the output is non-deterministic, a request stops before 1,024
 tokens, the backend is not exclusive, or a required host control is absent.
-Failed reports are retained for diagnosis.
+Failed reports are retained for diagnosis. Use S7 for the balanced gate and S6
+only when intentionally measuring the guarded peak profile.
 
 For the historical short-window shape, use `-MaxTokens 256 -NumBatch 20` and a
 new label. A clock lock reduces one source of variance but cannot eliminate
@@ -132,9 +173,28 @@ contention from other WDDM clients on a shared display GPU.
 
 ## 4. Verify the archived performance evidence offline
 
-This check recomputes the median and minimum from all nine raw samples, verifies
-the threshold and output digest, and verifies the archived report, environment,
-ACL, and prompt hashes:
+First verify the current compact evidence and its distinction between
+request-wide workload throughput and steady decode:
+
+```powershell
+$currentPath = '.\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\full-vocabulary-s7-current-rtx4090-3x.json'
+$current = Get-Content -Raw -LiteralPath $currentPath | ConvertFrom-Json
+$s7 = $current.modes | Where-Object name -eq 'tbq4-mtp-full-vocab-k7-s7'
+
+if ($s7.lenient_score -ne 76 -or
+    $s7.strict_score -ne 66 -or
+    [math]::Abs($s7.mean_workload_tokens_per_second - 83.22814601950864) -gt 1e-9 -or
+    ($s7.fallback_replays_per_run -join ',') -ne '0,0,0' -or
+    [math]::Abs($current.peak_gates.k7_s7_rollback_complete.median_decode_tokens_per_second -
+      175.20889378841997) -gt 1e-9 -or
+    $current.peak_gates.k7_s6_guarded.samples_at_or_above_175 -ne 9) {
+  throw 'Current compact evidence did not validate'
+}
+```
+
+The following historical check recomputes the median and minimum from all nine
+checked-in raw samples, verifies the threshold and output digest, and verifies
+the archived report, environment, ACL, and prompt hashes:
 
 ```powershell
 $evidenceRoot = '.\docs\benchmarks\qwen3.8-27b-q6k-rtx4090'
@@ -178,8 +238,10 @@ foreach ($entry in $expectedHashes.GetEnumerator()) {
 The separate [quality matrix guide](quality/README.md#reproduce) contains the
 complete commands for:
 
-- the three-mode, 100-task, three-repetition MMLU/GSM8K/C-Eval matrix; and
-- the 12-task full-vocabulary K7/S6 versus K7/S7 rollback calibration.
+- the current full-vocabulary K7/S7 three-mode, 100-task, three-repetition
+  MMLU/GSM8K/C-Eval matrix;
+- the current guarded K7/S6 versus rollback-complete K7/S7 calibration; and
+- deliberate replay of the historical prefix-FR matrix.
 
 Use its reviewed offline task cache to avoid dataset drift. Do not compare its
 request-wide throughput directly with the steady-state decode rate above.
@@ -191,16 +253,16 @@ following checks on 2026-08-20:
 
 | Check | Result |
 | --- | --- |
-| Rust library tests | 1,522 passed, 0 failed |
-| CUDA speculative-runtime tests | 10 passed, 0 failed |
+| Rust library tests | 1,526 passed, 0 failed |
+| CUDA speculative-runtime tests | 14 passed, 0 failed |
 | CUDA release build | Passed |
 | CUDA release Clippy with warnings denied | Passed |
-| Python harness tests | 26 passed, 0 failed |
+| Python harness tests | 28 passed, 0 failed |
 | Rust formatting | Passed |
-| PowerShell syntax | 6 runner/profile scripts parsed |
-| Benchmark evidence | 64 JSON files parsed; final report and 4 pinned input/evidence hashes verified |
-| Quality archive | 9 reports, 900 task results, manifest hash, and ACL hash verified |
-| Documentation links | 93 local links resolved, 0 missing |
+| PowerShell syntax | 3 current benchmark runners parsed |
+| Benchmark evidence | Current compact assertions passed; historical final report and 4 pinned hashes verified |
+| Quality archive | 900 current requests completed; aggregate, environment, manifest, ACL, and source hashes pinned |
+| Documentation links | All local links in changed documents resolved, 0 missing |
 
 Re-run the same checks with:
 
@@ -212,7 +274,7 @@ cargo test --release --lib `
   --target-dir target-native-sm89-ninja `
   --no-default-features `
   --features llamacpp-cuda,llamacpp-mtp-fr `
-  backend::llamacpp::speculative_runtime::tests
+  backend::llamacpp::speculative_runtime
 
 cargo build --release --bins `
   --target-dir target-native-sm89-ninja `

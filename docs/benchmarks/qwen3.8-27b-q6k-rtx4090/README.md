@@ -17,14 +17,14 @@ that cell.
 
 | Artifact and runtime mode | Quality proxy | Request-wide throughput | Median steady decode | Interpretation |
 | --- | --- | ---: | ---: | --- |
-| Untouched Q6_K, autoregressive | 66/100 lenient; 59/100 strict (100 tasks, 3x) | 34.551 token/s | 35.5793 token/s | Same-artifact quality and speed baseline |
+| Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) | Current fixed-task baseline; steady column is a separate historical shape |
 | Untouched Q6_K, native MTP | Quality matrix not run; exact parity on the fixed peak prompt | -- | 140.1600 token/s | Same-artifact MTP ceiling, not a broad quality result |
-| TBQ4 mixed artifact, autoregressive | 72/100 lenient; 64/100 strict (100 tasks, 3x) | **41.745 token/s** | -- | Representative-workload winner in the 100-task matrix |
-| TBQ4 mixed + MTP + prefix FR, K7/S6 | 72/100 lenient; 60/100 strict (100 tasks, 3x) | 27.951 token/s | 184.3665 token/s | High repetitive-prompt peak, but low 25.55% mixed-workload acceptance |
-| TBQ4 mixed + full-vocabulary fixed MTP, K7/S6 | 4/12 lenient; 3/12 strict (12 tasks, 3x) | 28.226 token/s | -- | Rejected default: 46 exact prefix replays per run |
+| TBQ4 mixed artifact, autoregressive | 70/100 lenient; 64/100 strict (100 tasks, 3x) | 38.724 token/s | -- | Current non-speculative mixed-artifact control |
+| TBQ4 mixed + full-vocabulary fixed MTP, K7/S7 | **76/100 lenient; 66/100 strict (100 tasks, 3x)** | **83.228 token/s** | **175.2089 token/s** | Balanced default: complete rollback window and zero replay |
+| TBQ4 mixed + full-vocabulary guarded MTP, K7/S6 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | 54.060 token/s | **177.7165 token/s** | Peak profile: one replay at most before request-local clamp |
+| TBQ4 mixed + MTP + prefix FR, K7/S6 (historical) | 72/100 lenient; 60/100 strict (100 tasks, 3x) | 27.951 token/s | 184.3665 token/s | Rejected universal default: 25.55% mixed-workload acceptance |
+| TBQ4 mixed + full-vocabulary fixed MTP, K7/S6 (pre-guard) | 4/12 lenient; 3/12 strict (12 tasks, 3x) | 28.226 token/s | -- | Historical failure: 46 exact prefix replays per run |
 | TBQ4 mixed + full-vocabulary adaptive MTP, K7/S6 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | 60.031 token/s | -- | Rollback-safe, but slower than fixed K7/S7 on the calibration |
-| TBQ4 mixed + full-vocabulary fixed MTP, K7/S7 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | **68.211 token/s** | -- | Rollback-safe calibration winner; the 100-task matrix is still pending |
-| TBQ4 mixed + full-vocabulary fixed MTP, host-staged K7/S6 with physical-core affinity | Quality matrix not run | -- | **177.3062 token/s** | Current controlled 9x peak gate; 175.5958 token/s minimum |
 | UD-Q8_K_XL, autoregressive heterogeneous placement | Quality matrix not run | -- | 6.3484 token/s | Fits through exact CPU/GPU tensor placement, but is bandwidth-bound |
 | UD-Q8_K_XL, native MTP K4/S4 heterogeneous placement | Quality matrix not run; cross-mode output hashes differ | -- | 9.7577 token/s | Performance boundary only; not a parity or quality acceptance result |
 
@@ -41,16 +41,25 @@ cache, environment, nine per-request reports, and paired statistics.
 
 | Mode | Lenient score | Strict score | Mean workload throughput |
 | --- | ---: | ---: | ---: |
-| Untouched Q6_K, speculation off | 66/100 | 59/100 | 34.551 token/s |
-| TBQ4 mixed artifact, speculation off | 72/100 | 64/100 | **41.745 token/s** |
-| TBQ4 + MTP + FR | 72/100 | 60/100 | 27.951 token/s |
+| Untouched Q6_K, speculation off | 67/100 | 60/100 | 30.883 token/s |
+| TBQ4 mixed artifact, speculation off | 70/100 | 64/100 | 38.724 token/s |
+| TBQ4 + full-vocabulary MTP, fixed K7/S7 | **76/100** | **66/100** | **83.228 token/s** |
 
-TBQ4-off was 20.8% faster than untouched Q6_K on this workload. MTP + FR was
-33.0% slower than TBQ4-off because its workload-wide draft acceptance fell to
-25.55%; C-Eval acceptance was only 14.21%. That historical prefix-FR result is
-a repetitive-prompt peak, not a representative mixed-workload rate.
-See the [quality and workload matrix](quality/README.md) for the full protocol,
-limitations, reproducibility command, and machine-readable evidence.
+TBQ4-off was 25.4% faster than untouched Q6_K on this current workload. Fixed
+K7/S7 was 114.9% faster than TBQ4-off, accepted 51.33% of proposals, verified
+4.543 tokens per target pass, and recorded zero fallback replay or guard
+activation. Relative to TBQ4-off it had seven lenient gains and one loss
+(`p=0.0703`) and three strict gains and one loss (`p=0.625`). The measured
+scores did not fall, but the differences do not establish a statistically
+significant general-intelligence improvement. All predictions were stable
+across repetitions and all 900 requests completed without error.
+
+The historical prefix-FR matrix remains useful negative evidence: MTP was
+33.0% slower than its TBQ4-off control because workload-wide acceptance fell
+to 25.55%, including 14.21% on C-Eval. Full-vocabulary K7/S7 removes that draft
+coverage bottleneck. See the [quality and workload matrix](quality/README.md)
+for the full protocol, paired statistics, limitations, replay command, and
+machine-readable evidence.
 
 A post-change calibration then replayed a fixed 12-task subset three times with
 the full 248,320-row draft vocabulary. It is intentionally smaller than the
@@ -60,47 +69,57 @@ current binary:
 | Full-vocabulary mode | Mean workload throughput | Draft acceptance | Fallback replays per run | Lenient score |
 | --- | ---: | ---: | ---: | ---: |
 | TBQ4, speculation off | 35.048 token/s | -- | -- | 5/12 |
-| Fixed K7, six snapshots | 28.226 token/s | 48.54% | 46 | 4/12 |
+| Fixed K7, six snapshots (pre-guard) | 28.226 token/s | 48.54% | 46 | 4/12 |
 | Adaptive K7, six snapshots | 60.031 token/s | 65.50% | 0 | 5/12 |
 | Fixed K7, seven snapshots | **68.211 token/s** | 49.67% | 0 | 5/12 |
+| Guarded fixed K7, six snapshots (current) | 54.060 token/s | 53.07% | 11 | 5/12 |
 
 The complete K7 rollback window made fixed full-vocabulary MTP 94.6% faster
 than speculation-off on this calibration and 13.6% faster than adaptive S6.
-Six snapshots remain useful for the high-acceptance peak prompt, but fixed
-K7/S6 is not a safe mixed-workload default because a seven-token rejection
-forces exact prefix replay. See the
+The current request-local guard makes six snapshots bounded: after one exact
+replay, that request remains clamped to the six-snapshot window. It improved
+the short fixed-S6 calibration by 91.5% over the pre-guard result, but current
+S7 still reached 68.205 token/s with no replay and is the balanced default.
+See the
 [calibration evidence](quality/full-vocab-rollback-calibration-rtx4090-3x.json)
-and its reproduction command in the quality README.
+and the [current compact evidence](quality/full-vocabulary-s7-current-rtx4090-3x.json)
+with reproduction commands in the quality README.
 
 ## Current full-vocabulary batched-greedy boundary
 
 The current implementation removes FR from the performance gate and retains
-all 248,320 draft-head rows. The current captured binary passes a topology-pinned
-nine-sample gate, and two earlier quiet-WDDM builds provide independent
-high-water captures. Predecessor captures are retained to show the range
-introduced by a shared WDDM display GPU:
+all 248,320 draft-head rows. The current binary passes topology-pinned
+nine-sample median gates with both guarded K7/S6 and rollback-complete K7/S7;
+two earlier quiet-WDDM builds provide independent high-water captures.
+Predecessor captures are retained to show the range introduced by a shared
+WDDM display GPU:
 
 | Capture | Median decode | Minimum decode | Median end-to-end | Gate |
 | --- | ---: | ---: | ---: | --- |
-| [Current physical-core-affinity gate, 1,024 tokens, 9x](final-affinity-1024-9x.json) | **177.3062 token/s** | **175.5958 token/s** | 168.9809 token/s | 175 passed, 9 / 9 |
-| [Current 1,024-token control, 9x](final-draft-greedy-pmin-guard-1024-9x.json) | **187.6094 token/s** | **183.7360 token/s** | 178.6574 token/s | 175 passed, 9 / 9 |
-| [Current 1,024-token repeat, 9x](final-draft-greedy-pmin-guard-1024-9x-repeat.json) | **188.2972 token/s** | **184.4913 token/s** | 179.2680 token/s | 175 passed, 9 / 9 |
+| [Current guarded K7/S6, affinity, 1,024 tokens, 9x](quality/full-vocabulary-s7-current-rtx4090-3x.json) | **177.7165 token/s** | **176.7287 token/s** | 169.0438 token/s | 175 passed, 9 / 9 |
+| [Current rollback-complete K7/S7, affinity, 1,024 tokens, 9x](quality/full-vocabulary-s7-current-rtx4090-3x.json) | **175.2089 token/s** | 174.2211 token/s | 166.3457 token/s | 175 median passed, 5 / 9 |
+| [Earlier physical-core-affinity gate, 1,024 tokens, 9x](final-affinity-1024-9x.json) | **177.3062 token/s** | **175.5958 token/s** | 168.9809 token/s | 175 passed, 9 / 9 |
+| [Earlier 1,024-token control, 9x](final-draft-greedy-pmin-guard-1024-9x.json) | **187.6094 token/s** | **183.7360 token/s** | 178.6574 token/s | 175 passed, 9 / 9 |
+| [Earlier 1,024-token repeat, 9x](final-draft-greedy-pmin-guard-1024-9x-repeat.json) | **188.2972 token/s** | **184.4913 token/s** | 179.2680 token/s | 175 passed, 9 / 9 |
 | [1,024 tokens, unlocked, 5x](batched-greedy-1024-5x.json) | **182.1530 token/s** | **180.7195 token/s** | 173.4201 token/s | 175 passed |
 | [256 tokens, 2,745 MHz control, 9x](batched-greedy-256-locked2745-9x.json) | **175.9190 token/s** | 169.3528 token/s | 152.0363 token/s | 175 median passed |
 | [256 tokens, contended desktop, 9x](batched-greedy-256-contended-9x.json) | 159.8593 token/s | 152.4855 token/s | 139.8559 token/s | 175 failed |
 | [Post-removal 256-token regression, 3x](post-device-carry-removal-256-3x.json) | 167.3977 token/s | 165.0082 token/s | 140.8385 token/s | Output regression passed |
 
-The current captured binary uses the host-staged CPU-embedding ACL and pins its ten
+The current binary has two explicit host-staged CPU-embedding profiles. Guarded
+K7/S6 preserves the 177.7165 token/s peak and kept all nine long samples above
+175; rollback-complete K7/S7 trades 1.41% median steady decode for zero replay
+on mixed workloads and passed the median gate at 175.2089 token/s. Both pin ten
 worker threads to one logical processor per physical Xeon W5-2445 core with
-mask `0x55555`. An order-balanced A/B measured a 176.8276 token/s combined
-median with that mask versus 173.0114 token/s across all 20 logical
-processors, a 2.21% gain. The independent nine-sample confirmation then kept
-every sample above 175 token/s. The complete A/B and final environment are
-recorded in [the compact comparison](affinity-ab-1024-12x.json), the
-[final report](final-affinity-1024-9x.json), and its
-[environment capture](final-affinity-1024-9x.environment.json). The mask is
-specific to this CPU topology and remains an explicit runner option rather
-than a product default.
+mask `0x55555`. That mask is specific to this CPU topology and remains an
+explicit runner option rather than a product default.
+
+The earlier order-balanced affinity A/B measured a 176.8276 token/s combined
+median with the mask versus 173.0114 token/s across all 20 logical processors,
+a 2.21% gain. Its complete A/B and environment remain recorded in
+[the compact comparison](affinity-ab-1024-12x.json), the
+[earlier final report](final-affinity-1024-9x.json), and its
+[environment capture](final-affinity-1024-9x.environment.json).
 
 All samples in every listed capture produced the expected deterministic digest:
 `584e2b93...be6eb` at 256 tokens and `a54538ea...90523` at 1,024 tokens. The two
@@ -120,13 +139,23 @@ post-capture annotation because native clock-control provenance was added to
 the runner immediately afterward. The wrapper reset clocks in its `finally`
 block; the final repeat returned to an idle 210 MHz after reset.
 
-The current [host-staged ACL](mtp7-snap6-full-vocab-cpu-embedding.acl) uses MTP
-width 7, six recurrent snapshots, an explicit disabled recurrent device chain,
-Flash Attention, ten host threads, and no `spec_mtp_fr_vocab_size` override.
-Short-window tuning used batch 20; the long capture used batch 14. The
-historical [device-chain ACL](mtp7-snap6-full-vocab.acl) keeps the token
-embedding on the GPU for the optional recurrent experiment. The rollback-safe
-[mixed-workload ACL](mtp7-snap7-full-vocab.acl) retains seven snapshots.
+The guarded [K7/S6 host-staged ACL](mtp7-snap6-full-vocab-cpu-embedding.acl)
+uses six recurrent snapshots. The balanced
+[K7/S7 host-staged ACL](mtp7-snap7-full-vocab-cpu-embedding.acl) retains the
+complete seven-token rollback window. Both disable the recurrent device chain,
+enable Flash Attention, use ten host threads, retain the complete draft
+vocabulary, and use batch 14 for the long gate. The historical
+[device-chain ACL](mtp7-snap6-full-vocab.acl) remains only for the optional
+recurrent experiment, while [the earlier S7 ACL](mtp7-snap7-full-vocab.acl)
+records the GPU-embedding calibration shape.
+
+For fixed configurations where proposal width exceeds resident snapshots, the
+runtime now owns a request-local rollback guard. The first rejection that
+cannot be restored from a snapshot performs the exact legacy prefix replay;
+the guard then clamps every later round in that request to the rollback-complete
+width. Metrics expose guarded requests, activation count, activation round, and
+the resulting draft limit. No global policy changes, and a high-acceptance
+request that never needs replay follows the original K7/S6 fast path exactly.
 
 The new backend fast path is deliberately narrow: one active sequence, dense
 output rows, and a sampler chain containing only backend greedy sampling. It
@@ -215,10 +244,11 @@ and repeat show that the final software path can remain above the requested
 boundary for 18 / 18 long samples; the failed predecessor run shows that a busy
 Windows display GPU can still erase that margin. A dedicated
 GPU, headless Linux, or an otherwise exclusive benchmark window is required
-before promoting 175 token/s to a reproducible floor. The 12-task calibration
-above confirms the full-vocabulary direction, but the separate 100-task matrix
-must still be repeated against this binary before making a release-scale
-quality claim.
+before promoting 175 token/s to a reproducible floor. The current 100-task,
+three-repetition matrix now covers this binary and K7/S7 profile: it recorded
+76/100 lenient, 66/100 strict, 83.228 token/s request-wide throughput, zero
+replay, and zero guard activation. That is evidence of no observed regression
+on the fixed sample, not a general model-intelligence guarantee.
 
 The complete build, input verification, offline evidence audit, quality replay,
 and source-validation procedure is in [REPRODUCE.md](REPRODUCE.md). Its runner
@@ -369,14 +399,18 @@ minimum, and 3.0834x speedup with `draft_max=6` and `num_batch=8`.
   141.4218, 138.6824, and 142.0743 token/s for batch sizes 12, 16, 24, 32,
   and 48. The apparent batch-48 gain was below run-to-run noise and did not
   reproduce strongly enough to replace the established batch-24 capture.
-- Six recurrent snapshots can match seven on the 93.62%-acceptance peak prompt,
-  but the three-run mixed-workload calibration recorded exactly 46 fallback
-  replays in every fixed K7/S6 run and only 28.226 token/s. Fixed K7/S7 removed
-  every replay and reached 68.211 token/s; adaptive K7/S6 also avoided replay
-  and reached 60.031 token/s. K7/S6 is therefore peak-only, while K7/S7 is the
-  fixed mixed-workload default. Four or fewer snapshots cross the replay
-  boundary even more often. Raising `draft_p_min` above 0.7 also increased
-  target-pass count and slowed decoding.
+- Six recurrent snapshots can match seven on a high-acceptance peak prompt.
+  Before the guard, however, the three-run mixed-workload calibration recorded
+  exactly 46 fallback replays in every fixed K7/S6 run and only 28.226 token/s.
+  The request-local guard reduced this to 11 replays and raised throughput to
+  54.060 token/s. Current K7/S7 still removed every replay and reached 68.205
+  token/s, so K7/S6 remains peak-only and K7/S7 remains the fixed
+  mixed-workload default. Four or fewer snapshots cross the replay boundary
+  even more often. Raising `draft_p_min` above 0.7 also increased target-pass
+  count and slowed decoding.
+- Current batch-12 and batch-16 peak trials ended early with EOS and changed the
+  output trajectory. They were rejected rather than reported as throughput
+  improvements; batch 14 remains the validated long-window CUDA graph shape.
 - Disabling Flash Attention overlapped the enabled result. Temporary
   instrumentation observed 531 llama.cpp output-reorder calls in a 64-token
   request and zero pending row swaps in every call, ruling out CPU vocabulary

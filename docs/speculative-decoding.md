@@ -184,14 +184,21 @@ for the baseline and candidate.
 `spec_mtp_recurrent_snapshots` bounds resident target rollback state separately
 from draft width. The effective value is capped by `spec_draft_max`. When a
 rejected suffix exceeds that window, Power restores exactness by replaying the
-committed target prefix. Record the same explicit value in both A/B configs;
-reducing it can avoid a GPU-memory allocation cliff, while replay frequency can
-reduce throughput. A three-run mixed-workload calibration made the boundary
-explicit: fixed K7/S6 incurred 46 fallback replays per run and reached only
-28.226 token/s, while fixed K7/S7 incurred none and reached 68.211 token/s.
-Adaptive K7/S6 also incurred no replay because its proposal width is capped by
-the rollback window, but reached 60.031 token/s. Use a complete K-sized window
-for fixed general workloads; a narrower window is a measured peak-only tuning.
+committed target prefix. Fixed K>S configurations now wrap this fallback in a
+request-local guard: the first exact replay is allowed, then all later rounds
+in that request are clamped to the rollback-complete snapshot width. This
+bounds replay without changing high-acceptance requests that never activate
+the guard. Metrics report guarded requests, activations, activation round, and
+the clamped draft limit.
+
+Record the same explicit snapshot value in both A/B configs; reducing it can
+avoid a GPU-memory allocation cliff, while recovery frequency can reduce
+throughput. Before the guard, fixed K7/S6 incurred 46 fallback replays per
+12-task run and reached 28.226 token/s. The current guard reduced that to 11
+replays and 54.060 token/s; complete K7/S7 needed none and reached 68.205
+token/s. The current 100-task K7/S7 matrix likewise recorded zero replay and
+zero guard activation. Use a complete K-sized window for fixed general
+workloads; narrower K7/S6 is a guarded peak-only tuning.
 
 `spec_mtp_fr_vocab_size` is an experimental FR-Spec-inspired optimization for
 the llama.cpp MTP context only. A full draft head selects rows in target
@@ -263,22 +270,29 @@ dense pure-greedy verification rows into one matrix argmax plus one contiguous
 device-to-host token copy. Pure-greedy MTP drafting with a zero probability
 threshold also reads the backend-selected draft token directly, avoiding its
 former Top-K probability and CPU-sampler path; positive `spec_draft_p_min`
-values and non-greedy requests retain the general implementation. Two
-independent nine-sample 1,024-token captures of the probability-guarded build
-reach 187.6094 and 188.2972 token/s medians, with an 183.7360 token/s combined
-minimum. An earlier 256-token capture fell to 159.8593 under heavy WDDM
-contention. The current captured binary adds a benchmark-only physical-core
-affinity control: an order-balanced 12-sample A/B improved the combined median
-from 173.0114 to 176.8276 token/s, and an independent nine-sample confirmation
-reached a 177.3062 median and 175.5958 minimum with every sample above 175.
-The runner records both requested and effective masks; the accepted `0x55555`
-mask is specific to the 10-core, 20-thread Xeon W5-2445 and is not a portable
-runtime default. The shared WDDM display GPU can still erase this margin, so
-175 is an observed boundary rather than a guaranteed service floor. Because
-the runtime artifact selectively requantizes Q6_K source tensors, it is
-reported separately from the untouched-Q6_K same-artifact comparison. Earlier
-8,192-row prefix-FR
-captures remain archived as historical, workload-sensitive experiments. A
+values and non-greedy requests retain the general implementation. Current
+nine-sample 1,024-token captures reached 177.7165 token/s median and 176.7287
+minimum for guarded K7/S6, and 175.2089 median and 174.2211 minimum for
+rollback-complete K7/S7. The S6 guard did not activate on that high-acceptance
+peak prompt. The runner records both requested and effective masks; the
+accepted `0x55555` mask is specific to the 10-core, 20-thread Xeon W5-2445 and
+is not a portable runtime default. Earlier quiet-WDDM captures reached
+187.6094 and 188.2972 token/s, while another 256-token capture fell to 159.8593
+under contention. The shared display GPU can erase the margin, so 175 is an
+observed boundary rather than a guaranteed service floor.
+
+On the current cyclically ordered 3x100 task matrix, K7/S7 reached 83.228
+token/s request-wide throughput versus 38.724 token/s for TBQ4-off, with
+76/100 versus 70/100 lenient answers and 66/100 versus 64/100 strict answers.
+The paired differences were not statistically significant at `p < 0.05`, so
+the capture shows no observed quality decline but does not establish a general
+intelligence gain. All predictions were stable across repeats, acceptance was
+51.33%, and replay and guard activation were zero.
+
+Because the runtime artifact selectively requantizes Q6_K source tensors, it
+is reported separately from the untouched-Q6_K same-artifact comparison.
+Earlier 8,192-row prefix-FR captures remain archived as historical,
+workload-sensitive experiments. A
 backend-resident hidden-row carry prototype was also removed after an
 order-reversed eight-sample A/B produced a 0.09% median gain but a 0.38% mean
 regression. It reduced transfer staging without reducing target or draft graph

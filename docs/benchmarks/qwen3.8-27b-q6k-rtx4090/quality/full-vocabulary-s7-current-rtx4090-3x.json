@@ -1,0 +1,164 @@
+{
+  "schema": "a3s.power.qwen38-full-vocabulary-summary.v1",
+  "created_at": "2026-08-20T04:05:07.793076+00:00",
+  "identity": {
+    "power_commit": "4406c9c5aa67b8ad861898866e04d7dfbf4cbf2b",
+    "server_sha256": "2beb4cd460eee49ea8ab350bf19b4941e2cd121faa62a44a26846eec6eb66082",
+    "q6_model_sha256": "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+    "q6_model_bytes": 22884408288,
+    "tbq4_model_sha256": "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+    "tbq4_model_bytes": 19187686464,
+    "runtime_config_sha256": "c2b3aca41323b6c3d0ae101b0b68764a99e0a9318df565d13612dd718eb11767",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "gpu_vram_mib": 24564,
+    "driver": "610.74",
+    "cpu": "Intel Xeon w5-2445, 10 cores / 20 logical processors",
+    "os_build": "Windows 11 22631",
+    "power_plan": "high-performance",
+    "process_priority": "High",
+    "processor_affinity_mask": "0x55555"
+  },
+  "workload": {
+    "canonical_tasks_sha256": "5798257e18b81188749196d34359278dfadf7986776eb2bd66d629cbfc33813c",
+    "task_manifest_sha256": "e254af009fbee304bb574515aece7630cfb6ea91fd0fece6c0d9b9f02de44a9d",
+    "tasks": 100,
+    "domains": {
+      "mmlu": 50,
+      "gsm8k": 20,
+      "ceval": 30
+    },
+    "repetitions": 3,
+    "mode_order": "three-mode cyclic Latin rotation",
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "seed": 42,
+    "num_ctx": 4096,
+    "num_batch": 14,
+    "warmup_requests_per_run": 1,
+    "full_draft_vocabulary": true
+  },
+  "modes": [
+    {
+      "name": "q6-off",
+      "lenient_score": 67,
+      "strict_score": 60,
+      "truncated": 38,
+      "workload_tokens_per_second": [
+        30.62962760714013,
+        31.954285522024975,
+        30.06497437349734
+      ],
+      "mean_workload_tokens_per_second": 30.88296250088748,
+      "prediction_stable_tasks": 100,
+      "content_stable_tasks": 100
+    },
+    {
+      "name": "tbq4-off",
+      "lenient_score": 70,
+      "strict_score": 64,
+      "truncated": 36,
+      "workload_tokens_per_second": [
+        39.37953765016975,
+        39.538962488697166,
+        37.253606873251776
+      ],
+      "mean_workload_tokens_per_second": 38.72403567070623,
+      "prediction_stable_tasks": 100,
+      "content_stable_tasks": 100
+    },
+    {
+      "name": "tbq4-mtp-full-vocab-k7-s7",
+      "lenient_score": 76,
+      "strict_score": 66,
+      "truncated": 34,
+      "workload_tokens_per_second": [
+        84.99457441952714,
+        83.94268150452373,
+        80.74718213447504
+      ],
+      "mean_workload_tokens_per_second": 83.22814601950864,
+      "prediction_stable_tasks": 100,
+      "content_stable_tasks": 100,
+      "weighted_acceptance_rate": 0.5132958564931783,
+      "verified_tokens_per_target_pass": 4.543020193151888,
+      "fallback_replays_per_run": [0, 0, 0],
+      "rollback_guard_requests_per_run": [0, 0, 0],
+      "rollback_guard_activations_per_run": [0, 0, 0],
+      "aggregate_server_reported_tokens_per_second": [
+        110.00369329016922,
+        108.72551757488004,
+        104.10655587809639
+      ]
+    }
+  ],
+  "domain_results": {
+    "q6-off": {
+      "mmlu": { "lenient_score": 30, "tasks": 50, "tokens_per_second": 30.45610146821654 },
+      "gsm8k": { "lenient_score": 15, "tasks": 20, "tokens_per_second": 31.984844218421223 },
+      "ceval": { "lenient_score": 22, "tasks": 30, "tokens_per_second": 30.832211083085863 }
+    },
+    "tbq4-off": {
+      "mmlu": { "lenient_score": 32, "tasks": 50, "tokens_per_second": 37.908767394285846 },
+      "gsm8k": { "lenient_score": 17, "tasks": 20, "tokens_per_second": 40.16686076847566 },
+      "ceval": { "lenient_score": 21, "tasks": 30, "tokens_per_second": 39.07144769631704 }
+    },
+    "tbq4-mtp-full-vocab-k7-s7": {
+      "mmlu": { "lenient_score": 35, "tasks": 50, "tokens_per_second": 78.56971711027488, "acceptance_rate": 0.4925604463732176 },
+      "gsm8k": { "lenient_score": 18, "tasks": 20, "tokens_per_second": 95.68063749573827, "acceptance_rate": 0.5630984707731885 },
+      "ceval": { "lenient_score": 23, "tasks": 30, "tokens_per_second": 82.78209886786063, "acceptance_rate": 0.5116551481785171 }
+    }
+  },
+  "paired_comparisons": {
+    "q6-off_to_tbq4-off": {
+      "lenient_gains": 8,
+      "lenient_losses": 5,
+      "lenient_exact_mcnemar_p": 0.5810546875,
+      "strict_gains": 8,
+      "strict_losses": 4,
+      "strict_exact_mcnemar_p": 0.3876953125
+    },
+    "tbq4-off_to_tbq4-mtp-full-vocab-k7-s7": {
+      "lenient_gains": 7,
+      "lenient_losses": 1,
+      "lenient_exact_mcnemar_p": 0.0703125,
+      "strict_gains": 3,
+      "strict_losses": 1,
+      "strict_exact_mcnemar_p": 0.625,
+      "prediction_parity": 89,
+      "content_sha256_parity": 34,
+      "both_untruncated": 62,
+      "both_untruncated_prediction_parity": 62
+    }
+  },
+  "peak_gates": {
+    "k7_s6_guarded": {
+      "power_commit": "f6a26a7eb51dc5a73b5aa5d0ff1f4f388f32606a",
+      "recurrent_snapshots": 6,
+      "samples": 9,
+      "samples_at_or_above_175": 9,
+      "median_decode_tokens_per_second": 177.71645508101074,
+      "minimum_decode_tokens_per_second": 176.72867856598307,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "report_sha256": "f7396ecbbcc7e15715c8f1834343d9cf36bfff8d63a78e31455c196eafa7c871",
+      "environment_sha256": "6979403046576adf544f7c8d80f314993c670f1e9012f82a244a6e50e93803ad"
+    },
+    "k7_s7_rollback_complete": {
+      "power_commit": "f6a26a7eb51dc5a73b5aa5d0ff1f4f388f32606a",
+      "recurrent_snapshots": 7,
+      "samples": 9,
+      "samples_at_or_above_175": 5,
+      "median_decode_tokens_per_second": 175.20889378841997,
+      "minimum_decode_tokens_per_second": 174.2211132623549,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "report_sha256": "3b237cc2265f01268f1b9c01f2ce3eeaa9dbceb5ccfb99f943258cc022884f26",
+      "environment_sha256": "763e51b5b0ca697752e159abf9ddd0b7ae8e839617d1768c5ca0eef4fb130f4c"
+    }
+  },
+  "source_evidence": {
+    "quality_matrix_sha256": "cadf445f2d3fb6c00924669b86bbb8f900b8ee945fe4bafa9222443081482123",
+    "quality_matrix_markdown_sha256": "dc05feb7e4cc24496f497681517e05adb22ec1c355a6bdfac673c4d263c8ba26",
+    "quality_environment_sha256": "5f92af26a9b611b6825ca18694ee6fb5dfc2cfe28ac8b7b6dac16ee44fb58df3",
+    "guarded_s6_calibration_sha256": "a71b2e7e23ef9d3ac8d358c865b6959dd79fb79896c8d85d133ee560d9aae0cc",
+    "rollback_complete_s7_calibration_sha256": "08d9ada82b16acadb85c5a4beb92092a85a7e64f7d58a7de2df2d7f6754831a3"
+  }
+}
