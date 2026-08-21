@@ -84,6 +84,13 @@ seven samples at or above 175. Prefix-FR8192 improved steady decode by 20.13%
 over its 147.0207 token/s full-vocabulary K7/S7 control, and both emitted the
 same deterministic output digest. No model weight was requantized.
 
+That capture crosses 175 as a median boundary; it does **not** establish a
+175 token/s service floor because two samples were below it. New acceptance
+runs can independently require the median and every measured sample, and the
+generic GGUF runner rejects a capture before startup when its configured idle
+GPU-utilization ceiling is exceeded. On this shared Windows display GPU,
+exclusive scheduling is part of the requirement, not an inference flag.
+
 That FR profile is a long, high-coverage peak, **not** a universal default or a
 service floor. On the one-pass 12-task calibration, full-vocabulary K7/S6
 reached 47.032 token/s request-wide with 52.30% proposal acceptance, while

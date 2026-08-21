@@ -199,15 +199,22 @@ fn mtp_target_context_reserves_recurrent_tail_and_exact_output_rows() {
 #[cfg(not(feature = "llamacpp-mtp-fr"))]
 #[test]
 fn reduced_vocabulary_requires_the_explicit_patched_feature() {
-    assert!(ensure_mtp_fr_available(None).is_ok());
-    let error = ensure_mtp_fr_available(Some(8192)).unwrap_err();
+    assert!(ensure_mtp_fr_available(None, Some("future_mtp")).is_ok());
+    let error = ensure_mtp_fr_available(Some(8192), Some("qwen35")).unwrap_err();
     assert!(error.to_string().contains("llamacpp-mtp-fr"));
 }
 
 #[cfg(feature = "llamacpp-mtp-fr")]
 #[test]
-fn patched_feature_accepts_reduced_vocabulary() {
-    assert!(ensure_mtp_fr_available(Some(8192)).is_ok());
+fn patched_feature_scopes_reduced_vocabulary_to_implemented_architectures() {
+    assert!(ensure_mtp_fr_available(None, Some("future_mtp")).is_ok());
+    assert!(ensure_mtp_fr_available(Some(8192), Some("qwen35")).is_ok());
+
+    for architecture in [Some("future_mtp"), None] {
+        let error = ensure_mtp_fr_available(Some(8192), architecture).unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
+        assert!(error.to_string().contains("full-vocabulary MTP"));
+    }
 }
 
 #[cfg(feature = "llamacpp-mtp-fr")]

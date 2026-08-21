@@ -231,6 +231,36 @@ the backend is not exclusive, or a required host control is absent. The
 full-vocabulary control deliberately uses a zero threshold because its purpose
 is the paired 147.0207 token/s baseline, not the 175 gate.
 
+### Promote a stable 175 token/s floor
+
+The archived pure-Q6_K result is a median boundary: its minimum was 173.2630
+token/s. Do not relabel it as a stable floor. A new promotion capture must add
+an independent all-sample gate and reject a busy GPU before model startup:
+
+```powershell
+.\tools\run-qwen38-q6k-benchmark.ps1 `
+  -Label pure-q6-fr8192-stable-175-candidate `
+  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\pure-q6-mtp7-snap6-fr8192-host-staged.acl `
+  -PromptFile .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\prompt.txt `
+  -BenchmarkRoot D:\models\a3s-power\qwen38\benchmark `
+  -PowerHome D:\models\a3s-power\qwen38\power-home `
+  -ModelHash 562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727 `
+  -MaxTokens 1024 -NumBatch 14 -WarmupRuns 2 -Samples 9 `
+  -MinimumTokensPerSecond 175 -MinimumSampleTokensPerSecond 175 `
+  -NvidiaGpuIndices 0 `
+  -MaximumIdleGpuUtilizationPercent 2 `
+  -ProcessPriority High -ProcessorAffinityMask 349525 `
+  -LockGpuClockMHz 2745 -TargetDirectory target-native-sm89-ninja `
+  -RequireHighPerformancePowerPlan -RequireCleanTree
+```
+
+The report is retained even when either gate fails. Promotion additionally
+requires the repeated quality matrix and controlled baseline/candidate output
+comparison; a single fixed prompt proves neither general workload throughput
+nor model intelligence. Consumer RTX cards under WDDM cannot reserve the GPU,
+so use a headless or otherwise exclusive window when the two-percent margin
+matters.
+
 ### Replay the previous mixed-artifact gates
 
 ```powershell

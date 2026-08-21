@@ -94,6 +94,10 @@ struct RunArgs {
     #[arg(long)]
     min_tokens_per_second: f64,
 
+    /// Required decode throughput for every measured sample.
+    #[arg(long)]
+    min_sample_tokens_per_second: Option<f64>,
+
     /// Per-request HTTP timeout, including model autoload time.
     #[arg(long, default_value_t = 900)]
     timeout_secs: u64,
@@ -143,16 +147,27 @@ async fn execute_run(args: RunArgs) -> Result<()> {
         warmup_runs: args.warmup_runs,
         samples: args.samples,
         min_required_tokens_per_second: args.min_tokens_per_second,
+        min_required_sample_tokens_per_second: args.min_sample_tokens_per_second,
         timeout: Duration::from_secs(args.timeout_secs),
     };
     let report = run_benchmark(&config).await?;
     write_json(&report)?;
-    if report.threshold_passed {
+    if report.all_thresholds_passed() {
         Ok(())
     } else {
+        let stability = report.stability.as_ref().map_or_else(
+            || "not requested".to_string(),
+            |stability| {
+                format!(
+                    "observed minimum {:.3} token/s, required {:.3} token/s",
+                    stability.observed_minimum_decode_tokens_per_second,
+                    stability.required_minimum_decode_tokens_per_second
+                )
+            },
+        );
         Err(invalid(format!(
-            "median decode throughput {:.3} token/s did not reach the required {:.3} token/s",
-            report.median_decode_tokens_per_second, report.min_required_tokens_per_second
+            "speculative throughput gate failed: median {:.3} token/s (required {:.3}); all-sample gate: {stability}",
+            report.median_decode_tokens_per_second, report.min_required_tokens_per_second,
         )))
     }
 }
@@ -173,7 +188,13 @@ fn execute_compare(args: CompareArgs) -> Result<()> {
 
 fn read_report(path: &Path) -> Result<SpeculativeBenchmarkReport> {
     let bytes = read_bounded_regular_file(path, MAX_REPORT_BYTES, "benchmark report")?;
-    Ok(serde_json::from_slice(&bytes)?)
+    // Windows PowerShell 5.1 writes a UTF-8 BOM for `-Encoding utf8`.
+    // Accept those historical reports while keeping newly captured evidence
+    // BOM-free in the generic runner.
+    let payload = bytes
+        .strip_prefix(b"\xef\xbb\xbf")
+        .unwrap_or(bytes.as_slice());
+    Ok(serde_json::from_slice(payload)?)
 }
 
 fn read_utf8_secret(path: &Path, maximum: u64, label: &str) -> Result<Zeroizing<String>> {
@@ -252,7 +273,7 @@ mod tests {
             "bench",
             "run",
             "--model",
-            "qwen",
+            "generic-gguf",
             "--model-sha256",
             &"a".repeat(64),
             "--mode",
@@ -285,5 +306,19 @@ mod tests {
         let path = directory.path().join("empty.json");
         std::fs::write(&path, []).unwrap();
         assert!(read_bounded_regular_file(&path, 32, "test file").is_err());
+    }
+
+    #[test]
+    fn report_reader_accepts_windows_powershell_utf8_bom() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("report.json");
+        let report = serde_json::json!({"schema": "not-a-supported-schema"});
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend(serde_json::to_vec(&report).unwrap());
+        std::fs::write(&path, bytes).unwrap();
+
+        let error = read_report(&path).unwrap_err();
+        assert!(error.to_string().contains("missing field"));
+        assert!(!error.to_string().contains("line 1 column 1"));
     }
 }

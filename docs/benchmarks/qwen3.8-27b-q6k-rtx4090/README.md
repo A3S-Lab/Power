@@ -47,6 +47,11 @@ No target or draft-head weight was requantized.
 | [Full vocabulary, K7/S7](pure-q6-full-vocabulary-1024-9x.json) | 147.0207 token/s | 146.0917 token/s | 140.2573 token/s | 0 / 9 |
 | [Prefix FR8192, K7/S6](pure-q6-fr8192-1024-9x.json) | **176.6109 token/s** | 173.2630 token/s | **167.3519 token/s** | **7 / 9** |
 
+The prefix-FR capture passes a 175 token/s median gate, not a 175 token/s
+all-sample gate. Its two sub-threshold samples are part of the result. Use the
+[reproduction guide](REPRODUCE.md#promote-a-stable-175-tokens-floor) for the
+separate median, minimum-sample, and idle-GPU promotion checks.
+
 The 20.13% steady-decode gain retained the same deterministic output SHA-256,
 but it did not generalize uniformly. In a one-pass 12-task calibration,
 full-vocabulary K7/S6 reached 47.032 token/s request-wide at 52.30% acceptance;

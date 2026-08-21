@@ -1121,7 +1121,11 @@ impl Backend for LlamaCppBackend {
         let speculative_strategy = speculative_capabilities
             .resolve(requested_strategy, backend_default)
             .map_err(|error| PowerError::Config(format!("llama.cpp: {error}")))?;
-        ensure_mtp_fr_available(self.config.spec_mtp_fr_vocab_size)?;
+        let model_architecture = model_arc.meta_val_str("general.architecture").ok();
+        ensure_mtp_fr_available(
+            self.config.spec_mtp_fr_vocab_size,
+            model_architecture.as_deref(),
+        )?;
         if matches!(
             speculative_strategy,
             crate::speculative::SpeculativeStrategy::Mtp

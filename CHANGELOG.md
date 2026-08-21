@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added an independent all-sample throughput gate to speculative benchmark
+  reports and comparisons, plus a model-neutral Windows GGUF capture runner
+  that records clean-source identity, binary and input hashes, CPU affinity,
+  power policy, and optional per-device NVIDIA idle/clock evidence. The
+  published Qwen runner is now a compatibility wrapper over that generic
+  path, and failed performance gates retain their reports as negative
+  evidence.
+- Split adaptive speculation control, llama.cpp sampling, and bounded
+  stop-sequence tracking into focused modules. Greedy llama.cpp MTP requests
+  can consume device-selected tokens without copying full vocabulary rows,
+  adaptive proposals retain an exact replay path when they exceed resident
+  rollback snapshots, and stop matching no longer retains or clones the full
+  generated response.
+- Scoped the experimental llama.cpp reduced-vocabulary MTP adapter to GGUF
+  architectures it explicitly implements. Unsupported and unknown
+  architectures fail closed while model-neutral full-vocabulary MTP remains
+  available.
 - Added a model-, format-, and backend-neutral production release evidence gate.
   Canonical policies require exact platform coverage and bind clean source,
   runtime artifact, weights, graph and shape declarations, typed devices, memory

@@ -142,6 +142,31 @@ pub struct SpeculativeBenchmarkReport {
     pub minimum_decode_tokens_per_second: f64,
     pub min_required_tokens_per_second: f64,
     pub threshold_passed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stability: Option<SpeculativeBenchmarkStability>,
+}
+
+/// Optional all-sample throughput gate for stability-sensitive captures.
+///
+/// The existing report threshold remains a median gate for compatibility.
+/// This independent gate is stricter: the slowest measured sample must reach
+/// the configured minimum.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpeculativeBenchmarkStability {
+    pub observed_minimum_decode_tokens_per_second: f64,
+    pub required_minimum_decode_tokens_per_second: f64,
+    pub threshold_passed: bool,
+}
+
+impl SpeculativeBenchmarkReport {
+    /// Whether both the median gate and an optional all-sample gate passed.
+    pub fn all_thresholds_passed(&self) -> bool {
+        self.threshold_passed
+            && self
+                .stability
+                .as_ref()
+                .is_none_or(|stability| stability.threshold_passed)
+    }
 }
 
 /// Controlled comparison between an autoregressive baseline and a candidate.
@@ -158,6 +183,8 @@ pub struct SpeculativeBenchmarkComparison {
     pub speedup: f64,
     pub output_parity: bool,
     pub candidate_threshold_passed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_stability_threshold_passed: Option<bool>,
     pub passed: bool,
 }
 
@@ -167,6 +194,7 @@ pub fn build_report(
     warmup_runs: u32,
     samples: Vec<SpeculativeBenchmarkSample>,
     min_required_tokens_per_second: f64,
+    min_required_sample_tokens_per_second: Option<f64>,
 ) -> Result<SpeculativeBenchmarkReport> {
     if warmup_runs > MAX_BENCHMARK_WARMUP_RUNS
         || samples.is_empty()
@@ -185,6 +213,12 @@ pub fn build_report(
     let minimum_decode_tokens_per_second = rates[0];
     let output_sha256 = samples[0].output_sha256.clone();
     let threshold_passed = median_decode_tokens_per_second >= min_required_tokens_per_second;
+    let stability =
+        min_required_sample_tokens_per_second.map(|required| SpeculativeBenchmarkStability {
+            observed_minimum_decode_tokens_per_second: minimum_decode_tokens_per_second,
+            required_minimum_decode_tokens_per_second: required,
+            threshold_passed: minimum_decode_tokens_per_second >= required,
+        });
     let report = SpeculativeBenchmarkReport {
         schema: REPORT_SCHEMA.to_string(),
         identity,
@@ -196,6 +230,7 @@ pub fn build_report(
         minimum_decode_tokens_per_second,
         min_required_tokens_per_second,
         threshold_passed,
+        stability,
     };
     validate_report(&report)?;
     Ok(report)
@@ -253,6 +288,23 @@ pub fn validate_report(report: &SpeculativeBenchmarkReport) -> Result<()> {
             "speculative benchmark threshold verdict is inconsistent",
         ));
     }
+    if let Some(stability) = report.stability.as_ref() {
+        if !stability
+            .required_minimum_decode_tokens_per_second
+            .is_finite()
+            || stability.required_minimum_decode_tokens_per_second < 0.0
+            || !close(
+                stability.observed_minimum_decode_tokens_per_second,
+                expected_minimum,
+            )
+            || stability.threshold_passed
+                != (expected_minimum >= stability.required_minimum_decode_tokens_per_second)
+        {
+            return Err(invalid(
+                "speculative benchmark all-sample stability verdict is inconsistent",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -287,7 +339,11 @@ pub fn compare_reports(
     let output_parity = baseline.output_sha256 == candidate.output_sha256;
     let speedup =
         candidate.median_decode_tokens_per_second / baseline.median_decode_tokens_per_second;
-    let passed = output_parity && candidate.threshold_passed;
+    let candidate_stability_threshold_passed = candidate
+        .stability
+        .as_ref()
+        .map(|stability| stability.threshold_passed);
+    let passed = output_parity && candidate.all_thresholds_passed();
     Ok(SpeculativeBenchmarkComparison {
         schema: COMPARISON_SCHEMA.to_string(),
         baseline_report_sha256: report_digest(baseline)?,
@@ -300,6 +356,7 @@ pub fn compare_reports(
         speedup,
         output_parity,
         candidate_threshold_passed: candidate.threshold_passed,
+        candidate_stability_threshold_passed,
         passed,
     })
 }
@@ -543,7 +600,7 @@ mod tests {
         SpeculativeBenchmarkIdentity {
             power_commit: "a".repeat(40),
             server_version: "0.8.0".to_string(),
-            model: "qwen3.8-27b-q6-k".to_string(),
+            model: "generic-gguf".to_string(),
             model_sha256: "b".repeat(64),
             model_bytes: 23_000_000_000,
             speculative: SpeculativeServerConfig {
@@ -620,6 +677,7 @@ mod tests {
             1,
             vec![sample(30_000_000, output), sample(25_000_000, output)],
             threshold,
+            None,
         )
         .unwrap()
     }
@@ -631,6 +689,69 @@ mod tests {
         assert_eq!(report.minimum_decode_tokens_per_second, 100.0);
         assert!(report.threshold_passed);
         validate_report(&report).unwrap();
+    }
+
+    #[test]
+    fn stability_gate_requires_every_sample_to_reach_its_threshold() {
+        let candidate = build_report(
+            identity(SpeculativeStrategy::Mtp),
+            workload(),
+            1,
+            vec![sample(30_000_000, 'f'), sample(25_000_000, 'f')],
+            0.0,
+            Some(101.0),
+        )
+        .unwrap();
+
+        assert!(candidate.threshold_passed);
+        assert!(!candidate.stability.as_ref().unwrap().threshold_passed);
+        assert!(!candidate.all_thresholds_passed());
+        validate_report(&candidate).unwrap();
+
+        let baseline = report(SpeculativeStrategy::Off, 'f', 0.0);
+        let comparison = compare_reports(&baseline, &candidate).unwrap();
+        assert!(comparison.output_parity);
+        assert_eq!(comparison.candidate_stability_threshold_passed, Some(false));
+        assert!(!comparison.passed);
+    }
+
+    #[test]
+    fn reports_without_the_optional_stability_gate_remain_compatible() {
+        let original = report(SpeculativeStrategy::Mtp, 'f', 100.0);
+        let mut json = serde_json::to_value(&original).unwrap();
+        json.as_object_mut().unwrap().remove("stability");
+
+        let restored: SpeculativeBenchmarkReport = serde_json::from_value(json).unwrap();
+        assert!(restored.stability.is_none());
+        assert!(restored.all_thresholds_passed());
+        validate_report(&restored).unwrap();
+    }
+
+    #[test]
+    fn validation_rejects_tampered_stability_evidence() {
+        let make_report = || {
+            build_report(
+                identity(SpeculativeStrategy::Mtp),
+                workload(),
+                1,
+                vec![sample(30_000_000, 'f'), sample(25_000_000, 'f')],
+                0.0,
+                Some(101.0),
+            )
+            .unwrap()
+        };
+
+        let mut wrong_minimum = make_report();
+        wrong_minimum
+            .stability
+            .as_mut()
+            .unwrap()
+            .observed_minimum_decode_tokens_per_second += 1.0;
+        assert!(validate_report(&wrong_minimum).is_err());
+
+        let mut wrong_verdict = make_report();
+        wrong_verdict.stability.as_mut().unwrap().threshold_passed = true;
+        assert!(validate_report(&wrong_verdict).is_err());
     }
 
     #[test]

@@ -5,14 +5,12 @@
 
 mod metrics;
 mod rollback_guard;
+mod sampling;
+mod stop_sequences;
 
-use llama_cpp_2::context::{
-    params::{LlamaContextParams, LlamaContextType},
-    LlamaContext,
-};
+use llama_cpp_2::context::params::{LlamaContextParams, LlamaContextType};
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::LlamaModel;
-use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
 
 use super::{backend_ref, nonzero_context_size, send_completion_result};
@@ -25,13 +23,22 @@ use crate::speculative::{
 
 use self::metrics::{elapsed_ns, log_metrics, MtpPhaseTimings};
 use self::rollback_guard::RollbackReplayGuard;
+#[cfg(test)]
+use self::sampling::use_greedy_fast_path;
+pub(super) use self::sampling::{
+    build_llamacpp_sampler, sample_target_token, use_backend_greedy, LlamaSamplingSettings,
+};
+use self::stop_sequences::StopSequenceTracker;
 
 fn metadata_entry_enables_mtp(key: &str, value: &str) -> bool {
     key.ends_with(".nextn_predict_layers")
         && value.trim().parse::<u32>().is_ok_and(|layers| layers > 0)
 }
 
-pub(super) fn ensure_mtp_fr_available(vocab_size: Option<u32>) -> Result<()> {
+pub(super) fn ensure_mtp_fr_available(
+    vocab_size: Option<u32>,
+    model_architecture: Option<&str>,
+) -> Result<()> {
     #[cfg(not(feature = "llamacpp-mtp-fr"))]
     if vocab_size.is_some() {
         return Err(PowerError::Config(
@@ -41,7 +48,16 @@ pub(super) fn ensure_mtp_fr_available(vocab_size: Option<u32>) -> Result<()> {
         ));
     }
 
-    let _ = vocab_size;
+    #[cfg(feature = "llamacpp-mtp-fr")]
+    if vocab_size.is_some() && model_architecture != Some("qwen35") {
+        return Err(PowerError::Config(format!(
+            "spec_mtp_fr_vocab_size is not implemented for GGUF architecture '{}'; \
+             use full-vocabulary MTP or a backend adapter that advertises reduced-vocabulary support",
+            model_architecture.unwrap_or("unknown")
+        )));
+    }
+
+    let _ = (vocab_size, model_architecture);
     Ok(())
 }
 
@@ -168,139 +184,6 @@ fn llamacpp_context_mtp_fr_vocab(params: &LlamaContextParams) -> u32 {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct LlamaSamplingSettings {
-    pub(super) response_format: Option<serde_json::Value>,
-    pub(super) repeat_penalty: Option<f32>,
-    pub(super) frequency_penalty: Option<f32>,
-    pub(super) presence_penalty: Option<f32>,
-    pub(super) repeat_last_n: i32,
-    pub(super) mirostat: Option<u32>,
-    pub(super) mirostat_tau: Option<f32>,
-    pub(super) mirostat_eta: Option<f32>,
-    pub(super) temperature: f32,
-    pub(super) top_k: Option<i32>,
-    pub(super) typical_p: Option<f32>,
-    pub(super) top_p: f32,
-    pub(super) min_p: Option<f32>,
-    pub(super) seed: u32,
-}
-
-fn use_greedy_fast_path(settings: &LlamaSamplingSettings) -> bool {
-    settings.mirostat.is_none()
-        && settings.temperature <= 0.0
-        && settings.top_k.is_none()
-        && settings.typical_p.is_none()
-        && settings.top_p >= 1.0
-        && settings.min_p.is_none()
-}
-
-pub(super) fn use_backend_greedy(settings: &LlamaSamplingSettings) -> bool {
-    settings.response_format.is_none()
-        && settings.repeat_penalty.is_none()
-        && settings.frequency_penalty.is_none()
-        && settings.presence_penalty.is_none()
-        && use_greedy_fast_path(settings)
-}
-
-pub(super) fn sample_target_token(
-    sampler: &mut LlamaSampler,
-    context: &LlamaContext<'_>,
-    index: i32,
-    backend_greedy: bool,
-) -> llama_cpp_2::token::LlamaToken {
-    // `llama_sampler_sample` asks llama.cpp for the sampled token, sampled
-    // probabilities, sampled logits, and candidate ids before it notices the
-    // CUDA graph already selected a token. Stateless greedy sampling needs no
-    // CPU-side accept step, so read that result directly. Retain the generic
-    // sampler as a defensive fallback if backend sampling was unavailable for
-    // a particular output row.
-    if backend_greedy {
-        if let Some(token) = context.sampled_token_ith(index) {
-            return token;
-        }
-    }
-    sampler.sample(context, index)
-}
-
-pub(super) fn build_llamacpp_sampler(
-    model: &LlamaModel,
-    settings: &LlamaSamplingSettings,
-) -> Result<LlamaSampler> {
-    let mut samplers = Vec::new();
-    if let Some(ref format) = settings.response_format {
-        match super::super::json_schema::format_to_gbnf(format) {
-            Ok(Some(grammar)) => samplers.push(
-                LlamaSampler::grammar(model, &grammar, "root").map_err(|error| {
-                    PowerError::InferenceFailed(format!(
-                        "Failed to create grammar sampler: {error}"
-                    ))
-                })?,
-            ),
-            Ok(None) => {}
-            Err(error) => {
-                return Err(PowerError::InvalidRequest(format!(
-                    "unsupported response_format grammar: {error}"
-                )));
-            }
-        }
-    }
-
-    if settings.repeat_penalty.is_some()
-        || settings.frequency_penalty.is_some()
-        || settings.presence_penalty.is_some()
-    {
-        samplers.push(LlamaSampler::penalties(
-            model.n_vocab(),
-            settings.repeat_last_n,
-            settings.repeat_penalty.unwrap_or(1.0),
-            settings.frequency_penalty.unwrap_or(0.0),
-            settings.presence_penalty.unwrap_or(0.0),
-        ));
-    }
-
-    match settings.mirostat {
-        Some(1) => {
-            samplers.push(LlamaSampler::temp(settings.temperature));
-            samplers.push(LlamaSampler::mirostat(
-                model.n_vocab(),
-                settings.seed,
-                settings.mirostat_tau.unwrap_or(5.0),
-                settings.mirostat_eta.unwrap_or(0.1),
-                100,
-            ));
-        }
-        Some(2) => {
-            samplers.push(LlamaSampler::temp(settings.temperature));
-            samplers.push(LlamaSampler::mirostat_v2(
-                settings.seed,
-                settings.mirostat_tau.unwrap_or(5.0),
-                settings.mirostat_eta.unwrap_or(0.1),
-            ));
-        }
-        _ => {
-            if use_greedy_fast_path(settings) {
-                samplers.push(LlamaSampler::greedy());
-                return Ok(LlamaSampler::chain_simple(samplers));
-            }
-            if let Some(top_k) = settings.top_k {
-                samplers.push(LlamaSampler::top_k(top_k));
-            }
-            if let Some(typical_p) = settings.typical_p {
-                samplers.push(LlamaSampler::typical(typical_p, 1));
-            }
-            samplers.push(LlamaSampler::top_p(settings.top_p, 1));
-            if let Some(min_p) = settings.min_p {
-                samplers.push(LlamaSampler::min_p(min_p, 1));
-            }
-            samplers.push(LlamaSampler::temp(settings.temperature));
-            samplers.push(LlamaSampler::dist(settings.seed));
-        }
-    }
-
-    Ok(LlamaSampler::chain_simple(samplers))
-}
-
-#[derive(Debug, Clone)]
 pub(super) struct MtpCompletionSettings {
     pub(super) max_tokens: usize,
     pub(super) stop_sequences: Vec<String>,
@@ -408,7 +291,7 @@ fn stream_token(
     model: &LlamaModel,
     token: llama_cpp_2::token::LlamaToken,
     eos_token: llama_cpp_2::token::LlamaToken,
-    generated_text: &mut String,
+    stop_tracker: &mut StopSequenceTracker,
     generated_count: &mut usize,
     stop_sequences: &[String],
     prompt_token_count: u32,
@@ -431,11 +314,8 @@ fn stream_token(
     }
 
     let text = token_piece(model, token);
-    generated_text.push_str(&text);
     *generated_count += 1;
-    let should_stop = stop_sequences
-        .iter()
-        .any(|stop| generated_text.ends_with(stop));
+    let should_stop = stop_tracker.push(&text, stop_sequences);
     send_completion_result(
         tx,
         Ok(CompletionResponseChunk {
@@ -606,7 +486,7 @@ pub(super) fn run_mtp_completion(
     let eos_token = model.token_eos();
     let prompt_token_count = tokens.len() as u32;
     let mut committed_tokens = tokens;
-    let mut generated_text = String::new();
+    let mut stop_tracker = StopSequenceTracker::new(&settings.stop_sequences);
     let mut generated_count = 0usize;
     let mut metrics = SpeculativeMetrics::default();
     let mut timings = MtpPhaseTimings::default();
@@ -658,7 +538,7 @@ pub(super) fn run_mtp_completion(
         model,
         anchor,
         eos_token,
-        &mut generated_text,
+        &mut stop_tracker,
         &mut generated_count,
         &settings.stop_sequences,
         prompt_token_count,
@@ -724,7 +604,7 @@ pub(super) fn run_mtp_completion(
                 model,
                 next,
                 eos_token,
-                &mut generated_text,
+                &mut stop_tracker,
                 &mut generated_count,
                 &settings.stop_sequences,
                 prompt_token_count,
@@ -837,8 +717,8 @@ pub(super) fn run_mtp_completion(
             .saturating_add(elapsed_ns(target_decode_started));
 
         let sampling_started = std::time::Instant::now();
-        let mut preview_text =
-            (!settings.stop_sequences.is_empty()).then(|| generated_text.clone());
+        let mut preview_stop_tracker =
+            (!settings.stop_sequences.is_empty()).then(|| stop_tracker.clone());
         let verified = verify_token_block_until(
             &drafts,
             |row| {
@@ -857,14 +737,10 @@ pub(super) fn run_mtp_completion(
                 if token == eos_token {
                     return true;
                 }
-                let Some(preview_text) = preview_text.as_mut() else {
+                let Some(preview_stop_tracker) = preview_stop_tracker.as_mut() else {
                     return false;
                 };
-                preview_text.push_str(&token_piece(model, token));
-                settings
-                    .stop_sequences
-                    .iter()
-                    .any(|stop| preview_text.ends_with(stop))
+                preview_stop_tracker.push(&token_piece(model, token), &settings.stop_sequences)
             },
         );
         timings.sampling_ns = timings
@@ -915,6 +791,18 @@ pub(super) fn run_mtp_completion(
         timings.accepted_prefix_histogram[verified.accepted.min(64)] =
             timings.accepted_prefix_histogram[verified.accepted.min(64)].saturating_add(1);
         timings.max_rejected_suffix = timings.max_rejected_suffix.max(rejected_suffix);
+        if let Some(controller) = adaptive.as_mut() {
+            let guard_before = controller.rollback_guard_after_round();
+            controller.observe(verified.accepted, drafts.len());
+            let guard_after = controller.rollback_guard_after_round();
+            if guard_before.is_none() && guard_after.is_some() {
+                timings.rollback_guard_activations =
+                    timings.rollback_guard_activations.saturating_add(1);
+                timings.rollback_guard_draft_limit = controller.effective_max();
+                timings.rollback_guard_after_round = guard_after;
+            }
+            timings.target_only_after_round = controller.target_only_after_round();
+        }
         if let Some(guard) = rollback_guard.as_mut() {
             if guard.observe_rejected_suffix(rejected_suffix, metrics.rounds.saturating_add(1)) {
                 timings.rollback_guard_activations =
@@ -991,7 +879,7 @@ pub(super) fn run_mtp_completion(
                 model,
                 token,
                 eos_token,
-                &mut generated_text,
+                &mut stop_tracker,
                 &mut generated_count,
                 &settings.stop_sequences,
                 prompt_token_count,
@@ -1000,10 +888,6 @@ pub(super) fn run_mtp_completion(
             ) {
                 emitted_this_round += generated_count.saturating_sub(count_before);
                 metrics.record_round(drafts.len(), verified.accepted, emitted_this_round);
-                if let Some(controller) = adaptive.as_mut() {
-                    controller.observe(verified.accepted, drafts.len());
-                    timings.target_only_after_round = controller.target_only_after_round();
-                }
                 timings.streaming_ns = timings
                     .streaming_ns
                     .saturating_add(elapsed_ns(streaming_started));
@@ -1017,10 +901,6 @@ pub(super) fn run_mtp_completion(
             .saturating_add(elapsed_ns(streaming_started));
 
         metrics.record_round(drafts.len(), verified.accepted, emitted_this_round);
-        if let Some(controller) = adaptive.as_mut() {
-            controller.observe(verified.accepted, drafts.len());
-            timings.target_only_after_round = controller.target_only_after_round();
-        }
         anchor = *verified.emitted.last().ok_or_else(|| {
             PowerError::InferenceFailed("MTP verification emitted no continuation".to_string())
         })?;

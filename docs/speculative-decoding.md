@@ -178,6 +178,50 @@ fixed seed and context, `keep_alive = -1`, streaming, and exact opted-in usage.
 An early EOS or stop result fails the run instead of silently producing a
 shorter, faster sample.
 
+`tools/run-gguf-speculative-benchmark.ps1` is the model-neutral host runner.
+It requires the registered model name, GGUF SHA-256, prompt, ACL profile, Power
+home, and explicit strategy instead of embedding a Qwen model name or path. For
+each selected NVIDIA device it records three pre-start utilization samples,
+the process set, binary and input hashes, clock request, power plan, and
+effective CPU affinity. Use
+`tools/run-qwen38-q6k-benchmark.ps1` only as a compatibility wrapper for the
+published Qwen capture.
+
+For a claimed service floor, set both gates. The median gate alone proves a
+typical run; the all-sample gate requires the slowest measured request to meet
+the floor:
+
+```powershell
+.\tools\run-gguf-speculative-benchmark.ps1 `
+  -Label candidate-1024-9x `
+  -Config .\candidate.acl `
+  -Model my-registered-gguf `
+  -ModelHash <64-lowercase-hex> `
+  -PromptFile .\benchmark-prompt.txt `
+  -PowerHome D:\models\power-home `
+  -Mode mtp -MaxTokens 1024 -NumCtx 4096 -NumBatch 14 `
+  -WarmupRuns 2 -Samples 9 `
+  -MinimumTokensPerSecond 175 `
+  -MinimumSampleTokensPerSecond 175 `
+  -NvidiaGpuIndices 0 `
+  -MaximumIdleGpuUtilizationPercent 2
+```
+
+The runner writes the JSON report and environment receipt before returning a
+threshold failure. This preserves negative evidence. On Windows PowerShell
+5.1 it writes BOM-free UTF-8; the comparison CLI also accepts older reports
+that contain PowerShell's UTF-8 BOM.
+
+The generic Windows runner defaults to the ordinary `target` Cargo directory
+and does not require NVIDIA tooling. Select one or more devices with
+`-NvidiaGpuIndices 0,1` only when NVIDIA idle-utilization evidence or clock
+locking is part of the gate. `-NumCtx` is configurable for models whose
+evaluated context is not 4,096 tokens. For a multi-GPU capture, make
+`-HardwareLabel` identify the complete topology; the environment receipt keeps
+the per-device indices and snapshots while the compact benchmark identity
+reports the backend's primary detected adapter. The Qwen compatibility wrapper
+retains its SM89-specific target directory and GPU 0 defaults.
+
 The correctness minimum is `num_batch >= spec_draft_max + 2`: one target
 anchor plus the proposal rows and one staging slot required because
 llama.cpp's recurrent splitter requires the physical batch to be strictly
@@ -194,8 +238,10 @@ committed target prefix. Fixed K>S configurations now wrap this fallback in a
 request-local guard: the first exact replay is allowed, then all later rounds
 in that request are clamped to the rollback-complete snapshot width. This
 bounds replay without changing high-acceptance requests that never activate
-the guard. Metrics report guarded requests, activations, activation round, and
-the clamped draft limit.
+the guard. Adaptive K>S configurations use the same rule: they start at the
+configured width and clamp only after an observed rejection actually exceeds
+the resident rollback window. Metrics report guarded requests, activations,
+activation round, and the clamped draft limit.
 
 Record the same explicit snapshot value in both A/B configs; reducing it can
 avoid a GPU-memory allocation cliff, while recovery frequency can reduce
@@ -207,14 +253,17 @@ zero guard activation. Use a complete K-sized window for fixed general
 workloads; narrower K7/S6 is a guarded peak-only tuning.
 
 `spec_mtp_fr_vocab_size` is an experimental FR-Spec-inspired optimization for
-the llama.cpp MTP context only. A full draft head selects rows in target
-token-ID order. A compact head can instead carry an I64 `d2t` tensor whose rows
-are ordered by a reproducible corpus-frequency ranking; draft logits are
-scattered back into the full target vocabulary and every absent row remains
-negative infinity. The target still verifies every proposal, so a draft-only
-token is never committed. Draft acceptance, block-vs-serial numerical effects,
-and output parity remain workload gates. Keep the artifact hash and explicit
-row limit identical in controlled A/B configs.
+the llama.cpp MTP context only. The reviewed patch currently advertises this
+capability only for the GGUF `qwen35` adapter; another MTP architecture fails
+closed when FR is requested and remains available through full-vocabulary MTP.
+A full draft head selects rows in target token-ID order. A compact head can
+instead carry an I64 `d2t` tensor whose rows are ordered by a reproducible
+corpus-frequency ranking; draft logits are scattered back into the full target
+vocabulary and every absent row remains negative infinity. The target still
+verifies every proposal, so a draft-only token is never committed. Draft
+acceptance, block-vs-serial numerical effects, and output parity remain
+workload gates. Keep the artifact hash and explicit row limit identical in
+controlled A/B configs.
 
 ```console
 a3s-power-speculative-bench run \
@@ -239,7 +288,8 @@ a3s-power-speculative-bench run \
   --prompt-file benchmark-prompt.txt \
   --max-tokens 256 --num-ctx 4096 --num-batch 24 --seed 42 \
   --warmup-runs 1 --samples 5 \
-  --min-tokens-per-second 100 > mtp.json
+  --min-tokens-per-second 100 \
+  --min-sample-tokens-per-second 100 > mtp.json
 
 a3s-power-speculative-bench compare baseline.json mtp.json > comparison.json
 ```
@@ -251,13 +301,14 @@ server URL, model path, and API key are omitted from reports. The client hashes
 the streamed UTF-8 output, verifies every inference receipt digest, and requires
 output parity across samples and modes.
 
-The threshold uses the median server-side steady-state decode rate:
+The compatibility threshold uses the median server-side steady-state decode rate:
 `(completion_tokens - 1) / (last_token_time - first_token_time)`. Reports also
 retain time to first token and client-observed end-to-end throughput. Power
 emits these exact timings only in the final opted-in SSE usage event when token
-metric suppression is disabled. A comparison passes only when the candidate's
-declared threshold passes and its output digest matches the autoregressive
-baseline.
+metric suppression is disabled. When
+`--min-sample-tokens-per-second` is present, the report additionally requires
+its minimum sample rate to pass. A comparison requires every declared
+throughput gate and an output digest matching the autoregressive baseline.
 
 The [RTX 4090 acceptance capture](benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
 pins the 22,884,408,288-byte GGUF by SHA-256. The current clean capture records

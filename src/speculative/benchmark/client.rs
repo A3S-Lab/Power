@@ -44,6 +44,7 @@ pub struct SpeculativeBenchmarkRunConfig {
     pub warmup_runs: u32,
     pub samples: usize,
     pub min_required_tokens_per_second: f64,
+    pub min_required_sample_tokens_per_second: Option<f64>,
     pub timeout: Duration,
 }
 
@@ -273,6 +274,7 @@ pub async fn run_benchmark(
         config.warmup_runs,
         samples,
         config.min_required_tokens_per_second,
+        config.min_required_sample_tokens_per_second,
     )
 }
 
@@ -538,6 +540,9 @@ fn validate_run_config(config: &SpeculativeBenchmarkRunConfig) -> Result<()> {
         || config.timeout.is_zero()
         || !config.min_required_tokens_per_second.is_finite()
         || config.min_required_tokens_per_second < 0.0
+        || config
+            .min_required_sample_tokens_per_second
+            .is_some_and(|threshold| !threshold.is_finite() || threshold < 0.0)
     {
         return Err(invalid(
             "speculative benchmark numeric settings are out of bounds",
@@ -708,7 +713,7 @@ mod tests {
 
     async fn benchmark_model() -> Json<serde_json::Value> {
         Json(serde_json::json!({
-            "id": "qwen",
+            "id": "generic-gguf",
             "object": "model",
             "created": 0,
             "owned_by": "local",
@@ -719,7 +724,7 @@ mod tests {
     }
 
     async fn benchmark_completion(Json(request): Json<CompletionRequest>) -> Response<Body> {
-        assert_eq!(request.model, "qwen");
+        assert_eq!(request.model, "generic-gguf");
         assert_eq!(request.max_tokens, Some(2));
         assert_eq!(request.temperature, Some(0.0));
         assert_eq!(request.top_p, Some(1.0));
@@ -768,7 +773,7 @@ mod tests {
     ) {
         let app = Router::new()
             .route("/health", get(benchmark_health))
-            .route("/v1/models/qwen", get(benchmark_model))
+            .route("/v1/models/generic-gguf", get(benchmark_model))
             .route("/v1/completions", post(benchmark_completion));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -829,6 +834,7 @@ mod tests {
             warmup_runs: 0,
             samples: 1,
             min_required_tokens_per_second: 0.0,
+            min_required_sample_tokens_per_second: None,
             timeout: Duration::from_secs(1),
         };
         assert!(validate_run_config(&config).is_err());
@@ -841,7 +847,7 @@ mod tests {
         let config = SpeculativeBenchmarkRunConfig {
             base_url,
             api_key: Some(Zeroizing::new("secret".to_string())),
-            model: "qwen".to_string(),
+            model: "generic-gguf".to_string(),
             expected_model_sha256: "a".repeat(64),
             mode: SpeculativeStrategy::Off,
             power_commit: "b".repeat(40),
@@ -854,6 +860,7 @@ mod tests {
             warmup_runs: 0,
             samples: 2,
             min_required_tokens_per_second: 100.0,
+            min_required_sample_tokens_per_second: Some(100.0),
             timeout: Duration::from_secs(5),
         };
 
@@ -868,6 +875,8 @@ mod tests {
         assert_eq!(report.samples.len(), 2);
         assert_eq!(report.median_decode_tokens_per_second, 1_000_000_000.0);
         assert!(report.threshold_passed);
+        assert!(report.stability.as_ref().unwrap().threshold_passed);
+        assert!(report.all_thresholds_passed());
         let json = serde_json::to_string(&report).unwrap();
         assert!(!json.contains(prompt));
         assert!(!json.contains("127.0.0.1"));
