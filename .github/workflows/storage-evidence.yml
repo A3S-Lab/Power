@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -194,7 +194,7 @@ jobs:
               > "${evidence}/${collection}-comparison.json"
           done
       - name: Upload path-free Linux evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: power-storage-evidence-linux-${{ github.run_id }}
           path: ${{ runner.temp }}/a3s-power-storage-evidence-linux
@@ -206,7 +206,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Enable long paths for Cargo Git dependencies
         run: git config --global core.longpaths true
@@ -314,7 +314,7 @@ jobs:
             )
           }
       - name: Upload path-free Windows evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: power-storage-evidence-windows-${{ github.run_id }}
           path: ${{ runner.temp }}/a3s-power-storage-evidence-windows

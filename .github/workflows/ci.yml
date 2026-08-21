@@ -14,7 +14,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -53,7 +53,7 @@ jobs:
           - label: artifact-provisioning
             features: "--no-default-features --features artifact-provisioning"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -87,7 +87,7 @@ jobs:
     name: Embedded dependency boundary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: tools/check-embedded-deps.sh
       - name: Test release evidence commit layout
@@ -97,7 +97,7 @@ jobs:
     name: Check (windows-embedded-inference)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Enable long paths for Cargo Git dependencies
         run: git config --global core.longpaths true
@@ -115,7 +115,7 @@ jobs:
     name: Check (macos-embedded-inference)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -147,7 +147,7 @@ jobs:
           - label: artifact-provisioning
             args: "--no-default-features --features artifact-provisioning --lib"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -161,11 +161,12 @@ jobs:
     name: Package verification
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           key: package-verification
+          cache-targets: false
       - run: cargo package --locked
 
   cross-build:
@@ -188,7 +189,7 @@ jobs:
             os: ubuntu-latest
             use_cross: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

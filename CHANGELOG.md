@@ -106,6 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Upgraded GitHub-hosted workflows to the Node 24 generations of checkout and
+  artifact actions. Package verification now caches Cargo home without scanning
+  Cargo's transient `target/package` tree during post-job cleanup.
 - Made the Windows GGUF preflight regression portable across Windows PowerShell
   and PowerShell 7 by replacing its unsupported generated console executable
   with a scoped command double, and made NVIDIA CLI arguments explicit. Also
