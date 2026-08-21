@@ -17,10 +17,19 @@ for development, fixture tests, or offline inspection.
 
 ## Build
 
-Build the verifier with hardware signature support:
+Build the ordinary verifier with hardware signature support:
 
 ```bash
 cargo build --release --bin a3s-power-verify --features hw-verify
+```
+
+The release-promotion command additionally needs the embedded release-contract
+types while retaining the server verifier:
+
+```bash
+cargo build --locked --release --no-default-features \
+  --features server,embedded-inference,hw-verify \
+  --bin a3s-power-verify
 ```
 
 Without `hw-verify`, strict verification fails closed with an error explaining
@@ -90,6 +99,19 @@ profile pins described in the README, including `--gpu-confidential`,
 `--gpu-verdict-digest`, GPU/NVSwitch topology pins, claims-version pins, and
 `--gpu-execution-digest`.
 
+To preserve externally collected NVIDIA bytes, configure
+`gpu_attestation.source = "configured"` with absolute `evidence_path` and
+`verdict_path` values. For a nonce-bound request, Power requires nvattest JSON,
+checks the exact evidence and verdict nonce, counts evidence entries, extracts
+structured device claims, and binds hashes of the unchanged files into the CPU
+TEE report. Direct NRAS evidence without a saved verdict belongs to the
+`nras-rest` provider instead.
+
+The full [External Metal and Confidential-GPU Release Capture](external-release-capture.md)
+workflow shows vendor collection, ACL, report capture, accelerator declaration,
+strict `--promote-capture` invocation, no-overwrite behavior, and the release
+artifact inventory.
+
 ## Failure Modes
 
 Treat these failures as production-blocking:
@@ -97,6 +119,8 @@ Treat these failures as production-blocking:
 - Missing `hw-verify` feature in a strict verifier build.
 - Missing or malformed `--expected-measurement`.
 - Missing raw report bytes in saved evidence.
+- Missing, reformatted, stale-nonce, or unpinned raw NVIDIA evidence/verdict
+  bytes during confidential release promotion.
 - Failed AMD KDS fetches.
 - Certificate parse failures.
 - Hardware signature verification failures.

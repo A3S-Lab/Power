@@ -623,6 +623,7 @@ use a3s_power::inference::{
 let spec = AcceleratorFusedBatchSpec::new(
     fused_kernel_sha256,
     exact_fallback_sha256,
+    execution_policy_sha256,
     vec!["model-owned-group-0".to_string()],
 )
 .with_fallback_mode(AcceleratorFallbackMode::AllowExact);
@@ -665,6 +666,13 @@ security class; it replays and re-hashes the promoted capture. Strict SEV-SNP
 verification binds exposed fields to the signed raw report. Built-in Intel TDX
 verification fails closed pending DCAP Quote/QVL support. Stored bindings remain
 digest-only evidence and still need the release trust root described below.
+
+`execution_policy_sha256` is the canonical digest of the actual server GPU
+execution/offload configuration. It is deliberately independent from
+`declaration_sha256`: the declaration additionally commits to weights, active
+residency groups, fused and fallback implementations, the typed device, and an
+optional mesh. A model integration must compute the policy digest from the same
+`GpuConfig` used by the server rather than copying the declaration digest.
 
 ### Attestation-Bound Heterogeneous Device Meshes
 
@@ -1143,7 +1151,9 @@ The release schema contains no architecture, tokenizer, container, modality, or
 generation-mode switch. Architecture integrations own the implementations
 behind the graph and weight digests. See
 [Production Release Evidence Gate](release-evidence-gate.md) for the complete
-schema and trust-root boundary.
+schema and trust-root boundary, and
+[External Metal and Confidential-GPU Release Capture](external-release-capture.md)
+for the reproducible hardware workflow and strict promotion command.
 
 ## Validation Gates
 

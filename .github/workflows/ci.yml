@@ -48,6 +48,8 @@ jobs:
             native_deps: true
           - label: embedded-inference
             features: "--no-default-features --features embedded-inference"
+          - label: release-promotion
+            features: "--no-default-features --features server,embedded-inference,hw-verify"
           - label: artifact-provisioning
             features: "--no-default-features --features artifact-provisioning"
     steps:
@@ -136,6 +138,8 @@ jobs:
             native_deps: true
           - label: embedded-inference
             args: "--no-default-features --features embedded-inference --lib"
+          - label: release-promotion
+            args: "--no-default-features --features server,embedded-inference,hw-verify --bin a3s-power-verify"
           - label: artifact-provisioning
             args: "--no-default-features --features artifact-provisioning --lib"
     steps:
@@ -148,6 +152,17 @@ jobs:
         if: matrix.native_deps == true
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
       - run: cargo test --locked ${{ matrix.args }}
+
+  package:
+    name: Package verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-verification
+      - run: cargo package --locked
 
   cross-build:
     name: Cross (${{ matrix.target }})
@@ -185,4 +200,4 @@ jobs:
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             BUILD_CMD="cross"
           fi
-          $BUILD_CMD build --locked --release --target ${{ matrix.target }} --features hf,hw-verify
+          $BUILD_CMD build --locked --release --target ${{ matrix.target }} --features hf,hw-verify,embedded-inference

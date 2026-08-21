@@ -265,7 +265,10 @@ calibration path. Neither the collector nor the evidence schema contains a
 tokenizer, container format, generation mode, model family, or architecture
 dispatch key. Qwen is one possible workload; language, vision, embedding,
 audio, scientific, and custom graphs use the same contract. See
-[Production Release Evidence Gate](docs/release-evidence-gate.md).
+[Production Release Evidence Gate](docs/release-evidence-gate.md). The
+[external hardware capture guide](docs/external-release-capture.md) defines the
+real Metal run and nonce-bound confidential-GPU promotion without introducing a
+Qwen-, GGUF-, or backend-specific release path.
 
 ## Backends are capabilities, not architecture
 
@@ -300,6 +303,11 @@ cargo build --locked --release --no-default-features --features tee-minimal
 
 # llama.cpp with CUDA
 cargo build --locked --release --no-default-features --features llamacpp-cuda
+
+# Strict verifier plus model-neutral confidential release promotion
+cargo build --locked --release --no-default-features \
+  --features server,embedded-inference,hw-verify \
+  --bin a3s-power-verify
 ```
 
 The FR-Spec-inspired path is separate because it patches the pinned llama.cpp
@@ -456,6 +464,7 @@ current production boundary and failure policy.
 | [Model-Neutral Session Replicas](docs/session-replicas.md) | Exclusive mutable contexts, shared device admission, residency bounds, and cancellation |
 | [Device-Resident Reviewed Graph Chains](docs/device-resident-graphs.md) | Same-request opaque handles, exact boundary validation, digest continuity, and explicit owned fallback |
 | [Production Release Evidence Gate](docs/release-evidence-gate.md) | Strict platform coverage, immutable bindings, runtime failure proofs, and trust-root requirements |
+| [External Metal and Confidential-GPU Capture](docs/external-release-capture.md) | Clean-revision hardware commands, raw vendor evidence, strict proof-backed promotion, and artifact inventory |
 | [Model-neutral Speculative Decoding](docs/speculative-decoding.md) | Strategies, native MTP, patching, protocol, and acceptance |
 | [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | Performance gates, artifact identity, quality, and raw evidence |
 | [Reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) | CUDA build, pinned inputs, replay, audit, and validation |
@@ -463,7 +472,6 @@ current production boundary and failure policy.
 | [Supply-chain Audit](docs/supply-chain.md) | Feature profiles, native code, and threat model |
 | [Storage Benchmark](docs/storage-benchmark.md) | Verified storage and residency measurements |
 | [Tensor Batch Cost Benchmark](docs/tensor-batch-benchmark.md) | Model-neutral allocation, host-boundary copy cost, parity, and named-hardware reproduction |
-| [Production Release Evidence Gate](docs/release-evidence-gate.md) | Platform-specific bindings, complete contract capture, verification, and trust-root boundary |
 | [Windows CPU/CUDA complete contract captures](docs/benchmarks/release-contract-windows-20260821/README.md) | Clean-revision peak memory, cancellation, queue expiry, replica recovery, fallback parity, raw JSON, and exact reproduction |
 | [Windows CPU/CUDA P5 pre-captures](docs/benchmarks/release-gate-windows-20260821/README.md) | Clean-revision raw samples, hashes, negative evidence, reproduction, and explicit remaining gaps |
 | [Roadmap](ROADMAP.md) | Acceptance gates and remaining work |

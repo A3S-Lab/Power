@@ -510,6 +510,16 @@ Landed in the current working tree:
   constructor. Production accelerator bindings, sealed-state export
   authorization, and confidential release promotion consume these proofs;
   raw reports and caller-supplied verification labels cannot mint them.
+- Made configured nonce-bound NVIDIA evidence parse and validate the saved
+  nvattest evidence as well as its verdict. The provider now requires the exact
+  evidence nonce, records the evidence count and canonical raw format labels,
+  and rejects stale evidence before it can enter CPU TEE claims.
+- Added a strict saved-report release-promotion CLI that consumes the opaque
+  confidential proof in the verifier process. It independently pins raw vendor
+  evidence, model weights, real GPU execution policy, accelerator declaration,
+  and local CUDA capture, then commits bounded output with no-overwrite
+  semantics. The external hardware workflow is documented in
+  `external-release-capture.md`.
 
 Still open:
 

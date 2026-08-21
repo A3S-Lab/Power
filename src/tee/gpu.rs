@@ -166,23 +166,31 @@ impl GpuEvidenceProvider for ConfiguredGpuEvidenceProvider {
         let mut claim = GpuEvidenceClaim::new(self.provider.clone(), evidence_digest)
             .with_evidence_format("configured-raw-bytes");
 
+        let nonce = nonce.filter(|nonce| !nonce.is_empty());
+        let nonce_hex = nonce.map(hex::encode);
+        if let (Some(nonce), Some(nonce_hex)) = (nonce, nonce_hex.as_deref()) {
+            let evidence_count = validate_nvattest_evidence_json(&evidence, nonce_hex)?;
+            claim = claim
+                .with_evidence_format("nvidia-nvattest-evidence-json")
+                .with_evidence_count(evidence_count)
+                .with_nonce(nonce);
+        }
+
         if let Some(verdict) = &self.verdict {
             let verdict = verdict.read().await?;
-            let devices = if let Some(nonce) = nonce.filter(|nonce| !nonce.is_empty()) {
-                Some(validate_configured_verdict_json(
-                    &verdict,
-                    &hex::encode(nonce),
-                )?)
+            let devices = if let Some(nonce_hex) = nonce_hex.as_deref() {
+                Some(validate_configured_verdict_json(&verdict, nonce_hex)?)
             } else {
                 None
             };
 
             claim = claim
-                .with_verdict_format("configured-raw-bytes")
+                .with_verdict_format(if nonce_hex.is_some() {
+                    "nvidia-nvattest-attestation-json"
+                } else {
+                    "configured-raw-bytes"
+                })
                 .with_verdict_digest(sha256_bytes(&verdict));
-            if let Some(nonce) = nonce.filter(|nonce| !nonce.is_empty()) {
-                claim = claim.with_nonce(nonce);
-            }
             if let Some(devices) = devices {
                 claim = claim.with_devices(devices);
             }
@@ -1729,6 +1737,19 @@ mod tests {
         })
     }
 
+    fn nvattest_evidence(nonce: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "evidences": [{
+                "nonce": nonce,
+                "evidence": "ZXZpZGVuY2U",
+                "certificate": "Y2VydA"
+            }],
+            "result_code": 0,
+            "result_message": "ok"
+        }))
+        .unwrap()
+    }
+
     fn nvidia_nvswitch_claim(nonce: &str) -> serde_json::Value {
         serde_json::json!({
             "dbgstat": "disabled",
@@ -1819,7 +1840,7 @@ mod tests {
         }))
         .unwrap();
         let config = GpuAttestationConfig {
-            evidence_hex: Some(hex::encode(b"gpu-evidence")),
+            evidence_hex: Some(hex::encode(nvattest_evidence(&nonce_hex))),
             verdict_hex: Some(hex::encode(&verdict)),
             ..Default::default()
         };
@@ -1833,6 +1854,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(claim.nonce, Some(nonce.to_vec()));
+        assert_eq!(claim.evidence_count, Some(1));
+        assert_eq!(
+            claim.evidence_format.as_deref(),
+            Some("nvidia-nvattest-evidence-json")
+        );
+        assert_eq!(
+            claim.verdict_format.as_deref(),
+            Some("nvidia-nvattest-attestation-json")
+        );
         assert_eq!(claim.devices.len(), 1);
         assert_eq!(
             claim.devices[0].hwmodel.as_deref(),
@@ -1853,7 +1883,7 @@ mod tests {
         }))
         .unwrap();
         let config = GpuAttestationConfig {
-            evidence_hex: Some(hex::encode(b"gpu-evidence")),
+            evidence_hex: Some(hex::encode(nvattest_evidence(&hex::encode(request_nonce)))),
             verdict_hex: Some(hex::encode(&verdict)),
             ..Default::default()
         };
@@ -1870,6 +1900,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configured_provider_with_nonce_rejects_stale_evidence() {
+        let request_nonce = [0x11u8; 32];
+        let request_nonce_hex = hex::encode(request_nonce);
+        let verdict = serde_json::to_vec(&serde_json::json!({
+            "claims": [nvidia_gpu_claim(&request_nonce_hex)]
+        }))
+        .unwrap();
+        let config = GpuAttestationConfig {
+            evidence_hex: Some(hex::encode(nvattest_evidence(&"22".repeat(32)))),
+            verdict_hex: Some(hex::encode(&verdict)),
+            ..Default::default()
+        };
+
+        let provider = ConfiguredGpuEvidenceProvider::from_config(&config)
+            .unwrap()
+            .unwrap();
+        let error = provider
+            .evidence_claim_for_nonce(Some(&request_nonce))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("evidence nonce"));
+    }
+
+    #[tokio::test]
     async fn configured_provider_with_nonce_rejects_unstructured_verdict() {
         let request_nonce = [0x04, 0x05, 0x06];
         let verdict = serde_json::to_vec(&serde_json::json!({
@@ -1877,7 +1932,7 @@ mod tests {
         }))
         .unwrap();
         let config = GpuAttestationConfig {
-            evidence_hex: Some(hex::encode(b"gpu-evidence")),
+            evidence_hex: Some(hex::encode(nvattest_evidence(&hex::encode(request_nonce)))),
             verdict_hex: Some(hex::encode(&verdict)),
             ..Default::default()
         };

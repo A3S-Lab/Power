@@ -93,8 +93,13 @@ pub(super) fn hierarchy_with_limits(
 }
 
 pub(super) fn spec() -> AcceleratorFusedBatchSpec {
-    AcceleratorFusedBatchSpec::new(digest('1'), digest('2'), vec!["expert-0".to_string()])
-        .with_fallback_mode(AcceleratorFallbackMode::AllowExact)
+    AcceleratorFusedBatchSpec::new(
+        digest('1'),
+        digest('2'),
+        digest('3'),
+        vec!["expert-0".to_string()],
+    )
+    .with_fallback_mode(AcceleratorFallbackMode::AllowExact)
 }
 
 pub(super) fn local_mesh(runtime: &EmbeddedRuntime) -> AcceleratorDeviceMesh {

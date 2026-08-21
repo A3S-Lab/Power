@@ -180,6 +180,10 @@ caller remains responsible for proving that the reference was produced by an
 independent reviewed implementation rather than copying the tested output.
 Complete commands and input formats are in the
 [Tensor Batch Cost Benchmark Protocol](tensor-batch-benchmark.md).
+The external [Metal and Confidential-GPU Release Capture](external-release-capture.md)
+guide carries the same contract onto named hardware, preserves raw vendor
+evidence, and invokes strict proof-backed promotion without adding a
+model-specific release path.
 
 ## Model and backend boundary
 
@@ -213,7 +217,11 @@ Metal and confidential-GPU results cannot be inferred from this Windows RTX
 4090 host. They remain explicit release blockers until captured on appropriate
 hardware from the same immutable release revision. The Rust API now implements
 proof-backed confidential promotion, and a raw attestation report or
-caller-provided label is insufficient. The benchmark CLI still emits only local
-captures; an external confidential capture workflow must collect the vendor
-evidence, run strict verification, call the promotion API, and preserve the raw
-report plus release trust-root material from one immutable revision.
+caller-provided label is insufficient. The checked-in
+[external capture workflow](external-release-capture.md) now defines the exact
+Metal runner, nonce-bound NVIDIA evidence collection, configured raw-evidence
+binding, model-owned accelerator declaration, strict verifier pins, create-new
+promotion, and artifact inventory. That implementation does not replace the
+missing hardware results: the raw Metal and confidential-GPU captures plus an
+authenticated final bundle still have to be produced from one immutable
+revision.

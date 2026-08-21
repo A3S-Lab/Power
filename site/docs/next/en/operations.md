@@ -34,6 +34,11 @@ cargo build --release --no-default-features --features tee-minimal
 
 # llama.cpp with CUDA
 cargo build --release --no-default-features --features llamacpp-cuda
+
+# Strict verifier with confidential release promotion
+cargo build --locked --release --no-default-features \
+  --features server,embedded-inference,hw-verify \
+  --bin a3s-power-verify
 ```
 
 The `llamacpp-mtp-fr` profile is intentionally separate because it modifies the
@@ -77,6 +82,9 @@ Model aliases point to manifests rather than weakening blob identity.
   strict confidential-GPU verification; raw reports are evidence inputs, not
   authorization tokens.
 - Preserve raw report fields when saving attestation evidence.
+- Preserve unchanged NVIDIA evidence and verdict bytes, and use the
+  [external capture workflow](https://github.com/A3S-Lab/Power/blob/main/docs/external-release-capture.md)
+  for strict `--promote-capture` release evidence.
 - Treat mixed quantization and vocabulary-reduced drafting as quality-gated,
   workload-specific techniques.
 - Keep model bytes, ACL, binary hashes, drivers, and host controls with every

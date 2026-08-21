@@ -49,6 +49,15 @@ Without `hw-verify`, strict signature verification fails closed. The explicit
 `--allow-offline` bypass exists for fixtures and offline inspection, not
 production acceptance.
 
+Confidential release promotion also needs the model-neutral embedded contract
+types:
+
+```bash
+cargo build --locked --release --no-default-features \
+  --features server,embedded-inference,hw-verify \
+  --bin a3s-power-verify
+```
+
 ## Verify a running service
 
 ```bash
@@ -114,6 +123,20 @@ authenticated release trust root.
 The current [clean-revision CPU/CUDA captures](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/release-contract-windows-20260821/README.md)
 replay as one verified two-platform partial bundle. Metal and confidential-GPU
 captures remain required before the strict four-platform v1 policy can pass.
+
+## Reproduce external hardware capture
+
+The checked-in workflow runs the complete contract on a real Metal device, then
+uses one fresh nonce to bind preserved NVIDIA evidence, the remote NRAS verdict,
+the CPU TEE report, the canonical GPU execution policy, and a model-owned
+accelerator declaration. `a3s-power-verify --promote-capture` consumes the
+strict proof in-process and creates a new confidential capture without replacing
+an existing file.
+
+Read [External Metal and Confidential-GPU Release Capture](https://github.com/A3S-Lab/Power/blob/main/docs/external-release-capture.md)
+for the exact commands, ACL, device pins, failure conditions, and artifact
+inventory. The workflow is implemented; actual same-revision Metal and
+confidential-GPU artifacts are still required for v1.
 
 ## Production-blocking failures
 

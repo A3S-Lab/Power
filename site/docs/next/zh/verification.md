@@ -44,6 +44,14 @@ cargo build --release --bin a3s-power-verify --features hw-verify
 
 未启用 `hw-verify` 时，严格签名验证会失败关闭。显式 `--allow-offline` 绕过只用于 fixture 与离线检查，不是生产接受策略。
 
+机密发布提升还需要模型中立的嵌入式契约类型：
+
+```bash
+cargo build --locked --release --no-default-features \
+  --features server,embedded-inference,hw-verify \
+  --bin a3s-power-verify
+```
+
 ## 验证运行中的服务
 
 ```bash
@@ -92,6 +100,12 @@ model_hash "your-model" {
 受信任的构造路径由类型系统约束。严格的机密 GPU 验证会返回一个绑定到精确报告的不可构造证明；只有 `ReleaseCapture::promote_confidential_gpu` 能用它把有效的本地 CUDA 捕获提升为机密 GPU 捕获。原始报告、反序列化标签或调用方写入的布尔值都不能铸造这类发布证据。生成的 bundle 仍须由发布信任根认证。
 
 当前[干净 revision 的 CPU/CUDA 完整捕获](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/release-contract-windows-20260821/README.md)可回放为一个经过验证的两平台部分 bundle。在 Metal 与机密 GPU 捕获补齐前，严格的四平台 v1 策略仍不会通过。
+
+## 复现外部硬件捕获
+
+仓库中的流程会先在真实 Metal 设备上运行完整契约，再用同一个新鲜 nonce 绑定保留原字节的 NVIDIA evidence、远程 NRAS verdict、CPU TEE 报告、规范化 GPU 执行策略与模型自有加速器声明。`a3s-power-verify --promote-capture` 在同一进程内消费严格验证证明，并以禁止覆盖的方式创建机密捕获。
+
+精确命令、ACL、设备 pin、失败条件与制品清单见[外部 Metal 与机密 GPU 发布捕获](https://github.com/A3S-Lab/Power/blob/main/docs/external-release-capture.md)。流程已经实现，但 v1 仍需要同一 revision 的真实 Metal 与机密 GPU 制品。
 
 ## 生产阻断条件
 

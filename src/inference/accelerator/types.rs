@@ -54,6 +54,8 @@ pub enum AcceleratorSecurityRequirement {
 pub struct AcceleratorFusedBatchSpec {
     pub fused_kernel_sha256: String,
     pub exact_fallback_sha256: String,
+    /// Exact runtime GPU execution/offload policy expected in attestation.
+    pub execution_policy_sha256: String,
     pub residency_group_ids: Vec<String>,
     #[serde(default)]
     pub fallback_mode: AcceleratorFallbackMode,
@@ -67,11 +69,13 @@ impl AcceleratorFusedBatchSpec {
     pub fn new(
         fused_kernel_sha256: impl Into<String>,
         exact_fallback_sha256: impl Into<String>,
+        execution_policy_sha256: impl Into<String>,
         residency_group_ids: Vec<String>,
     ) -> Self {
         Self {
             fused_kernel_sha256: fused_kernel_sha256.into(),
             exact_fallback_sha256: exact_fallback_sha256.into(),
+            execution_policy_sha256: execution_policy_sha256.into(),
             residency_group_ids,
             fallback_mode: AcceleratorFallbackMode::Deny,
             fallback_target: AcceleratorFallbackTarget::Cpu,
@@ -97,6 +101,10 @@ impl AcceleratorFusedBatchSpec {
     pub(super) fn validate(&self, max_groups: usize, max_name_bytes: usize) -> Result<()> {
         validate_sha256(&self.fused_kernel_sha256, "fused kernel")?;
         validate_sha256(&self.exact_fallback_sha256, "exact fallback")?;
+        validate_sha256(
+            &self.execution_policy_sha256,
+            "accelerator execution policy",
+        )?;
         if self.fused_kernel_sha256 == self.exact_fallback_sha256 {
             return Err(PowerError::InvalidRequest(
                 "fused kernel and exact fallback identities must be distinct".to_string(),
@@ -158,8 +166,14 @@ pub struct AcceleratorResidencyDeclaration {
 }
 
 impl AcceleratorResidencyDeclaration {
-    pub const SCHEMA: &'static str = "a3s.power.accelerator-residency-declaration.v1";
-    pub const MESH_SCHEMA: &'static str = "a3s.power.accelerator-residency-declaration.v2";
+    pub const SCHEMA: &'static str = "a3s.power.accelerator-residency-declaration.v3";
+    pub const MESH_SCHEMA: &'static str = "a3s.power.accelerator-residency-declaration.v4";
+
+    /// Replays every structural, resource, device, and canonical-digest check
+    /// for a declaration loaded from an external evidence artifact.
+    pub fn verify(&self) -> Result<()> {
+        self.validate()
+    }
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build(
@@ -196,11 +210,10 @@ impl AcceleratorResidencyDeclaration {
             total_bytes,
             device_mesh,
             declaration_sha256: String::new(),
-            execution_policy_sha256: String::new(),
+            execution_policy_sha256: spec.execution_policy_sha256.clone(),
         };
         let digest = declaration.recompute_sha256()?;
-        declaration.declaration_sha256 = digest.clone();
-        declaration.execution_policy_sha256 = digest;
+        declaration.declaration_sha256 = digest;
         declaration.validate()?;
         Ok(declaration)
     }
@@ -209,11 +222,13 @@ impl AcceleratorResidencyDeclaration {
     pub(crate) fn confidential_release_fixture(
         weights_sha256: String,
         runtime_device: RuntimeDeviceIdentity,
+        execution_policy_sha256: String,
     ) -> Self {
         let group_id = "release-fixture".to_string();
         let spec = AcceleratorFusedBatchSpec::new(
             "11".repeat(32),
             "22".repeat(32),
+            execution_policy_sha256,
             vec![group_id.clone()],
         )
         .with_fallback_mode(AcceleratorFallbackMode::AllowExact)
@@ -325,7 +340,7 @@ impl AcceleratorResidencyDeclaration {
             ));
         }
         let recomputed = self.recompute_sha256()?;
-        if self.declaration_sha256 != recomputed || self.execution_policy_sha256 != recomputed {
+        if self.declaration_sha256 != recomputed {
             return Err(PowerError::InvalidFormat(
                 "accelerator residency declaration digest does not match its canonical payload"
                     .to_string(),
@@ -344,6 +359,7 @@ impl AcceleratorResidencyDeclaration {
             runtime_device: RuntimeDeviceIdentity,
             fused_kernel_sha256: &'a str,
             exact_fallback_sha256: &'a str,
+            execution_policy_sha256: &'a str,
             fallback_mode: AcceleratorFallbackMode,
             fallback_target: AcceleratorFallbackTarget,
             security: AcceleratorSecurityRequirement,
@@ -362,6 +378,7 @@ impl AcceleratorResidencyDeclaration {
             runtime_device: self.runtime_device,
             fused_kernel_sha256: &self.fused_kernel_sha256,
             exact_fallback_sha256: &self.exact_fallback_sha256,
+            execution_policy_sha256: &self.execution_policy_sha256,
             fallback_mode: self.fallback_mode,
             fallback_target: self.fallback_target,
             security: self.security,
@@ -375,9 +392,9 @@ impl AcceleratorResidencyDeclaration {
         let encoded = serde_json::to_vec(&payload)?;
         let mut hasher = Sha256::new();
         if self.schema == Self::MESH_SCHEMA {
-            hasher.update(b"a3s-power-accelerator-residency-declaration-v2\0");
+            hasher.update(b"a3s-power-accelerator-residency-declaration-v4\0");
         } else {
-            hasher.update(b"a3s-power-accelerator-residency-declaration-v1\0");
+            hasher.update(b"a3s-power-accelerator-residency-declaration-v3\0");
         }
         hasher.update(encoded);
         Ok(format!("{:x}", hasher.finalize()))

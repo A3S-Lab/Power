@@ -32,6 +32,11 @@ cargo build --release --no-default-features --features tee-minimal
 
 # 带 CUDA 的 llama.cpp
 cargo build --release --no-default-features --features llamacpp-cuda
+
+# 带机密发布提升能力的严格验证器
+cargo build --locked --release --no-default-features \
+  --features server,embedded-inference,hw-verify \
+  --bin a3s-power-verify
 ```
 
 `llamacpp-mtp-fr` 独立成 profile，是因为它会修改固定版本的源码。普通 `llamacpp` 构建不需要该实验补丁。
@@ -65,6 +70,7 @@ cargo build --release --no-default-features --features llamacpp-cuda
 - 不得因为 CPU TEE 放置就声称 GPU 推理具备机密性。
 - 只能使用严格机密 GPU 验证返回的不可构造证明提升发布捕获；原始报告是证据输入，不是授权令牌。
 - 保存证明证据时保留原始报告字段。
+- 保留未经改写的 NVIDIA evidence 与 verdict 字节，并按[外部捕获流程](https://github.com/A3S-Lab/Power/blob/main/docs/external-release-capture.md)生成严格的 `--promote-capture` 发布证据。
 - 混合量化与词表缩减 draft 都是需要质量门槛、与负载相关的技术。
 - 每次性能验收都同时保存模型字节、ACL、二进制哈希、驱动与主机控制信息。
 

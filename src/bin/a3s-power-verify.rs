@@ -18,6 +18,14 @@
 //! a3s-power-verify --file report.json \
 //!     --nonce deadbeef \
 //!     --model-hash <sha256-hex>
+//!
+//! # Promote a model-neutral local CUDA release capture after strict
+//! # confidential-GPU verification. The saved report remains unchanged.
+//! a3s-power-verify --file report.json \
+//!     --promote-capture cuda.json \
+//!     --accelerator-declaration accelerator.json \
+//!     --promoted-output confidential.json \
+//!     <strict confidential-GPU pins>
 //! ```
 
 use std::process;
@@ -29,6 +37,8 @@ use a3s_power::api::receipt::{AttestationReceipt, ReceiptRequestType};
 use a3s_power::api::types::{ChatCompletionRequest, CompletionRequest};
 use a3s_power::config::GpuConfig;
 use a3s_power::tee::attestation::AttestationReport;
+#[cfg(feature = "embedded-inference")]
+use a3s_power::verify::verify_confidential_gpu_attestation;
 use a3s_power::verify::{
     verify_receipt_against_attestation, verify_receipt_matches_chat_request,
     verify_receipt_matches_completion_request, verify_receipt_policy, verify_report_with_policy,
@@ -37,6 +47,14 @@ use a3s_power::verify::{
 };
 #[cfg(feature = "hw-verify")]
 use a3s_power::verify::{SevSnpVerifier, TdxVerifier};
+
+#[cfg(feature = "embedded-inference")]
+#[path = "power_verify/release_promotion.rs"]
+mod release_promotion;
+
+#[cfg(test)]
+#[path = "power_verify/release_promotion_cli_tests.rs"]
+mod release_promotion_cli_tests;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -48,6 +66,7 @@ fn main() {
 
 fn run(args: &[String]) -> anyhow::Result<()> {
     let opts = parse_args(args)?;
+    validate_release_promotion_options(&opts)?;
 
     if opts.print_gpu_execution_digest {
         println!("{}", gpu_execution_digest_from_opts(&opts)?);
@@ -168,6 +187,36 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         "--gpu-execution-digest",
         opts.gpu_execution_digest.as_deref(),
     )?;
+    #[cfg(feature = "embedded-inference")]
+    let prepared_release_promotion = if opts.release_promotion_requested() {
+        let capture_path = opts
+            .promote_capture
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("release promotion is missing --promote-capture"))?;
+        let declaration_path = opts.accelerator_declaration.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("release promotion is missing --accelerator-declaration")
+        })?;
+        let output_path = opts
+            .promoted_output
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("release promotion is missing --promoted-output"))?;
+        let expected_model_hash = model_hash
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("release promotion is missing --model-hash"))?;
+        let expected_execution_digest =
+            expected_gpu_execution_digest.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("release promotion is missing --gpu-execution-digest")
+            })?;
+        Some(release_promotion::PreparedReleasePromotion::load(
+            capture_path,
+            declaration_path,
+            output_path,
+            expected_model_hash,
+            expected_execution_digest,
+        )?)
+    } else {
+        None
+    };
     let expected_receipt_digest =
         decode_optional_hex_arg("--receipt-digest", opts.receipt_digest.as_deref())?;
     let expected_effective_prompt_digest = decode_optional_hex_arg(
@@ -261,8 +310,21 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         policy
     };
 
+    #[cfg(feature = "embedded-inference")]
+    let (result, confidential_proof) = if prepared_release_promotion.is_some() {
+        let (result, proof) = verify_confidential_gpu_attestation(&report, &verify_opts)
+            .map_err(|error| anyhow::anyhow!("verification failed: {error}"))?;
+        (result, Some(proof))
+    } else {
+        (
+            verify_report_with_policy(&report, &verify_opts, policy)
+                .map_err(|error| anyhow::anyhow!("verification failed: {error}"))?,
+            None,
+        )
+    };
+    #[cfg(not(feature = "embedded-inference"))]
     let result = verify_report_with_policy(&report, &verify_opts, policy)
-        .map_err(|e| anyhow::anyhow!("verification failed: {e}"))?;
+        .map_err(|error| anyhow::anyhow!("verification failed: {error}"))?;
     if let Some(receipt) = receipt.as_ref() {
         verify_receipt_against_attestation(
             &report,
@@ -287,6 +349,16 @@ fn run(args: &[String]) -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("receipt request verification failed: {e}"))?;
         }
     }
+
+    #[cfg(feature = "embedded-inference")]
+    let promoted_capture_sha256 = if let Some(promotion) = prepared_release_promotion {
+        let proof = confidential_proof.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("release promotion completed without a confidential attestation proof")
+        })?;
+        Some(promotion.promote(proof)?)
+    } else {
+        None
+    };
 
     // Print results
     println!("TEE type:    {}", report.tee_type);
@@ -357,6 +429,10 @@ fn run(args: &[String]) -> anyhow::Result<()> {
             "— skipped"
         }
     );
+    #[cfg(feature = "embedded-inference")]
+    if let Some(sha256) = promoted_capture_sha256 {
+        println!("Release:     ✓ promoted ({sha256})");
+    }
     println!("\nAttestation OK");
     Ok(())
 }
@@ -371,6 +447,12 @@ struct CliOpts {
     url: Option<String>,
     /// Path to a JSON file containing an AttestationReport
     file: Option<String>,
+    /// Valid local CUDA ReleaseCapture to promote after strict verification.
+    promote_capture: Option<String>,
+    /// Model-owned confidential AcceleratorResidencyDeclaration JSON.
+    accelerator_declaration: Option<String>,
+    /// Create-new output path for the promoted confidential ReleaseCapture.
+    promoted_output: Option<String>,
     /// Path to a JSON file containing an AttestationReceipt.
     receipt_file: Option<String>,
     /// Path to the original ChatCompletionRequest JSON covered by the receipt.
@@ -489,6 +571,12 @@ enum ReceiptRequest {
 }
 
 impl CliOpts {
+    fn release_promotion_requested(&self) -> bool {
+        self.promote_capture.is_some()
+            || self.accelerator_declaration.is_some()
+            || self.promoted_output.is_some()
+    }
+
     fn has_gpu_evidence_pins(&self) -> bool {
         self.gpu_provider
             .as_deref()
@@ -673,6 +761,9 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
     let mut opts = CliOpts {
         url: None,
         file: None,
+        promote_capture: None,
+        accelerator_declaration: None,
+        promoted_output: None,
         receipt_file: None,
         receipt_chat_request_file: None,
         receipt_completion_request_file: None,
@@ -742,6 +833,16 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
             }
             "--file" => {
                 opts.file = Some(next_arg(args, &mut i, "--file")?);
+            }
+            "--promote-capture" => {
+                opts.promote_capture = Some(next_arg(args, &mut i, "--promote-capture")?);
+            }
+            "--accelerator-declaration" => {
+                opts.accelerator_declaration =
+                    Some(next_arg(args, &mut i, "--accelerator-declaration")?);
+            }
+            "--promoted-output" => {
+                opts.promoted_output = Some(next_arg(args, &mut i, "--promoted-output")?);
             }
             "--receipt-file" => {
                 opts.receipt_file = Some(next_arg(args, &mut i, "--receipt-file")?);
@@ -1000,6 +1101,73 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
     Ok(opts)
 }
 
+fn validate_release_promotion_options(opts: &CliOpts) -> anyhow::Result<()> {
+    if !opts.release_promotion_requested() {
+        return Ok(());
+    }
+    if opts.promote_capture.is_none()
+        || opts.accelerator_declaration.is_none()
+        || opts.promoted_output.is_none()
+    {
+        anyhow::bail!(
+            "confidential release promotion requires --promote-capture, --accelerator-declaration, and --promoted-output together"
+        );
+    }
+    for (flag, value) in [
+        ("--promote-capture", opts.promote_capture.as_deref()),
+        (
+            "--accelerator-declaration",
+            opts.accelerator_declaration.as_deref(),
+        ),
+        ("--promoted-output", opts.promoted_output.as_deref()),
+    ] {
+        if value.is_none_or(|value| value.trim().is_empty()) {
+            anyhow::bail!("{flag} must not be empty");
+        }
+    }
+    if opts.print_gpu_execution_digest {
+        anyhow::bail!("release promotion conflicts with --print-gpu-execution-digest");
+    }
+    if opts.allow_offline {
+        anyhow::bail!(
+            "confidential release promotion requires hardware verification and rejects --allow-offline"
+        );
+    }
+    if !opts.gpu_confidential {
+        anyhow::bail!("confidential release promotion requires --gpu-confidential");
+    }
+    if opts.file.is_none() || opts.url.is_some() {
+        anyhow::bail!(
+            "confidential release promotion requires one preserved --file report and rejects live --url input"
+        );
+    }
+    if opts.model_hash.is_none() {
+        anyhow::bail!(
+            "confidential release promotion requires --model-hash to pin the captured weights independently"
+        );
+    }
+    if opts.gpu_evidence_digest.is_none() {
+        anyhow::bail!(
+            "confidential release promotion requires --gpu-evidence-digest to pin the preserved vendor evidence bytes independently"
+        );
+    }
+    if opts.gpu_execution_digest.is_none() {
+        anyhow::bail!(
+            "confidential release promotion requires --gpu-execution-digest to match the capture and accelerator declaration"
+        );
+    }
+    #[cfg(not(feature = "embedded-inference"))]
+    anyhow::bail!(
+        "confidential release promotion requires an a3s-power-verify build with the embedded-inference feature"
+    );
+    #[cfg(all(feature = "embedded-inference", not(feature = "hw-verify")))]
+    anyhow::bail!(
+        "confidential release promotion requires an a3s-power-verify build with the hw-verify feature"
+    );
+    #[cfg(all(feature = "embedded-inference", feature = "hw-verify"))]
+    Ok(())
+}
+
 #[cfg(feature = "hw-verify")]
 fn default_hardware_verifier(
     report: &AttestationReport,
@@ -1171,6 +1339,9 @@ USAGE:
 OPTIONS:
     --url <URL>                    Fetch report from a live server (e.g. http://localhost:11434)
     --file <PATH>                  Read report from a JSON file
+    --promote-capture <PATH>       Verified local CUDA ReleaseCapture to promote after strict verification
+    --accelerator-declaration <PATH> Model-owned confidential AcceleratorResidencyDeclaration JSON
+    --promoted-output <PATH>       Create-new path for the promoted confidential ReleaseCapture
     --receipt-file <PATH>          Read an AttestationReceipt JSON file and bind it to the report
     --receipt-chat-request-file <PATH> Original ChatCompletionRequest JSON to compare with the receipt
     --receipt-completion-request-file <PATH> Original CompletionRequest JSON to compare with the receipt
@@ -1290,6 +1461,29 @@ EXAMPLES:
         --gpu-hwmodel "GH100 A01 GSP BROM" \
         --gpu-driver-version 590.12 \
         --gpu-firmware-version 96.00.A5.00.01
+
+    # Promote any compatible local CUDA release capture; requires a build with
+    # server, embedded-inference, and hw-verify. Output is never overwritten.
+    a3s-power-verify --file report.json \
+        --promote-capture cuda.json \
+        --accelerator-declaration accelerator.json \
+        --promoted-output confidential.json \
+        --expected-measurement <96-char-hex> \
+        --nonce <64-char-hex> \
+        --model-hash <64-char-hex> \
+        --gpu-confidential \
+        --gpu-evidence-digest <64-char-hex> \
+        --gpu-verdict-digest <64-char-hex> \
+        --gpu-provider nvidia-nras \
+        --gpu-evidence-format nvidia-nvattest-evidence-json \
+        --gpu-verdict-format nvidia-nvattest-attestation-json \
+        --gpu-evidence-count 1 \
+        --gpu-execution-digest <64-char-hex> \
+        --gpu-count 1 \
+        --nvswitch-count 0 \
+        --gpu-ueid <expected-gpu-ueid> \
+        --gpu-claims-version <expected-claims-version> \
+        --gpu-hwmodel <expected-hardware-model>
 
     # Require runtime prompt/template policy binding
     a3s-power-verify --file report.json \

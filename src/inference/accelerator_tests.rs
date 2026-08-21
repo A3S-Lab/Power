@@ -108,8 +108,13 @@ fn applied_hierarchy() -> (
 }
 
 fn local_spec() -> AcceleratorFusedBatchSpec {
-    AcceleratorFusedBatchSpec::new(digest('1'), digest('2'), vec!["expert-0".to_string()])
-        .with_fallback_mode(AcceleratorFallbackMode::AllowExact)
+    AcceleratorFusedBatchSpec::new(
+        digest('1'),
+        digest('2'),
+        digest('3'),
+        vec!["expert-0".to_string()],
+    )
+    .with_fallback_mode(AcceleratorFallbackMode::AllowExact)
 }
 
 fn confidential_report(
@@ -183,10 +188,11 @@ fn declaration_is_deterministic_and_bound_to_the_active_device_plan() {
     assert_eq!(first.total_bytes, 16);
     assert_eq!(first.total_weights, 2);
     assert_eq!(first.declaration_sha256.len(), 64);
-    assert_eq!(first.execution_policy_sha256, first.declaration_sha256);
+    assert_eq!(first.execution_policy_sha256, digest('3'));
+    assert_ne!(first.execution_policy_sha256, first.declaration_sha256);
 
     let mut changed = local_spec();
-    changed.fused_kernel_sha256 = digest('3');
+    changed.fused_kernel_sha256 = digest('4');
     assert_ne!(
         hierarchy
             .declare_accelerator_residency(&changed)
@@ -204,6 +210,24 @@ fn declaration_is_deterministic_and_bound_to_the_active_device_plan() {
             .declaration_sha256,
         first.declaration_sha256
     );
+
+    let mut policy_changed = local_spec();
+    policy_changed.execution_policy_sha256 = digest('5');
+    assert_ne!(
+        hierarchy
+            .declare_accelerator_residency(&policy_changed)
+            .unwrap()
+            .declaration_sha256,
+        first.declaration_sha256
+    );
+
+    let serialized = serde_json::to_vec(&first).unwrap();
+    let replayed: AcceleratorResidencyDeclaration = serde_json::from_slice(&serialized).unwrap();
+    replayed.verify().unwrap();
+
+    let mut tampered = first;
+    tampered.execution_policy_sha256 = digest('5');
+    assert!(tampered.verify().is_err());
 }
 
 #[test]
@@ -216,19 +240,34 @@ fn declaration_rejects_invalid_or_non_device_groups() {
         .declare_accelerator_residency(&invalid_digest)
         .is_err());
 
+    let mut invalid_policy = local_spec();
+    invalid_policy.execution_policy_sha256 = "not-a-digest".to_string();
+    assert!(hierarchy
+        .declare_accelerator_residency(&invalid_policy)
+        .is_err());
+
     let duplicate = AcceleratorFusedBatchSpec::new(
         digest('1'),
         digest('2'),
+        digest('3'),
         vec!["expert-0".to_string(), "expert-0".to_string()],
     );
     assert!(hierarchy.declare_accelerator_residency(&duplicate).is_err());
 
-    let missing =
-        AcceleratorFusedBatchSpec::new(digest('1'), digest('2'), vec!["missing".to_string()]);
+    let missing = AcceleratorFusedBatchSpec::new(
+        digest('1'),
+        digest('2'),
+        digest('3'),
+        vec!["missing".to_string()],
+    );
     assert!(hierarchy.declare_accelerator_residency(&missing).is_err());
 
-    let host_group =
-        AcceleratorFusedBatchSpec::new(digest('1'), digest('2'), vec!["expert-1".to_string()]);
+    let host_group = AcceleratorFusedBatchSpec::new(
+        digest('1'),
+        digest('2'),
+        digest('3'),
+        vec!["expert-1".to_string()],
+    );
     assert!(hierarchy
         .declare_accelerator_residency(&host_group)
         .is_err());

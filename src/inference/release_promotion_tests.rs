@@ -2,6 +2,8 @@ use super::{
     AcceleratorResidencyDeclaration, ReleaseCapture, ReleaseCaptureSecurity, ReleasePlatform,
     ShapeProfileBinding,
 };
+use crate::api::prompt_policy::canonical_gpu_execution_digest;
+use crate::config::GpuConfig;
 use crate::error::Result;
 use crate::tee::attestation::{
     build_claims_report_data, AttestationClaimsV2, AttestationReport, ExecutionPolicyClaim,
@@ -170,9 +172,20 @@ fn only_an_opaque_confidential_proof_can_promote_a_local_cuda_capture() {
         "../../docs/benchmarks/release-contract-windows-20260821/cuda.json"
     ))
     .unwrap();
+    let execution_policy_sha256 = hex::encode(
+        canonical_gpu_execution_digest(&GpuConfig {
+            gpu_layers: -1,
+            main_gpu: 0,
+            tensor_split: vec![1.0],
+            cpu_tensors: Vec::new(),
+            gpu_tensors: Vec::new(),
+        })
+        .unwrap(),
+    );
     let declaration = AcceleratorResidencyDeclaration::confidential_release_fixture(
         published.shape_binding.weights_sha256,
         published.shape_binding.runtime_device,
+        execution_policy_sha256,
     );
     let local = local_cuda_capture(&declaration);
     let report = report_for(&declaration);

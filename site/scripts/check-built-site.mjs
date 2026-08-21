@@ -156,6 +156,20 @@ const routeChecks = [
       "run-qwen38-q6k-benchmark.ps1",
     ],
   },
+  {
+    file: "verification.html",
+    lang: "zh",
+    copy: ["复现外部硬件捕获", "--promote-capture", "模型中立"],
+  },
+  {
+    file: path.join("en", "verification.html"),
+    lang: "en",
+    copy: [
+      "Reproduce external hardware capture",
+      "--promote-capture",
+      "model-neutral",
+    ],
+  },
 ];
 
 for (const route of routeChecks) {

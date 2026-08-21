@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one clean immutable revision, including byte-stable policy input, raw JSON,
   exact artifact pins, negative CPU batching evidence, and a replay test that
   constructs their verified two-platform partial bundle.
+- Added the model-neutral external Metal/confidential-GPU capture workflow and
+  a strict `a3s-power-verify` release-promotion path. Promotion consumes a saved
+  local CUDA capture, model-owned accelerator declaration, and opaque
+  exact-report proof in one process; inputs are bounded and replayed, all
+  weights/device/execution identities are pinned, and synchronized
+  same-directory output refuses to replace an existing artifact.
+- Split accelerator execution-policy identity from the accelerator declaration
+  digest in declaration schemas v3/v4. Model integrations now bind the
+  canonical server GPU execution/offload digest explicitly while declaration
+  hashing independently covers weights, residency, kernels, fallback, device,
+  and optional mesh.
 - Added model-neutral, device-resident chaining for adjacent reviewed static
   graphs. `ResidentGraphTensor` is non-cloneable, retains the exact request
   permit, enforces F32/fixed-or-symbolic-shape/device identity, and consumes a
@@ -62,6 +73,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason and implementation digest; receipt v5 exposes no dimensions, class
   data, filesystem paths, or tensor values.
 
+### Fixed
+
+- Added exact published version requirements to the revision-pinned
+  `llama-cpp-2` and `llama-cpp-sys-2` dependencies so Cargo can transform the
+  Git pins into resolvable registry dependencies during package verification
+  and publication. CI and release validation now run `cargo package --locked`
+  before a tag can reach the publish job.
+
 ### Security
 
 - Added opaque, non-serializable strict hardware and confidential-GPU
@@ -70,6 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local-CUDA-to-confidential release promotion now consume those proofs; raw
   reports, mutable verification results, and caller-supplied security labels
   cannot mint the protected classes through the Rust construction API.
+- Configured NVIDIA evidence now validates nonce-bound nvattest evidence as
+  well as the verdict, records the exact evidence count and byte-format labels,
+  extracts structured device claims, and rejects stale evidence before a CPU
+  TEE report can authenticate it. This preserves externally collected raw
+  evidence/verdict files for reproducible release promotion.
 - Strict hardware verification now requires the policy-visible SEV-SNP
   `report_data` and launch `measurement` to exactly match their fields in the
   raw signed report before a hardware verifier is called. This prevents a valid

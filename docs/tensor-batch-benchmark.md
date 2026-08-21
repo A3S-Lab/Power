@@ -267,6 +267,14 @@ profiles and TEE policies are device-specific.
 `--output` writes UTF-8 JSON with create-new semantics and refuses to overwrite
 an existing capture. Omit it to keep stdout output for pipelines.
 
+For a production Metal capture, run `release-run` on named Apple hardware with
+`--features embedded-metal --device metal:0`, positive predeclared device fixed
+and scratch bounds, an independent typed reference output, and the exact clean
+Power revision. Record the Apple hardware/OS identity and hash every input and
+output. The complete command, artifact inventory, and confidential-GPU
+promotion sequence are in
+[External Metal and Confidential-GPU Release Capture](external-release-capture.md).
+
 ## Interpretation and promotion gate
 
 Compare raw samples and lower medians rather than one best run. Fewer allocation

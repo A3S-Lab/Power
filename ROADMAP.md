@@ -127,9 +127,11 @@ deadline-drop, and recycle behavior.
 The model-neutral, fail-closed evidence schema, platform-specific profile/TEE
 bindings, strict four-platform policy, and isolated complete-contract collector
 are implemented. Clean-revision Windows CPU/CUDA captures now replay the full
-contract and form one verified two-platform partial bundle. The unchecked
-publication items remain release blockers until Metal and supported
-confidential-GPU captures exist for the same immutable release revision.
+contract and form one verified two-platform partial bundle. A checked-in
+external workflow now covers named Metal collection and nonce-bound,
+proof-backed confidential-GPU promotion while preserving raw vendor evidence.
+The unchecked publication items remain release blockers until those hardware
+captures exist for the same immutable release revision.
 
 - [x] Drive the real resident graph, cancellation lifecycle, bounded queue,
       replica pool, and explicit shape fallback from both a generic calibration
@@ -145,7 +147,7 @@ confidential-GPU captures exist for the same immutable release revision.
       local CUDA capture to confidential-GPU evidence; the proof borrows the
       exact authenticated report, and a raw report or caller label cannot mint
       the production security class.
-- [ ] Add the external confidential-GPU capture workflow that collects vendor
+- [x] Add the external Metal/confidential-GPU capture workflow that collects vendor
       evidence, invokes strict proof-backed promotion, and preserves the raw
       report plus trust-root material for the same immutable release revision.
 - [ ] Implement reviewed Intel DCAP Quote generation and QVL verification, or

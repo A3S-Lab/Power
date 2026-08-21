@@ -16,7 +16,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: a3s-power
-  BUILD_FEATURES: "--features hf,hw-verify"
+  BUILD_FEATURES: "--features hf,hw-verify,embedded-inference"
   LINUX_CPU_FEATURES: "--no-default-features --features server,llamacpp,mistralrs,embedded-inference,tls,vsock,hf,hw-verify,picolm"
 
 jobs:
@@ -56,10 +56,16 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Clippy
-        run: cargo clippy --locked --all-targets --features hf,hw-verify -- -D warnings
+        run: cargo clippy --locked --all-targets --features hf,hw-verify,embedded-inference -- -D warnings
 
       - name: Tests
         run: cargo test --locked --lib
+
+      - name: Confidential release promotion tests
+        run: cargo test --locked --no-default-features --features server,embedded-inference,hw-verify --bin a3s-power-verify
+
+      - name: Package verification
+        run: cargo package --locked
 
       - name: Install Linux CPU feature dependencies
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
