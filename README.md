@@ -278,9 +278,12 @@ class. The resulting digest-bound capture is still evidence, not authorship, so
 the release system must authenticate its bundle digest.
 
 For v1, the confidential binding is explicitly SEV-SNP-only. The release
-workflow bounded-reads a checked-in four-platform bundle, verifies its external
-SHA-256 pin plus exact crate version and commit, and blocks every non-`0.x` tag
-when the evidence is missing or TDX-backed. See the
+workflow requires a tag to identify an evidence-only child of the frozen source
+commit, bounded-reads its checked-in four-platform bundle, verifies the external
+SHA-256 pin plus exact crate version and source commit, and builds release
+binaries from that parent. This avoids self-referential commit identity and
+blocks every non-`0.x` tag when evidence is missing, mixed with source changes,
+or TDX-backed. See the
 [v1 Production Support Matrix](docs/v1-support-matrix.md).
 
 `a3s-power-tensor-batch-bench release-run` applies the same collector to any

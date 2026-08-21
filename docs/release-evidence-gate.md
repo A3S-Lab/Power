@@ -164,14 +164,24 @@ reviewed DCAP Quote/QVL path. The exact support boundary is recorded in the
 
 ## Tagged-release verification
 
-The isolated runner also exposes a read-only release command:
+The v1 tag points to a single-parent evidence commit, not directly to the source
+commit measured by the captures. Its parent is the frozen source revision. The
+evidence commit may add only the two regular files under
+`release/v<crate-version>/`; that directory must not exist in the source parent.
+This two-commit layout avoids the impossible requirement for a checked-in
+bundle to contain the hash of the commit that contains the bundle.
+
+First derive and validate the frozen source revision, then pass that revision to
+the isolated read-only verifier:
 
 ```bash
+source_commit="$(bash tools/verify-release-evidence-commit.sh 1.0.0 HEAD)"
+
 a3s-power-tensor-batch-bench verify-release-bundle \
   --bundle release/v1.0.0/release-evidence.json \
   --expected-sha256-file release/v1.0.0/release-evidence.sha256 \
   --power-version 1.0.0 \
-  --power-commit <exact-lowercase-tag-commit>
+  --power-commit "${source_commit}"
 ```
 
 It bounded-reads both files, denies unknown bundle fields, replays every nested
@@ -180,9 +190,11 @@ external pin, matches the requested version and source revision, and enforces
 the SEV-SNP confidential boundary. The pin file must contain one lowercase
 SHA-256 digest with only an optional LF or CRLF line ending.
 
-Release CI runs this command for every non-`0.x` tag before artifacts can be
-published. Missing evidence therefore blocks v1 instead of silently degrading
-to the available local platforms.
+Release CI runs both checks for every non-`0.x` tag before artifacts can be
+published. It builds binaries and publishes the crate from the frozen source
+parent while attaching the evidence pair from the tagged child. Missing,
+pre-existing, or mixed source/evidence changes therefore block v1 instead of
+silently degrading to the available local platforms.
 
 ## Capture runners
 

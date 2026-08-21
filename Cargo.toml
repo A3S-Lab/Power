@@ -9,6 +9,7 @@ description = "A3S Power — Model-neutral, bounded, verifiable inference for co
 readme = "README.md"
 keywords = ["inference", "runtime", "tee", "privacy", "gpu"]
 categories = ["web-programming::http-server"]
+exclude = ["/release"]
 
 [lib]
 name = "a3s_power"

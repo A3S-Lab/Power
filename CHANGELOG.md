@@ -106,6 +106,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Replaced the self-referential v1 release layout with a machine-checked
+  two-commit protocol. Hardware captures bind a frozen source parent; the signed
+  tag points to its direct child, whose complete diff is exactly the release
+  bundle and digest pin. Release binaries and crates are produced from the
+  source parent, while the tagged child carries the authenticated evidence.
 - Added exact published version requirements to the revision-pinned
   `llama-cpp-2` and `llama-cpp-sys-2` dependencies so Cargo can transform the
   Git pins into resolvable registry dependencies during package verification

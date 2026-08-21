@@ -1,9 +1,9 @@
 # v1 Production Support Matrix
 
 This document is the release boundary for A3S Power v1. A feature is production
-supported only when the tagged revision's checked-in release bundle passes the
-machine-enforced evidence gate. Build support, unit tests, or a single fast
-benchmark do not by themselves establish production support.
+supported only when the tag's evidence-only commit and its frozen source parent
+pass the machine-enforced evidence gate. Build support, unit tests, or a single
+fast benchmark do not by themselves establish production support.
 
 ## Execution platforms
 
@@ -49,15 +49,32 @@ release/v<crate-version>/
 
 The pin file contains exactly one lowercase SHA-256 digest, optionally followed
 by one LF or CRLF line ending. The bundle is a bounded, unknown-field-denying
-JSON document. Assemble both create-new artifacts from the four independently
-reviewed captures; the command rejects mislabeled platforms, revision drift,
-reused tensor evidence, and non-SEV-SNP confidential evidence, and rolls back
-ordinary partial-output failures:
+JSON document.
+
+The release uses two commits so the evidence can bind an immutable source
+revision without trying to contain its own Git hash:
+
+```text
+frozen source commit S
+  `-- evidence commit E: adds exactly the JSON and SHA-256 files above
+        `-- signed tag v<crate-version>
+```
+
+`E` must have exactly one parent, `S`; the evidence directory must be absent
+from `S`; and the two regular files must be the complete diff. Release binaries
+and the crates.io package are built from `S`. The signed tag and GitHub source
+archive point to `E`, which carries the authenticated evidence pair. Cargo
+excludes `release/` from the published crate.
+
+From a clean checkout of `S`, assemble both create-new artifacts from the four
+independently reviewed captures. The command rejects mislabeled platforms,
+revision drift, reused tensor evidence, and non-SEV-SNP confidential evidence,
+and rolls back ordinary partial-output failures:
 
 ```bash
 version="$(cargo metadata --locked --no-deps --format-version 1 \
   | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
-commit="$(git rev-parse HEAD)"
+source_commit="$(git rev-parse HEAD)"
 mkdir -p "release/v${version}"
 
 cargo run --locked --release --no-default-features \
@@ -69,9 +86,20 @@ cargo run --locked --release --no-default-features \
   --metal-capture /reviewed/metal.json \
   --confidential-gpu-capture /reviewed/confidential-gpu.json \
   --power-version "${version}" \
-  --power-commit "${commit}" \
+  --power-commit "${source_commit}" \
   --output "release/v${version}/release-evidence.json" \
   --sha256-output "release/v${version}/release-evidence.sha256"
+
+git add -- \
+  "release/v${version}/release-evidence.json" \
+  "release/v${version}/release-evidence.sha256"
+git diff --cached --check
+git commit -m "release: add v${version} production evidence"
+
+evidence_commit="$(git rev-parse HEAD)"
+test "$(bash tools/verify-release-evidence-commit.sh \
+  "${version}" "${evidence_commit}")" = "${source_commit}"
+git tag -s "v${version}" -m "A3S Power v${version}"
 ```
 
 From the tagged clean checkout, reproduce the release decision with:
@@ -79,7 +107,8 @@ From the tagged clean checkout, reproduce the release decision with:
 ```bash
 version="$(cargo metadata --locked --no-deps --format-version 1 \
   | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
-commit="$(git rev-parse HEAD)"
+source_commit="$(bash tools/verify-release-evidence-commit.sh \
+  "${version}" HEAD)"
 
 cargo run --locked --release --no-default-features \
   --features embedded-inference \
@@ -88,13 +117,14 @@ cargo run --locked --release --no-default-features \
   --bundle "release/v${version}/release-evidence.json" \
   --expected-sha256-file "release/v${version}/release-evidence.sha256" \
   --power-version "${version}" \
-  --power-commit "${commit}"
+  --power-commit "${source_commit}"
 ```
 
 Verification recomputes the bundle and nested digests, requires the exact four
 platform classes, checks the external digest pin, compares the exact version and
-Git revision, and requires SEV-SNP for the confidential-GPU capture. The release
-workflow runs this command before any `v1.x` or later tag can publish artifacts.
+Git source revision, validates the exact evidence-only child layout, and
+requires SEV-SNP for the confidential-GPU capture. The release workflow runs
+these checks before any `v1.x` or later tag can publish artifacts.
 
 The checked-in digest is a mutation-detection pin. Release authorship still
 requires the repository's signed tag/release trust root and preserved raw

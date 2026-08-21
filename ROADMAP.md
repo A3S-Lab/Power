@@ -131,9 +131,11 @@ contract and form one verified two-platform partial bundle. A checked-in
 external workflow now covers named Metal collection and nonce-bound,
 proof-backed confidential-GPU promotion while preserving raw vendor evidence.
 The strict bundle builder now derives the four platform bindings and writes the
-bundle and digest pin as one no-overwrite operation. The unchecked publication
-items remain release blockers until those hardware captures exist for the same
-immutable release revision.
+bundle and digest pin as one no-overwrite operation. The release workflow uses a
+machine-checked source-parent/evidence-child protocol so checked-in evidence can
+bind the source revision without a self-referential commit hash. The unchecked
+publication items remain release blockers until those hardware captures exist
+for the same immutable release revision.
 
 - [x] Drive the real resident graph, cancellation lifecycle, bounded queue,
       replica pool, and explicit shape fallback from both a generic calibration
@@ -155,6 +157,9 @@ immutable release revision.
 - [x] Assemble typed four-platform captures with a machine-enforced CLI that
       derives the strict policy, verifies the exact version/revision, writes a
       create-new bundle and digest pin, and attaches both to non-`0.x` releases.
+- [x] Require non-`0.x` tags to point to a single-parent evidence commit whose
+      complete diff adds only the bundle and pin; build and publish artifacts
+      from its frozen source parent.
 - [x] Implement reviewed Intel DCAP Quote generation and QVL verification, or
       explicitly exclude TDX from the v1 production support matrix. A local
       TDREPORT now fails closed and is not treated as a PCK-signed Quote. The

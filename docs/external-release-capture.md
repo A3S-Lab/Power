@@ -17,7 +17,7 @@ identities.
 
 ## Trust boundary
 
-Every capture must come from one immutable Power revision and one common
+Every capture must come from one immutable Power source revision and one common
 weights/graph identity. Platform binaries and shape profiles are expected to
 differ. A release capture proves internal consistency and detects mutation; it
 does not prove who ran the command. The final bundle digest must be authenticated
@@ -359,14 +359,16 @@ TDX cannot enter the v1 release class through a custom verifier.
 ## Build and verify the strict bundle
 
 Once the independently reviewed CPU, ordinary CUDA, Metal, and promoted
-confidential-GPU captures are available from the same revision, assemble the
-canonical release pair without copying nested digest fields by hand:
+confidential-GPU captures are available from the same frozen source revision,
+assemble the canonical release pair without copying nested digest fields by
+hand. Keep the source commit in a variable before creating the files; the later
+evidence commit has a different hash by construction:
 
 ```bash
 set -euo pipefail
 power_version="$(cargo metadata --locked --no-deps --format-version 1 \
   | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
-power_commit="$(git rev-parse HEAD)"
+source_commit="$(git rev-parse HEAD)"
 release_dir="release/v${power_version}"
 mkdir -p "$release_dir"
 
@@ -379,7 +381,7 @@ cargo run --locked --release --no-default-features \
   --metal-capture /reviewed/metal.json \
   --confidential-gpu-capture /reviewed/confidential-gpu.json \
   --power-version "$power_version" \
-  --power-commit "$power_commit" \
+  --power-commit "$source_commit" \
   --output "$release_dir/release-evidence.json" \
   --sha256-output "$release_dir/release-evidence.sha256"
 
@@ -390,7 +392,18 @@ cargo run --locked --release --no-default-features \
   --bundle "$release_dir/release-evidence.json" \
   --expected-sha256-file "$release_dir/release-evidence.sha256" \
   --power-version "$power_version" \
-  --power-commit "$power_commit"
+  --power-commit "$source_commit"
+
+git add -- \
+  "$release_dir/release-evidence.json" \
+  "$release_dir/release-evidence.sha256"
+git diff --cached --check
+git commit -m "release: add v${power_version} production evidence"
+
+evidence_commit="$(git rev-parse HEAD)"
+test "$(bash tools/verify-release-evidence-commit.sh \
+  "$power_version" "$evidence_commit")" = "$source_commit"
+git tag -s "v${power_version}" -m "A3S Power v${power_version}"
 ```
 
 The builder independently verifies every capture, its argument-to-platform
@@ -398,7 +411,9 @@ mapping, the exact common revision and workload, distinct tensor evidence,
 all platform-specific bindings, and the SEV-SNP confidential boundary. Both
 outputs use create-new semantics. If creating or synchronizing either file
 fails normally, the command removes any new half-pair; an existing caller-owned
-file is never replaced.
+file is never replaced. The layout verifier then requires the tagged evidence
+commit to be the direct child of the measured source commit and to contain no
+other changes. Release CI builds and publishes from that source parent.
 
 ## Artifact inventory
 
@@ -416,7 +431,7 @@ Preserve at least these files for review:
 | `report.json` | Raw CPU TEE report and canonical model/runtime/GPU claims |
 | `confidential-gpu.json` | Proof-backed promoted capture |
 | `release-evidence.json` | Canonical four-platform strict v1 bundle |
-| `release-evidence.sha256` | Single lowercase bundle digest pinned by the signed release revision |
+| `release-evidence.sha256` | Single lowercase bundle digest carried by the signed evidence tag |
 | OS, CPU/GPU, driver, firmware, `nvattest`, Rust, and Cargo records | Named execution environment |
 | SHA-256 manifest and external signature/attestation | Mutation detection and caller-owned authorship |
 
