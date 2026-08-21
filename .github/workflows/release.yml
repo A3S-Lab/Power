@@ -223,9 +223,19 @@ jobs:
 
       - name: Collect release assets
         run: |
-          mkdir -p release
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release/ \;
-          ls -lh release/
+          mkdir -p release-assets
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release-assets/ \;
+          TAG="${{ steps.tag.outputs.version }}"
+          VERSION="${TAG#v}"
+          MAJOR_VERSION="${VERSION%%.*}"
+          if [ "${MAJOR_VERSION}" != "0" ]; then
+            EVIDENCE_DIR="release/v${VERSION}"
+            cp "${EVIDENCE_DIR}/release-evidence.json" \
+              "release-assets/a3s-power-${TAG}-release-evidence.json"
+            cp "${EVIDENCE_DIR}/release-evidence.sha256" \
+              "release-assets/a3s-power-${TAG}-release-evidence.sha256"
+          fi
+          ls -lh release-assets/
 
       - name: Generate release notes
         run: |
@@ -244,10 +254,10 @@ jobs:
           TAG="${{ steps.tag.outputs.version }}"
           if gh release view "${TAG}" > /dev/null 2>&1; then
             echo "Release ${TAG} exists — uploading assets (overwriting duplicates)..."
-            gh release upload "${TAG}" release/* --clobber
+            gh release upload "${TAG}" release-assets/* --clobber
           else
             echo "Creating release ${TAG}..."
-            gh release create "${TAG}" release/* \
+            gh release create "${TAG}" release-assets/* \
               --title "${TAG}" \
               --notes-file /tmp/release-notes.md
           fi

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a model-neutral `build-release-bundle` command and
+  `ReleaseEvidenceBundle::build_strict_v1` API. They derive the strict policy
+  from typed CPU, CUDA, Metal, and proof-promoted confidential-GPU captures,
+  reject identity or platform drift, and create the canonical JSON plus digest
+  pin as a no-overwrite pair. Non-`0.x` GitHub releases now attach that pair as
+  release assets.
+- Added a configurable NVIDIA quiet-window preflight, standalone
+  `-PreflightOnly` admission, and input-bound failure receipts to the generic
+  GGUF benchmark runner. A deterministic Windows CI test covers rejection,
+  create-new evidence, clock-lock cleanup, and the no-model-start boundary.
 - Added an independent all-sample throughput gate to speculative benchmark
   reports and comparisons, plus a model-neutral Windows GGUF capture runner
   that records clean-source identity, binary and input hashes, CPU affinity,

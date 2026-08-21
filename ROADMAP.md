@@ -130,8 +130,10 @@ are implemented. Clean-revision Windows CPU/CUDA captures now replay the full
 contract and form one verified two-platform partial bundle. A checked-in
 external workflow now covers named Metal collection and nonce-bound,
 proof-backed confidential-GPU promotion while preserving raw vendor evidence.
-The unchecked publication items remain release blockers until those hardware
-captures exist for the same immutable release revision.
+The strict bundle builder now derives the four platform bindings and writes the
+bundle and digest pin as one no-overwrite operation. The unchecked publication
+items remain release blockers until those hardware captures exist for the same
+immutable release revision.
 
 - [x] Drive the real resident graph, cancellation lifecycle, bounded queue,
       replica pool, and explicit shape fallback from both a generic calibration
@@ -150,6 +152,9 @@ captures exist for the same immutable release revision.
 - [x] Add the external Metal/confidential-GPU capture workflow that collects vendor
       evidence, invokes strict proof-backed promotion, and preserves the raw
       report plus trust-root material for the same immutable release revision.
+- [x] Assemble typed four-platform captures with a machine-enforced CLI that
+      derives the strict policy, verifies the exact version/revision, writes a
+      create-new bundle and digest pin, and attaches both to non-`0.x` releases.
 - [x] Implement reviewed Intel DCAP Quote generation and QVL verification, or
       explicitly exclude TDX from the v1 production support matrix. A local
       TDREPORT now fails closed and is not treated as a PCK-signed Quote. The

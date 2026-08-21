@@ -528,6 +528,12 @@ impl ReleaseEvidenceBundle {
         super::build_bundle(policy, captures)
     }
 
+    /// Derive and verify the production v1 policy from one CPU, CUDA, Metal,
+    /// and proof-promoted confidential-GPU capture.
+    pub fn build_strict_v1(captures: Vec<ReleaseCapture>) -> Result<Self> {
+        super::build_strict_v1_bundle(captures)
+    }
+
     pub fn verify(&self) -> Result<()> {
         super::validation::verify_bundle(self)
     }

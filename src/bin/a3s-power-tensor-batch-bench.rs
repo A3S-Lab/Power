@@ -32,7 +32,7 @@ mod release_run;
 
 use allocator::ProcessAllocationCounter;
 use arguments::Arguments;
-use output::write_json_output;
+use output::{write_json_output, write_release_bundle_outputs};
 
 const USAGE: &str = r#"A3S Power model-neutral tensor batch benchmark
 
@@ -100,6 +100,17 @@ Capture the complete model-neutral runtime contract with the same fixture:
     [--warmup-rounds <count>] \
     [--measured-rounds <count>]
 
+Build a pinned production v1 release-evidence bundle from four captures:
+  a3s-power-tensor-batch-bench build-release-bundle \
+    --cpu-capture <cpu.json> \
+    --cuda-capture <cuda.json> \
+    --metal-capture <metal.json> \
+    --confidential-gpu-capture <confidential-gpu.json> \
+    --power-version <exact-crate-version> \
+    --power-commit <exact-lowercase-git-revision> \
+    --output <new-release-evidence.json> \
+    --sha256-output <new-release-evidence.sha256>
+
 Verify a pinned production v1 release-evidence bundle:
   a3s-power-tensor-batch-bench verify-release-bundle \
     --bundle <release-evidence.json> \
@@ -154,7 +165,21 @@ fn run() -> Result<()> {
     let mut arguments = Arguments::new(values);
     let output_path = arguments.optional_path("--output")?;
     let output = match command.as_str() {
-        "verify-release-bundle" => release_bundle::run(&mut arguments)?,
+        "build-release-bundle" => {
+            let bundle_path = output_path.as_deref().ok_or_else(|| {
+                PowerError::InvalidRequest(
+                    "build-release-bundle requires --output for the new bundle".to_string(),
+                )
+            })?;
+            let pin_path = arguments.required_path("--sha256-output")?;
+            let bundle = release_bundle::build(&mut arguments)?;
+            arguments.finish()?;
+            write_release_bundle_outputs(&bundle, bundle_path, &pin_path)?;
+            let receipt = release_bundle::build_receipt(&bundle)?;
+            write_json_output(&receipt, None)?;
+            return Ok(());
+        }
+        "verify-release-bundle" => release_bundle::verify(&mut arguments)?,
         "run" => {
             let common = parse_common(&mut arguments)?;
             serde_json::to_value(run_reviewed_graph(&mut arguments, &common)?)?

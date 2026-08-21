@@ -1,6 +1,7 @@
 use super::{
-    AcceleratorResidencyDeclaration, ReleaseCapture, ReleaseCaptureSecurity, ReleasePlatform,
-    ShapeProfileBinding,
+    AcceleratorResidencyDeclaration, HardwareEvidenceBinding, ReleaseCapture,
+    ReleaseCaptureSecurity, ReleaseEvidenceBundle, ReleasePlatform, RuntimeDeviceIdentity,
+    RuntimeDeviceKind, ShapeProfileBinding,
 };
 use crate::api::prompt_policy::canonical_gpu_execution_digest;
 use crate::config::GpuConfig;
@@ -140,34 +141,82 @@ fn verify_options<'a>(
     }
 }
 
-fn local_cuda_capture(declaration: &AcceleratorResidencyDeclaration) -> ReleaseCapture {
-    let published: ReleaseCapture = serde_json::from_str(include_str!(
-        "../../docs/benchmarks/release-contract-windows-20260821/cuda.json"
-    ))
-    .unwrap();
-    published.verify().unwrap();
+fn local_cuda_capture(
+    declaration: &AcceleratorResidencyDeclaration,
+    source: ReleaseCapture,
+) -> ReleaseCapture {
+    source.verify().unwrap();
     let shape = ShapeProfileBinding::new(
-        published.shape_binding.weights_sha256.clone(),
-        published.shape_binding.graph_sha256.clone(),
-        published.shape_binding.runtime_device,
-        published.shape_binding.device_topology_sha256.clone(),
-        published.shape_binding.runtime_reservations,
+        source.shape_binding.weights_sha256.clone(),
+        source.shape_binding.graph_sha256.clone(),
+        source.shape_binding.runtime_device,
+        source.shape_binding.device_topology_sha256.clone(),
+        source.shape_binding.runtime_reservations,
         declaration.execution_policy_sha256.clone(),
     )
     .unwrap();
-    let mut contracts = published.contracts;
+    let mut contracts = source.contracts;
     contracts.exact_fallback.selection.binding_sha256 = shape.binding_sha256().unwrap();
     ReleaseCapture::build(
         ReleaseCaptureSecurity::Local,
         shape,
-        published.tensor_batch,
+        source.tensor_batch,
+        contracts,
+    )
+    .unwrap()
+}
+
+fn retarget_accelerator_capture(
+    mut source: ReleaseCapture,
+    runtime_device: RuntimeDeviceIdentity,
+    device_class: &str,
+    topology_sha256: &str,
+) -> ReleaseCapture {
+    source.verify().unwrap();
+    source.tensor_batch.system.device_class = device_class.to_string();
+    source.tensor_batch.binding = HardwareEvidenceBinding::new(
+        source.tensor_batch.binding.power_version.clone(),
+        source.tensor_batch.binding.power_commit.clone(),
+        source.tensor_batch.binding.weights_sha256.clone(),
+        source.tensor_batch.binding.graph_source_sha256.clone(),
+        runtime_device,
+        &source.tensor_batch.system,
+    )
+    .unwrap();
+    for sample in &mut source.tensor_batch.samples {
+        let copies = sample.execution_count as u64;
+        sample.boundary.host_to_device_copy_operations = copies;
+        sample.boundary.device_to_host_copy_operations = copies;
+    }
+    source.tensor_batch.sha256 =
+        super::execution_cost::recompute_test_report_sha256(&source.tensor_batch);
+
+    let shape = ShapeProfileBinding::new(
+        source.shape_binding.weights_sha256.clone(),
+        source.shape_binding.graph_sha256.clone(),
+        runtime_device,
+        topology_sha256,
+        source.shape_binding.runtime_reservations,
+        source.shape_binding.tee_policy_sha256.clone(),
+    )
+    .unwrap();
+    let mut contracts = source.contracts;
+    contracts.exact_fallback.selection.binding_sha256 = shape.binding_sha256().unwrap();
+    contracts.exact_fallback.selection.runtime_device = runtime_device;
+    contracts.replica_recovery.before.device = runtime_device;
+    contracts.replica_recovery.retired.device = runtime_device;
+    contracts.replica_recovery.recovered.device = runtime_device;
+    ReleaseCapture::build(
+        ReleaseCaptureSecurity::Local,
+        shape,
+        source.tensor_batch,
         contracts,
     )
     .unwrap()
 }
 
 #[test]
-fn only_an_opaque_confidential_proof_can_promote_a_local_cuda_capture() {
+fn opaque_confidential_proof_enables_a_strict_v1_bundle() {
     let published: ReleaseCapture = serde_json::from_str(include_str!(
         "../../docs/benchmarks/release-contract-windows-20260821/cuda.json"
     ))
@@ -183,11 +232,20 @@ fn only_an_opaque_confidential_proof_can_promote_a_local_cuda_capture() {
         .unwrap(),
     );
     let declaration = AcceleratorResidencyDeclaration::confidential_release_fixture(
-        published.shape_binding.weights_sha256,
+        published.shape_binding.weights_sha256.clone(),
         published.shape_binding.runtime_device,
         execution_policy_sha256,
     );
-    let local = local_cuda_capture(&declaration);
+    let confidential_source = retarget_accelerator_capture(
+        published.clone(),
+        RuntimeDeviceIdentity {
+            kind: RuntimeDeviceKind::Cuda,
+            ordinal: Some(0),
+        },
+        "test-confidential-cuda",
+        &"a".repeat(64),
+    );
+    let local = local_cuda_capture(&declaration, confidential_source);
     let report = report_for(&declaration);
     let verifier = AcceptFixtureSignature;
     let options = verify_options(&report, &declaration, &verifier);
@@ -226,11 +284,32 @@ fn only_an_opaque_confidential_proof_can_promote_a_local_cuda_capture() {
     assert_eq!(binding.tee_type(), TeeType::SevSnp);
 
     let relabel_error = ReleaseCapture::build(
-        promoted.security,
+        promoted.security.clone(),
         local.shape_binding,
         local.tensor_batch,
         local.contracts,
     )
     .unwrap_err();
     assert!(relabel_error.to_string().contains("proof-backed promotion"));
+
+    let metal = retarget_accelerator_capture(
+        published.clone(),
+        RuntimeDeviceIdentity {
+            kind: RuntimeDeviceKind::Metal,
+            ordinal: Some(0),
+        },
+        "test-metal",
+        &"b".repeat(64),
+    );
+    let cpu: ReleaseCapture = serde_json::from_str(include_str!(
+        "../../docs/benchmarks/release-contract-windows-20260821/cpu.json"
+    ))
+    .unwrap();
+    let expected_version = cpu.tensor_batch.binding.power_version.clone();
+    let expected_commit = cpu.tensor_batch.binding.power_commit.clone();
+    let bundle =
+        ReleaseEvidenceBundle::build_strict_v1(vec![promoted, metal, published, cpu]).unwrap();
+    bundle
+        .verify_strict_v1_release(&bundle.sha256, &expected_version, &expected_commit)
+        .unwrap();
 }

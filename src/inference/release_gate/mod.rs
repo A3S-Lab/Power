@@ -46,3 +46,26 @@ pub(super) fn build_bundle(
     bundle.verify()?;
     Ok(bundle)
 }
+
+pub(super) fn build_strict_v1_bundle(
+    captures: Vec<ReleaseCapture>,
+) -> Result<ReleaseEvidenceBundle> {
+    let mut cpu_capture = None;
+    for capture in &captures {
+        capture.verify()?;
+        if capture.platform()? == ReleasePlatform::Cpu && cpu_capture.is_none() {
+            cpu_capture = Some(capture);
+        }
+    }
+    let revision = ReleaseRevisionBinding::from_capture(cpu_capture.ok_or_else(|| {
+        crate::error::PowerError::PolicyViolation(
+            "strict v1 release evidence is missing its CPU capture".to_string(),
+        )
+    })?)?;
+    let required_platforms = captures
+        .iter()
+        .map(ReleaseCapture::platform_binding)
+        .collect::<Result<Vec<_>>>()?;
+    let policy = ReleaseEvidencePolicy::strict_v1(revision, required_platforms)?;
+    build_bundle(policy, captures)
+}

@@ -49,8 +49,32 @@ release/v<crate-version>/
 
 The pin file contains exactly one lowercase SHA-256 digest, optionally followed
 by one LF or CRLF line ending. The bundle is a bounded, unknown-field-denying
-JSON document. From the tagged clean checkout, reproduce the release decision
-with:
+JSON document. Assemble both create-new artifacts from the four independently
+reviewed captures; the command rejects mislabeled platforms, revision drift,
+reused tensor evidence, and non-SEV-SNP confidential evidence, and rolls back
+ordinary partial-output failures:
+
+```bash
+version="$(cargo metadata --locked --no-deps --format-version 1 \
+  | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
+commit="$(git rev-parse HEAD)"
+mkdir -p "release/v${version}"
+
+cargo run --locked --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- \
+  build-release-bundle \
+  --cpu-capture /reviewed/cpu.json \
+  --cuda-capture /reviewed/cuda.json \
+  --metal-capture /reviewed/metal.json \
+  --confidential-gpu-capture /reviewed/confidential-gpu.json \
+  --power-version "${version}" \
+  --power-commit "${commit}" \
+  --output "release/v${version}/release-evidence.json" \
+  --sha256-output "release/v${version}/release-evidence.sha256"
+```
+
+From the tagged clean checkout, reproduce the release decision with:
 
 ```bash
 version="$(cargo metadata --locked --no-deps --format-version 1 \
@@ -75,6 +99,9 @@ workflow runs this command before any `v1.x` or later tag can publish artifacts.
 The checked-in digest is a mutation-detection pin. Release authorship still
 requires the repository's signed tag/release trust root and preserved raw
 hardware evidence described in the external capture guide.
+For non-`0.x` tags, the release workflow also publishes the verified bundle and
+pin beside the platform archives instead of leaving production evidence only
+inside the source tree.
 
 ## Current readiness
 

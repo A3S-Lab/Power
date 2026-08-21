@@ -214,6 +214,14 @@ guide carries the same contract onto named hardware, preserves raw vendor
 evidence, and invokes strict proof-backed promotion without adding a
 model-specific release path.
 
+After all four captures exist, `build-release-bundle` derives their common
+revision and platform-specific bindings instead of asking a release operator to
+copy digest fields. It requires each capture under its typed CPU, CUDA, Metal,
+or confidential-GPU argument, constructs `ReleaseEvidencePolicy::strict_v1`,
+replays the final version and commit check, and creates the bundle and digest
+pin as a no-overwrite pair. An ordinary write failure rolls back any newly
+created half of the pair.
+
 ## Model and backend boundary
 
 Architecture-specific implementations are adapters behind the evidence hashes.

@@ -356,6 +356,50 @@ replaced. Promotion also writes the verified CPU TEE type into the digest-bound
 confidential release binding. The v1 bundle verifier accepts `sev-snp` only;
 TDX cannot enter the v1 release class through a custom verifier.
 
+## Build and verify the strict bundle
+
+Once the independently reviewed CPU, ordinary CUDA, Metal, and promoted
+confidential-GPU captures are available from the same revision, assemble the
+canonical release pair without copying nested digest fields by hand:
+
+```bash
+set -euo pipefail
+power_version="$(cargo metadata --locked --no-deps --format-version 1 \
+  | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
+power_commit="$(git rev-parse HEAD)"
+release_dir="release/v${power_version}"
+mkdir -p "$release_dir"
+
+cargo run --locked --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- \
+  build-release-bundle \
+  --cpu-capture /reviewed/cpu.json \
+  --cuda-capture /reviewed/cuda.json \
+  --metal-capture /reviewed/metal.json \
+  --confidential-gpu-capture /reviewed/confidential-gpu.json \
+  --power-version "$power_version" \
+  --power-commit "$power_commit" \
+  --output "$release_dir/release-evidence.json" \
+  --sha256-output "$release_dir/release-evidence.sha256"
+
+cargo run --locked --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- \
+  verify-release-bundle \
+  --bundle "$release_dir/release-evidence.json" \
+  --expected-sha256-file "$release_dir/release-evidence.sha256" \
+  --power-version "$power_version" \
+  --power-commit "$power_commit"
+```
+
+The builder independently verifies every capture, its argument-to-platform
+mapping, the exact common revision and workload, distinct tensor evidence,
+all platform-specific bindings, and the SEV-SNP confidential boundary. Both
+outputs use create-new semantics. If creating or synchronizing either file
+fails normally, the command removes any new half-pair; an existing caller-owned
+file is never replaced.
+
 ## Artifact inventory
 
 Preserve at least these files for review:

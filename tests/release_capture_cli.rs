@@ -1,5 +1,6 @@
 #![cfg(feature = "embedded-inference")]
 
+use std::path::Path;
 use std::process::Command;
 
 use a3s_power::inference::{
@@ -131,6 +132,48 @@ fn release_bundle_verifier_rejects_partial_platform_evidence() {
         "unexpected verifier error: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn release_bundle_builder_rejects_mislabeled_captures_without_partial_outputs() {
+    let capture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs/benchmarks/release-contract-windows-20260821/cpu.json");
+    let capture: ReleaseCapture =
+        serde_json::from_slice(&std::fs::read(&capture_path).unwrap()).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let bundle_path = directory.path().join("release-evidence.json");
+    let pin_path = directory.path().join("release-evidence.sha256");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a3s-power-tensor-batch-bench"))
+        .arg("build-release-bundle")
+        .arg("--cpu-capture")
+        .arg(&capture_path)
+        .arg("--cuda-capture")
+        .arg(&capture_path)
+        .arg("--metal-capture")
+        .arg(&capture_path)
+        .arg("--confidential-gpu-capture")
+        .arg(&capture_path)
+        .arg("--power-version")
+        .arg(&capture.tensor_batch.binding.power_version)
+        .arg("--power-commit")
+        .arg(&capture.tensor_batch.binding.power_commit)
+        .arg("--output")
+        .arg(&bundle_path)
+        .arg("--sha256-output")
+        .arg(&pin_path)
+        .output()
+        .expect("release bundle builder should start");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("CUDA release capture has platform Cpu, expected Cuda"),
+        "unexpected builder error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!bundle_path.exists());
+    assert!(!pin_path.exists());
 }
 
 #[test]
