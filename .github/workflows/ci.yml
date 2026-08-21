@@ -167,6 +167,7 @@ jobs:
         with:
           key: package-verification
           cache-targets: false
+          save-if: false
       - run: cargo package --locked
 
   cross-build:
