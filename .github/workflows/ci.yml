@@ -90,6 +90,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: tools/check-embedded-deps.sh
+      - name: Test release evidence commit layout
+        run: tools/test-release-evidence-commit.sh
 
   windows-embedded:
     name: Check (windows-embedded-inference)

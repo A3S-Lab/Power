@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -75,6 +75,9 @@ jobs:
 
       - name: Verify production release evidence
         id: production-evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_INPUT: ${{ github.event.inputs.tag }}
         run: |
           CRATE_VERSION="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
           MAJOR_VERSION="${CRATE_VERSION%%.*}"
@@ -82,6 +85,34 @@ jobs:
             echo "Pre-v1 release: strict production evidence gate is not required."
             echo "source_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          RELEASE_TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            RELEASE_TAG="${RELEASE_TAG_INPUT}"
+          fi
+          TAG_REF_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          if [ "$(jq -r '.object.type' <<< "${TAG_REF_JSON}")" != "tag" ]; then
+            echo "production releases require an annotated, GitHub-verified tag" >&2
+            exit 1
+          fi
+          TAG_OBJECT_SHA="$(jq -r '.object.sha' <<< "${TAG_REF_JSON}")"
+          TAG_OBJECT_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}")"
+          if [ "$(jq -r '.tag' <<< "${TAG_OBJECT_JSON}")" != "${RELEASE_TAG}" ] || \
+             [ "$(jq -r '.object.type' <<< "${TAG_OBJECT_JSON}")" != "commit" ] || \
+             [ "$(jq -r '.verification.verified' <<< "${TAG_OBJECT_JSON}")" != "true" ]; then
+            echo "production release tag must directly identify a commit and have a GitHub-verified signature" >&2
+            exit 1
+          fi
+          TAG_COMMIT="$(jq -r '.object.sha' <<< "${TAG_OBJECT_JSON}")"
+          if [ "${TAG_COMMIT}" != "$(git rev-parse HEAD)" ]; then
+            echo "checked-out release commit does not match the signed tag target" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "${TAG_COMMIT}" refs/remotes/origin/main; then
+            echo "production evidence commit must be reachable from origin/main" >&2
+            exit 1
           fi
 
           EVIDENCE_DIR="release/v${CRATE_VERSION}"

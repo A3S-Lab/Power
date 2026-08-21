@@ -403,7 +403,9 @@ git commit -m "release: add v${power_version} production evidence"
 evidence_commit="$(git rev-parse HEAD)"
 test "$(bash tools/verify-release-evidence-commit.sh \
   "$power_version" "$evidence_commit")" = "$source_commit"
+git push origin HEAD:main
 git tag -s "v${power_version}" -m "A3S Power v${power_version}"
+git push origin "v${power_version}"
 ```
 
 The builder independently verifies every capture, its argument-to-platform
@@ -413,7 +415,9 @@ outputs use create-new semantics. If creating or synchronizing either file
 fails normally, the command removes any new half-pair; an existing caller-owned
 file is never replaced. The layout verifier then requires the tagged evidence
 commit to be the direct child of the measured source commit and to contain no
-other changes. Release CI builds and publishes from that source parent.
+other changes. Push that child to `main` before the signed annotated tag;
+release CI requires both main-branch reachability and GitHub-verified tag status,
+then builds and publishes from the source parent.
 
 ## Artifact inventory
 

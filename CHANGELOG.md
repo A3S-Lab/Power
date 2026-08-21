@@ -119,6 +119,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Non-`0.x` release CI now requires the evidence commit to be reachable from
+  `main` and the annotated release tag to have a GitHub-verified signature.
+  Lightweight, unverified, indirect, or detached production tags fail before
+  any binary or crate publication.
 - Added opaque, non-serializable strict hardware and confidential-GPU
   attestation proof types tied to the exact authenticated report lifetime.
   Production accelerator bindings, sealed-state export authorization, and

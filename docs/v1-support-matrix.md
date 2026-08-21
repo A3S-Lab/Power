@@ -61,10 +61,11 @@ frozen source commit S
 ```
 
 `E` must have exactly one parent, `S`; the evidence directory must be absent
-from `S`; and the two regular files must be the complete diff. Release binaries
-and the crates.io package are built from `S`. The signed tag and GitHub source
-archive point to `E`, which carries the authenticated evidence pair. Cargo
-excludes `release/` from the published crate.
+from `S`; and the two regular files must be the complete diff. `E` must be
+reachable from `main`. Release binaries and the crates.io package are built from
+`S`. A GitHub-verified annotated tag and the GitHub source archive point to `E`,
+which carries the authenticated evidence pair. Lightweight or unverified tags
+fail the release workflow. Cargo excludes `release/` from the published crate.
 
 From a clean checkout of `S`, assemble both create-new artifacts from the four
 independently reviewed captures. The command rejects mislabeled platforms,
@@ -99,7 +100,9 @@ git commit -m "release: add v${version} production evidence"
 evidence_commit="$(git rev-parse HEAD)"
 test "$(bash tools/verify-release-evidence-commit.sh \
   "${version}" "${evidence_commit}")" = "${source_commit}"
+git push origin HEAD:main
 git tag -s "v${version}" -m "A3S Power v${version}"
+git push origin "v${version}"
 ```
 
 From the tagged clean checkout, reproduce the release decision with:

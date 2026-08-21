@@ -191,10 +191,12 @@ the SEV-SNP confidential boundary. The pin file must contain one lowercase
 SHA-256 digest with only an optional LF or CRLF line ending.
 
 Release CI runs both checks for every non-`0.x` tag before artifacts can be
-published. It builds binaries and publishes the crate from the frozen source
-parent while attaching the evidence pair from the tagged child. Missing,
-pre-existing, or mixed source/evidence changes therefore block v1 instead of
-silently degrading to the available local platforms.
+published. It also requires the evidence child to be reachable from `main` and
+the annotated tag signature to carry GitHub's verified status. It builds
+binaries and publishes the crate from the frozen source parent while attaching
+the evidence pair from the tagged child. Missing, pre-existing, mixed
+source/evidence, lightweight-tag, or unverified-tag inputs therefore block v1
+instead of silently degrading to the available local platforms.
 
 ## Capture runners
 

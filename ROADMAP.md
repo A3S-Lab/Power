@@ -159,7 +159,8 @@ for the same immutable release revision.
       create-new bundle and digest pin, and attaches both to non-`0.x` releases.
 - [x] Require non-`0.x` tags to point to a single-parent evidence commit whose
       complete diff adds only the bundle and pin; build and publish artifacts
-      from its frozen source parent.
+      from its frozen source parent. The child must be reachable from `main` and
+      the annotated tag must have a GitHub-verified signature.
 - [x] Implement reviewed Intel DCAP Quote generation and QVL verification, or
       explicitly exclude TDX from the v1 production support matrix. A local
       TDREPORT now fails closed and is not treated as a PCK-signed Quote. The
