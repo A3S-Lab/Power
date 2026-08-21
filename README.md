@@ -87,9 +87,10 @@ same deterministic output digest. No model weight was requantized.
 That capture crosses 175 as a median boundary; it does **not** establish a
 175 token/s service floor because two samples were below it. New acceptance
 runs can independently require the median and every measured sample, and the
-generic GGUF runner rejects a capture before startup when its configured idle
-GPU-utilization ceiling is exceeded. On this shared Windows display GPU,
-exclusive scheduling is part of the requirement, not an inference flag.
+generic GGUF runner can require a configurable pre-start quiet window and
+retains an input-bound preflight receipt when the idle-GPU ceiling is exceeded.
+On this shared Windows display GPU, exclusive scheduling is part of the
+requirement, not an inference flag.
 
 That FR profile is a long, high-coverage peak, **not** a universal default or a
 service floor. On the one-pass 12-task calibration, full-vocabulary K7/S6

@@ -54,6 +54,12 @@ param(
     [ValidateRange(0, 100)]
     [int]$MaximumIdleGpuUtilizationPercent = 100,
 
+    [ValidateRange(1, 120)]
+    [int]$IdleGpuSampleCount = 3,
+
+    [ValidateRange(100, 60000)]
+    [int]$IdleGpuSampleIntervalMilliseconds = 500,
+
     [ValidateScript({ $_ -ge 0 })]
     [int[]]$NvidiaGpuIndices = @(),
 
@@ -69,6 +75,8 @@ param(
     [int]$Port = 11434,
 
     [string]$HardwareLabel,
+
+    [switch]$PreflightOnly,
 
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._+-]*$')]
     [string]$ExpectedBackend = 'llama.cpp',
@@ -92,6 +100,7 @@ $stdout = Join-Path $benchmarkRootPath "$Label.stdout.log"
 $stderr = Join-Path $benchmarkRootPath "$Label.stderr.log"
 $report = Join-Path $benchmarkRootPath "$Label.json"
 $environmentReport = Join-Path $benchmarkRootPath "$Label.environment.json"
+$preflightReport = Join-Path $benchmarkRootPath "$Label.preflight.json"
 $encodedModel = [Uri]::EscapeDataString($Model)
 $normalizedModelHash = $ModelHash.ToLowerInvariant()
 $effectiveHardwareLabel = if ([string]::IsNullOrWhiteSpace($HardwareLabel)) {
@@ -114,7 +123,10 @@ if ($NvidiaGpuIndices.Count -ne @($NvidiaGpuIndices | Sort-Object -Unique).Count
     throw 'NvidiaGpuIndices must not contain duplicate device indices'
 }
 if ($NvidiaGpuIndices.Count -eq 0 -and
-    ($LockGpuClockMHz -gt 0 -or $MaximumIdleGpuUtilizationPercent -lt 100)) {
+    ($LockGpuClockMHz -gt 0 -or
+     $MaximumIdleGpuUtilizationPercent -lt 100 -or
+     $PSBoundParameters.ContainsKey('IdleGpuSampleCount') -or
+     $PSBoundParameters.ContainsKey('IdleGpuSampleIntervalMilliseconds'))) {
     throw 'NvidiaGpuIndices is required when an NVIDIA clock lock or idle-utilization gate is requested'
 }
 if ($MaxTokens -gt $NumCtx -or $NumBatch -gt $NumCtx) {
@@ -158,6 +170,7 @@ $serverHash = (Get-FileHash -LiteralPath $server -Algorithm SHA256).Hash.ToLower
 $benchmarkHash = (Get-FileHash -LiteralPath $benchmark -Algorithm SHA256).Hash.ToLowerInvariant()
 $configHash = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $promptHash = (Get-FileHash -LiteralPath $prompt -Algorithm SHA256).Hash.ToLowerInvariant()
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 
 $env:A3S_POWER_HOME = $PowerHome
 $env:RUST_LOG = $RustLog
@@ -165,73 +178,208 @@ $lockedGpuIndices = @()
 $gpuSnapshot = @()
 $gpuProcessSnapshot = @()
 $idleGpuUtilization = @()
+$maximumObservedGpuUtilization = $null
+$idleWindowStartedAt = $null
+$idleWindowCompletedAt = $null
+$idleWindowElapsedMilliseconds = $null
+$preflightFailure = $null
+$preflightHash = $null
 
 try {
     if ($NvidiaGpuIndices.Count -gt 0) {
         if (-not (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)) {
-            throw 'nvidia-smi.exe is required when NvidiaGpuIndices is configured'
-        }
-
-        for ($sampleIndex = 0; $sampleIndex -lt 3; $sampleIndex++) {
-            foreach ($gpuIndex in $NvidiaGpuIndices) {
-                $utilization = @(& nvidia-smi.exe `
-                    --id=$gpuIndex `
-                    --query-gpu=utilization.gpu `
-                    --format=csv,noheader,nounits)
-                if ($LASTEXITCODE -ne 0 -or $utilization.Count -ne 1) {
-                    throw "Failed to capture idle utilization for NVIDIA GPU $gpuIndex"
-                }
-                $parsedUtilization = 0
-                if (-not [int]::TryParse($utilization[0].Trim(), [ref]$parsedUtilization)) {
-                    throw "NVIDIA GPU $gpuIndex reported an invalid utilization value: $($utilization[0])"
-                }
-                $idleGpuUtilization += [ordered]@{
-                    sample = $sampleIndex
-                    gpu_index = $gpuIndex
-                    utilization_percent = $parsedUtilization
-                }
-            }
-            if ($sampleIndex -lt 2) {
-                Start-Sleep -Milliseconds 500
+            $preflightFailure = [ordered]@{
+                code = 'nvidia-smi-unavailable'
+                message = 'nvidia-smi.exe is required when NvidiaGpuIndices is configured'
             }
         }
-        $maximumObservedGpuUtilization = @(
-            $idleGpuUtilization | ForEach-Object { $_.utilization_percent }
-        ) | Measure-Object -Maximum
-        if ($maximumObservedGpuUtilization.Maximum -gt
-            $MaximumIdleGpuUtilizationPercent) {
-            $observations = @(
-                $idleGpuUtilization | ForEach-Object {
-                    "sample $($_.sample), GPU $($_.gpu_index)=$($_.utilization_percent)%"
+
+        if (-not $preflightFailure) {
+            $idleWindowStartedAt = [DateTimeOffset]::UtcNow.ToString('o')
+            $idleWindowStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            for ($sampleIndex = 0; $sampleIndex -lt $IdleGpuSampleCount; $sampleIndex++) {
+                foreach ($gpuIndex in $NvidiaGpuIndices) {
+                    $utilization = @(& nvidia-smi.exe `
+                        --id=$gpuIndex `
+                        --query-gpu=utilization.gpu `
+                        --format=csv,noheader,nounits)
+                    if ($LASTEXITCODE -ne 0 -or $utilization.Count -ne 1) {
+                        $preflightFailure = [ordered]@{
+                            code = 'nvidia-idle-sample-failed'
+                            message = "Failed to capture idle utilization for NVIDIA GPU $gpuIndex"
+                        }
+                        break
+                    }
+                    $parsedUtilization = 0
+                    if (-not [int]::TryParse($utilization[0].Trim(), [ref]$parsedUtilization) -or
+                        $parsedUtilization -lt 0 -or
+                        $parsedUtilization -gt 100) {
+                        $preflightFailure = [ordered]@{
+                            code = 'nvidia-idle-sample-invalid'
+                            message = "NVIDIA GPU $gpuIndex reported an invalid utilization value: $($utilization[0])"
+                        }
+                        break
+                    }
+                    $idleGpuUtilization += [ordered]@{
+                        sample = $sampleIndex
+                        gpu_index = $gpuIndex
+                        utilization_percent = $parsedUtilization
+                        observed_at = [DateTimeOffset]::UtcNow.ToString('o')
+                    }
                 }
-            ) -join '; '
-            throw "GPU idle utilization exceeded $MaximumIdleGpuUtilizationPercent percent: $observations"
+                if ($preflightFailure) {
+                    break
+                }
+                if ($sampleIndex -lt ($IdleGpuSampleCount - 1)) {
+                    Start-Sleep -Milliseconds $IdleGpuSampleIntervalMilliseconds
+                }
+            }
+            $idleWindowStopwatch.Stop()
+            $idleWindowElapsedMilliseconds = [int64]$idleWindowStopwatch.ElapsedMilliseconds
+            $idleWindowCompletedAt = [DateTimeOffset]::UtcNow.ToString('o')
         }
 
-        if ($LockGpuClockMHz -gt 0) {
+        if (-not $preflightFailure) {
+            $maximumObservedGpuUtilization = [int](@(
+                $idleGpuUtilization | ForEach-Object { $_.utilization_percent }
+            ) | Measure-Object -Maximum).Maximum
+            if ($maximumObservedGpuUtilization -gt
+                $MaximumIdleGpuUtilizationPercent) {
+                $observations = @(
+                    $idleGpuUtilization | ForEach-Object {
+                        "sample $($_.sample), GPU $($_.gpu_index)=$($_.utilization_percent)%"
+                    }
+                ) -join '; '
+                $preflightFailure = [ordered]@{
+                    code = 'nvidia-idle-utilization-exceeded'
+                    message = "GPU idle utilization exceeded $MaximumIdleGpuUtilizationPercent percent: $observations"
+                }
+            }
+        }
+
+        if (-not $preflightFailure -and $LockGpuClockMHz -gt 0) {
             foreach ($gpuIndex in $NvidiaGpuIndices) {
                 & nvidia-smi.exe `
                     --id=$gpuIndex `
                     --lock-gpu-clocks="$LockGpuClockMHz,$LockGpuClockMHz" | Out-Null
                 if ($LASTEXITCODE -ne 0) {
-                    throw "Failed to lock NVIDIA GPU $gpuIndex at $LockGpuClockMHz MHz"
+                    $preflightFailure = [ordered]@{
+                        code = 'nvidia-clock-lock-failed'
+                        message = "Failed to lock NVIDIA GPU $gpuIndex at $LockGpuClockMHz MHz"
+                    }
+                    break
                 }
                 $lockedGpuIndices += $gpuIndex
             }
         }
-        foreach ($gpuIndex in $NvidiaGpuIndices) {
-            $gpuSnapshot += @(& nvidia-smi.exe `
-                --id=$gpuIndex `
-                --query-gpu=index,name,driver_version,pstate,clocks.current.graphics,clocks.max.graphics,power.limit,temperature.gpu,memory.total `
-                --format=csv,noheader,nounits)
+
+        if (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue) {
+            foreach ($gpuIndex in $NvidiaGpuIndices) {
+                $snapshot = @(& nvidia-smi.exe `
+                    --id=$gpuIndex `
+                    --query-gpu=index,name,driver_version,pstate,clocks.current.graphics,clocks.max.graphics,power.limit,temperature.gpu,memory.total `
+                    --format=csv,noheader,nounits)
+                if ($LASTEXITCODE -ne 0 -or $snapshot.Count -ne 1) {
+                    if (-not $preflightFailure) {
+                        $preflightFailure = [ordered]@{
+                            code = 'nvidia-state-snapshot-failed'
+                            message = "Failed to capture NVIDIA GPU $gpuIndex state"
+                        }
+                    }
+                    break
+                }
+                $gpuSnapshot += $snapshot[0]
+            }
+            $gpuProcessSnapshot = @(& nvidia-smi.exe)
             if ($LASTEXITCODE -ne 0) {
-                throw "Failed to capture NVIDIA GPU $gpuIndex state"
+                if (-not $preflightFailure) {
+                    $preflightFailure = [ordered]@{
+                        code = 'nvidia-process-snapshot-failed'
+                        message = 'Failed to capture the NVIDIA GPU process state'
+                    }
+                }
             }
         }
-        $gpuProcessSnapshot = @(& nvidia-smi.exe)
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Failed to capture the NVIDIA GPU process state'
+    }
+
+    $preflight = [ordered]@{
+        schema = 'a3s.power.speculative-benchmark.preflight.v1'
+        created_at = [DateTimeOffset]::UtcNow.ToString('o')
+        passed = $null -eq $preflightFailure
+        failure = $preflightFailure
+        power_commit = $powerCommit
+        dirty_worktree = $gitStatus.Count -ne 0
+        git_status = $gitStatus
+        requirements = [ordered]@{
+            clean_tree = [bool]$RequireCleanTree
+            high_performance_power_plan = [bool]$RequireHighPerformancePowerPlan
+            expected_exclusive_backend = $ExpectedBackend
         }
+        active_power_scheme = $activePowerScheme.Trim()
+        server = [ordered]@{
+            path = [System.IO.Path]::GetFullPath($server)
+            sha256 = $serverHash
+        }
+        benchmark_client = [ordered]@{
+            path = [System.IO.Path]::GetFullPath($benchmark)
+            sha256 = $benchmarkHash
+        }
+        config = [ordered]@{
+            path = $configPath
+            sha256 = $configHash
+        }
+        prompt = [ordered]@{
+            path = $prompt
+            sha256 = $promptHash
+        }
+        model = [ordered]@{
+            name = $Model
+            sha256 = $normalizedModelHash
+        }
+        gpu = [ordered]@{
+            provider = if ($NvidiaGpuIndices.Count -gt 0) { 'nvidia' } else { 'none' }
+            indices = $NvidiaGpuIndices
+            requested_clock_lock_mhz = if ($LockGpuClockMHz -gt 0) { $LockGpuClockMHz } else { $null }
+            clock_lock_applied_indices = $lockedGpuIndices
+            maximum_idle_utilization_percent = if ($NvidiaGpuIndices.Count -gt 0) {
+                $MaximumIdleGpuUtilizationPercent
+            } else {
+                $null
+            }
+            idle_sample_count = if ($NvidiaGpuIndices.Count -gt 0) { $IdleGpuSampleCount } else { $null }
+            idle_sample_interval_milliseconds = if ($NvidiaGpuIndices.Count -gt 0) {
+                $IdleGpuSampleIntervalMilliseconds
+            } else {
+                $null
+            }
+            idle_window_duration_milliseconds = if ($NvidiaGpuIndices.Count -gt 0) {
+                [int64]($IdleGpuSampleCount - 1) * $IdleGpuSampleIntervalMilliseconds
+            } else {
+                $null
+            }
+            observed_idle_window_started_at = $idleWindowStartedAt
+            observed_idle_window_completed_at = $idleWindowCompletedAt
+            observed_idle_window_duration_milliseconds = $idleWindowElapsedMilliseconds
+            maximum_observed_idle_utilization_percent = $maximumObservedGpuUtilization
+            idle_utilization_samples = $idleGpuUtilization
+            nvidia_smi = $gpuSnapshot
+            process_snapshot = $gpuProcessSnapshot
+        }
+    }
+    $preflightJson = $preflight | ConvertTo-Json -Depth 6
+    [System.IO.File]::WriteAllText(
+        $preflightReport,
+        $preflightJson + [Environment]::NewLine,
+        $utf8NoBom
+    )
+    $preflightHash = (Get-FileHash -LiteralPath $preflightReport -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    if ($preflightFailure) {
+        throw $preflightFailure.message
+    }
+    if ($PreflightOnly) {
+        $preflightJson
+        return
     }
 
     # Start-Process joins ArgumentList entries into one Windows command line.
@@ -323,7 +471,6 @@ try {
     if ([string]::IsNullOrWhiteSpace($raw)) {
         throw "Benchmark exited with code $benchmarkExitCode without a JSON report"
     }
-    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText(
         $report,
         $raw + [Environment]::NewLine,
@@ -336,6 +483,10 @@ try {
         power_commit = $powerCommit
         dirty_worktree = $gitStatus.Count -ne 0
         git_status = $gitStatus
+        preflight = [ordered]@{
+            path = [System.IO.Path]::GetFullPath($preflightReport)
+            sha256 = $preflightHash
+        }
         server = [ordered]@{
             path = [System.IO.Path]::GetFullPath($server)
             sha256 = $serverHash
@@ -388,6 +539,21 @@ try {
             } else {
                 $null
             }
+            idle_sample_count = if ($NvidiaGpuIndices.Count -gt 0) { $IdleGpuSampleCount } else { $null }
+            idle_sample_interval_milliseconds = if ($NvidiaGpuIndices.Count -gt 0) {
+                $IdleGpuSampleIntervalMilliseconds
+            } else {
+                $null
+            }
+            idle_window_duration_milliseconds = if ($NvidiaGpuIndices.Count -gt 0) {
+                [int64]($IdleGpuSampleCount - 1) * $IdleGpuSampleIntervalMilliseconds
+            } else {
+                $null
+            }
+            observed_idle_window_started_at = $idleWindowStartedAt
+            observed_idle_window_completed_at = $idleWindowCompletedAt
+            observed_idle_window_duration_milliseconds = $idleWindowElapsedMilliseconds
+            maximum_observed_idle_utilization_percent = $maximumObservedGpuUtilization
             idle_utilization_samples = $idleGpuUtilization
             idle_utilization_samples_percent = if ($NvidiaGpuIndices.Count -eq 1) {
                 @($idleGpuUtilization | ForEach-Object { $_.utilization_percent })

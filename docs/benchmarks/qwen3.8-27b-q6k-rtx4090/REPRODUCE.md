@@ -249,13 +249,17 @@ an independent all-sample gate and reject a busy GPU before model startup:
   -MinimumTokensPerSecond 175 -MinimumSampleTokensPerSecond 175 `
   -NvidiaGpuIndices 0 `
   -MaximumIdleGpuUtilizationPercent 2 `
+  -IdleGpuSampleCount 21 -IdleGpuSampleIntervalMilliseconds 500 `
   -ProcessPriority High -ProcessorAffinityMask 349525 `
   -LockGpuClockMHz 2745 -TargetDirectory target-native-sm89-ninja `
   -RequireHighPerformancePowerPlan -RequireCleanTree
 ```
 
-The report is retained even when either gate fails. Promotion additionally
-requires the repeated quality matrix and controlled baseline/candidate output
+The 21 samples cover a 10-second quiet window. Run the same command once with
+`-PreflightOnly` to audit host admission without loading the model. A failed
+idle or clock gate retains `<label>.preflight.json`; a throughput failure keeps
+the benchmark report and environment receipt. Promotion additionally requires
+the repeated quality matrix and controlled baseline/candidate output
 comparison; a single fixed prompt proves neither general workload throughput
 nor model intelligence. Consumer RTX cards under WDDM cannot reserve the GPU,
 so use a headless or otherwise exclusive window when the two-percent margin

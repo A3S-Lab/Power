@@ -181,9 +181,9 @@ shorter, faster sample.
 `tools/run-gguf-speculative-benchmark.ps1` is the model-neutral host runner.
 It requires the registered model name, GGUF SHA-256, prompt, ACL profile, Power
 home, and explicit strategy instead of embedding a Qwen model name or path. For
-each selected NVIDIA device it records three pre-start utilization samples,
-the process set, binary and input hashes, clock request, power plan, and
-effective CPU affinity. Use
+each selected NVIDIA device it records a configurable pre-start utilization
+window, the process set, binary and input hashes, clock request, power plan,
+and effective CPU affinity. Use
 `tools/run-qwen38-q6k-benchmark.ps1` only as a compatibility wrapper for the
 published Qwen capture.
 
@@ -204,13 +204,19 @@ the floor:
   -MinimumTokensPerSecond 175 `
   -MinimumSampleTokensPerSecond 175 `
   -NvidiaGpuIndices 0 `
-  -MaximumIdleGpuUtilizationPercent 2
+  -MaximumIdleGpuUtilizationPercent 2 `
+  -IdleGpuSampleCount 21 `
+  -IdleGpuSampleIntervalMilliseconds 500
 ```
 
-The runner writes the JSON report and environment receipt before returning a
-threshold failure. This preserves negative evidence. On Windows PowerShell
-5.1 it writes BOM-free UTF-8; the comparison CLI also accepts older reports
-that contain PowerShell's UTF-8 BOM.
+Twenty-one samples at 500 ms cover a 10-second quiet window. The runner writes
+`<label>.preflight.json` before model startup; a failed idle or clock gate keeps
+that receipt and never loads the model. `-PreflightOnly` validates and records
+the host controls without starting the server. Once inference runs, the JSON
+report and environment receipt are also written before a throughput-threshold
+failure. These files preserve both environment and performance negative
+evidence. On Windows PowerShell 5.1 they use BOM-free UTF-8; the comparison CLI
+also accepts older reports that contain PowerShell's UTF-8 BOM.
 
 The generic Windows runner defaults to the ordinary `target` Cargo directory
 and does not require NVIDIA tooling. Select one or more devices with

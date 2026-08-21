@@ -99,6 +99,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Enable long paths for Cargo Git dependencies
         run: git config --global core.longpaths true
+      - name: Test GGUF benchmark preflight contract
+        run: .\tools\test-gguf-speculative-preflight.ps1
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows-embedded-inference

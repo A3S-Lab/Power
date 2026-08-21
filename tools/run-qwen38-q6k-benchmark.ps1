@@ -38,6 +38,12 @@ param(
     [ValidateRange(0, 100)]
     [int]$MaximumIdleGpuUtilizationPercent = 100,
 
+    [ValidateRange(1, 120)]
+    [int]$IdleGpuSampleCount = 3,
+
+    [ValidateRange(100, 60000)]
+    [int]$IdleGpuSampleIntervalMilliseconds = 500,
+
     [ValidateScript({ $_ -ge 0 })]
     [int[]]$NvidiaGpuIndices = @(0),
 
@@ -52,6 +58,8 @@ param(
     [string]$PromptFile,
 
     [string]$PowerHome = 'D:\models\a3s-power\qwen38\power-home',
+
+    [switch]$PreflightOnly,
 
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._+-]*$')]
     [string]$ExpectedBackend = 'llama.cpp',
@@ -87,6 +95,8 @@ $runnerParameters = @{
     ProcessorAffinityMask = $ProcessorAffinityMask
     LockGpuClockMHz = $LockGpuClockMHz
     MaximumIdleGpuUtilizationPercent = $MaximumIdleGpuUtilizationPercent
+    IdleGpuSampleCount = $IdleGpuSampleCount
+    IdleGpuSampleIntervalMilliseconds = $IdleGpuSampleIntervalMilliseconds
     NvidiaGpuIndices = $NvidiaGpuIndices
     RequireHighPerformancePowerPlan = $RequireHighPerformancePowerPlan
     RequireCleanTree = $RequireCleanTree
@@ -94,6 +104,7 @@ $runnerParameters = @{
     BenchmarkRoot = $BenchmarkRoot
     Port = 11434
     HardwareLabel = "rtx4090-qwen38-q6k-$Label"
+    PreflightOnly = $PreflightOnly
     ExpectedBackend = $ExpectedBackend
     RustLog = $RustLog
 }
