@@ -460,7 +460,7 @@ Before building the four-platform bundle:
 7. authenticate the final bundle digest through the release trust root.
 
 The workflow and verifier control path are implemented and covered by
-deterministic tests. Those tests do not substitute for a hardware capture.
-Actual Metal and confidential-GPU captures remain release blockers until they
-are produced on supported named hardware from the same immutable revision as
-the CPU and ordinary CUDA captures.
+deterministic tests. Those tests do not substitute for hardware capture. Every
+production tag must authenticate Metal and confidential-GPU captures from
+supported named hardware and from the same immutable source parent as its CPU
+and ordinary CUDA captures; absence or verification failure blocks publication.

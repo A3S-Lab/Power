@@ -130,7 +130,7 @@ same integrity, resource, and evidence contracts.
 
 ```toml
 [dependencies]
-a3s-power = { version = "0.9.0", default-features = false, features = ["embedded-inference"] }
+a3s-power = { version = "1.0.0", default-features = false, features = ["embedded-inference"] }
 ```
 
 ```rust
@@ -487,6 +487,7 @@ current production boundary and failure policy.
 | --- | --- |
 | [Documentation home - 简体中文](https://a3s-lab.github.io/Power/) | Default `next` documentation in Simplified Chinese |
 | [Documentation home - English](https://a3s-lab.github.io/Power/en/) | English `next` documentation |
+| [v1.0.0 release documentation](https://a3s-lab.github.io/Power/v1.0.0/) | Versioned bilingual production-release snapshot |
 | [v0.9.0 release documentation](https://a3s-lab.github.io/Power/v0.9.0/) | Versioned bilingual release snapshot |
 | [Embedded Inference Architecture](docs/embedded-inference-architecture.md) | Graph execution, placement, scheduling, state, and receipts |
 | [Model-Owned Shape Profiles](docs/shape-profiles.md) | Finite opaque classes, stale-binding rejection, fallback, and receipt v5 |

@@ -1,0 +1,37 @@
+[
+  {
+    "type": "file",
+    "name": "getting-started",
+    "label": "快速开始"
+  },
+  {
+    "type": "file",
+    "name": "architecture",
+    "label": "架构设计"
+  },
+  {
+    "type": "file",
+    "name": "performance",
+    "label": "性能证据"
+  },
+  {
+    "type": "file",
+    "name": "reproduction",
+    "label": "复现实验"
+  },
+  {
+    "type": "file",
+    "name": "speculative-decoding",
+    "label": "推测解码"
+  },
+  {
+    "type": "file",
+    "name": "verification",
+    "label": "独立验证"
+  },
+  {
+    "type": "file",
+    "name": "operations",
+    "label": "部署运维"
+  }
+]

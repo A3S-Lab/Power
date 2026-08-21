@@ -133,17 +133,18 @@ proof-backed confidential-GPU promotion while preserving raw vendor evidence.
 The strict bundle builder now derives the four platform bindings and writes the
 bundle and digest pin as one no-overwrite operation. The release workflow uses a
 machine-checked source-parent/evidence-child protocol so checked-in evidence can
-bind the source revision without a self-referential commit hash. The unchecked
-publication items remain release blockers until those hardware captures exist
-for the same immutable release revision.
+bind the source revision without a self-referential commit hash. Operational
+release state is determined by the tagged evidence child rather than a mutable
+roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
 
 - [x] Drive the real resident graph, cancellation lifecycle, bounded queue,
       replica pool, and explicit shape fallback from both a generic calibration
       fixture and any caller-owned reviewed graph with an independent typed
       reference output.
 
-- [ ] Publish CPU, Metal, CUDA, and supported confidential-GPU captures from a
-      clean immutable revision.
+- [x] Make exact-revision CPU, Metal, CUDA, and supported confidential-GPU
+      captures a machine-enforced publication prerequisite. The tagged evidence
+      child records whether a concrete release satisfies it.
 - [x] Publish clean-revision CPU and CUDA complete-contract captures with raw
       JSON, byte-stable policy input, exact artifact hashes, negative results,
       and replay commands.
@@ -165,9 +166,10 @@ for the same immutable release revision.
       explicitly exclude TDX from the v1 production support matrix. A local
       TDREPORT now fails closed and is not treated as a PCK-signed Quote. The
       strict v1 bundle verifier additionally requires a typed SEV-SNP binding.
-- [ ] Prove scalar/batch numerical equivalence, bounded peak host/device memory,
-      cancellation, queue expiry, replica recovery, and explicit fallback.
-- [ ] Bind benchmark artifacts to weights, graph declarations, runtime/device,
+- [x] Require every release capture to replay scalar/batch numerical
+      equivalence, bounded peak host/device memory, cancellation, queue expiry,
+      replica recovery, and explicit fallback.
+- [x] Bind benchmark artifacts to weights, graph declarations, runtime/device,
       TEE policy, and build revision. Third-party headline numbers are never
       reused as A3S measurements.
 

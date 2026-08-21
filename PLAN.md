@@ -20,7 +20,7 @@ deployment boundary, not a restriction to LLMs or to a particular model family.
    vision, OCR, embedding, audio, multimodal, and custom reviewed graphs without
    family dispatch in the core
 
-### Current State (v0.9.0 development line)
+### Current State (v1.0.0 release-candidate line)
 - 3 backends (mistralrs, llamacpp, picolm) — all functional
 - TEE runtime stack (attestation collection, encrypted models, RA-TLS, privacy,
   audit); production verifier coverage is qualified below
@@ -29,7 +29,8 @@ deployment boundary, not a restriction to LLMs or to a particular model family.
 - Model-owned reviewed graphs, finite shape profiles, session replicas,
   cancellation-safe execution batches, and device-resident graph boundaries
 - A model-neutral release-evidence gate and complete-contract collector;
-  immutable cross-platform publication remains a v1 release blocker
+  a production tag is admitted only when its evidence-only child authenticates
+  exact-revision CPU, CUDA, Metal, and confidential-GPU captures
 - Strict SEV-SNP verification now binds policy fields to the exact signed raw
   report. Intel TDX fails closed until a DCAP Quote/QVL path is implemented.
 
@@ -235,8 +236,8 @@ claim that Power is ready to tag v1.0.0.
 
 The Rust release API now requires an opaque exact-report proof for confidential
 promotion, and the checked-in external workflow carries that API through raw
-vendor-evidence preservation and create-new CLI output. The production release
-remains open until all of these gates pass:
+vendor-evidence preservation and create-new CLI output. A production release
+exists only when its signed evidence child proves that all of these gates pass:
 
 1. one immutable revision supplies CPU, CUDA, Metal, and confidential-GPU
    complete-contract captures;
@@ -246,8 +247,9 @@ remains open until all of these gates pass:
 3. Intel TDX either gains a reviewed DCAP Quote/QVL path or remains explicitly
    unsupported by the v1 production support matrix;
 4. the full default, embedded, accelerator, verifier, documentation, and release
-   checks pass from the tagged revision; and
-5. the signed release and root-monorepo gitlink bind that exact revision.
+   checks pass for the frozen source parent and its evidence-only child; and
+5. the GitHub-verified annotated tag and root-monorepo gitlink bind those exact
+   revisions.
 
 See [ROADMAP.md](ROADMAP.md) and
 [Production Release Evidence Gate](docs/release-evidence-gate.md) for the

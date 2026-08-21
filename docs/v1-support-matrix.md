@@ -136,12 +136,20 @@ For non-`0.x` tags, the release workflow also publishes the verified bundle and
 pin beside the platform archives instead of leaving production evidence only
 inside the source tree.
 
-## Current readiness
+## Release decision
 
-The verifier, capture contracts, and fail-closed workflow are implemented.
-Actual same-revision Metal and SEV-SNP confidential-GPU captures have not yet
-been published, so v1.0.0 is not ready to tag. CPU/CUDA pre-release captures are
-useful regression evidence but cannot satisfy the four-platform gate.
+The source tree alone never claims that a production release passed. The
+frozen source parent intentionally has no `release/v1.0.0` directory; only its
+direct evidence child may add that directory. A v1.0.0 tag is production
+supported exactly when that child is on `main`, its GitHub-verified annotated
+tag points directly to it, and the checked-in bundle passes the four-platform
+gate against the parent revision. An absent or invalid child means there is no
+production v1.0.0 release, regardless of source-build or historical benchmark
+results.
+
+The checked-in CPU/CUDA pre-release captures remain useful regression evidence,
+but they cannot substitute for exact-parent CPU, CUDA, Metal, and proof-promoted
+SEV-SNP confidential-GPU captures authenticated by the tagged bundle.
 
 See [Production Release Evidence Gate](release-evidence-gate.md) for schema and
 contract details and [External Metal and Confidential-GPU Capture](external-release-capture.md)

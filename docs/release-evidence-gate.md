@@ -265,14 +265,13 @@ two-platform partial bundle. The raw JSON, policy bytes, artifact hashes,
 negative CPU batching result, and exact reproduction commands are checked in.
 
 Metal and confidential-GPU results cannot be inferred from this Windows RTX
-4090 host. They remain explicit release blockers until captured on appropriate
-hardware from the same immutable release revision. The Rust API now implements
-proof-backed confidential promotion, and a raw attestation report or
-caller-provided label is insufficient. The checked-in
+4090 host. Every production tag must instead carry exact-parent captures from
+appropriate named hardware in its authenticated four-platform bundle. The Rust
+API implements proof-backed confidential promotion, and a raw attestation
+report or caller-provided label is insufficient. The checked-in
 [external capture workflow](external-release-capture.md) now defines the exact
 Metal runner, nonce-bound NVIDIA evidence collection, configured raw-evidence
 binding, model-owned accelerator declaration, strict verifier pins, create-new
-promotion, and artifact inventory. That implementation does not replace the
-missing hardware results: the raw Metal and confidential-GPU captures plus an
-authenticated final bundle still have to be produced from one immutable
-revision.
+promotion, and artifact inventory. Workflow implementation and historical
+results do not replace those tag-specific hardware proofs; failure to build and
+authenticate them from one immutable source parent blocks publication.

@@ -8,7 +8,7 @@ import {
 
 const base = process.env.DOCS_BASE ?? "/Power/";
 const siteOrigin = process.env.DOCS_ORIGIN ?? "https://a3s-lab.github.io";
-const docVersions = ["next", "v0.9.0"] as const;
+const docVersions = ["next", "v1.0.0", "v0.9.0"] as const;
 
 interface NavigationLabels {
   architecture: string;
@@ -108,7 +108,7 @@ const config: UserConfig = {
   },
   multiVersion: {
     default: "next",
-    versions: ["next", "v0.9.0"],
+    versions: [...docVersions],
   },
   locales: [
     {

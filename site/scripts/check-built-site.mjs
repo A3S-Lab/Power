@@ -33,6 +33,7 @@ const routeChecks = [
       "Rust 模型推理",
       "运行时。",
       "简体中文",
+      "v1.0.0",
       "v0.9.0",
       "MTP 推测解码",
       "Draft 提议",
@@ -51,7 +52,44 @@ const routeChecks = [
       "A Rust runtime",
       "for model inference.",
       "English",
+      "v1.0.0",
       "v0.9.0",
+      "MTP speculative decoding",
+      "Draft proposals",
+      "Example result: 5/7 proposals accepted",
+      "Illustrative data, not a benchmark sample",
+      "Docs",
+      "Performance",
+      "Reproduce",
+      "176.6109",
+    ],
+  },
+  {
+    file: path.join("v1.0.0", "index.html"),
+    lang: "zh",
+    copy: [
+      "Rust 模型推理",
+      "运行时。",
+      "简体中文",
+      "next",
+      "MTP 推测解码",
+      "Draft 提议",
+      "示例结果：接受 5/7 个 proposal",
+      "示意数据，不是基准测试样本",
+      "文档",
+      "性能",
+      "复现实验",
+      "176.6109",
+    ],
+  },
+  {
+    file: path.join("v1.0.0", "en", "index.html"),
+    lang: "en",
+    copy: [
+      "A Rust runtime",
+      "for model inference.",
+      "English",
+      "next",
       "MTP speculative decoding",
       "Draft proposals",
       "Example result: 5/7 proposals accepted",
@@ -109,6 +147,16 @@ const routeChecks = [
     copy: ["Performance evidence", "176.6109", "Did quality fall?"],
   },
   {
+    file: path.join("v1.0.0", "performance.html"),
+    lang: "zh",
+    copy: ["性能证据", "176.6109", "智力水平下降了吗？"],
+  },
+  {
+    file: path.join("v1.0.0", "en", "performance.html"),
+    lang: "en",
+    copy: ["Performance evidence", "176.6109", "Did quality fall?"],
+  },
+  {
     file: path.join("v0.9.0", "performance.html"),
     lang: "zh",
     copy: ["性能证据", "176.6109"],
@@ -130,6 +178,26 @@ const routeChecks = [
   },
   {
     file: path.join("en", "reproduction.html"),
+    lang: "en",
+    copy: [
+      "Reproduction",
+      "verify-qwen38-q6k-evidence.ps1",
+      "run-qwen38-q6k-benchmark.ps1",
+      "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+    ],
+  },
+  {
+    file: path.join("v1.0.0", "reproduction.html"),
+    lang: "zh",
+    copy: [
+      "复现实验",
+      "verify-qwen38-q6k-evidence.ps1",
+      "run-qwen38-q6k-benchmark.ps1",
+      "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+    ],
+  },
+  {
+    file: path.join("v1.0.0", "en", "reproduction.html"),
     lang: "en",
     copy: [
       "Reproduction",
@@ -161,7 +229,12 @@ const routeChecks = [
   {
     file: "verification.html",
     lang: "zh",
-    copy: ["复现外部硬件捕获", "--promote-capture", "模型中立"],
+    copy: [
+      "复现外部硬件捕获",
+      "--promote-capture",
+      "模型中立",
+      "生产发布信任链",
+    ],
   },
   {
     file: path.join("en", "verification.html"),
@@ -170,6 +243,27 @@ const routeChecks = [
       "Reproduce external hardware capture",
       "--promote-capture",
       "model-neutral",
+      "Production release trust chain",
+    ],
+  },
+  {
+    file: path.join("v1.0.0", "verification.html"),
+    lang: "zh",
+    copy: [
+      "复现外部硬件捕获",
+      "--promote-capture",
+      "模型中立",
+      "生产发布信任链",
+    ],
+  },
+  {
+    file: path.join("v1.0.0", "en", "verification.html"),
+    lang: "en",
+    copy: [
+      "Reproduce external hardware capture",
+      "--promote-capture",
+      "model-neutral",
+      "Production release trust chain",
     ],
   },
 ];
@@ -211,12 +305,12 @@ if (logoHash !== expectedLogoHash) {
   throw new Error(`Built A3S OS logo has an unexpected SHA-256: ${logoHash}`);
 }
 
-if (htmlFiles.length < 33) {
+if (htmlFiles.length < 49) {
   throw new Error(
-    `Expected 32 localized/versioned pages plus 404, found ${htmlFiles.length}`,
+    `Expected 48 localized/versioned pages plus 404, found ${htmlFiles.length}`,
   );
 }
 
 console.log(
-  `Verified ${htmlFiles.length} rendered pages, four locale/version roots, and official A3S OS assets.`,
+  `Verified ${htmlFiles.length} rendered pages, six locale/version roots, and official A3S OS assets.`,
 );
