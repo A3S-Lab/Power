@@ -13,7 +13,7 @@ pub use types::{
     TensorBatchBenchmarkSummary,
 };
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 pub(crate) fn recompute_test_report_sha256(report: &TensorBatchBenchmarkReport) -> String {
     digest::report_sha256(report).expect("test report must have a canonical SHA-256")
 }

@@ -39,17 +39,17 @@ $targetName = "target-preflight-contract-test-$testId"
 $targetRoot = Join-Path $powerRoot $targetName
 $releaseRoot = Join-Path $targetRoot 'release'
 $outputRoot = Join-Path $tempRoot 'output'
-$fakeToolRoot = Join-Path $tempRoot 'bin'
-$fakeNvidiaSmi = Join-Path $fakeToolRoot 'nvidia-smi.exe'
 $fakeNvidiaLog = Join-Path $tempRoot 'nvidia-smi.log'
 $config = Join-Path $tempRoot 'test.acl'
 $prompt = Join-Path $tempRoot 'prompt.txt'
-$originalPath = $env:PATH
 $originalFakeUtilization = $env:A3S_POWER_FAKE_NVIDIA_UTILIZATION
 $originalFakeLog = $env:A3S_POWER_FAKE_NVIDIA_LOG
+$originalNvidiaSmiFunction = Get-Item `
+    -LiteralPath 'Function:\global:nvidia-smi.exe' `
+    -ErrorAction SilentlyContinue
 
 try {
-    New-Item -ItemType Directory -Force -Path $releaseRoot, $outputRoot, $fakeToolRoot | Out-Null
+    New-Item -ItemType Directory -Force -Path $releaseRoot, $outputRoot | Out-Null
     [System.IO.File]::WriteAllBytes(
         (Join-Path $releaseRoot 'a3s-power.exe'),
         [byte[]](1, 2, 3)
@@ -61,46 +61,33 @@ try {
     [System.IO.File]::WriteAllText($config, "model {}`r`n")
     [System.IO.File]::WriteAllText($prompt, "preflight contract`r`n")
 
-    $className = "FakeNvidiaSmi$testId"
-    $fakeSource = @"
-using System;
-using System.IO;
-
-public static class $className
-{
-    public static int Main(string[] args)
-    {
-        var invocation = string.Join(" ", args);
-        var log = Environment.GetEnvironmentVariable("A3S_POWER_FAKE_NVIDIA_LOG");
-        if (!string.IsNullOrEmpty(log))
-        {
-            File.AppendAllText(log, invocation + Environment.NewLine);
+    Set-Item -LiteralPath 'Function:\global:nvidia-smi.exe' -Value {
+        $flatArguments = @($args | ForEach-Object { $_ })
+        $invocation = $flatArguments -join ' '
+        $log = $env:A3S_POWER_FAKE_NVIDIA_LOG
+        if (-not [string]::IsNullOrEmpty($log)) {
+            [System.IO.File]::AppendAllText(
+                $log,
+                $invocation + [Environment]::NewLine
+            )
         }
 
-        if (invocation.Contains("--query-gpu=utilization.gpu"))
-        {
-            Console.WriteLine(Environment.GetEnvironmentVariable(
-                "A3S_POWER_FAKE_NVIDIA_UTILIZATION") ?? "0");
-        }
-        else if (invocation.Contains("--query-gpu=index,name,driver_version"))
-        {
-            Console.WriteLine("0, Fake NVIDIA GPU, 999.0, P0, 2745, 2745, 450, 40, 24564");
-        }
-        else if (args.Length == 0)
-        {
-            Console.WriteLine("fake NVIDIA process snapshot");
+        if ($invocation.Contains('--query-gpu=utilization.gpu')) {
+            if ([string]::IsNullOrEmpty(
+                $env:A3S_POWER_FAKE_NVIDIA_UTILIZATION
+            )) {
+                Write-Output '0'
+            } else {
+                Write-Output $env:A3S_POWER_FAKE_NVIDIA_UTILIZATION
+            }
+        } elseif ($invocation.Contains('--query-gpu=index,name,driver_version')) {
+            Write-Output '0, Fake NVIDIA GPU, 999.0, P0, 2745, 2745, 450, 40, 24564'
+        } elseif ($args.Count -eq 0) {
+            Write-Output 'fake NVIDIA process snapshot'
         }
 
-        return 0;
+        $global:LASTEXITCODE = 0
     }
-}
-"@
-    Add-Type `
-        -TypeDefinition $fakeSource `
-        -OutputAssembly $fakeNvidiaSmi `
-        -OutputType ConsoleApplication
-
-    $env:PATH = "$fakeToolRoot;$originalPath"
     $env:A3S_POWER_FAKE_NVIDIA_LOG = $fakeNvidiaLog
 
     $listener = [System.Net.Sockets.TcpListener]::new(
@@ -216,7 +203,15 @@ public static class $className
 
     Write-Output 'GGUF speculative benchmark preflight contract: PASS'
 } finally {
-    $env:PATH = $originalPath
+    if ($null -eq $originalNvidiaSmiFunction) {
+        Remove-Item `
+            -LiteralPath 'Function:\global:nvidia-smi.exe' `
+            -ErrorAction SilentlyContinue
+    } else {
+        Set-Item `
+            -LiteralPath 'Function:\global:nvidia-smi.exe' `
+            -Value $originalNvidiaSmiFunction.ScriptBlock
+    }
     if ($null -eq $originalFakeUtilization) {
         Remove-Item Env:A3S_POWER_FAKE_NVIDIA_UTILIZATION -ErrorAction SilentlyContinue
     } else {

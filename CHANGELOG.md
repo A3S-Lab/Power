@@ -106,6 +106,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Made the Windows GGUF preflight regression portable across Windows PowerShell
+  and PowerShell 7 by replacing its unsupported generated console executable
+  with a scoped command double, and made NVIDIA CLI arguments explicit. Also
+  gated a release-promotion-only test helper with the feature that owns its
+  caller so the standalone `embedded-inference` Clippy profile stays warning
+  free.
 - Replaced the self-referential v1 release layout with a machine-checked
   two-commit protocol. Hardware captures bind a frozen source parent; the signed
   tag points to its direct child, whose complete diff is exactly the release

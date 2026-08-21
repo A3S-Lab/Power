@@ -200,9 +200,9 @@ try {
             for ($sampleIndex = 0; $sampleIndex -lt $IdleGpuSampleCount; $sampleIndex++) {
                 foreach ($gpuIndex in $NvidiaGpuIndices) {
                     $utilization = @(& nvidia-smi.exe `
-                        --id=$gpuIndex `
-                        --query-gpu=utilization.gpu `
-                        --format=csv,noheader,nounits)
+                        "--id=$gpuIndex" `
+                        '--query-gpu=utilization.gpu' `
+                        '--format=csv,noheader,nounits')
                     if ($LASTEXITCODE -ne 0 -or $utilization.Count -ne 1) {
                         $preflightFailure = [ordered]@{
                             code = 'nvidia-idle-sample-failed'
@@ -260,7 +260,7 @@ try {
         if (-not $preflightFailure -and $LockGpuClockMHz -gt 0) {
             foreach ($gpuIndex in $NvidiaGpuIndices) {
                 & nvidia-smi.exe `
-                    --id=$gpuIndex `
+                    "--id=$gpuIndex" `
                     --lock-gpu-clocks="$LockGpuClockMHz,$LockGpuClockMHz" | Out-Null
                 if ($LASTEXITCODE -ne 0) {
                     $preflightFailure = [ordered]@{
@@ -276,9 +276,9 @@ try {
         if (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue) {
             foreach ($gpuIndex in $NvidiaGpuIndices) {
                 $snapshot = @(& nvidia-smi.exe `
-                    --id=$gpuIndex `
-                    --query-gpu=index,name,driver_version,pstate,clocks.current.graphics,clocks.max.graphics,power.limit,temperature.gpu,memory.total `
-                    --format=csv,noheader,nounits)
+                    "--id=$gpuIndex" `
+                    '--query-gpu=index,name,driver_version,pstate,clocks.current.graphics,clocks.max.graphics,power.limit,temperature.gpu,memory.total' `
+                    '--format=csv,noheader,nounits')
                 if ($LASTEXITCODE -ne 0 -or $snapshot.Count -ne 1) {
                     if (-not $preflightFailure) {
                         $preflightFailure = [ordered]@{
