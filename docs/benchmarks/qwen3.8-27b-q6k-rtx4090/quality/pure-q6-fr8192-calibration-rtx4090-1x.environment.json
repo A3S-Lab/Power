@@ -1,0 +1,58 @@
+﻿{
+    "schema":  "a3s.power.mtp-sweep.environment.v1",
+    "created_at":  "2026-08-21T02:19:54.1491166+00:00",
+    "identity":  {
+                     "power_commit":  "eb6aeda59561eff3e4e7592704cab6fc863b72c7",
+                     "server_sha256":  "c6ba312db786b45d81e8feaa286df7793ad2f072a81e4d0ab37ad39756ec95fa",
+                     "model_sha256":  "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+                     "model_bytes":  22884408288,
+                     "gpu":  [
+                                 "NVIDIA GeForce RTX 4090, 610.74, 24564, 8.9"
+                             ],
+                     "active_power_scheme":  "电源方案 GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (高性能)",
+                     "process_priority":  "High",
+                     "repetitions":  1,
+                     "max_tokens_cap":  128,
+                     "config_sha256":  "9f3cd4d36c8d141c9b3c2f5961f90a87561a1807f299a2b7a799f24706df9fc3",
+                     "tasks_sha256":  "2fd18d52a2e011692c6ffac2547da41ec8b6594e2d35a8aa40fa8648df96b40a",
+                     "selection_sha256":  "7fa39a125714ce311d5a30f3b3b290e85495699bd5ceb38f415dfc49854de630",
+                     "modes":  [
+                                   {
+                                       "label":  "off-b14",
+                                       "spec_mode":  "off",
+                                       "fr_vocab_size":  0,
+                                       "draft_max":  7,
+                                       "recurrent_snapshots":  6,
+                                       "recurrent_chain":  false,
+                                       "num_batch":  14,
+                                       "adaptive":  false
+                                   },
+                                   {
+                                       "label":  "frfull-k7-s6-b14-fixed",
+                                       "spec_mode":  "mtp",
+                                       "fr_vocab_size":  0,
+                                       "draft_max":  7,
+                                       "recurrent_snapshots":  6,
+                                       "recurrent_chain":  false,
+                                       "num_batch":  14,
+                                       "adaptive":  false
+                                   },
+                                   {
+                                       "label":  "fr8192-k7-s6-b14-fixed",
+                                       "spec_mode":  "mtp",
+                                       "fr_vocab_size":  8192,
+                                       "draft_max":  7,
+                                       "recurrent_snapshots":  6,
+                                       "recurrent_chain":  false,
+                                       "num_batch":  14,
+                                       "adaptive":  false
+                                   }
+                               ]
+                 },
+    "dirty_worktree":  false,
+    "git_status":  [
+
+                   ],
+    "model_path":  "D:\\models\\a3s-power\\qwen38\\full\\Qwen3.8-27B-Q6_K.gguf",
+    "model_file_hash_verified":  true
+}

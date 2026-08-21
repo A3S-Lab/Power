@@ -14,7 +14,9 @@ Power 只接受仍然保留执行契约的性能优化。因此，公开的 Qwen
 | Qwen3.8-27B 制品与模式 | 固定任务质量代理 | 请求全程吞吐 | 稳态解码中位数 |
 | --- | --- | ---: | ---: |
 | 原始 Q6_K，自回归 | 宽松 67/100；严格 60/100（100 题，重复 3 次） | 30.883 token/s | 35.5793 token/s（较早记录） |
-| 原始 Q6_K，原生 MTP | 固定峰值提示词下与 greedy 输出完全一致；未运行完整矩阵 | - | 140.1600 token/s |
+| 原始 Q6_K，全词表 MTP，K7/S7 | 固定峰值提示词下与 greedy 输出完全一致 | - | 147.0207 token/s |
+| 原始 Q6_K，全词表 MTP，K7/S6 | 宽松 5/12；严格 3/12（1 轮；11 题截断） | **47.032 token/s** | - |
+| **原始 Q6_K + 前缀 FR8192 MTP，K7/S6** | 宽松 4/12；严格 3/12（1 轮；11 题截断） | 37.290 token/s | **176.6109 token/s** |
 | TBQ4 混合制品，自回归 | 宽松 70/100；严格 64/100（100 题，重复 3 次） | 38.724 token/s | - |
 | **TBQ4 混合制品 + 全词表固定 MTP，K7/S7** | **宽松 76/100；严格 66/100**（100 题，重复 3 次） | **83.228 token/s** | **175.2089 token/s** |
 | TBQ4 混合制品 + 全词表防护 MTP，K7/S6 | 宽松 5/12；严格 3/12（12 题，重复 3 次） | 54.060 token/s | **177.7165 token/s** |
@@ -23,17 +25,23 @@ Power 只接受仍然保留执行契约的性能优化。因此，公开的 Qwen
 
 “请求全程”包含提示词处理、生成、HTTP 和请求开销；“稳态解码”是预热后的重复 1,024-token 工作形状。短横线表示没有可辩护的同口径记录。
 
-## 175+ 边界究竟意味着什么
+## 原始 Q6_K 的 176.61 边界
 
-平衡型 K7/S7 配置在 9 个 1,024-token 样本上的稳态中位数达到 175.2089 token/s，最低 174.2211，其中 5 个样本不低于 175。防护型 K7/S6 峰值配置达到 177.7165 token/s，9 个样本全部超过 175；但 K7/S7 保留 7 个驻留快照，可对每个 proposal 完成回滚，无需重放，因此它是混合负载默认配置。
+原始 22,884,408,288 字节 Q6_K 制品使用前缀 FR8192 K7/S6 后，9 个 1,024-token 样本的稳态中位数达到 176.6109 token/s，最低 173.2630，其中 7 个样本不低于 175。同一制品的全词表 K7/S7 对照为 147.0207 token/s，稳态中位数提升 20.13%，所有输出摘要一致。
 
-这一结果**不是原始 6-bit 模型**，也**不是服务吞吐下限**。19,187,686,464 字节的制品从 Q6_K 衍生：主 FFN 张量使用 Q4_0，MTP block 保持 Q6_K，独立 draft head 使用 Q4_K。测量还依赖 Flash Attention、完整 CUDA offload、目标与草稿模型的批量 greedy 采样、足够空闲的 WDDM 显示 GPU 和主机调优。
+模型权重没有重新量化。速度来自原生 MTP、目标模型精确校验、8,192 行 draft-only token-ID 前缀、6 份驻留循环状态快照、GPU 批量 greedy 采样、Flash Attention、完整 CUDA offload、batch 14 与主机控制。
+
+这是高覆盖工作形状下的峰值，**不是服务下限，也不是通用默认值**。在单轮 12 题校准中，全词表 K7/S6 的请求全程吞吐为 47.032 token/s，proposal 接受率 52.30%；前缀 FR 为 37.290 token/s，接受率 24.82%。每种模式都有 11 题触及输出上限。
+
+此前的混合制品边界仍单独保留：完整回滚的 K7/S7 稳态解码为 175.2089 token/s，重复 100 题负载为 83.228 token/s。该 19,187,686,464 字节制品的主 FFN 使用 Q4_0，MTP block 使用 Q6_K，draft head 使用 Q4_K。
 
 当前验收主机为 Windows 11、RTX 4090 与 10 核 20 线程 Intel Xeon w5-2445。`0x55555` 亲和性掩码与该机器拓扑绑定，不是可移植的产品默认值。
 
 ## 智力水平下降了吗？
 
-在当前固定样本上没有观察到回归：
+原始 Q6_K 前缀 FR 配置尚未完成重复 100 题矩阵。12 题、128-token 校准的截断比例太高，不能据此判断通用智力。目标模型精确校验能证明固定提示词下 greedy 输出一致，但不能取代代表性质量测试。
+
+此前的混合制品 K7/S7 配置在固定重复样本上没有观察到回归：
 
 - TBQ4 自回归：宽松 70/100，严格 64/100；
 - 全词表 K7/S7：宽松 76/100，严格 66/100；
@@ -62,6 +70,7 @@ Power 只接受仍然保留执行契约的性能优化。因此，公开的 Qwen
 
 - [Windows/CUDA 完整复现步骤](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md)
 - [基准记录与所有模式解读](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
+- [原始 Q6_K 边界与动态量化分析](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/PURE-Q6.md)
 - [100 题重复质量协议](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [当前紧凑机器可读证据](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/full-vocabulary-s7-current-rtx4090-3x.json)
 - [UD-Q8_K_XL 异构放置边界](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)

@@ -69,24 +69,34 @@ topology and semantics.
 | Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Mean request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
-| Untouched Q6_K, native MTP | Fixed peak prompt has exact greedy parity; matrix not run | - | 140.1600 token/s |
+| Untouched Q6_K, full-vocabulary MTP, K7/S7 | Fixed peak prompt has exact greedy parity | - | 147.0207 token/s |
+| Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x calibration; 11 truncated) | **47.032 token/s** | - |
+| **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x calibration; 11 truncated) | 37.290 token/s | **176.6109 token/s** |
 | TBQ4 mixed, autoregressive | 70/100 lenient; 64/100 strict (100 tasks, 3x) | 38.724 token/s | - |
 | **TBQ4 mixed + full-vocabulary fixed MTP, K7/S7** | **76/100 lenient; 66/100 strict** (100 tasks, 3x) | **83.228 token/s** | **175.2089 token/s** |
 | TBQ4 mixed + full-vocabulary guarded MTP, K7/S6 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | 54.060 token/s | **177.7165 token/s** |
 | TBQ4 mixed + MTP + prefix FR (historical) | 72/100 lenient; 60/100 strict (100 tasks, 3x) | 27.951 token/s | 184.3665 token/s |
 | UD-Q8_K_XL, heterogeneous MTP K4/S4 | Cross-mode output hashes differ; matrix not run | - | 9.7577 token/s |
 
-The current balanced K7/S7 profile sustained a 175.2089 token/s median across
-nine 1,024-token samples, with a 174.2211 minimum and five samples at or above
-175. Its repeated 100-task matrix completed all 900 API requests, recorded
-51.33% proposal acceptance, and observed no replay or rollback-guard activation.
+The current untouched 22,884,408,288-byte Q6_K artifact sustained a 176.6109
+token/s median across nine 1,024-token samples, with a 173.2630 minimum and
+seven samples at or above 175. Prefix-FR8192 improved steady decode by 20.13%
+over its 147.0207 token/s full-vocabulary K7/S7 control, and both emitted the
+same deterministic output digest. No model weight was requantized.
 
-The 175+ result is an observed steady-decode boundary, **not** a service floor
-and **not** an untouched 6-bit result. It uses a Q6_K-derived mixed artifact:
-main FFN tensors are Q4_0, the MTP block remains Q6_K, and the separate
-full-vocabulary draft head is Q4_K. Flash Attention, full CUDA offload, batched
-target/draft greedy sampling, host tuning, and exact target verification are all
-part of the measured system.
+That FR profile is a long, high-coverage peak, **not** a universal default or a
+service floor. On the one-pass 12-task calibration, full-vocabulary K7/S6
+reached 47.032 token/s request-wide with 52.30% proposal acceptance, while
+prefix-FR8192 reached 37.290 token/s with 24.82% acceptance. Eleven tasks per
+mode hit the 128-token cap, so this calibration diagnoses workload sensitivity;
+the repeated 100-task matrix remains the primary quality evidence.
+
+The earlier mixed-artifact K7/S7 profile sustained a 175.2089 token/s median
+and completed all 900 requests in its repeated quality matrix with 51.33%
+proposal acceptance and no replay. That separate 19,187,686,464-byte artifact
+uses Q4_0 main FFN tensors, a Q6_K MTP block, and a Q4_K draft head. Both
+boundaries depend on Flash Attention, full CUDA offload, batched target/draft
+greedy sampling, host controls, and exact target verification.
 
 The quality values are task-accuracy proxies, not general intelligence or IQ
 measurements. On the fixed current matrix, K7/S7 moved from 70 to 76 lenient and
@@ -95,6 +105,7 @@ observed in that sample. The paired comparison did not reach conventional
 statistical significance and is not evidence that MTP improves intelligence.
 
 - [Current Q6_K/TBQ4/MTP benchmark, raw samples, and limitations](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
+- [Untouched-Q6_K 176.61 token/s boundary and dynamic-quantization analysis](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/PURE-Q6.md)
 - [Repeated quality matrix and reproducible environment](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [Step-by-step reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md)
 - [UD-Q8_K_XL heterogeneous-placement boundary](docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)

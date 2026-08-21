@@ -1,0 +1,158 @@
+﻿{
+  "schema": "a3s.power.speculative-benchmark.v1",
+  "identity": {
+    "power_commit": "eb6aeda59561eff3e4e7592704cab6fc863b72c7",
+    "server_version": "0.9.0",
+    "model": "qwen3.8-27b-q6-k",
+    "model_sha256": "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+    "model_bytes": 22884408288,
+    "speculative": {
+      "mode": "mtp",
+      "draft_max": 7,
+      "mtp_recurrent_snapshots": 6,
+      "mtp_recurrent_chain": false,
+      "mtp_adaptive": false,
+      "mtp_fr_vocab_size": 8192,
+      "draft_min": 0,
+      "draft_p_min": 0.0
+    },
+    "inference": {
+      "gpu_layers": -1,
+      "main_gpu": 0,
+      "tensor_split": [],
+      "num_thread": 10,
+      "flash_attention": true,
+      "num_parallel": 1,
+      "use_mlock": false,
+      "use_mmap": true,
+      "tee_mode": false,
+      "suppress_token_metrics": false
+    },
+    "system": {
+      "label": "rtx4090-qwen38-q6k-pure-q6-eb6aeda-fr8192-k7s6-b14-1024-9x-clean",
+      "os": "windows",
+      "architecture": "x86_64",
+      "gpu_backend": "cuda",
+      "gpu_name": "NVIDIA GeForce RTX 4090",
+      "gpu_vram_bytes": 25757220864,
+      "gpu_driver": "610.74"
+    }
+  },
+  "workload": {
+    "prompt_sha256": "d95a5e4dad822ba9c84138f7a120017318bcb3a6a90e77246a8ec4ede0e65d89",
+    "request_sha256": "abed8befc164997a7c3aa3850f2dc8cf4b2f95ff3255fbafc0303416be010d86",
+    "max_tokens": 1024,
+    "num_ctx": 4096,
+    "num_batch": 14,
+    "seed": 42,
+    "temperature": 0.0,
+    "top_p": 1.0
+  },
+  "warmup_runs": 1,
+  "samples": [
+    {
+      "completion_tokens": 1024,
+      "completion_token_intervals": 1023,
+      "time_to_first_token_ns": 305576600,
+      "inter_token_duration_ns": 5745156500,
+      "total_duration_ns": 6073664000,
+      "decode_tokens_per_second": 178.0630344882685,
+      "end_to_end_tokens_per_second": 168.59674819021927,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "receipt_sha256": "2189554cf1b67e1e0009e32bca3154aa984ac9a34c7a488aa4875b0502cd282d"
+    },
+    {
+      "completion_tokens": 1024,
+      "completion_token_intervals": 1023,
+      "time_to_first_token_ns": 306458800,
+      "inter_token_duration_ns": 5782982600,
+      "total_duration_ns": 6110904100,
+      "decode_tokens_per_second": 176.89833616307266,
+      "end_to_end_tokens_per_second": 167.56931269793614,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "receipt_sha256": "2189554cf1b67e1e0009e32bca3154aa984ac9a34c7a488aa4875b0502cd282d"
+    },
+    {
+      "completion_tokens": 1024,
+      "completion_token_intervals": 1023,
+      "time_to_first_token_ns": 305375600,
+      "inter_token_duration_ns": 5792395500,
+      "total_duration_ns": 6118844000,
+      "decode_tokens_per_second": 176.6108685085471,
+      "end_to_end_tokens_per_second": 167.3518723471296,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "receipt_sha256": "2189554cf1b67e1e0009e32bca3154aa984ac9a34c7a488aa4875b0502cd282d"
+    },
+    {
+      "completion_tokens": 1024,
+      "completion_token_intervals": 1023,
+      "time_to_first_token_ns": 307410600,
+      "inter_token_duration_ns": 5783377800,
+      "total_duration_ns": 6117802100,
+      "decode_tokens_per_second": 176.8862480331131,
+      "end_to_end_tokens_per_second": 167.3803734187479,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "receipt_sha256": "2189554cf1b67e1e0009e32bca3154aa984ac9a34c7a488aa4875b0502cd282d"
+    },
+    {
+      "completion_tokens": 1024,
+      "completion_token_intervals": 1023,
+      "time_to_first_token_ns": 306950400,
+      "inter_token_duration_ns": 5808833800,
+      "total_duration_ns": 6137310800,
+      "decode_tokens_per_second": 176.11108102283802,
+      "end_to_end_tokens_per_second": 166.84832060321924,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "receipt_sha256": "2189554cf1b67e1e0009e32bca3154aa984ac9a34c7a488aa4875b0502cd282d"
+    },
+    {
+      "completion_tokens": 1024,
+      "completion_token_intervals": 1023,
+      "time_to_first_token_ns": 307072100,
+      "inter_token_duration_ns": 5782381600,
+      "total_duration_ns": 6111426000,
+      "decode_tokens_per_second": 176.91672234153484,
+      "end_to_end_tokens_per_second": 167.55500271131484,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "receipt_sha256": "2189554cf1b67e1e0009e32bca3154aa984ac9a34c7a488aa4875b0502cd282d"
+    },
+    {
+      "completion_tokens": 1024,
+      "completion_token_intervals": 1023,
+      "time_to_first_token_ns": 313244700,
+      "inter_token_duration_ns": 5805484000,
+      "total_duration_ns": 6140105500,
+      "decode_tokens_per_second": 176.21269820052902,
+      "end_to_end_tokens_per_second": 166.77237874821532,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "receipt_sha256": "2189554cf1b67e1e0009e32bca3154aa984ac9a34c7a488aa4875b0502cd282d"
+    },
+    {
+      "completion_tokens": 1024,
+      "completion_token_intervals": 1023,
+      "time_to_first_token_ns": 309765600,
+      "inter_token_duration_ns": 5898218400,
+      "total_duration_ns": 6228749200,
+      "decode_tokens_per_second": 173.4422041747386,
+      "end_to_end_tokens_per_second": 164.39897756679625,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "receipt_sha256": "2189554cf1b67e1e0009e32bca3154aa984ac9a34c7a488aa4875b0502cd282d"
+    },
+    {
+      "completion_tokens": 1024,
+      "completion_token_intervals": 1023,
+      "time_to_first_token_ns": 334109100,
+      "inter_token_duration_ns": 5904320400,
+      "total_duration_ns": 6259934400,
+      "decode_tokens_per_second": 173.26295503882207,
+      "end_to_end_tokens_per_second": 163.57998895323888,
+      "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+      "receipt_sha256": "2189554cf1b67e1e0009e32bca3154aa984ac9a34c7a488aa4875b0502cd282d"
+    }
+  ],
+  "output_sha256": "a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523",
+  "median_decode_tokens_per_second": 176.6108685085471,
+  "minimum_decode_tokens_per_second": 173.26295503882207,
+  "min_required_tokens_per_second": 175.0,
+  "threshold_passed": true
+}

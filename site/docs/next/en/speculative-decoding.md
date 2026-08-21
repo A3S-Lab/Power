@@ -75,22 +75,30 @@ FR reduces only the rows projected by the MTP draft head. That can raise a peak
 on a narrow vocabulary distribution, but its acceptance is language- and
 domain-sensitive. The historical prefix-FR matrix reached a high steady rate
 while becoming slower than autoregressive TBQ4 on the representative workload.
-The current profile therefore retains all 248,320 draft-head rows.
+The mixed-artifact release profile therefore retains all 248,320 draft-head
+rows. The current pure-Q6_K peak deliberately enables an 8,192-token-ID prefix,
+but keeps full-vocabulary MTP as its balanced workload profile.
 
-## Current accepted profile
+## Current measured profiles
 
-The balanced Qwen3.8-27B K7/S7 capture combines:
+The untouched Q6_K peak combines:
 
-- the Q6_K-derived mixed TBQ4 artifact;
-- native full-vocabulary MTP;
-- seven proposals and seven recurrent snapshots;
+- the original 22,884,408,288-byte Q6_K artifact;
+- native MTP with an 8,192-row draft-only token-ID prefix;
+- seven proposals and six recurrent snapshots;
 - batched target and draft greedy CUDA sampling;
 - Flash Attention and full CUDA layer offload;
 - exact target verification and deterministic output digests.
 
-It reached 175.2089 token/s median steady decode and 83.228 token/s mean
-request-wide throughput on the fixed 100-task workload. The quality matrix
-recorded no regression against its TBQ4 autoregressive control, but that sample
+It reached 176.6109 token/s median steady decode versus 147.0207 token/s for
+the same-artifact full-vocabulary K7/S7 control. On the one-pass 12-task
+calibration, however, full-vocabulary K7/S6 reached 47.032 token/s
+request-wide while prefix FR reached 37.290 token/s. The peak profile has not
+yet completed the repeated 100-task matrix.
+
+The previous mixed-artifact K7/S7 profile remains the representative quality
+capture: 175.2089 token/s median steady decode, 83.228 token/s request-wide,
+and no observed regression against its TBQ4 autoregressive control. That sample
 does not establish a general intelligence improvement.
 
 See [Performance evidence](/performance) for the complete interpretation and

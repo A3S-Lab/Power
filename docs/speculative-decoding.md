@@ -104,6 +104,12 @@ acceptance host through Power's streaming API. This is an acceptance floor,
 not a tuning ceiling. Native-tool measurements are diagnostic evidence; they
 do not replace the Power end-to-end result.
 
+The current clean untouched-Q6_K capture raises the observed boundary to a
+176.6109 token/s median for prefix-FR8192 K7/S6, with seven of nine 1,024-token
+samples at or above 175. Its full-vocabulary K7/S7 control reached 147.0207
+token/s. This remains benchmark evidence for one artifact, prompt, backend,
+and RTX 4090 host; it does not change the model-neutral runtime contract.
+
 ## Reproducible Power API benchmark
 
 `a3s-power-speculative-bench` captures the acceptance evidence through
@@ -254,13 +260,28 @@ declared threshold passes and its output digest matches the autoregressive
 baseline.
 
 The [RTX 4090 acceptance capture](benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
-pins the 22,884,408,288-byte GGUF by SHA-256 and records five measured samples
-per mode. The final MTP configuration reached a 140.1600 token/s median and a
-139.4793 token/s minimum, versus a 35.5793 token/s same-shape baseline median
-(3.9394x speedup). Every sample produced the same output digest, so the
-100 token/s gate and greedy parity both pass. A post-safety rebuild repeated
-the A/B after the recurrent-batch validation fix and retained a 129.7065
-token/s MTP median, 125.8369 token/s minimum, 4.0318x speedup, and identical
+pins the 22,884,408,288-byte GGUF by SHA-256. The current clean capture records
+one warm-up and nine measured 1,024-token samples per mode. Prefix-FR8192
+K7/S6 reached a 176.6109 token/s median and 173.2630 minimum, versus a
+147.0207 token/s full-vocabulary K7/S7 control; both emitted the same output
+digest. A 12-task calibration reversed the ranking: full vocabulary reached
+47.032 token/s request-wide with 52.30% proposal acceptance, while prefix FR
+reached 37.290 token/s with 24.82% acceptance. Eleven tasks hit the output cap,
+so the result establishes workload sensitivity rather than a quality score.
+
+The CUDA backend already uses dynamic Q8_1 activation quantization for
+quantized matrix-matrix kernels. Forcing the eight-row Q6 verification shape
+from MMVQ into that MMQ path reduced its five-sample median from 143.6024 to
+132.2581 token/s for the 5-8-row route and to 116.1835 token/s for exactly
+eight rows. Those dependency-checkout experiments retained output identity but
+were reverted; on Ada SM89, their setup cost exceeded the benefit at this row
+shape.
+
+The historical same-artifact configuration reached a 140.1600 token/s median
+and a 139.4793 token/s minimum, versus a 35.5793 token/s same-shape baseline
+median (3.9394x speedup). A post-safety rebuild repeated the A/B after the
+recurrent-batch validation fix and retained a 129.7065 token/s MTP median,
+125.8369 token/s minimum, 4.0318x speedup, and identical
 greedy output under an active Windows desktop; those companion reports are
 kept beside the best capture rather than replacing it. A later Q6_K-derived
 mixed-precision development artifact combined selective TBQ4-style FFN
@@ -289,11 +310,12 @@ the capture shows no observed quality decline but does not establish a general
 intelligence gain. All predictions were stable across repeats, acceptance was
 51.33%, and replay and guard activation were zero.
 
-Because the runtime artifact selectively requantizes Q6_K source tensors, it
-is reported separately from the untouched-Q6_K same-artifact comparison.
-Earlier 8,192-row prefix-FR captures remain archived as historical,
-workload-sensitive experiments. A
-backend-resident hidden-row carry prototype was also removed after an
+The mixed runtime artifact selectively requantizes Q6_K source tensors and is
+reported separately from the current untouched-Q6_K captures. Prefix-FR8192
+is also kept peak-only because its current full head is limited in target-token
+ID order, not by a corpus-frequency-ranked `d2t` map, and its acceptance can
+collapse on multilingual workloads. A backend-resident hidden-row carry
+prototype was also removed after an
 order-reversed eight-sample A/B produced a 0.09% median gain but a 0.38% mean
 regression. It reduced transfer staging without reducing target or draft graph
 work, so the result stayed within WDDM noise and did not justify an additional

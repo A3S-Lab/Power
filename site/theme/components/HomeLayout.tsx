@@ -18,21 +18,28 @@ const modeData = [
     steady: "35.5793*",
   },
   {
-    mode: "TBQ4 / AR",
-    quality: "70 / 64",
-    request: "38.724",
-    steady: "-",
+    mode: "Q6_K + MTP / full",
+    quality: "5 / 3†",
+    request: "47.032†",
+    steady: "147.0207",
   },
   {
-    mode: "TBQ4 + MTP / K7/S7",
+    mode: "Q6_K + MTP / FR8192",
+    quality: "4 / 3†",
+    request: "37.290†",
+    steady: "176.6109",
+    current: true,
+  },
+  {
+    mode: "TBQ4 + MTP / full",
     quality: "76 / 66",
     request: "83.228",
     steady: "175.2089",
-    current: true,
   },
 ];
 
-const benchmarkMetricValues = ["175.2089", "83.228", "76 / 66", "51.33%"];
+const heroFactValues = ["176.6109", "47.032", "14/14"];
+const benchmarkMetricValues = ["176.6109", "47.032", "20.13%", "14 / 14"];
 
 const homeCopy = {
   zh: {
@@ -45,9 +52,9 @@ const homeCopy = {
     evidenceAction: "查看性能数据",
     cargoLabel: "Cargo 依赖",
     facts: [
-      "K7/S7 稳态解码 token/s",
-      "K7/S7 请求全程 token/s",
-      "100 题 × 3 轮完成请求",
+      "原始 Q6_K 峰值稳态 token/s",
+      "全词表 12 题请求全程 token/s",
+      "证据文件离线验真",
     ],
     principlesTitle: "资源限制、执行身份和验收规则都写进接口。",
     principles: [
@@ -67,17 +74,17 @@ const homeCopy = {
     measuredTitle: "同一模型、同一输入、同一测试协议。",
     reproduce: "复现基准测试",
     benchmarkContext:
-      "RTX 4090 · Qwen3.8-27B · Q6_K 衍生 TBQ4 + 全词表 MTP K7/S7 · 1 次预热 + 9 × 1,024 token",
+      "RTX 4090 · Qwen3.8-27B · 原始 Q6_K · 全词表 / 前缀 FR8192 配对采集 · 1 次预热 + 9 × 1,024 token",
     metrics: [
-      "稳态解码中位数 token/s",
-      "请求全程平均 token/s",
-      "宽松 / 严格质量分",
-      "proposal 加权接受率",
+      "前缀 FR 稳态中位数 token/s",
+      "全词表校准请求全程 token/s",
+      "相对全词表稳态提升",
+      "离线验真的证据文件",
     ],
     columns: ["模型制品 / 模式", "宽松 / 严格", "请求全程 t/s", "稳态 t/s"],
     current: "当前",
     note:
-      "* 较早的稳态记录。175+ 是 Q6_K 衍生混合制品的稳态解码边界，不是原始 6-bit 模型的服务下限；质量值是固定任务代理指标，而非通用智力分数。",
+      "* 较早的稳态记录。† 12 题单轮校准中有 11 题触及输出上限；176.6109 是原始 Q6_K 的高覆盖峰值，不是服务下限。TBQ4 行来自独立的 100 题 × 3 轮矩阵。",
     surfacesTitle: "库、服务和制品安装器共用同一套运行时约束。",
     surfaces: [
       {
@@ -124,9 +131,9 @@ const homeCopy = {
     evidenceAction: "View benchmark data",
     cargoLabel: "Cargo dependency",
     facts: [
-      "K7/S7 steady-decode token/s",
-      "K7/S7 request-wide token/s",
-      "100 tasks × 3 runs completed",
+      "untouched-Q6_K peak token/s",
+      "full-vocabulary 12-task token/s",
+      "evidence files verified offline",
     ],
     principlesTitle:
       "Resource limits, execution identity, and acceptance rules are explicit in the interface.",
@@ -147,12 +154,12 @@ const homeCopy = {
     measuredTitle: "The same model, input, and benchmark protocol.",
     reproduce: "Reproduce the benchmark",
     benchmarkContext:
-      "RTX 4090 · Qwen3.8-27B · Q6_K-derived TBQ4 + full-vocabulary MTP K7/S7 · 1 warm-up + 9 × 1,024 tokens",
+      "RTX 4090 · Qwen3.8-27B · untouched Q6_K · paired full-vocabulary / prefix-FR8192 capture · 1 warm-up + 9 × 1,024 tokens",
     metrics: [
-      "median steady-decode token/s",
-      "mean request-wide token/s",
-      "lenient / strict quality",
-      "weighted proposal acceptance",
+      "prefix-FR median steady token/s",
+      "full-vocabulary calibration token/s",
+      "steady gain over full vocabulary",
+      "offline-verified evidence files",
     ],
     columns: [
       "Artifact / mode",
@@ -162,7 +169,7 @@ const homeCopy = {
     ],
     current: "CURRENT",
     note:
-      "* Earlier steady capture. The 175+ result is a steady-decode boundary for a Q6_K-derived mixed artifact, not an untouched 6-bit service floor. Quality values are fixed-task proxies, not general intelligence scores.",
+      "* Earlier steady capture. † The one-pass 12-task calibration truncated 11 tasks. The 176.6109 result is an untouched-Q6_K high-coverage peak, not a service floor. The TBQ4 row comes from a separate 3 × 100-task matrix.",
     surfacesTitle:
       "Library, service, and provisioner paths use the same runtime constraints.",
     surfaces: [
@@ -258,9 +265,9 @@ export function HomeLayout() {
             <code>cargo add a3s-power --no-default-features -F embedded-inference</code>
           </div>
           <dl className="power-hero__facts">
-            <div><dt>175.2089</dt><dd>{copy.facts[0]}</dd></div>
-            <div><dt>83.228</dt><dd>{copy.facts[1]}</dd></div>
-            <div><dt className="power-is-verified">900/900</dt><dd>{copy.facts[2]}</dd></div>
+            <div><dt>{heroFactValues[0]}</dt><dd>{copy.facts[0]}</dd></div>
+            <div><dt>{heroFactValues[1]}</dt><dd>{copy.facts[1]}</dd></div>
+            <div><dt className="power-is-verified">{heroFactValues[2]}</dt><dd>{copy.facts[2]}</dd></div>
           </dl>
         </div>
 

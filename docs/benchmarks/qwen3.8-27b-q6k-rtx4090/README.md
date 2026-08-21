@@ -18,7 +18,9 @@ that cell.
 | Artifact and runtime mode | Quality proxy | Request-wide throughput | Median steady decode | Interpretation |
 | --- | --- | ---: | ---: | --- |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) | Current fixed-task baseline; steady column is a separate historical shape |
-| Untouched Q6_K, native MTP | Quality matrix not run; exact parity on the fixed peak prompt | -- | 140.1600 token/s | Same-artifact MTP ceiling, not a broad quality result |
+| Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact parity on the fixed peak prompt | -- | 147.0207 token/s | Current balanced steady-decode control |
+| Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x; 11 truncated) | **47.032 token/s** | -- | Current small mixed-workload calibration winner |
+| **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x; 11 truncated) | 37.290 token/s | **176.6109 token/s** | Peak-only profile; proposal coverage is workload-sensitive |
 | TBQ4 mixed artifact, autoregressive | 70/100 lenient; 64/100 strict (100 tasks, 3x) | 38.724 token/s | -- | Current non-speculative mixed-artifact control |
 | TBQ4 mixed + full-vocabulary fixed MTP, K7/S7 | **76/100 lenient; 66/100 strict (100 tasks, 3x)** | **83.228 token/s** | **175.2089 token/s** | Balanced default: complete rollback window and zero replay |
 | TBQ4 mixed + full-vocabulary guarded MTP, K7/S6 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | 54.060 token/s | **177.7165 token/s** | Peak profile: one replay at most before request-local clamp |
@@ -29,8 +31,34 @@ that cell.
 | UD-Q8_K_XL, native MTP K4/S4 heterogeneous placement | Quality matrix not run; cross-mode output hashes differ | -- | 9.7577 token/s | Performance boundary only; not a parity or quality acceptance result |
 
 The complete protocols and raw evidence are in the
+[untouched-Q6_K report](PURE-Q6.md), the
 [100-task and 12-task quality report](quality/README.md), the sections below,
 and the sibling [UD-Q8_K_XL boundary capture](../qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md).
+
+## Current untouched-Q6_K boundary
+
+The clean `eb6aeda59561eff3e4e7592704cab6fc863b72c7` capture pins the
+original 22,884,408,288-byte GGUF with SHA-256
+`562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727`.
+No target or draft-head weight was requantized.
+
+| Pure Q6_K mode, 1 warm-up + 9x1,024 tokens | Median decode | Minimum | Median end to end | At least 175 |
+| --- | ---: | ---: | ---: | ---: |
+| [Full vocabulary, K7/S7](pure-q6-full-vocabulary-1024-9x.json) | 147.0207 token/s | 146.0917 token/s | 140.2573 token/s | 0 / 9 |
+| [Prefix FR8192, K7/S6](pure-q6-fr8192-1024-9x.json) | **176.6109 token/s** | 173.2630 token/s | **167.3519 token/s** | **7 / 9** |
+
+The 20.13% steady-decode gain retained the same deterministic output SHA-256,
+but it did not generalize uniformly. In a one-pass 12-task calibration,
+full-vocabulary K7/S6 reached 47.032 token/s request-wide at 52.30% acceptance;
+prefix-FR8192 reached 37.290 token/s at 24.82% acceptance. Eleven tasks per mode
+hit the output cap, so those scores are calibration diagnostics rather than an
+intelligence result. Full vocabulary remains the balanced profile; prefix FR
+is a measured high-coverage peak profile.
+
+For first-principles analysis, raw environment receipts, the dynamic-Q8_1
+activation experiment, limitations, and exact reproduction commands, see the
+[untouched-Q6_K performance boundary](PURE-Q6.md) and
+[reproduction guide](REPRODUCE.md).
 
 ## Representative workload, repeated three times
 
@@ -85,10 +113,10 @@ See the
 and the [current compact evidence](quality/full-vocabulary-s7-current-rtx4090-3x.json)
 with reproduction commands in the quality README.
 
-## Current full-vocabulary batched-greedy boundary
+## Mixed-artifact full-vocabulary batched-greedy boundary
 
-The current implementation removes FR from the performance gate and retains
-all 248,320 draft-head rows. The current binary passes topology-pinned
+The mixed-artifact release profile removes FR from its performance gate and
+retains all 248,320 draft-head rows. The current binary passes topology-pinned
 nine-sample median gates with both guarded K7/S6 and rollback-complete K7/S7;
 two earlier quiet-WDDM builds provide independent high-water captures.
 Predecessor captures are retained to show the range introduced by a shared
@@ -339,7 +367,7 @@ py -3 tools\add-gguf-mtp-head.py `
   qwen38-tbq4-ffn-mtp-head-q4k.gguf
 ```
 
-## Original same-artifact Q6_K result
+## Historical same-artifact Q6_K result
 
 | Metric | Explicit off | Native MTP |
 | --- | ---: | ---: |
@@ -349,7 +377,7 @@ py -3 tools\add-gguf-mtp-head.py `
 | Samples after warm-up | 5 | 5 |
 | Completion tokens per sample | 256 | 256 |
 
-The final MTP median is 40.1600% above the 100 token/s acceptance floor, and
+This earlier MTP median is 40.1600% above the 100 token/s acceptance floor, and
 every individual MTP sample is at least 39.4793% above it. All ten measured
 outputs have SHA-256
 `584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb`,
@@ -357,6 +385,12 @@ so greedy output parity passes both within and across modes. The verified
 comparison is in [final-comparison.json](final-comparison.json); the full raw
 reports are [final-baseline.json](final-baseline.json) and
 [final-mtp.json](final-mtp.json).
+
+The current untouched-Q6_K capture supersedes this historical performance
+boundary at the same model identity: full-vocabulary K7/S7 now reaches
+147.0207 token/s, while the workload-sensitive prefix-FR8192 K7/S6 profile
+reaches 176.6109 token/s. The historical reports remain immutable evidence for
+the original implementation stage.
 
 ### Post-safety rebuild confirmation
 

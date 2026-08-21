@@ -57,6 +57,32 @@ pins the scores, runtime metrics, peak gates, identities, and source-evidence
 hashes in
 [full-vocabulary-s7-current-rtx4090-3x.json](full-vocabulary-s7-current-rtx4090-3x.json).
 
+## Untouched-Q6_K prefix-FR calibration
+
+The current pure-Q6_K peak profile was also replayed once on the fixed 12-task
+subset with a 128-token cap. This is a throughput and proposal-coverage probe,
+not a replacement for the repeated 100-task matrix:
+
+| Pure Q6_K mode, K7/S6, batch 14 | Request-wide throughput | Acceptance | Lenient / strict | Truncated |
+| --- | ---: | ---: | ---: | ---: |
+| Speculation off | 29.7127 token/s | -- | 4/12 / 3/12 | 11/12 |
+| Full-vocabulary MTP | **47.0324 token/s** | **52.30%** | **5/12 / 3/12** | 11/12 |
+| Prefix-FR8192 MTP | 37.2900 token/s | 24.82% | 4/12 / 3/12 | 11/12 |
+
+Full-vocabulary MTP was 58.29% faster than autoregressive mode. Prefix-FR8192
+was 25.50% faster than autoregressive mode but 20.71% slower than full
+vocabulary because proposal coverage fell on this multilingual mix. This is why
+the 176.6109 token/s repetitive-prompt peak is not reported as general
+request-wide throughput.
+
+The [raw sweep](pure-q6-fr8192-calibration-rtx4090-1x.json),
+[environment receipt](pure-q6-fr8192-calibration-rtx4090-1x.environment.json),
+[pure-Q6_K analysis](../PURE-Q6.md), and
+[reproduction command](../REPRODUCE.md#5-reproduce-the-representative-quality-tests)
+are checked in. Eleven truncated tasks make the answer counts unsuitable for a
+general quality conclusion; the exact pure-Q6_K prefix-FR profile still needs a
+full repeated matrix before any such claim.
+
 ## Historical 100-task prefix-FR result
 
 Within this 100-task prefix-FR matrix, the winner is **TBQ4 with speculation

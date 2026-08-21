@@ -41,7 +41,7 @@ const routeChecks = [
       "文档",
       "性能",
       "复现实验",
-      "51.33%",
+      "176.6109",
     ],
   },
   {
@@ -59,7 +59,7 @@ const routeChecks = [
       "Docs",
       "Performance",
       "Reproduce",
-      "51.33%",
+      "176.6109",
     ],
   },
   {
@@ -77,7 +77,7 @@ const routeChecks = [
       "文档",
       "性能",
       "复现实验",
-      "51.33%",
+      "176.6109",
     ],
   },
   {
@@ -95,28 +95,28 @@ const routeChecks = [
       "Docs",
       "Performance",
       "Reproduce",
-      "51.33%",
+      "176.6109",
     ],
   },
   {
     file: "performance.html",
     lang: "zh",
-    copy: ["性能证据", "175.2089", "智力水平下降了吗？"],
+    copy: ["性能证据", "176.6109", "智力水平下降了吗？"],
   },
   {
     file: path.join("en", "performance.html"),
     lang: "en",
-    copy: ["Performance evidence", "175.2089", "Did quality fall?"],
+    copy: ["Performance evidence", "176.6109", "Did quality fall?"],
   },
   {
     file: path.join("v0.9.0", "performance.html"),
     lang: "zh",
-    copy: ["性能证据", "175.2089"],
+    copy: ["性能证据", "176.6109"],
   },
   {
     file: path.join("v0.9.0", "en", "performance.html"),
     lang: "en",
-    copy: ["Performance evidence", "175.2089"],
+    copy: ["Performance evidence", "176.6109"],
   },
   {
     file: "reproduction.html",
@@ -125,7 +125,7 @@ const routeChecks = [
       "复现实验",
       "verify-qwen38-q6k-evidence.ps1",
       "run-qwen38-q6k-benchmark.ps1",
-      "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+      "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
     ],
   },
   {
@@ -135,7 +135,7 @@ const routeChecks = [
       "Reproduction",
       "verify-qwen38-q6k-evidence.ps1",
       "run-qwen38-q6k-benchmark.ps1",
-      "5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6",
+      "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
     ],
   },
   {
@@ -145,6 +145,7 @@ const routeChecks = [
       "复现实验",
       "verify-qwen38-q6k-evidence.ps1",
       "run-qwen38-q6k-benchmark.ps1",
+      "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
     ],
   },
   {
@@ -154,6 +155,7 @@ const routeChecks = [
       "Reproduction",
       "verify-qwen38-q6k-evidence.ps1",
       "run-qwen38-q6k-benchmark.ps1",
+      "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
     ],
   },
   {

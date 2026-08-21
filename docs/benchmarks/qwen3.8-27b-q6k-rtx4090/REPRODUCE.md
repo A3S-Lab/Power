@@ -12,7 +12,29 @@ capture was made on Windows 11 with an RTX 4090 and a 10-core / 20-thread Intel
 Xeon w5-2445. The CPU affinity mask and GPU clock control are specific to that
 host; do not copy them to a different topology without a new A/B measurement.
 
-## Current acceptance targets
+## Current untouched Q6-K target
+
+| Input or result | Current value |
+| --- | --- |
+| Model | Untouched Q6_K GGUF, 22,884,408,288 bytes |
+| Model SHA-256 | `562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727` |
+| Clean source revision | `eb6aeda59561eff3e4e7592704cab6fc863b72c7` |
+| Workload | 1 warm-up, 9 measured requests, 1,024 generated tokens each, batch 14 |
+| Full-vocabulary K7/S7 control | 147.0207 token/s median; 146.0917 minimum |
+| Prefix-FR8192 K7/S6 peak | **176.6109 token/s median**; 173.2630 minimum; 7 / 9 at least 175 |
+| Peak median end to end | 167.3519 token/s |
+| Output SHA-256 | `a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523` |
+| Peak report | [`pure-q6-fr8192-1024-9x.json`](pure-q6-fr8192-1024-9x.json) |
+| Full-vocabulary report | [`pure-q6-full-vocabulary-1024-9x.json`](pure-q6-full-vocabulary-1024-9x.json) |
+
+Prefix-FR8192 is a peak profile for measured high-coverage workloads. The
+current full head uses target-token-ID order rather than a corpus-frequency
+`d2t` map. On the checked-in 12-task calibration, full-vocabulary K7/S6 was
+faster request-wide than prefix FR, so full vocabulary remains the balanced
+choice. The [pure-Q6_K report](PURE-Q6.md) separates that real-workload result
+from the long repetitive steady-decode gate.
+
+## Previous mixed-artifact acceptance targets
 
 | Input or result | Current value |
 | --- | --- |
@@ -85,7 +107,50 @@ other than the exclusive `llama.cpp` backend.
 
 ## 2. Verify the model, prompt, and ACL
 
-The mixed artifact can be rebuilt from the untouched Q6_K source with the
+Register the untouched Q6_K file as `qwen3.8-27b-q6-k` in the selected Power
+home, then verify the exact artifact and current pure-Q6_K inputs:
+
+```powershell
+$powerDataRoot = 'D:\models\a3s-power\qwen38\power-home'
+$modelManifestPath = Join-Path $powerDataRoot `
+  'models\manifests\qwen3.8-27b-q6-k.json'
+$modelManifest = Get-Content -Raw -LiteralPath $modelManifestPath |
+  ConvertFrom-Json
+$modelFile = Get-Item -LiteralPath $modelManifest.path
+
+if ($modelFile.Length -ne 22884408288) {
+  throw "Unexpected model length: $($modelFile.Length)"
+}
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $modelFile.FullName).Hash -ne
+    '562FBF760503008F118E5DF38DE5B3E97992D1F693F475815631198547486727') {
+  throw 'Unexpected model hash'
+}
+
+$evidenceRoot = '.\docs\benchmarks\qwen3.8-27b-q6k-rtx4090'
+$purePeakConfig = Join-Path $evidenceRoot `
+  'pure-q6-mtp7-snap6-fr8192-host-staged.acl'
+$pureFullConfig = Join-Path $evidenceRoot `
+  'pure-q6-mtp7-snap7-host-staged.acl'
+$promptPath = Join-Path $evidenceRoot 'prompt.txt'
+
+$expectedHashes = @{
+  $purePeakConfig =
+    '9B1213DF972EA3731010A1FA72B0D553BA73DA42F31E92EAA4FECD3156CBF2EF'
+  $pureFullConfig =
+    'EB445101C1E33A035C9B1D120FEC12D9B21E6CE1B2FE5486AD46BEE52878A588'
+  $promptPath =
+    'D95A5E4DAD822BA9C84138F7A120017318BCB3A6A90E77246A8EC4EDE0E65D89'
+}
+foreach ($entry in $expectedHashes.GetEnumerator()) {
+  if ((Get-FileHash -Algorithm SHA256 -LiteralPath $entry.Key).Hash -ne
+      $entry.Value) {
+    throw "Hash mismatch: $($entry.Key)"
+  }
+}
+```
+
+For the previous mixed-artifact capture, rebuild it from the untouched Q6_K
+source with the
 quantization steps in the [benchmark record](README.md#historical-prefix-fr-175-tokens-gate).
 Register the resulting file as `qwen3.8-27b-q6-k` in the selected Power home,
 then verify every local input before starting the server:
@@ -123,13 +188,50 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $balancedConfigPath).Hash -ne
 }
 ```
 
-## 3. Run the current 175 token/s gates
+## 3. Run the current untouched Q6-K gates
 
 Use an otherwise idle GPU. The clock-lock operation may require an elevated
 terminal and is reset by the runner in its `finally` block. The runner records
 the current Git revision, clean/dirty state, executable hashes, prompt and ACL
 hashes, requested and effective CPU affinity, power plan, GPU state, and GPU
-process snapshot in a companion environment file.
+process snapshot in a companion environment file. Run the full-vocabulary
+control first, then the prefix-FR8192 peak with the same model and work shape:
+
+```powershell
+.\tools\run-qwen38-q6k-benchmark.ps1 `
+  -Label pure-q6-full-vocabulary-replay `
+  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\pure-q6-mtp7-snap7-host-staged.acl `
+  -PromptFile .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\prompt.txt `
+  -BenchmarkRoot D:\models\a3s-power\qwen38\benchmark `
+  -PowerHome D:\models\a3s-power\qwen38\power-home `
+  -ModelHash 562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727 `
+  -MaxTokens 1024 -NumBatch 14 -WarmupRuns 1 -Samples 9 `
+  -MinimumTokensPerSecond 0 -ProcessPriority High `
+  -ProcessorAffinityMask 349525 -LockGpuClockMHz 2745 `
+  -TargetDirectory target-native-sm89-ninja `
+  -RequireHighPerformancePowerPlan -RequireCleanTree
+
+.\tools\run-qwen38-q6k-benchmark.ps1 `
+  -Label pure-q6-fr8192-k7s6-replay `
+  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\pure-q6-mtp7-snap6-fr8192-host-staged.acl `
+  -PromptFile .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\prompt.txt `
+  -BenchmarkRoot D:\models\a3s-power\qwen38\benchmark `
+  -PowerHome D:\models\a3s-power\qwen38\power-home `
+  -ModelHash 562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727 `
+  -MaxTokens 1024 -NumBatch 14 -WarmupRuns 1 -Samples 9 `
+  -MinimumTokensPerSecond 175 -ProcessPriority High `
+  -ProcessorAffinityMask 349525 -LockGpuClockMHz 2745 `
+  -TargetDirectory target-native-sm89-ninja `
+  -RequireHighPerformancePowerPlan -RequireCleanTree
+```
+
+The peak command fails when the median misses 175 token/s, the model identity
+changes, the output is non-deterministic, a request stops before 1,024 tokens,
+the backend is not exclusive, or a required host control is absent. The
+full-vocabulary control deliberately uses a zero threshold because its purpose
+is the paired 147.0207 token/s baseline, not the 175 gate.
+
+### Replay the previous mixed-artifact gates
 
 ```powershell
 .\tools\run-qwen38-q6k-benchmark.ps1 `
@@ -161,9 +263,10 @@ process snapshot in a companion environment file.
   -RequireHighPerformancePowerPlan -RequireCleanTree
 ```
 
-The command returns nonzero when the median misses 175 token/s, the model
-identity changes, the output is non-deterministic, a request stops before 1,024
-tokens, the backend is not exclusive, or a required host control is absent.
+The mixed-artifact command returns nonzero when the median misses 175 token/s,
+the model identity changes, the output is non-deterministic, a request stops
+before 1,024 tokens, the backend is not exclusive, or a required host control
+is absent.
 Failed reports are retained for diagnosis. Use S7 for the balanced gate and S6
 only when intentionally measuring the guarded peak profile.
 
@@ -174,17 +277,34 @@ contention from other WDDM clients on a shared display GPU.
 ## 4. Verify the archived performance evidence offline
 
 Run the checked-in verifier first. It requires neither the model nor an NVIDIA
-GPU, verifies six pinned file hashes, and recomputes the current quality and
-steady-decode acceptance values shown below:
+GPU, verifies 14 pinned file hashes, and recomputes the pure-Q6_K and mixed
+quality, workload, steady-decode, and deterministic-output values:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\verify-qwen38-q6k-evidence.ps1 -Json
 ```
 
-A passing run exits with code zero and reports `"status": "passed"`. The
-expanded commands below document the individual assertions implemented by the
-verifier and remain useful when diagnosing a mismatch.
+A passing run exits with code zero and reports `"status": "passed"`, including:
+
+```json
+{
+  "verified_file_hashes": 14,
+  "pure_q6": {
+    "full_vocabulary_k7_s7_median": 147.020656574707,
+    "prefix_fr8192_k7_s6_median": 176.6108685085471,
+    "prefix_fr8192_samples_at_or_above_175": 7,
+    "calibration": {
+      "autoregressive_tokens_per_second": 29.712723837098697,
+      "full_vocabulary_tokens_per_second": 47.03236986836804,
+      "prefix_fr8192_tokens_per_second": 37.29003139316878
+    }
+  }
+}
+```
+
+The expanded commands below document the individual assertions implemented by
+the verifier and remain useful when diagnosing a mismatch.
 
 First verify the current compact evidence and its distinction between
 request-wide workload throughput and steady decode:
@@ -248,6 +368,39 @@ foreach ($entry in $expectedHashes.GetEnumerator()) {
 
 ## 5. Reproduce the representative quality tests
 
+Replay the current pure-Q6_K 12-task throughput and acceptance calibration with
+a splatted argument table. Supplying the Boolean recurrent-chain option this
+way avoids PowerShell's cross-process Boolean argument ambiguity:
+
+```powershell
+$sweepArgs = @{
+  PowerHome = 'D:\models\a3s-power\qwen38\power-home'
+  FrVocabSizes = @(0, 8192)
+  DraftMaxValues = @(7)
+  MtpRecurrentSnapshots = 6
+  MtpRecurrentChain = $false
+  NumBatchValues = @(14)
+  Policies = @('fixed')
+  IncludeOffBaseline = $true
+  Repetitions = 1
+  MaxTokensCap = 128
+  ProcessPriority = 'High'
+  TargetDirectory = 'target-native-sm89-ninja'
+  OutputRoot = 'target-qwen38-pure-q6-calibration'
+  ModelHash =
+    '562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727'
+  VerifyModelFile = $true
+  RequireHighPerformancePowerPlan = $true
+}
+.\tools\run-qwen38-mtp-sweep.ps1 @sweepArgs
+```
+
+The expected mode labels are `off-b14`, `frfull-k7-s6-b14-fixed`, and
+`fr8192-k7-s6-b14-fixed`. Compare the new `sweep.json` with the checked-in
+[raw calibration](quality/pure-q6-fr8192-calibration-rtx4090-1x.json). Eleven
+of twelve tasks per mode were truncated at 128 tokens in the accepted capture;
+do not present its answer counts as a general quality score.
+
 The separate [quality matrix guide](quality/README.md#reproduce) contains the
 complete commands for:
 
@@ -262,20 +415,23 @@ request-wide throughput directly with the steady-state decode rate above.
 ## 6. Re-run implementation validation
 
 The pre-submit source and evidence state used for this documentation passed the
-following checks on 2026-08-20:
+following checks. Documentation and general library checks were rerun on
+2026-08-21; the unchanged CUDA implementation rows retain the 2026-08-20
+release validation:
 
 | Check | Result |
 | --- | --- |
-| Rust library tests | 1,526 passed, 0 failed |
+| Rust library tests | 1,538 passed, 0 failed |
 | CUDA speculative-runtime tests | 14 passed, 0 failed |
 | CUDA release build | Passed |
 | CUDA release Clippy with warnings denied | Passed |
 | Python harness tests | 28 passed, 0 failed |
 | Rust formatting | Passed |
-| PowerShell syntax | 3 current benchmark runners parsed |
-| Benchmark evidence | One-command verifier passed; current compact assertions and 6 pinned file hashes verified |
+| PowerShell syntax | 3 benchmark scripts and 21 documentation blocks parsed |
+| Benchmark evidence | One-command verifier passed; pure-Q6_K and mixed assertions plus 14 pinned file hashes verified |
 | Quality archive | 900 current requests completed; aggregate, environment, manifest, ACL, and source hashes pinned |
 | Documentation links | All local links in changed documents resolved, 0 missing |
+| Documentation site | TypeScript passed; 33 bilingual/versioned pages built and verified |
 
 Re-run the same checks with:
 
@@ -325,7 +481,9 @@ py -3.13 -m py_compile `
   .\tools\qwen38_quality_report.py
 ```
 
-The performance replay is deliberately not a CI test: it requires the pinned
-19.19 GB model, a specific RTX 4090 host, administrative clock control, and an
-exclusive benchmark window. The checked-in JSON remains the auditable result;
-new measurements should be added as new captures instead of overwriting it.
+The performance replay is deliberately not a CI test: the current gate requires
+the pinned 22.88 GB pure-Q6_K model, a specific RTX 4090 host, administrative
+clock control, and an exclusive benchmark window. The previous mixed gate uses
+its separate 19.19 GB artifact identity. The checked-in JSON remains the
+auditable result; new measurements should be added as new captures instead of
+overwriting it.
