@@ -251,11 +251,16 @@ fn strict_v1_policy_requires_and_binds_all_platform_profiles() {
     .collect();
     let strict = ReleaseEvidencePolicy::strict_v1(revision.clone(), bindings).unwrap();
     assert_eq!(strict.required_platforms.len(), 4);
+    strict.verify_strict_v1().unwrap();
 
     let partial =
         vec![ReleasePlatformBinding::new(ReleasePlatform::Cpu, digest('e'), digest('d')).unwrap()];
     let error = ReleaseEvidencePolicy::strict_v1(revision, partial).unwrap_err();
 
+    assert!(error.to_string().contains("requires CPU"));
+
+    let development = policy(&fixture, vec![ReleasePlatform::Cpu]);
+    let error = development.verify_strict_v1().unwrap_err();
     assert!(error.to_string().contains("requires CPU"));
 }
 
@@ -342,6 +347,7 @@ fn policy_and_security_mismatches_fail_closed() {
     let confidential = serde_json::from_value::<ReleaseCaptureSecurity>(serde_json::json!({
         "kind": "confidential-gpu",
         "binding": {
+            "teeType": "sev-snp",
             "verifiedClaimsSha256": digest('7'),
             "acceleratorDeclarationSha256": digest('8'),
             "weightsSha256": fixture.shape.weights_sha256.clone(),
@@ -353,11 +359,28 @@ fn policy_and_security_mismatches_fail_closed() {
     .unwrap();
     assert!(ReleaseCapture::build(
         confidential,
-        fixture.shape,
-        fixture.report,
-        fixture.contracts,
+        fixture.shape.clone(),
+        fixture.report.clone(),
+        fixture.contracts.clone(),
     )
     .is_err());
+
+    let simulated = serde_json::from_value::<ReleaseCaptureSecurity>(serde_json::json!({
+        "kind": "confidential-gpu",
+        "binding": {
+            "teeType": "simulated",
+            "verifiedClaimsSha256": digest('7'),
+            "acceleratorDeclarationSha256": digest('8'),
+            "weightsSha256": fixture.shape.weights_sha256.clone(),
+            "executionPolicySha256": fixture.shape.tee_policy_sha256.clone(),
+            "runtimeDevice": { "kind": "cuda", "ordinal": 0 },
+            "deviceMeshSha256": null
+        }
+    }))
+    .unwrap();
+    assert!(
+        ReleaseCapture::build(simulated, fixture.shape, fixture.report, fixture.contracts).is_err()
+    );
 }
 
 #[test]

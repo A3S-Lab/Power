@@ -223,6 +223,7 @@ fn only_an_opaque_confidential_proof_can_promote_a_local_cuda_capture() {
     );
     assert_eq!(binding.weights_sha256(), declaration.weights_sha256);
     assert_eq!(binding.runtime_device(), declaration.runtime_device);
+    assert_eq!(binding.tee_type(), TeeType::SevSnp);
 
     let relabel_error = ReleaseCapture::build(
         promoted.security,

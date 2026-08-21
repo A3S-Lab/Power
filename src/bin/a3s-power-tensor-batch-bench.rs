@@ -21,6 +21,8 @@ mod allocator;
 mod arguments;
 #[path = "tensor_batch_bench/output.rs"]
 mod output;
+#[path = "tensor_batch_bench/release_bundle.rs"]
+mod release_bundle;
 #[path = "tensor_batch_bench/release_contract.rs"]
 mod release_contract;
 #[path = "tensor_batch_bench/release_fixture.rs"]
@@ -98,6 +100,13 @@ Capture the complete model-neutral runtime contract with the same fixture:
     [--warmup-rounds <count>] \
     [--measured-rounds <count>]
 
+Verify a pinned production v1 release-evidence bundle:
+  a3s-power-tensor-batch-bench verify-release-bundle \
+    --bundle <release-evidence.json> \
+    --expected-sha256-file <release-evidence.sha256> \
+    --power-version <exact-crate-version> \
+    --power-commit <exact-lowercase-git-revision>
+
 The JSON report is written to stdout. It contains named hardware and digests,
 but no model path, graph path, tensor values, tensor names, or model-family
 label. Allocation counters cover successful host heap allocations in this
@@ -144,12 +153,24 @@ fn run() -> Result<()> {
     values.remove(0);
     let mut arguments = Arguments::new(values);
     let output_path = arguments.optional_path("--output")?;
-    let common = parse_common(&mut arguments)?;
     let output = match command.as_str() {
-        "run" => serde_json::to_value(run_reviewed_graph(&mut arguments, &common)?)?,
-        "fixture" => serde_json::to_value(run_fixture(&mut arguments, &common)?)?,
-        "release-run" => serde_json::to_value(release_run::run(&mut arguments, &common)?)?,
-        "release-fixture" => serde_json::to_value(release_fixture::run(&mut arguments, &common)?)?,
+        "verify-release-bundle" => release_bundle::run(&mut arguments)?,
+        "run" => {
+            let common = parse_common(&mut arguments)?;
+            serde_json::to_value(run_reviewed_graph(&mut arguments, &common)?)?
+        }
+        "fixture" => {
+            let common = parse_common(&mut arguments)?;
+            serde_json::to_value(run_fixture(&mut arguments, &common)?)?
+        }
+        "release-run" => {
+            let common = parse_common(&mut arguments)?;
+            serde_json::to_value(release_run::run(&mut arguments, &common)?)?
+        }
+        "release-fixture" => {
+            let common = parse_common(&mut arguments)?;
+            serde_json::to_value(release_fixture::run(&mut arguments, &common)?)?
+        }
         _ => {
             return Err(PowerError::InvalidRequest(format!(
                 "unsupported tensor batch benchmark command '{command}'"
@@ -412,7 +433,21 @@ fn read_bounded_regular(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8
             "{label} must be a non-empty regular non-symlink file of at most {maximum} bytes"
         )));
     }
-    Ok(std::fs::read(path)?)
+    let capacity = usize::try_from(metadata.len()).map_err(|_| {
+        PowerError::InvalidRequest(format!(
+            "{label} size cannot be represented on this platform"
+        ))
+    })?;
+    let mut bytes = Vec::with_capacity(capacity);
+    File::open(path)?
+        .take(maximum.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.is_empty() || bytes.len() as u64 > maximum {
+        return Err(PowerError::InvalidRequest(format!(
+            "{label} changed outside the non-empty {maximum}-byte input bound while being read"
+        )));
+    }
+    Ok(bytes)
 }
 
 struct FixtureDirectory {

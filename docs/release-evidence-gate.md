@@ -150,10 +150,39 @@ The policy and captures jointly bind:
 - host and device memory reservations;
 - the resolved typed device and named hardware environment;
 - the TEE policy; and
-- verified confidential-GPU claims and accelerator declaration when required.
+- verified confidential-GPU claims, CPU TEE type, and accelerator declaration
+  when required.
 
 The outer bundle, each capture, the tensor report, and the shape binding use
 domain-separated canonical digests. Deserialization denies unknown fields.
+
+For v1, the confidential binding must name AMD SEV-SNP. Intel TDX remains a
+typed generic schema value for future policy revisions, but
+`ReleaseEvidenceBundle::verify_strict_v1_release` rejects it until Power has a
+reviewed DCAP Quote/QVL path. The exact support boundary is recorded in the
+[v1 Production Support Matrix](v1-support-matrix.md).
+
+## Tagged-release verification
+
+The isolated runner also exposes a read-only release command:
+
+```bash
+a3s-power-tensor-batch-bench verify-release-bundle \
+  --bundle release/v1.0.0/release-evidence.json \
+  --expected-sha256-file release/v1.0.0/release-evidence.sha256 \
+  --power-version 1.0.0 \
+  --power-commit <exact-lowercase-tag-commit>
+```
+
+It bounded-reads both files, denies unknown bundle fields, replays every nested
+digest and contract, requires the exact four-platform v1 policy, checks the
+external pin, matches the requested version and source revision, and enforces
+the SEV-SNP confidential boundary. The pin file must contain one lowercase
+SHA-256 digest with only an optional LF or CRLF line ending.
+
+Release CI runs this command for every non-`0.x` tag before artifacts can be
+published. Missing evidence therefore blocks v1 instead of silently degrading
+to the available local platforms.
 
 ## Capture runners
 

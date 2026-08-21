@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::error::{PowerError, Result};
+use crate::tee::attestation::TeeType;
 
 use super::super::RuntimeDeviceKind;
 use super::types::{
@@ -13,6 +14,12 @@ const MAX_LABEL_BYTES: usize = 512;
 const MAX_MEMORY_SAMPLES: u64 = 100_000_000;
 const MAX_SAMPLE_INTERVAL_NANOS: u64 = 1_000_000_000;
 const MAX_RELEASE_CAPTURES: usize = 4;
+const STRICT_V1_PLATFORMS: [ReleasePlatform; 4] = [
+    ReleasePlatform::Cpu,
+    ReleasePlatform::Cuda,
+    ReleasePlatform::Metal,
+    ReleasePlatform::ConfidentialGpu,
+];
 
 pub(super) fn validate_revision_binding(binding: &ReleaseRevisionBinding) -> Result<()> {
     validate_label(&binding.power_version, "release Power version")?;
@@ -57,6 +64,22 @@ pub(super) fn validate_policy(policy: &ReleaseEvidencePolicy) -> Result<()> {
         .all(|pair| pair[0].platform < pair[1].platform)
     {
         return invalid("release evidence policy platforms must be unique and canonically ordered");
+    }
+    Ok(())
+}
+
+pub(super) fn validate_strict_v1_policy(policy: &ReleaseEvidencePolicy) -> Result<()> {
+    validate_policy(policy)?;
+    let actual = policy
+        .required_platforms
+        .iter()
+        .map(|binding| binding.platform)
+        .collect::<Vec<_>>();
+    if actual != STRICT_V1_PLATFORMS {
+        return Err(PowerError::PolicyViolation(
+            "strict v1 release evidence requires CPU, CUDA, Metal, and confidential-GPU platform bindings"
+                .to_string(),
+        ));
     }
     Ok(())
 }
@@ -106,6 +129,9 @@ pub(super) fn validate_memory_observation(
 
 pub(super) fn validate_security(security: &ReleaseCaptureSecurity) -> Result<()> {
     if let ReleaseCaptureSecurity::ConfidentialGpu { binding } = security {
+        if !matches!(binding.tee_type, TeeType::SevSnp | TeeType::Tdx) {
+            return invalid("verified confidential-GPU binding requires a hardware TEE");
+        }
         validate_sha256(
             &binding.verified_claims_sha256,
             "verified confidential GPU claims",
@@ -252,6 +278,63 @@ pub(super) fn verify_pinned_bundle(
     Ok(())
 }
 
+pub(super) fn verify_strict_v1_release(
+    bundle: &ReleaseEvidenceBundle,
+    expected_sha256: &str,
+    expected_power_version: &str,
+    expected_power_commit: &str,
+) -> Result<()> {
+    verify_pinned_bundle(bundle, expected_sha256)?;
+    validate_strict_v1_policy(&bundle.policy)?;
+    validate_release_identity(
+        &bundle.policy.revision,
+        expected_power_version,
+        expected_power_commit,
+    )?;
+
+    let binding = bundle
+        .captures
+        .iter()
+        .find_map(|capture| match &capture.security {
+            ReleaseCaptureSecurity::ConfidentialGpu { binding } => Some(binding),
+            ReleaseCaptureSecurity::Local => None,
+        })
+        .ok_or_else(|| {
+            PowerError::PolicyViolation(
+                "strict v1 release evidence is missing its confidential-GPU capture".to_string(),
+            )
+        })?;
+    validate_strict_v1_confidential_tee(binding.tee_type)
+}
+
+fn validate_release_identity(
+    revision: &ReleaseRevisionBinding,
+    expected_power_version: &str,
+    expected_power_commit: &str,
+) -> Result<()> {
+    validate_label(expected_power_version, "expected release Power version")?;
+    validate_revision(expected_power_commit, "expected release Power commit")?;
+    if revision.power_version != expected_power_version
+        || revision.power_commit != expected_power_commit
+    {
+        return Err(PowerError::PolicyViolation(
+            "release evidence bundle does not match the expected Power version and source revision"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_strict_v1_confidential_tee(tee_type: TeeType) -> Result<()> {
+    if tee_type != TeeType::SevSnp {
+        return Err(PowerError::PolicyViolation(
+            "strict v1 confidential-GPU evidence requires AMD SEV-SNP; Intel TDX is unsupported until reviewed DCAP Quote/QVL verification exists"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_capture_against_policy(
     capture: &ReleaseCapture,
     policy: &ReleaseEvidencePolicy,
@@ -332,4 +415,42 @@ fn validate_label(value: &str, label: &str) -> Result<()> {
 
 pub(super) fn invalid<T>(message: impl Into<String>) -> Result<T> {
     Err(PowerError::InvalidFormat(message.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_v1_confidential_gpu_supports_only_sev_snp() {
+        validate_strict_v1_confidential_tee(TeeType::SevSnp).unwrap();
+        for tee_type in [TeeType::Tdx, TeeType::Simulated, TeeType::None] {
+            let error = validate_strict_v1_confidential_tee(tee_type).unwrap_err();
+            assert!(error.to_string().contains("requires AMD SEV-SNP"));
+        }
+    }
+
+    #[test]
+    fn strict_release_identity_requires_the_exact_version_and_revision() {
+        let revision = ReleaseRevisionBinding::new(
+            "1.0.0",
+            "a".repeat(40),
+            "b".repeat(64),
+            "c".repeat(64),
+            "d".repeat(64),
+        )
+        .unwrap();
+        validate_release_identity(&revision, "1.0.0", &"a".repeat(40)).unwrap();
+
+        let version_error =
+            validate_release_identity(&revision, "1.0.1", &"a".repeat(40)).unwrap_err();
+        assert!(version_error
+            .to_string()
+            .contains("version and source revision"));
+        let revision_error =
+            validate_release_identity(&revision, "1.0.0", &"e".repeat(40)).unwrap_err();
+        assert!(revision_error
+            .to_string()
+            .contains("version and source revision"));
+    }
 }

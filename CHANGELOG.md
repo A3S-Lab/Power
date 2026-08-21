@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published Qwen runner is now a compatibility wrapper over that generic
   path, and failed performance gates retain their reports as negative
   evidence.
+- Added a machine-enforced production release-bundle verifier and release CI
+  gate. Non-`0.x` tags must provide a bounded four-platform bundle, an external
+  SHA-256 pin, and exact crate-version/source-revision bindings before any
+  artifact can be published.
 - Split adaptive speculation control, llama.cpp sampling, and bounded
   stop-sequence tracking into focused modules. Greedy llama.cpp MTP requests
   can consume device-selected tokens without copying full vocabulary rows,
@@ -120,6 +124,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path was removed. Production TDX support remains unavailable until Power has
   typed DCAP Quote generation, QVL verification, collateral freshness checks,
   and exact Quote REPORTDATA/MRTD binding.
+- Bound the CPU TEE type into confidential-GPU release evidence. The strict v1
+  matrix accepts AMD SEV-SNP only and rejects TDX even if a caller supplies a
+  custom verifier, making the documented v1 exclusion executable policy.
 - Corrected local TDREPORT collection to read REPORTDATA from architectural
   offset 128 rather than 64. Collection and strict binding now share one typed,
   length-checked TDREPORT parser with a regression fixture that poisons the old

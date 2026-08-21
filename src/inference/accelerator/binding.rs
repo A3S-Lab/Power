@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{PowerError, Result};
 use crate::inference::RuntimeDeviceIdentity;
+use crate::tee::attestation::TeeType;
 #[cfg(any(feature = "server", test))]
 use crate::tee::attestation::{
     canonical_claims_bytes, require_verified_hardware_claims, AttestationReport, ModelDigestKind,
@@ -21,6 +22,7 @@ use super::types::{validate_sha256, AcceleratorResidencyDeclaration};
 /// one accelerator declaration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ConfidentialGpuBinding {
+    tee_type: TeeType,
     claims_sha256: String,
     declaration_sha256: String,
     weights_sha256: String,
@@ -135,6 +137,7 @@ impl ConfidentialGpuBinding {
         let claims_sha256 = format!("{:x}", hasher.finalize());
         validate_sha256(&claims_sha256, "confidential GPU claims")?;
         Ok(Self {
+            tee_type: claims.tee_type,
             claims_sha256,
             declaration_sha256: declaration.declaration_sha256.clone(),
             weights_sha256: declaration.weights_sha256.clone(),
@@ -145,6 +148,10 @@ impl ConfidentialGpuBinding {
                 .as_ref()
                 .map(|mesh| mesh.mesh_sha256.clone()),
         })
+    }
+
+    pub fn tee_type(&self) -> TeeType {
+        self.tee_type
     }
 
     pub fn claims_sha256(&self) -> &str {
@@ -172,6 +179,11 @@ impl ConfidentialGpuBinding {
     }
 
     pub(super) fn validate_for(&self, declaration: &AcceleratorResidencyDeclaration) -> Result<()> {
+        if !matches!(self.tee_type, TeeType::SevSnp | TeeType::Tdx) {
+            return Err(PowerError::PolicyViolation(
+                "confidential GPU binding requires a verified hardware TEE".to_string(),
+            ));
+        }
         if self.declaration_sha256 != declaration.declaration_sha256
             || self.weights_sha256 != declaration.weights_sha256
             || self.execution_policy_sha256 != declaration.execution_policy_sha256
@@ -195,6 +207,7 @@ impl std::fmt::Debug for ConfidentialGpuBinding {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ConfidentialGpuBinding")
+            .field("tee_type", &self.tee_type)
             .field("claims_sha256", &self.claims_sha256)
             .field("declaration_sha256", &self.declaration_sha256)
             .field("runtime_device", &self.runtime_device)

@@ -67,6 +67,37 @@ jobs:
       - name: Package verification
         run: cargo package --locked
 
+      - name: Verify production release evidence
+        run: |
+          CRATE_VERSION="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
+          MAJOR_VERSION="${CRATE_VERSION%%.*}"
+          if [ "${MAJOR_VERSION}" = "0" ]; then
+            echo "Pre-v1 release: strict production evidence gate is not required."
+            exit 0
+          fi
+
+          EVIDENCE_DIR="release/v${CRATE_VERSION}"
+          BUNDLE_PATH="${EVIDENCE_DIR}/release-evidence.json"
+          PIN_PATH="${EVIDENCE_DIR}/release-evidence.sha256"
+          test -f "${BUNDLE_PATH}" || {
+            echo "missing production release evidence bundle: ${BUNDLE_PATH}" >&2
+            exit 1
+          }
+          test -f "${PIN_PATH}" || {
+            echo "missing production release evidence digest pin: ${PIN_PATH}" >&2
+            exit 1
+          }
+
+          POWER_COMMIT="$(git rev-parse HEAD)"
+          cargo run --locked --release --no-default-features \
+            --features embedded-inference \
+            --bin a3s-power-tensor-batch-bench -- \
+            verify-release-bundle \
+            --bundle "${BUNDLE_PATH}" \
+            --expected-sha256-file "${PIN_PATH}" \
+            --power-version "${CRATE_VERSION}" \
+            --power-commit "${POWER_COMMIT}"
+
       - name: Install Linux CPU feature dependencies
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
 

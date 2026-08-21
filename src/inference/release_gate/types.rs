@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::admission::AdmissionSnapshot;
 use crate::error::{PowerError, Result};
+use crate::tee::attestation::TeeType;
 #[cfg(feature = "server")]
 use crate::verify::VerifiedConfidentialGpuAttestation;
 
@@ -158,24 +159,13 @@ impl ReleaseEvidencePolicy {
         required_platforms: Vec<ReleasePlatformBinding>,
     ) -> Result<Self> {
         let policy = Self::new(revision, required_platforms)?;
-        let actual = policy
-            .required_platforms
-            .iter()
-            .map(|binding| binding.platform)
-            .collect::<Vec<_>>();
-        let required = vec![
-            ReleasePlatform::Cpu,
-            ReleasePlatform::Cuda,
-            ReleasePlatform::Metal,
-            ReleasePlatform::ConfidentialGpu,
-        ];
-        if actual != required {
-            return Err(crate::error::PowerError::InvalidRequest(
-                "strict v1 release evidence requires CPU, CUDA, Metal, and confidential-GPU platform bindings"
-                    .to_string(),
-            ));
-        }
+        policy.verify_strict_v1()?;
         Ok(policy)
+    }
+
+    /// Verify that a deserialized policy is the complete production v1 matrix.
+    pub fn verify_strict_v1(&self) -> Result<()> {
+        super::validation::validate_strict_v1_policy(self)
     }
 
     pub fn policy_sha256(&self) -> Result<String> {
@@ -307,6 +297,7 @@ pub struct ReleaseContractEvidence {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfidentialReleaseBinding {
+    pub(super) tee_type: TeeType,
     pub(super) verified_claims_sha256: String,
     pub(super) accelerator_declaration_sha256: String,
     pub(super) weights_sha256: String,
@@ -319,6 +310,7 @@ impl ConfidentialReleaseBinding {
     #[cfg(feature = "server")]
     fn from_verified(binding: &ConfidentialGpuBinding) -> Self {
         Self {
+            tee_type: binding.tee_type(),
             verified_claims_sha256: binding.claims_sha256().to_string(),
             accelerator_declaration_sha256: binding.declaration_sha256().to_string(),
             weights_sha256: binding.weights_sha256().to_string(),
@@ -326,6 +318,10 @@ impl ConfidentialReleaseBinding {
             runtime_device: binding.runtime_device(),
             device_mesh_sha256: binding.device_mesh_sha256().map(str::to_string),
         }
+    }
+
+    pub fn tee_type(&self) -> TeeType {
+        self.tee_type
     }
 
     pub fn verified_claims_sha256(&self) -> &str {
@@ -357,6 +353,7 @@ impl std::fmt::Debug for ConfidentialReleaseBinding {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ConfidentialReleaseBinding")
+            .field("tee_type", &self.tee_type)
             .field("verified_claims", &"sha256")
             .field("accelerator_declaration", &"sha256")
             .field("weights", &"sha256")
@@ -537,6 +534,22 @@ impl ReleaseEvidenceBundle {
 
     pub fn verify_pinned(&self, expected_sha256: &str) -> Result<()> {
         super::validation::verify_pinned_bundle(self, expected_sha256)
+    }
+
+    /// Verify the complete v1 platform matrix, its external digest pin, and
+    /// the exact Power version and source revision selected by the release.
+    pub fn verify_strict_v1_release(
+        &self,
+        expected_sha256: &str,
+        expected_power_version: &str,
+        expected_power_commit: &str,
+    ) -> Result<()> {
+        super::validation::verify_strict_v1_release(
+            self,
+            expected_sha256,
+            expected_power_version,
+            expected_power_commit,
+        )
     }
 }
 

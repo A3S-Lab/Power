@@ -150,9 +150,10 @@ captures exist for the same immutable release revision.
 - [x] Add the external Metal/confidential-GPU capture workflow that collects vendor
       evidence, invokes strict proof-backed promotion, and preserves the raw
       report plus trust-root material for the same immutable release revision.
-- [ ] Implement reviewed Intel DCAP Quote generation and QVL verification, or
+- [x] Implement reviewed Intel DCAP Quote generation and QVL verification, or
       explicitly exclude TDX from the v1 production support matrix. A local
-      TDREPORT now fails closed and is not treated as a PCK-signed Quote.
+      TDREPORT now fails closed and is not treated as a PCK-signed Quote. The
+      strict v1 bundle verifier additionally requires a typed SEV-SNP binding.
 - [ ] Prove scalar/batch numerical equivalence, bounded peak host/device memory,
       cancellation, queue expiry, replica recovery, and explicit fallback.
 - [ ] Bind benchmark artifacts to weights, graph declarations, runtime/device,

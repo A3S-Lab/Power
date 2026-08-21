@@ -276,6 +276,12 @@ deserialized labels, and caller-authored verification booleans cannot mint that
 class. The resulting digest-bound capture is still evidence, not authorship, so
 the release system must authenticate its bundle digest.
 
+For v1, the confidential binding is explicitly SEV-SNP-only. The release
+workflow bounded-reads a checked-in four-platform bundle, verifies its external
+SHA-256 pin plus exact crate version and commit, and blocks every non-`0.x` tag
+when the evidence is missing or TDX-backed. See the
+[v1 Production Support Matrix](docs/v1-support-matrix.md).
+
 `a3s-power-tensor-batch-bench release-run` applies the same collector to any
 caller-owned reviewed graph, typed tensors, opaque profile identities, and
 independent reference output. `release-fixture` is only a reproducible Add-graph
@@ -482,6 +488,7 @@ current production boundary and failure policy.
 | [Model-Neutral Session Replicas](docs/session-replicas.md) | Exclusive mutable contexts, shared device admission, residency bounds, and cancellation |
 | [Device-Resident Reviewed Graph Chains](docs/device-resident-graphs.md) | Same-request opaque handles, exact boundary validation, digest continuity, and explicit owned fallback |
 | [Production Release Evidence Gate](docs/release-evidence-gate.md) | Strict platform coverage, immutable bindings, runtime failure proofs, and trust-root requirements |
+| [v1 Production Support Matrix](docs/v1-support-matrix.md) | Required execution platforms, SEV-SNP boundary, TDX exclusion, and the machine-enforced release artifact contract |
 | [External Metal and Confidential-GPU Capture](docs/external-release-capture.md) | Clean-revision hardware commands, raw vendor evidence, strict proof-backed promotion, and artifact inventory |
 | [Model-neutral Speculative Decoding](docs/speculative-decoding.md) | Strategies, native MTP, patching, protocol, and acceptance |
 | [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | Performance gates, artifact identity, quality, and raw evidence |

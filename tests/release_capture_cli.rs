@@ -2,7 +2,10 @@
 
 use std::process::Command;
 
-use a3s_power::inference::{ReleaseCapture, ReleasePlatform};
+use a3s_power::inference::{
+    ReleaseCapture, ReleaseEvidenceBundle, ReleaseEvidencePolicy, ReleasePlatform,
+    ReleaseRevisionBinding,
+};
 use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
 
 #[test]
@@ -90,6 +93,44 @@ fn isolated_cpu_fixture_captures_the_complete_model_neutral_contract() {
             "release capture leaked model-specific term {forbidden}"
         );
     }
+}
+
+#[test]
+fn release_bundle_verifier_rejects_partial_platform_evidence() {
+    let capture: ReleaseCapture = serde_json::from_str(include_str!(
+        "../docs/benchmarks/release-contract-windows-20260821/cpu.json"
+    ))
+    .unwrap();
+    let revision = ReleaseRevisionBinding::from_capture(&capture).unwrap();
+    let policy =
+        ReleaseEvidencePolicy::new(revision.clone(), vec![capture.platform_binding().unwrap()])
+            .unwrap();
+    let bundle = ReleaseEvidenceBundle::build(policy, vec![capture]).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let bundle_path = directory.path().join("release-evidence.json");
+    let pin_path = directory.path().join("release-evidence.sha256");
+    std::fs::write(&bundle_path, serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+    std::fs::write(&pin_path, format!("{}\n", bundle.sha256)).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a3s-power-tensor-batch-bench"))
+        .arg("verify-release-bundle")
+        .arg("--bundle")
+        .arg(&bundle_path)
+        .arg("--expected-sha256-file")
+        .arg(&pin_path)
+        .arg("--power-version")
+        .arg(&revision.power_version)
+        .arg("--power-commit")
+        .arg(&revision.power_commit)
+        .output()
+        .expect("release bundle verifier should start");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("requires CPU, CUDA, Metal"),
+        "unexpected verifier error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

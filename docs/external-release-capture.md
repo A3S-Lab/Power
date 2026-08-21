@@ -352,7 +352,9 @@ live `--url` input, missing evidence pins, a non-local or non-CUDA source,
 mismatched weights/device/policy, malformed declarations, and builds without
 `embedded-inference` or `hw-verify`. `confidential-gpu.json` is synchronized and
 committed with same-directory create-new semantics; an existing path is never
-replaced.
+replaced. Promotion also writes the verified CPU TEE type into the digest-bound
+confidential release binding. The v1 bundle verifier accepts `sev-snp` only;
+TDX cannot enter the v1 release class through a custom verifier.
 
 ## Artifact inventory
 
@@ -369,6 +371,8 @@ Preserve at least these files for review:
 | `gpu-evidence.json`, `gpu-verdict.json`, `nonce.hex` | Exact raw NVIDIA freshness and verdict bytes |
 | `report.json` | Raw CPU TEE report and canonical model/runtime/GPU claims |
 | `confidential-gpu.json` | Proof-backed promoted capture |
+| `release-evidence.json` | Canonical four-platform strict v1 bundle |
+| `release-evidence.sha256` | Single lowercase bundle digest pinned by the signed release revision |
 | OS, CPU/GPU, driver, firmware, `nvattest`, Rust, and Cargo records | Named execution environment |
 | SHA-256 manifest and external signature/attestation | Mutation detection and caller-owned authorship |
 
@@ -388,7 +392,9 @@ Before building the four-platform bundle:
    bindings remain distinct and honest;
 4. confirm the confidential source is not reused as the ordinary CUDA capture;
 5. recompute the artifact manifest from read-only copies; and
-6. authenticate the final bundle digest through the release trust root.
+6. run the pinned `verify-release-bundle` command documented in the
+   [v1 Production Support Matrix](v1-support-matrix.md); and
+7. authenticate the final bundle digest through the release trust root.
 
 The workflow and verifier control path are implemented and covered by
 deterministic tests. Those tests do not substitute for a hardware capture.
