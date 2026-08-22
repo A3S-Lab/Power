@@ -541,11 +541,16 @@ $env:PYTHONPATH = $llamaCppCandidates[0]
 py -3.13 .\tools\test_add_gguf_mtp_head.py
 py -3.13 .\tools\test_build_fr_vocabulary.py
 py -3.13 .\tools\test_qwen38_quality_eval.py
+py -3.13 .\tools\test_qwen38_quality_evidence.py
+py -3.13 .\tools\qwen38_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality\evidence.json `
+  --json
 py -3.13 -m py_compile `
   .\tools\add-gguf-mtp-head.py `
   .\tools\build-fr-vocabulary.py `
   .\tools\qwen38_quality_eval.py `
-  .\tools\qwen38_quality_report.py
+  .\tools\qwen38_quality_report.py `
+  .\tools\qwen38_quality_evidence.py
 ```
 
 The performance replay is deliberately not a CI test: the current gate requires
@@ -565,8 +570,19 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\verify-dspark-evidence.ps1 -Json
 ```
 
-Then follow the [DSpark-specific registration and replay guide](dspark/README.md).
-It contains the typed registration body, both ACL profiles, exact artifact
-revisions and hashes, paired runner commands, raw three-sample reports, the
-160 token/s all-sample gate, VRAM boundary, and DFlash non-result. Do not merge
-its 256-token statistics with the 1,024-token native-MTP peak above.
+Verify the separate 600-request quality package without a model or GPU:
+
+```powershell
+py -3.13 .\tools\qwen38_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality\evidence.json `
+  --json
+```
+
+Adding `--require-production-default` intentionally fails for this capture:
+only 54/100 complete target/DSpark outputs are byte-identical. Then follow the
+[DSpark-specific registration and replay guide](dspark/README.md). It contains
+the typed registration body, both peak ACL profiles, the quality ACL, exact
+artifact revisions and hashes, paired runner commands, the 160 token/s peak
+gate, the cross-domain matrix, VRAM boundary, and DFlash non-result. Do not
+merge its request-wide context-1024 statistics with the 256-token peak or the
+1,024-token native-MTP steady-decode result.

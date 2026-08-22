@@ -113,6 +113,18 @@ a3s-power-tensor-batch-bench verify-release-capture \
 
 当前[干净 revision 的 CPU/CUDA 完整捕获](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/release-contract-windows-20260821/README.md)可回放为一个经过验证的两平台部分 bundle。在 Metal 与机密 GPU 捕获补齐前，严格的四平台 v1 策略仍不会通过。
 
+## 离线验证基准证据
+
+模型专项性能证据不是发布证明，但仍应失败关闭并可由第三方独立验证。DSpark 质量包固定了干净源码与服务端二进制、目标与 draft 制品、题目与 ACL 输入、6 份原始报告摘要、GPU 准入窗口、聚合指标和配对任务向量：
+
+```bash
+python3 tools/qwen38_quality_evidence.py verify \
+  --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/evidence.json \
+  --json
+```
+
+该证据能通过完整性校验，同时明确标记为不具备生产默认资格。加入 `--require-production-default` 会因目标与 DSpark 完整输出一致率仅为 54/100 而失败。证据完整性、质量观察与部署准入是三个独立判断。
+
 ## 生产发布信任链
 
 从 v1 开始，硬件捕获绑定一个冻结的源码提交。它的直接子提交只能新增

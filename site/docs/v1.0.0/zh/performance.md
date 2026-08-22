@@ -16,6 +16,9 @@ Power 只接受仍然保留执行契约的性能优化。因此，公开的 Qwen
 | Qwen3.8-27B 制品与模式 | 固定任务质量代理 | 请求全程吞吐 | 稳态解码中位数 |
 | --- | --- | ---: | ---: |
 | 原始 Q6_K，自回归 | 宽松 67/100；严格 60/100（100 题，重复 3 次） | 30.883 token/s | 35.5793 token/s（较早记录） |
+| 原始 Q6_K，DSpark 峰值对照 | 配对三次采集的 256-token greedy 输出完全一致 | 25.171 token/s（中位数） | 32.249 token/s |
+| **原始 Q6_K + 外部 DSpark Q4，K10/S6（峰值提示词）** | 配对输出与回执摘要完全一致 | **65.825 token/s（中位数）** | **169.324 token/s** |
+| 原始 Q6_K + 外部 DSpark Q4，K10/S6（100 题，重复 3 次） | 宽松 73/100；严格 59/100；逐字输出一致 54/100 | **32.678 token/s** | - |
 | 原始 Q6_K，全词表 MTP，K7/S7 | 固定峰值提示词下与 greedy 输出完全一致 | - | 147.0207 token/s |
 | 原始 Q6_K，全词表 MTP，K7/S6 | 宽松 5/12；严格 3/12（1 轮；11 题截断） | **47.032 token/s** | - |
 | **原始 Q6_K + 前缀 FR8192 MTP，K7/S6** | 宽松 4/12；严格 3/12（1 轮；11 题截断） | 37.290 token/s | **176.6109 token/s** |
@@ -26,6 +29,14 @@ Power 只接受仍然保留执行契约的性能优化。因此，公开的 Qwen
 | UD-Q8_K_XL，异构 MTP K4/S4 | 跨模式输出哈希不同；未运行完整矩阵 | - | 9.7577 token/s |
 
 “请求全程”包含提示词处理、生成、HTTP 和请求开销；“稳态解码”是预热后的重复 1,024-token 工作形状。短横线表示没有可辩护的同口径记录。
+
+## 外部 DSpark 的实测边界
+
+峰值采集保持 Q6_K 目标字节不变，另加载 1.10 GB 的 DSpark Q4 proposal 模型。固定 K10/S6 的三次稳态结果为 169.561、167.102 和 169.324 token/s，相对 32.249 token/s 的配对目标对照提升 5.250 倍；proposal 接受率为 90.873%，每次目标前向提交 9.8077 个 token，回放为零。
+
+另一组 600 请求质量采集固定 100 道 MMLU、GSM8K 与 C-Eval 题目，每种模式重复三次，使用 1,024 context 和 batch 12。目标对照为宽松 67/100、严格 58/100、22.618 token/s；DSpark 为 73/100、59/100、32.678 token/s，吞吐提升 1.445 倍。两种模式各自完全稳定，但跨模式只有 54/100 个完整输出逐字一致，而且每个 DSpark 请求都进入过精确回放路径。因此没有观察到分数下降，但 K10/S6 未通过无损生产默认门槛，仍是显式基准配置。
+
+DFlash 不包含在上述数字中。它与 DSpark 使用不同的制品契约，不能叠加；本机尚无真正的 DFlash GGUF 通过验收。
 
 ## 原始 Q6_K 的 176.61 边界
 
@@ -41,7 +52,7 @@ Power 只接受仍然保留执行契约的性能优化。因此，公开的 Qwen
 
 ## 智力水平下降了吗？
 
-原始 Q6_K 前缀 FR 配置尚未完成重复 100 题矩阵。12 题、128-token 校准的截断比例太高，不能据此判断通用智力。目标模型精确校验能证明固定提示词下 greedy 输出一致，但不能取代代表性质量测试。
+DSpark 的跨领域矩阵没有观察到分数下降：宽松 73/100、严格 59/100，对照为 67/100 与 58/100；双方都未截断的 58 题保持相同提取答案。但完整输出一致率只有 54/100，因此不能宣称无损默认等价，更不能把固定任务分数解释为通用智力。
 
 此前的混合制品 K7/S7 配置在固定重复样本上没有观察到回归：
 
@@ -75,6 +86,7 @@ Power 只接受仍然保留执行契约的性能优化。因此，公开的 Qwen
 - [原始 Q6_K 边界与动态量化分析](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/PURE-Q6.md)
 - [100 题重复质量协议](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [当前紧凑机器可读证据](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/full-vocabulary-s7-current-rtx4090-3x.json)
+- [DSpark 峰值、质量证据与精确复现](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
 - [UD-Q8_K_XL 异构放置边界](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 更换芯片、驱动、显示负载、时钟策略、模型字节或提示词后，应将结果视为一次新实验，不能静默合并进本次验收记录。

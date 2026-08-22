@@ -133,6 +133,13 @@ fallback replay was zero. Peak VRAM was 23,847 MiB, so this profile requires a
 quiet 24 GB device. A genuine DFlash artifact has not yet been benchmarked; a
 DSpark artifact mislabeled as DFlash is rejected and is not a DFlash result.
 
+The context-1024 quality diagnostic tells a different, workload-representative
+story. Across 600 successful requests, DSpark K10/S6 delivered 32.678 token/s
+request-wide versus 22.618 for target-only (1.445x), with no observed score
+decrease. Exact complete-output parity was only 54/100 and every DSpark request
+entered fallback replay. The profile is therefore deterministic and useful for
+experimentation, but it is not a lossless production default.
+
 See the [Optimization playbook](./optimization) for the complete execution
 path, [Performance evidence](./performance) for the measurement interpretation, and
 the [canonical speculative-decoding design](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)

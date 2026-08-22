@@ -138,6 +138,25 @@ The current [clean-revision CPU/CUDA captures](https://github.com/A3S-Lab/Power/
 replay as one verified two-platform partial bundle. Metal and confidential-GPU
 captures remain required before the strict four-platform v1 policy can pass.
 
+## Verify benchmark evidence offline
+
+Model-specific performance evidence is not a release attestation, but it is
+still fail-closed and independently checkable. The DSpark quality package pins
+the clean source and server, target and draft artifacts, task and ACL inputs,
+six raw-report hashes, GPU admission windows, aggregates, and paired task
+vectors:
+
+```bash
+python3 tools/qwen38_quality_evidence.py verify \
+  --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/evidence.json \
+  --json
+```
+
+The evidence passes integrity verification while declaring itself ineligible
+as a production default. `--require-production-default` rejects it because
+exact target/DSpark output parity is 54/100. Integrity, quality observation,
+and deployment acceptance are separate decisions.
+
 ## Production release trust chain
 
 For v1 and later, hardware captures bind a frozen source commit. Its direct

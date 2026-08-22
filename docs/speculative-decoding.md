@@ -151,7 +151,9 @@ contracts, not by branches in the Power scheduler.
    use the same model digest, prompts, sampling settings, context, and hardware.
 5. A separate DSpark artifact is admitted only after its target/tokenizer
    compatibility, provenance, peak memory, exactness, and speedup are measured.
-   The first accepted Qwen3.8 Q6_K + DSpark Q4 capture meets that gate.
+   The first Qwen3.8 Q6_K + DSpark Q4 peak-prompt capture meets the narrow
+   artifact and execution gate. Its broader K10/S6 quality capture does not
+   meet the exact-output production-default gate and remains opt-in.
 6. At least one non-Qwen adapter must pass the same transaction and exactness
    suite before DSpark support is considered cross-architecture complete.
 
@@ -174,6 +176,16 @@ request, output, and receipt hashes. It accepts 90.873% of proposals, commits
 [raw reports and reproduction protocol](benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/README.md).
 This 5.250x decode gain is a narrow single-request boundary, not a universal
 service floor or cross-prompt quality conclusion.
+
+The subsequent context-1024 matrix ran 100 fixed MMLU/GSM8K/C-Eval tasks three
+times per mode, for 600 successful requests. Target-only reached 22.618
+token/s request-wide and scored 67/100 lenient, 58/100 strict. DSpark K10/S6
+reached 32.678 token/s (1.445x) and scored 73/100, 59/100. Predictions were
+stable within each mode, but complete target/DSpark output parity was only
+54/100 and every DSpark request entered the exact replay path at least once.
+The observed score did not fall, yet output divergence means this profile is
+not a lossless production default. The checked-in path-free evidence can be
+verified without a model or GPU; see the linked DSpark report.
 
 ## Reproducible Power API benchmark
 

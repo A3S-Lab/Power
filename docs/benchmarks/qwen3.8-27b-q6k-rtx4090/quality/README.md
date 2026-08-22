@@ -6,6 +6,33 @@ repeats every mode three times, rotates execution order, and retains the
 machine-readable task set and per-request evidence needed to reproduce or
 audit the result.
 
+## External-DSpark quality diagnostic
+
+The native external-DSpark K10/S6 profile has now been replayed against the
+same fixed 100-task MMLU/GSM8K/C-Eval set, three times per mode and in rotating
+order. This is a separate context-1024, batch-12 capture using the untouched
+Q6_K target and the verified 1.10 GB DSpark Q4 artifact.
+
+| Mode | Lenient | Strict | Truncated | Mean request-wide throughput |
+| --- | ---: | ---: | ---: | ---: |
+| Q6_K target-only | 67/100 | 58/100 | 40/100 | 22.618 token/s |
+| Q6_K + DSpark Q4 K10/S6 | **73/100** | **59/100** | 40/100 | **32.678 token/s** |
+
+Both modes produced identical predictions and response hashes across their
+three repetitions. The paired DSpark comparison had six lenient gains and no
+losses (`p=0.03125`), two strict gains and one loss (`p=1.0`), 91/100 answer
+parity, and 54/100 complete response-hash parity. All 58 tasks that were
+untruncated in both modes retained the same extracted answer. The measured
+score did not fall, but the complete-output divergence prevents a claim of
+lossless equivalence or improved intelligence.
+
+DSpark increased workload throughput by **1.445x**, accepted 44.726% of
+proposals, and committed 3.674 verified tokens per target pass. Each 100-task
+run recorded 100 exact fallback replays and 100 rollback-guarded requests.
+That makes fixed K10/S6 a high-acceptance peak-prompt profile, not the balanced
+quality default. See the [full DSpark analysis, verifier, and reproduction
+protocol](../dspark/README.md#representative-100-task-diagnostic).
+
 ## Current 100-task full-vocabulary K7/S7 result
 
 The current rollback-complete profile selects **TBQ4 + full-vocabulary MTP,

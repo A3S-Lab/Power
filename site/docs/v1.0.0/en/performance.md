@@ -25,7 +25,8 @@ against the same input identities.
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
 | Untouched Q6_K, paired DSpark control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s |
-| **Untouched Q6_K + external DSpark Q4, K10/S6** | Exact paired request/output/receipt hashes; broader matrix not run | **65.825 token/s median** | **169.324 token/s** |
+| **Untouched Q6_K + external DSpark Q4, K10/S6 (peak prompt)** | Exact paired 256-token output and receipt hashes | **65.825 token/s median** | **169.324 token/s** |
+| Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; 54/100 exact-output parity | **32.678 token/s** | - |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact greedy parity on the fixed peak prompt | - | 147.0207 token/s |
 | Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x; 11 truncated) | **47.032 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x; 11 truncated) | 37.290 token/s | **176.6109 token/s** |
@@ -56,6 +57,15 @@ digest. That is exact evidence for this deterministic request, not a
 cross-prompt intelligence result. The profile peaked at 23,847 MiB and left
 only 717 MiB on the recorded RTX 4090, so low utilization alone does not prove
 that model admission will be stable.
+
+The separate 600-request quality capture used 100 fixed MMLU/GSM8K/C-Eval
+tasks, three repetitions per mode, context 1,024, and batch 12. Target-only
+scored 67/100 lenient and 58/100 strict at 22.618 token/s request-wide. DSpark
+scored 73/100 and 59/100 at 32.678 token/s, a 1.445x gain. Both modes were
+deterministic, but only 54/100 complete outputs matched across modes and every
+DSpark request entered exact fallback replay. The observed score did not fall;
+nevertheless K10/S6 fails the lossless production-default gate and remains an
+explicit benchmark profile.
 
 DFlash is not part of this number. It uses a different artifact contract and
 cannot be layered onto DSpark. No genuine DFlash GGUF has completed the
@@ -90,11 +100,11 @@ not a portable product default.
 
 ## Did quality fall?
 
-The exact pure-Q6_K prefix-FR profile has not yet completed the repeated
-100-task matrix. Its 12-task, 128-token calibration is too truncated to support
-a general intelligence claim. Exact target verification establishes
-fixed-prompt greedy output identity; it does not replace a representative
-quality evaluation.
+The external-DSpark matrix observed no score decrease: 73/100 lenient and
+59/100 strict versus its target-only control at 67/100 and 58/100. All 58 tasks
+that were untruncated in both modes retained the same extracted answer. The
+54/100 complete-output parity still blocks a lossless-default claim; fixed-task
+scores are not a measure of general intelligence.
 
 For the previous mixed-artifact K7/S7 profile, no regression was observed on
 the fixed repeated sample:

@@ -98,6 +98,13 @@ jobs:
         run: tools/test-release-workflow-contract.sh
       - name: Test prompt-cache benchmark client
         run: python3 -m unittest tools/test_prompt_cache_benchmark.py
+      - name: Test Qwen3.8 quality benchmark contracts
+        run: |
+          python3 tools/test_qwen38_quality_eval.py
+          python3 tools/test_qwen38_quality_evidence.py
+          python3 tools/qwen38_quality_evidence.py verify \
+            --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/evidence.json \
+            --json
 
   windows-embedded:
     name: Check (windows-embedded-inference)

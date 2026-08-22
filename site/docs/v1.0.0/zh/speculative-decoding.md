@@ -31,8 +31,10 @@ Power 提供共享的事务、调度、回滚与证据协议。后端适配器�
 | picolm | `off`、`prompt-lookup`、`ngram-context` |
 | 不含原生 prediction tensor 的 llama.cpp | `off` |
 | 带 `*.nextn_predict_layers > 0` 的 llama.cpp | `off`、`mtp` |
+| 带已验证外部 DFlash GGUF 的 llama.cpp | `off`、`dflash` |
+| 带已验证外部 DSpark GGUF 的 llama.cpp | `off`、`dspark` |
 
-共享策略词表还包含 `draft-model`、`dflash` 与 `dspark`，但在具备兼容适配器制品和计算图之前保持不可用。显式请求不受支持的模式会返回错误；Power 不会静默替换成廉价算法，也不会把 n-gram lookup 伪装成 MTP。
+`draft-model` 仍是尚无生产 llama.cpp 适配器的保留策略。DFlash 与 DSpark 使用不同的外部制品契约；Power 会校验制品类型、目标绑定、tokenizer、来源与摘要，不会把其中一种静默当作另一种。显式请求不受支持的模式会返回错误。
 
 ## Draft 宽度不等于回滚宽度
 
@@ -69,5 +71,9 @@ FR 只减少 MTP draft head 投影的行数。它可以提高窄词表分布上�
 它的稳态解码中位数为 176.6109 token/s；同一制品的全词表 K7/S7 对照为 147.0207 token/s。但在单轮 12 题校准中，全词表 K7/S6 的请求全程吞吐为 47.032 token/s，前缀 FR 只有 37.290 token/s。该峰值配置尚未完成重复 100 题矩阵。
 
 此前的混合制品 K7/S7 仍是代表性质量记录：稳态解码中位数 175.2089 token/s，请求全程吞吐 83.228 token/s，相对 TBQ4 自回归对照没有观察到回归。该样本同样不能证明通用智力提升。
+
+外部 DSpark 是独立路径，不与 DFlash 或原生 MTP 叠加。固定 K10/S6 的 context-512 峰值达到 169.324 token/s 中位数、167.102 最低值，相对配对目标对照提升 5.250 倍；三次 256-token 输出逐字一致，接受率 90.873%，回放为零。
+
+context-1024 的跨领域诊断给出了更接近真实工作负载的边界：600 个请求全部成功，DSpark 请求全程吞吐为 32.678 token/s，目标对照为 22.618 token/s，提升 1.445 倍，并未观察到分数下降。但跨模式完整输出一致率只有 54/100，而且每个 DSpark 请求都进入过精确回放。因此该配置可用于显式实验，尚不能成为无损生产默认值。
 
 完整解读参阅[性能证据](/performance)，适配器 API、基准命令与验收规则参阅[规范推测解码设计](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)。

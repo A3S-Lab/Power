@@ -70,7 +70,8 @@ topology and semantics.
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
 | Untouched Q6_K, DSpark acceptance control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s |
-| **Untouched Q6_K + external DSpark Q4, K10/S6** | Exact paired request/output/receipt hashes; broader matrix not run | **65.825 token/s median** | **169.324 token/s** |
+| **Untouched Q6_K + external DSpark Q4, K10/S6 (peak prompt)** | Exact paired 256-token output and receipt hashes | **65.825 token/s median** | **169.324 token/s** |
+| Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; **54/100 exact-output parity** versus target-only | **32.678 token/s** (1.445x paired control) | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K6/S6, B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **46.923 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K7/S6, B11, high-priority CUDA** | Fixed peak prompt retained the control digest | - | **172.835 token/s** on a contended desktop |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Fixed peak prompt has exact greedy parity | - | 147.0207 token/s |
@@ -90,6 +91,16 @@ proposals, committed 9.8077 tokens per target pass, performed zero replay, and
 matched the target-only output byte for byte. The 5.250x decode speedup is a
 short-context single-request boundary, not a universal service or quality
 claim.
+
+The separate 600-request MMLU/GSM8K/C-Eval capture measured the same K10/S6
+profile at 32.678 token/s request-wide versus 22.618 token/s for target-only.
+Both modes were deterministic across three repetitions. DSpark scored 73/100
+lenient and 59/100 strict versus 67/100 and 58/100 for the paired control, so
+no score decrease was observed. However, only 54/100 complete outputs matched
+byte for byte, and every DSpark request exercised exact fallback replay. This
+is useful workload evidence, but it fails Power's lossless production-default
+gate; K10/S6 remains an explicit benchmark profile while graph-shape parity and
+rollback width are recalibrated.
 
 DFlash and DSpark are alternative external-draft contracts, not an additive
 mode. DSpark Q4 is implemented and measured; a genuine DFlash GGUF has not yet
@@ -155,7 +166,7 @@ steady-decode or DFlash/DSpark claim.
 - [Untouched-Q6_K 176.61 token/s boundary and dynamic-quantization analysis](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/PURE-Q6.md)
 - [Repeated quality matrix and reproducible environment](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [Step-by-step reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md)
-- [Native DSpark Q4 paired capture, artifacts, and exact reproduction](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/README.md)
+- [Native DSpark Q4 peak and 600-request quality captures](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/README.md)
 - [UD-Q8_K_XL heterogeneous-placement boundary](docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 ## Start in three steps

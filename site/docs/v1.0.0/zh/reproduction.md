@@ -161,4 +161,19 @@ runner 在 `finally` 中恢复 GPU 时钟，并把失败报告也保留下来，
 
 只有同时满足以下条件才算通过：9 个请求都生成 1,024 token；稳态中位数不低于 175 token/s；所有输出 SHA-256 一致；模型身份精确匹配；后端独占；工作树干净；要求的主机控制真实生效。
 
-完整的 [Windows/CUDA 长版流程](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) 还包含配对全词表对照、原始 Q6_K 12 题校准与此前的混合制品门槛；[质量矩阵协议](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md#reproduce) 说明如何重复现有 100 题 × 3 轮测试。
+## 8. 复现原生 DSpark 门槛
+
+外部 DSpark 使用保持不变的 22,884,408,288 字节 Q6_K 目标和固定摘要的 1.10 GB DSpark Q4 制品。先运行两个无需模型与 GPU 的校验器：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\verify-dspark-evidence.ps1 -Json
+
+py -3.13 .\tools\qwen38_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality\evidence.json `
+  --json
+```
+
+第一个验证 context-512 峰值：目标对照 32.249 token/s，DSpark K10/S6 中位数 169.324、最低 167.102 token/s，三次输出和回执完全一致。第二个验证 context-1024 的 600 请求质量采集：22.618 对 32.678 token/s、1.445 倍提升，以及分数、回放与全部配对任务向量。加入 `--require-production-default` 应当失败，因为完整输出一致率只有 54/100；该 K10/S6 矩阵是诊断证据，不是无损默认值。
+
+完整的 [Windows/CUDA 长版流程](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) 还包含 DSpark 质量矩阵命令、配对全词表对照、原始 Q6_K 12 题校准与此前的混合制品门槛；[质量矩阵协议](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md#reproduce) 说明如何重复现有 100 题 × 3 轮测试。

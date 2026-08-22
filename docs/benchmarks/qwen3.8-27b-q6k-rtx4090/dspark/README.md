@@ -37,6 +37,56 @@ The checked-in [target-only report](target-only.json),
 [compact environment receipt](evidence.json) bind the raw samples, artifact
 identities, executable hashes, telemetry summary, and capture revision.
 
+## Representative 100-task diagnostic
+
+The peak prompt is intentionally easy to predict. A separate capture therefore
+ran the fixed 50-task MMLU, 20-task GSM8K, and 30-task C-Eval workload three
+times per mode in alternating order. Both modes used context 1,024, batch 12,
+greedy sampling, the same target bytes, a 256-token maximum, and one excluded
+warm-up. All 600 API requests completed successfully.
+
+| Mode | Lenient | Strict | Truncated | Request-wide throughput runs | Mean |
+| --- | ---: | ---: | ---: | --- | ---: |
+| Q6_K target-only | 67/100 | 58/100 | 40/100 | 22.450, 22.707, 22.696 token/s | 22.618 token/s |
+| Q6_K + DSpark Q4 K10/S6 | **73/100** | **59/100** | 40/100 | 32.546, 32.356, 33.133 token/s | **32.678 token/s** |
+
+The measured workload speedup is **1.445x**. Within each mode, every prediction
+and complete output digest was stable across all three repetitions. In the
+paired comparison DSpark had six lenient gains and no losses (`p=0.03125`), two
+strict gains and one loss (`p=1.0`), 91/100 extracted-answer parity, and 54/100
+complete output-hash parity. All 58 requests that were untruncated in both
+modes retained the same extracted answer.
+
+This does **not** show an intelligence loss, and it does not show that DSpark
+improves intelligence. The score increase is a property of this fixed sample.
+More importantly for the runtime contract, deterministic DSpark and target-only
+execution followed different complete token trajectories on 46 tasks. The
+K10/S6 profile therefore fails the exact-output production-default gate even
+though every committed speculative token was target-verified.
+
+Workload acceptance was 44.726% (14,719 accepted of 32,909 drafted), with
+3.674 verified tokens per target pass. Each DSpark repetition recorded 100
+fallback replays and 100 rollback-guard activations. By domain, acceptance was
+46.218% for MMLU, 55.395% for GSM8K, and 37.197% for C-Eval. These values
+explain why the 169.324 token/s peak cannot be generalized: proposal coverage,
+replay cost, and output length dominate mixed workloads.
+
+The path-free [quality evidence package](quality/evidence.json) pins the clean
+source and server, both model digests, task and configuration identities, six
+raw-report hashes, GPU admission samples, per-run aggregates, and all paired
+task vectors. Verify it on any machine without the model or an NVIDIA GPU:
+
+```powershell
+py -3.13 .\tools\qwen38_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality\evidence.json `
+  --json
+```
+
+Use `--require-production-default` to apply the lossless release gate. It is
+expected to fail this diagnostic because exact output parity is 54/100. The
+default verifier succeeds because the evidence is internally consistent and
+explicitly classified as `diagnostic-output-divergence`.
+
 ## What was optimized
 
 The result is not a DFlash-plus-DSpark stack. DFlash and DSpark define different
@@ -213,11 +263,50 @@ Treat a quiet GPU and adequate free VRAM as admission requirements; if the host
 cannot provide that margin, reduce context or proposal shape and record a new
 result rather than presenting an unstable K10/S6 number.
 
+### 5. Run the representative quality matrix
+
+Use the reviewed offline task cache so dataset drift cannot alter the sample.
+The runner starts a fresh server for every mode, rotates execution order, and
+requires three consecutive idle-GPU samples before every server launch:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\run-qwen38-quality-matrix.ps1 `
+  -Q6PowerHome D:\models\a3s-power\dspark-home `
+  -Profile dspark-q4 `
+  -PreparedTaskCache .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\tasks-v1.json `
+  -TargetDirectory target-native-sm89-ninja `
+  -OutputRoot D:\models\a3s-power\quality-dspark-replay `
+  -Model qwen3.8-27b-q6-k-dspark-q4 `
+  -Repetitions 3 -NumCtx 1024 -NumBatch 12 -MaxTokensCap 256 `
+  -ProcessPriority High -ProcessorAffinityMask 349525 `
+  -NvidiaGpuIndex 0 -MaximumIdleGpuUtilizationPercent 20 `
+  -MinimumIdleGpuMemoryFreeMiB 23000 `
+  -IdleGpuSampleCount 3 -IdleGpuSampleIntervalMilliseconds 500 `
+  -IdleGpuWaitSeconds 120 `
+  -RequireHighPerformancePowerPlan -RequireCleanTree
+```
+
+Package a completed raw capture for review with:
+
+```powershell
+py -3.13 .\tools\qwen38_quality_evidence.py capture `
+  --capture-root D:\models\a3s-power\quality-dspark-replay `
+  --output D:\models\a3s-power\quality-dspark-replay\evidence.json
+```
+
+That newly generated package will bind its own raw files, but the checked-in
+verifier intentionally recognizes only the published clean capture. Updating
+the repository pin requires review of the new source, binary, artifact, GPU,
+task, configuration, and report identities.
+
 ## Claim boundary
 
-This is a single-request, short-context, deterministic boundary on one prompt
-and one RTX 4090. Exact output identity proves no change for these measured
-requests; it is not a cross-domain intelligence evaluation. The DSpark draft
-does not alter target weights, but other prompts, stochastic sampling,
-concurrency, long contexts, drivers, and GPU memory pressure require their own
+The 169.324 token/s result is a single-request, short-context, deterministic
+boundary on one prompt and one RTX 4090. The broader 100-task matrix is a
+cross-domain diagnostic, not a full benchmark score: it observed no score
+decrease and a 1.445x request-wide gain, but only 54/100 complete outputs
+matched the target-only mode. K10/S6 is consequently opt-in and not eligible
+as a lossless production default. Stochastic sampling, concurrency, long
+contexts, other models, drivers, and GPU memory pressure require independent
 quality and performance gates.

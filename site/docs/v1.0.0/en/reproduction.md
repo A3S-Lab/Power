@@ -172,6 +172,10 @@ Run its model-free verifier first:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\verify-dspark-evidence.ps1 -Json
+
+py -3.13 .\tools\qwen38_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality\evidence.json `
+  --json
 ```
 
 The accepted context-512, batch-12 capture reports 32.249 token/s target-only
@@ -179,6 +183,13 @@ and 169.324 token/s with DSpark K10/S6, with a 167.102 token/s minimum. All
 three 256-token outputs and receipts match exactly. Peak VRAM is 23,847 MiB,
 so a quiet device and adequate free memory are required even when GPU
 utilization is low.
+
+The second verifier authenticates the context-1024, batch-12, 600-request
+quality capture. It recomputes the 22.618 versus 32.678 token/s workload rates,
+1.445x speedup, fixed-task scores, replay telemetry, and all 100 paired task
+vectors. Adding `--require-production-default` is expected to fail because only
+54/100 complete outputs match; the published K10/S6 matrix is diagnostic, not
+a lossless default.
 
 Use the [DSpark reproduction package](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
 for the typed registration body, target-only and DSpark ACL files, raw reports,
