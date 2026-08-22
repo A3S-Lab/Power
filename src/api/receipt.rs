@@ -88,6 +88,8 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             "{message}; cannot be receipt-bound"
         )));
     }
+    crate::api::prompt_cache::validate_prompt_cache_key(request.prompt_cache_key.as_deref())
+        .map_err(crate::error::PowerError::InvalidRequest)?;
     if request.has_conflicting_max_token_limits() {
         return Err(crate::error::PowerError::InvalidRequest(
             "max_tokens and max_completion_tokens must match when both are provided".to_string(),
@@ -241,6 +243,11 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
             .map(serde_json::Value::Bool)
             .unwrap_or(serde_json::Value::Null),
     );
+    insert_optional_string_sha256(
+        &mut parameters,
+        "prompt_cache_key_sha256",
+        request.prompt_cache_key.as_deref(),
+    );
 
     Ok(AttestationReceipt {
         schema: AttestationReceipt::SCHEMA.to_string(),
@@ -284,6 +291,8 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
             "{message}; cannot be receipt-bound"
         )));
     }
+    crate::api::prompt_cache::validate_prompt_cache_key(request.prompt_cache_key.as_deref())
+        .map_err(crate::error::PowerError::InvalidRequest)?;
     if request.suffix.is_some() {
         return Err(crate::error::PowerError::InvalidRequest(
             "completion suffix requests are unsupported and cannot be receipt-bound".to_string(),
@@ -377,6 +386,11 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
         "stream".to_string(),
         serde_json::Value::Bool(request.stream.unwrap_or(false)),
     );
+    insert_optional_string_sha256(
+        &mut parameters,
+        "prompt_cache_key_sha256",
+        request.prompt_cache_key.as_deref(),
+    );
 
     Ok(AttestationReceipt {
         schema: AttestationReceipt::SCHEMA.to_string(),
@@ -426,6 +440,19 @@ fn insert_optional_f32(
         .map(serde_json::Value::Number)
         .unwrap_or(serde_json::Value::Null);
     map.insert(key.to_string(), value);
+}
+
+fn insert_optional_string_sha256(
+    map: &mut BTreeMap<String, serde_json::Value>,
+    key: &'static str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value {
+        map.insert(
+            key.to_string(),
+            serde_json::Value::String(hex::encode(Sha256::digest(value.as_bytes()))),
+        );
+    }
 }
 
 fn insert_optional_u32(
@@ -571,6 +598,7 @@ mod tests {
             functions: None,
             function_call: None,
             parallel_tool_calls: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         }
@@ -661,6 +689,7 @@ mod tests {
             seed: None,
             response_format: None,
             suffix: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         };
@@ -676,6 +705,28 @@ mod tests {
         assert_ne!(
             receipt_digest(&base).unwrap(),
             receipt_digest(&with_effective).unwrap()
+        );
+    }
+
+    #[test]
+    fn prompt_cache_key_is_digest_bound_without_raw_identifier() {
+        let mut first = chat_request();
+        first.prompt_cache_key = Some("private-agent-prefix".to_string());
+        let first_receipt = chat_receipt(&first).unwrap();
+        let expected = hex::encode(Sha256::digest(b"private-agent-prefix"));
+        assert_eq!(
+            first_receipt.decoding.parameters["prompt_cache_key_sha256"],
+            serde_json::json!(expected)
+        );
+        assert!(!serde_json::to_string(&first_receipt)
+            .unwrap()
+            .contains("private-agent-prefix"));
+
+        let mut second = first.clone();
+        second.prompt_cache_key = Some("private-agent-prefix-v2".to_string());
+        assert_ne!(
+            receipt_digest(&first_receipt).unwrap(),
+            receipt_digest(&chat_receipt(&second).unwrap()).unwrap()
         );
     }
 
@@ -1099,6 +1150,7 @@ mod tests {
             seed: None,
             response_format: None,
             suffix: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         };
@@ -1158,6 +1210,7 @@ mod tests {
             seed: None,
             response_format: None,
             suffix: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         };
@@ -1221,6 +1274,7 @@ mod tests {
             seed: None,
             response_format: None,
             suffix: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         };
@@ -1263,6 +1317,7 @@ mod tests {
             seed: None,
             response_format: None,
             suffix: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         };
@@ -1310,6 +1365,7 @@ mod tests {
             seed: None,
             response_format: None,
             suffix: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         };
@@ -1370,6 +1426,7 @@ mod tests {
                 unsupported: BTreeMap::new(),
             }),
             suffix: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         };
@@ -1416,6 +1473,7 @@ mod tests {
                 unsupported: BTreeMap::new(),
             }),
             suffix: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         };

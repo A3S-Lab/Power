@@ -6,6 +6,7 @@ pub mod llamacpp;
 pub mod mistralrs_backend;
 pub mod picolm;
 pub mod picolm_ops;
+pub mod prompt_cache;
 pub mod proxy;
 /// Test utilities for integration tests. Not part of the public API.
 #[doc(hidden)]
@@ -26,6 +27,8 @@ use crate::model::manifest::{ModelFormat, ModelManifest};
 use crate::server::request_context::RequestContext;
 use crate::speculative::{SpeculativeCapabilities, SpeculativeStrategy};
 use crate::tee::encrypted_model::{LayerStreamingDecryptedModel, MemoryDecryptedModel};
+
+use prompt_cache::{PromptCacheMetricsSnapshot, PromptCacheSupport};
 
 use types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
@@ -59,6 +62,16 @@ pub trait Backend: Send + Sync {
     /// same container format can coexist without relying on raw backend names.
     fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
         self.supports(&manifest.format)
+    }
+
+    /// Describe whether this backend guarantees keyed prompt-prefix KV reuse.
+    fn prompt_cache_support(&self) -> PromptCacheSupport {
+        PromptCacheSupport::Unsupported
+    }
+
+    /// Return cumulative prompt-cache telemetry when the backend implements it.
+    fn prompt_cache_metrics(&self) -> Option<PromptCacheMetricsSnapshot> {
+        None
     }
 
     /// Load a model into memory, ready for inference.
@@ -310,6 +323,27 @@ impl BackendRegistry {
     /// List all registered backend names.
     pub fn list_names(&self) -> Vec<&str> {
         self.backends.iter().map(|b| b.name()).collect()
+    }
+
+    /// List backends that can honor the public `prompt_cache_key` contract.
+    pub fn prompt_cache_backend_names(&self) -> Vec<&str> {
+        self.backends
+            .iter()
+            .filter(|backend| backend.prompt_cache_support().is_supported())
+            .map(|backend| backend.name())
+            .collect()
+    }
+
+    /// Snapshot prompt-cache counters for every instrumented backend.
+    pub fn prompt_cache_metrics(&self) -> Vec<(&str, PromptCacheMetricsSnapshot)> {
+        self.backends
+            .iter()
+            .filter_map(|backend| {
+                backend
+                    .prompt_cache_metrics()
+                    .map(|snapshot| (backend.name(), snapshot))
+            })
+            .collect()
     }
 }
 

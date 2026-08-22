@@ -403,6 +403,8 @@ The service reads `~/.a3s/power/config.acl`, or the path supplied to
 host = "127.0.0.1"
 port = 11434
 max_loaded_models = 1
+prompt_cache_max_entries = 1
+prompt_cache_ttl_seconds = 300
 keep_alive = "5m"
 
 flash_attention = true
@@ -452,12 +454,23 @@ curl http://127.0.0.1:11434/v1/chat/completions \
   -d '{
     "model": "your-model",
     "messages": [{"role": "user", "content": "Explain capability-based security."}],
+    "prompt_cache_key": "shared-agent-prefix-v1",
     "stream": true
   }'
 ```
 
 Chat and completion responses include an `attestation_receipt` and its SHA-256
 digest. Streaming responses emit the receipt before `[DONE]`.
+
+`prompt_cache_key` is an explicit A3S extension. The llama.cpp text path reuses
+a token prefix only when its KV and recurrent state can roll back exactly;
+unsupported backends return
+`prompt_cache_unsupported` instead of ignoring the field. Power scopes the key
+by authenticated identity, endpoint, and model, bounds resident contexts by
+LRU capacity and TTL, exposes hit/miss/token/eviction metrics, and binds only a
+key digest into the request receipt. Native MTP and cached llama.cpp sessions
+do not compose yet; explicit MTP fails closed and `auto` chooses target-only
+decoding for keyed requests. See [Keyed Prompt-Prefix Cache](docs/prompt-prefix-cache.md).
 
 ## Verification is a client decision
 
@@ -524,6 +537,7 @@ current production boundary and failure policy.
 | [v1 Production Support Matrix](docs/v1-support-matrix.md) | Required execution platforms, SEV-SNP boundary, TDX exclusion, and the machine-enforced release artifact contract |
 | [External Metal and Confidential-GPU Capture](docs/external-release-capture.md) | Clean-revision hardware commands, raw vendor evidence, strict proof-backed promotion, and artifact inventory |
 | [Model-neutral Speculative Decoding](docs/speculative-decoding.md) | Strategies, native MTP, patching, protocol, and acceptance |
+| [Keyed Prompt-Prefix Cache](docs/prompt-prefix-cache.md) | Explicit API contract, tenant isolation, bounded KV lifecycle, metrics, MTP boundary, and paired cold/warm benchmark |
 | [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | Performance gates, artifact identity, quality, and raw evidence |
 | [Reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) | CUDA build, pinned inputs, replay, audit, and validation |
 | [Hardware Verifier Operations](docs/hardware-verifier-operations.md) | Production hardware-signature verification |

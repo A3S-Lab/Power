@@ -33,12 +33,28 @@ tensor name, sequence length, image geometry, or backend label.
 | Attention and decode | Flash Attention, full device offload, batched sampling, CUDA Graph reuse | Backend + model crate | No. Select per workload and backend. |
 | Tensor path | Deterministic microbatching, leading-axis stack/split, device-resident graph chains | Runtime | Yes, within declared limits and compatible graph contracts. |
 | Speculation | Prompt lookup, n-gram, native MTP, exact target verification, snapshots, rollback guard, FR projection | Runtime + adapter + artifact profile | Exact transaction is portable; strategy availability and shapes are not. |
+| Prompt reuse | Explicit keyed prefix matching, authenticated namespaces, bounded KV lifetime, hit/miss/token metrics | Runtime + backend | Opt-in and fail-closed; llama.cpp text requests currently implement it. |
 | Scheduling | Model/device admission, continuous batches, session replicas, cancellation, monotonic deadlines | Runtime | Yes, with caller-owned limits. |
 | Host scheduling | High-priority CUDA streams, physical-core affinity, process priority, clock policy, single-service GPU use | Backend + host profile | No. Every host needs a new A/B capture. |
 | Weight I/O | Verified mmap/positional/direct reads, shards, replicas, partial mirrors, encrypted and lossless sources | Runtime | Explicit and fail-closed; the selected path is workload- and storage-specific. |
 | Residency | LFRU/LRU, grouped staging, prefetch, hot-set plans, hardware budgets, lossless live adaptation | Runtime + model crate | Zero-cache and no adaptation remain safe defaults. |
 | Accelerator topology | Residency-bound fused batches, exact fallback, bounded heterogeneous meshes | Runtime + model crate + backend | Only after parity and device evidence pass. |
 | Tuning and proof | Two-order A/B, output parity, quality gates, receipts, hardware bundles, offline hash verification | Runtime + client gate | Evidence format is portable; thresholds are deployment policy. |
+
+## Optimization order
+
+For repeated language-model workloads, exhaust lossless execution changes
+before changing model bytes:
+
+1. increase effective output per target pass with an exact speculative adapter;
+2. eliminate repeated prefill with explicit prompt-prefix reuse; and
+3. consider quantization only after the first two paths have workload-wide
+   evidence.
+
+Speculation and prefix reuse optimize different terms. Speculation targets
+decode; a prefix cache targets prefill and time to first token. Quantization can
+reduce bandwidth or capacity pressure, but it changes the artifact and its
+benefit depends on concurrency, kernels, and the memory hierarchy.
 
 ## 1. Shape and kernel work
 
@@ -195,6 +211,27 @@ without disturbing healthy replicas.
 
 The same contract serves KV caches, recurrent state, OCR sessions, embedding
 contexts, and multimodal state. No model family appears in the scheduler.
+
+### Keyed prompt-prefix reuse
+
+The hosted API accepts the explicit `prompt_cache_key` extension for chat and
+text completions. Power validates it, derives an opaque identity scoped by API
+identity, endpoint, and model, and forwards it only when the selected backend
+advertises exact prefix matching. Unsupported backends fail before model load.
+
+The current llama.cpp path uses a per-model TTL- and capacity-bounded LRU map.
+It compares token IDs, restores prompt-boundary recurrent/SWA state, clears KV
+rows only across an exact backend rollback, and evaluates the suffix. A hybrid
+recurrent context that cannot prove an older divergent rollback becomes a
+measured miss; strict prompt extension remains the portable fast path. Health
+reports support and configured bounds; Prometheus reports requests, hits,
+misses, reused and evaluated tokens, evictions, and resident entries.
+
+Native llama.cpp MTP and cached sessions do not yet share one reviewed state
+transaction. Explicit MTP plus a cache key fails closed; `auto` selects exact
+target-only decoding for that request. See
+[Keyed Prompt-Prefix Cache](prompt-prefix-cache.md) for the API, security,
+memory, and reproduction contract.
 
 ### Host-specific GPU scheduling
 

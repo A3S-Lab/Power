@@ -52,6 +52,8 @@ fn test_config_roundtrip() {
         port: 9999,
         data_dir: dir.path().to_path_buf(),
         max_loaded_models: 5,
+        prompt_cache_max_entries: 3,
+        prompt_cache_ttl_seconds: 600,
         gpu: GpuConfig {
             gpu_tensors: vec!["token_embd.weight".to_string()],
             ..Default::default()
@@ -107,6 +109,8 @@ fn test_config_roundtrip() {
     assert_eq!(loaded.host, "0.0.0.0");
     assert_eq!(loaded.port, 9999);
     assert_eq!(loaded.max_loaded_models, 5);
+    assert_eq!(loaded.prompt_cache_max_entries, 3);
+    assert_eq!(loaded.prompt_cache_ttl_seconds, 600);
     assert_eq!(loaded.num_parallel, 4);
     assert_eq!(loaded.spec_mtp_fr_vocab_size, Some(8192));
     assert!(!loaded.spec_mtp_recurrent_chain);
@@ -544,6 +548,20 @@ fn test_env_a3s_power_keep_alive() {
     config.apply_env_overrides().unwrap();
     assert_eq!(config.keep_alive, "10m");
     std::env::remove_var("A3S_POWER_KEEP_ALIVE");
+}
+
+#[test]
+#[serial]
+fn test_env_a3s_power_prompt_cache_settings() {
+    std::env::set_var("A3S_POWER_PROMPT_CACHE_MAX_ENTRIES", "4");
+    std::env::set_var("A3S_POWER_PROMPT_CACHE_TTL_SECONDS", "900");
+    let mut config = PowerConfig::default();
+    config.apply_env_overrides().unwrap();
+    std::env::remove_var("A3S_POWER_PROMPT_CACHE_MAX_ENTRIES");
+    std::env::remove_var("A3S_POWER_PROMPT_CACHE_TTL_SECONDS");
+
+    assert_eq!(config.prompt_cache_max_entries, 4);
+    assert_eq!(config.prompt_cache_ttl_seconds, 900);
 }
 
 #[test]

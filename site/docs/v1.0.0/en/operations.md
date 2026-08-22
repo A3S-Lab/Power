@@ -60,6 +60,33 @@ pinned source. Ordinary `llamacpp` builds do not need the experimental patch.
 Health and model inspection endpoints expose effective, non-secret settings so
 benchmark and deployment automation can reject configuration drift.
 
+## Keyed prompt-prefix reuse
+
+Add `prompt_cache_key` to a text chat or completion request when later
+requests will share a long prefix. The llama.cpp path reuses only a token prefix
+whose KV and recurrent state can roll back exactly, then evaluates the suffix;
+an unprovable hybrid-state rollback becomes a measured miss. mistral.rs,
+picolm, proxy, and multimodal
+requests currently return `prompt_cache_unsupported`; the field is never
+silently ignored.
+
+```text
+prompt_cache_max_entries = 1
+prompt_cache_ttl_seconds = 300
+```
+
+Power hashes and scopes each key by authenticated identity, endpoint, and model.
+The raw key is not stored in the backend or receipt. `/health` reports support
+and bounds; `/metrics` reports requests, hits, misses, reused/evaluated tokens,
+evictions, and resident entries. Opted-in completion streams expose backend
+prompt-evaluation time separately from TTFT; the canonical benchmark client
+checks both timings against exact miss/hit counter deltas.
+
+Native llama.cpp MTP does not yet share a state transaction with a cached
+context. Explicit MTP plus a cache key fails closed; `auto` selects exact
+target-only decoding. Prefix caching improves repeated prefill and TTFT, not
+steady decode token/s. See the [canonical cache contract](https://github.com/A3S-Lab/Power/blob/main/docs/prompt-prefix-cache.md).
+
 ## Artifact installation
 
 The artifact provisioner requires an expected filename, maximum byte length,

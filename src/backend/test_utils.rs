@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use futures::Stream;
 
+use crate::backend::prompt_cache::PromptCacheSupport;
 use crate::backend::types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
     EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse, FunctionCall, ToolCall,
@@ -27,6 +28,7 @@ pub struct MockBackend {
     streaming_load_succeeds: bool,
     supports_streaming_load: bool,
     supports_remote: bool,
+    prompt_cache_support: PromptCacheSupport,
     unload_succeeds: bool,
     cleanup_succeeds: bool,
     /// When true, chat() emits chunks simulating `<think>reasoning</think>answer`.
@@ -60,6 +62,7 @@ impl MockBackend {
             streaming_load_succeeds: true,
             supports_streaming_load: false,
             supports_remote: false,
+            prompt_cache_support: PromptCacheSupport::Unsupported,
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: false,
@@ -86,6 +89,7 @@ impl MockBackend {
             streaming_load_succeeds: false,
             supports_streaming_load: false,
             supports_remote: false,
+            prompt_cache_support: PromptCacheSupport::Unsupported,
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: false,
@@ -112,6 +116,7 @@ impl MockBackend {
             streaming_load_succeeds: true,
             supports_streaming_load: false,
             supports_remote: false,
+            prompt_cache_support: PromptCacheSupport::Unsupported,
             unload_succeeds: false,
             cleanup_succeeds: true,
             emit_thinking: false,
@@ -138,6 +143,7 @@ impl MockBackend {
             streaming_load_succeeds: true,
             supports_streaming_load: false,
             supports_remote: false,
+            prompt_cache_support: PromptCacheSupport::Unsupported,
             unload_succeeds: true,
             cleanup_succeeds: false,
             emit_thinking: false,
@@ -164,6 +170,7 @@ impl MockBackend {
             streaming_load_succeeds: true,
             supports_streaming_load: false,
             supports_remote: false,
+            prompt_cache_support: PromptCacheSupport::Unsupported,
             unload_succeeds: true,
             cleanup_succeeds: true,
             emit_thinking: true,
@@ -209,6 +216,12 @@ impl MockBackend {
     /// Allow tests to exercise remote/proxy-shaped request handling.
     pub fn with_remote_support(mut self) -> Self {
         self.supports_remote = true;
+        self
+    }
+
+    /// Advertise exact prompt-prefix matching for public API contract tests.
+    pub fn with_prompt_cache_support(mut self) -> Self {
+        self.prompt_cache_support = PromptCacheSupport::PrefixMatch;
         self
     }
 
@@ -259,6 +272,10 @@ impl Backend for MockBackend {
                 Some(family) => manifest.family.as_deref() == Some(family),
                 None => true,
             }
+    }
+
+    fn prompt_cache_support(&self) -> PromptCacheSupport {
+        self.prompt_cache_support
     }
 
     async fn load(&self, _manifest: &ModelManifest) -> Result<()> {

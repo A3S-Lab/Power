@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Exposed explicit `prompt_cache_key` prefix reuse for llama.cpp text chat and
+  completions. Keys are validated and SHA-256 scoped by authentication,
+  endpoint, and model; unsupported backends fail closed. Resident KV contexts
+  now use configurable bounded LRU/TTL storage, receipts bind a key digest,
+  and health plus Prometheus report support, hits, misses, token reuse,
+  evaluation, evictions, and entries. Final opted-in SSE usage events expose
+  backend prompt-evaluation time, and a hash-bound cold/warm benchmark client
+  turns those timings and cache counters into reproducible evidence.
+
 ## [1.0.0] - 2026-08-22
 
 ### Added

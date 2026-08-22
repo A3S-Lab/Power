@@ -12,6 +12,18 @@ use crate::speculative::SpeculativeStrategy;
 /// Default maximum number of resident llama.cpp MTP recurrent-state snapshots.
 pub const DEFAULT_SPEC_MTP_RECURRENT_SNAPSHOTS: u32 = 7;
 
+/// Safe default number of resident prompt KV contexts per loaded model.
+pub const DEFAULT_PROMPT_CACHE_MAX_ENTRIES: usize = 1;
+
+/// Default idle lifetime of one resident prompt KV context.
+pub const DEFAULT_PROMPT_CACHE_TTL_SECONDS: u64 = 300;
+
+/// Hard operational bound for prompt-cache entries per loaded model.
+pub const MAX_PROMPT_CACHE_ENTRIES: usize = 1024;
+
+/// Hard operational bound for an idle prompt-cache lifetime.
+pub const MAX_PROMPT_CACHE_TTL_SECONDS: u64 = 86_400;
+
 /// Maximum number of exact tensor names that may be forced onto CPU memory.
 pub const MAX_CPU_TENSOR_OVERRIDES: usize = 256;
 
@@ -321,6 +333,17 @@ pub struct PowerConfig {
     /// Maximum number of models to keep loaded in memory
     #[serde(default = "default_max_loaded_models")]
     pub max_loaded_models: usize,
+
+    /// Maximum resident prompt-prefix KV contexts per loaded model.
+    ///
+    /// A single context can consume substantial CPU or GPU memory, so the
+    /// default is deliberately one and the value is always bounded.
+    #[serde(default = "default_prompt_cache_max_entries")]
+    pub prompt_cache_max_entries: usize,
+
+    /// Idle lifetime of a resident prompt-prefix KV context, in seconds.
+    #[serde(default = "default_prompt_cache_ttl_seconds")]
+    pub prompt_cache_ttl_seconds: u64,
 
     /// GPU acceleration settings
     #[serde(default)]
@@ -705,6 +728,14 @@ fn default_max_loaded_models() -> usize {
     1
 }
 
+pub(crate) const fn default_prompt_cache_max_entries() -> usize {
+    DEFAULT_PROMPT_CACHE_MAX_ENTRIES
+}
+
+pub(crate) const fn default_prompt_cache_ttl_seconds() -> u64 {
+    DEFAULT_PROMPT_CACHE_TTL_SECONDS
+}
+
 const fn default_use_mmap() -> bool {
     true
 }
@@ -728,6 +759,8 @@ impl Default for PowerConfig {
             port: default_port(),
             data_dir: dirs::power_home(),
             max_loaded_models: default_max_loaded_models(),
+            prompt_cache_max_entries: default_prompt_cache_max_entries(),
+            prompt_cache_ttl_seconds: default_prompt_cache_ttl_seconds(),
             gpu: GpuConfig::default(),
             gpu_attestation: GpuAttestationConfig::default(),
             spec_mode: default_spec_mode(),

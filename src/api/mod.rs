@@ -1,6 +1,7 @@
 pub mod autoload;
 pub mod health;
 pub mod openai;
+pub mod prompt_cache;
 pub mod prompt_policy;
 pub mod receipt;
 pub mod types;

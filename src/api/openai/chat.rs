@@ -101,6 +101,11 @@ pub async fn handler(
 ) -> impl IntoResponse {
     let model_name = request.model.clone();
     let request_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+    if let Err(message) =
+        crate::api::prompt_cache::validate_prompt_cache_key(request.prompt_cache_key.as_deref())
+    {
+        return openai_error("invalid_prompt_cache_key", &message).into_response();
+    }
     if let Some(message) = request.unsupported_fields_message() {
         return openai_error("unsupported_request_fields", &message).into_response();
     }
@@ -293,6 +298,36 @@ pub async fn handler(
         state.metrics.decrement_active_requests();
         return openai_error("unsupported_response_format", &message).into_response();
     }
+    let prompt_cache_session_id = match request.prompt_cache_key.as_deref() {
+        Some(key) => {
+            if !backend.prompt_cache_support().is_supported() {
+                state.metrics.decrement_active_requests();
+                return openai_error(
+                    "prompt_cache_unsupported",
+                    &format!(
+                        "backend '{}' cannot guarantee prompt-prefix cache reuse; omit prompt_cache_key or select a supporting backend",
+                        backend.name()
+                    ),
+                )
+                .into_response();
+            }
+            if request.has_image_inputs() {
+                state.metrics.decrement_active_requests();
+                return openai_error(
+                    "prompt_cache_unsupported",
+                    "prompt_cache_key currently supports text-only chat requests",
+                )
+                .into_response();
+            }
+            Some(crate::api::prompt_cache::scoped_prompt_cache_key(
+                ctx.auth_id.as_deref(),
+                crate::api::prompt_cache::PromptCacheEndpoint::Chat,
+                &model_name,
+                key,
+            ))
+        }
+        None => None,
+    };
 
     let load_result = match crate::api::autoload::ensure_loaded_with_keep_alive(
         &state,
@@ -374,7 +409,7 @@ pub async fn handler(
         },
         num_parallel: Some(state.config.num_parallel as u32),
         images: None,
-        session_id: None,
+        session_id: prompt_cache_session_id,
     };
 
     let effective_prompt = match backend
@@ -1127,6 +1162,95 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("service_tier"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_chat_rejects_invalid_prompt_cache_key_before_lookup() {
+        let state = test_state_with_mock(MockBackend::success());
+        let response = router::build(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"missing","messages":[{"role":"user","content":"hi"}],"prompt_cache_key":" leading"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_prompt_cache_key");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_prompt_cache_fails_closed_or_forwards_opaque_key() {
+        let directory = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", directory.path());
+
+        let unsupported_state = test_state_with_mock(MockBackend::success());
+        unsupported_state
+            .registry
+            .register(sample_manifest("unsupported"))
+            .unwrap();
+        let response = router::build(unsupported_state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"unsupported","messages":[{"role":"user","content":"hi"}],"prompt_cache_key":"agent-v1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "prompt_cache_unsupported");
+
+        let mock = MockBackend::success().with_prompt_cache_support();
+        let capture = mock.chat_request_capture();
+        let supported_state = test_state_with_mock(mock);
+        supported_state
+            .registry
+            .register(sample_manifest("supported"))
+            .unwrap();
+        supported_state.mark_loaded("supported");
+        let response = router::build(supported_state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"supported","messages":[{"role":"user","content":"hi"}],"prompt_cache_key":"agent-v1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let captured = capture
+            .lock()
+            .expect("chat request lock poisoned")
+            .clone()
+            .expect("expected captured request");
+        let session_id = captured.session_id.expect("expected opaque cache key");
+        assert!(session_id.starts_with("a3s-pcache-v1:"));
+        assert!(!session_id.contains("agent-v1"));
+
+        std::env::remove_var("A3S_POWER_HOME");
     }
 
     #[tokio::test]

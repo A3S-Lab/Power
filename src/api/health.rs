@@ -59,6 +59,30 @@ pub struct InferenceStatus {
     pub timing_padding_ms: Option<u64>,
 }
 
+/// Public, non-secret prompt-prefix cache contract and backend availability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptCacheStatus {
+    pub enabled: bool,
+    pub request_field: String,
+    pub max_entries_per_model: usize,
+    pub ttl_seconds: u64,
+    pub authenticated_namespace: bool,
+    pub supported_backends: Vec<String>,
+}
+
+impl Default for PromptCacheStatus {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            request_field: "prompt_cache_key".to_string(),
+            max_entries_per_model: crate::config::DEFAULT_PROMPT_CACHE_MAX_ENTRIES,
+            ttl_seconds: crate::config::DEFAULT_PROMPT_CACHE_TTL_SECONDS,
+            authenticated_namespace: true,
+            supported_backends: Vec::new(),
+        }
+    }
+}
+
 const fn default_use_mmap_status() -> bool {
     true
 }
@@ -72,6 +96,8 @@ pub struct HealthResponse {
     pub loaded_models: usize,
     pub speculative: SpeculativeStatus,
     pub inference: InferenceStatus,
+    #[serde(default)]
+    pub prompt_cache: PromptCacheStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tee: Option<TeeStatus>,
 }
@@ -89,6 +115,12 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
         }
     });
 
+    let prompt_cache_backends = state
+        .backends
+        .prompt_cache_backend_names()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     let resp = HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -119,6 +151,14 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
             suppress_token_metrics: state.config.suppress_token_metrics,
             timing_padding_ms: state.config.timing_padding_ms,
         },
+        prompt_cache: PromptCacheStatus {
+            enabled: !prompt_cache_backends.is_empty(),
+            request_field: "prompt_cache_key".to_string(),
+            max_entries_per_model: state.config.prompt_cache_max_entries,
+            ttl_seconds: state.config.prompt_cache_ttl_seconds,
+            authenticated_namespace: true,
+            supported_backends: prompt_cache_backends,
+        },
         tee,
     };
     (StatusCode::OK, Json(resp))
@@ -127,6 +167,7 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::test_utils::MockBackend;
     use crate::backend::BackendRegistry;
     use crate::config::PowerConfig;
     use crate::model::registry::ModelRegistry;
@@ -195,6 +236,32 @@ mod tests {
         assert_eq!(health.speculative.mtp_recurrent_snapshots, 7);
         assert!(health.speculative.mtp_recurrent_chain);
         assert!(!health.inference.suppress_token_metrics);
+        assert!(!health.prompt_cache.enabled);
+        assert_eq!(health.prompt_cache.request_field, "prompt_cache_key");
+        assert_eq!(health.prompt_cache.max_entries_per_model, 1);
+    }
+
+    #[tokio::test]
+    async fn test_health_reports_prompt_cache_backend_and_bounds() {
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(MockBackend::success().with_prompt_cache_support()));
+        let config = Arc::new(PowerConfig {
+            prompt_cache_max_entries: 4,
+            prompt_cache_ttl_seconds: 900,
+            ..Default::default()
+        });
+        let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+
+        let response = handler(State(state)).await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
+        assert!(health.prompt_cache.enabled);
+        assert_eq!(health.prompt_cache.supported_backends, ["mock"]);
+        assert_eq!(health.prompt_cache.max_entries_per_model, 4);
+        assert_eq!(health.prompt_cache.ttl_seconds, 900);
+        assert!(health.prompt_cache.authenticated_namespace);
     }
 
     #[tokio::test]
@@ -262,6 +329,7 @@ mod tests {
                 draft_p_min: 0.25,
             },
             inference: inference_status(),
+            prompt_cache: PromptCacheStatus::default(),
             tee: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
@@ -296,6 +364,7 @@ mod tests {
                 draft_p_min: 0.0,
             },
             inference: inference_status(),
+            prompt_cache: PromptCacheStatus::default(),
             tee: Some(TeeStatus {
                 enabled: true,
                 tee_type: TeeType::Simulated,

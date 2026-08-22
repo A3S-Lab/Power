@@ -33,6 +33,7 @@ geometry, or backend label.
 | Attention and decode | Flash Attention, full device offload, batched GPU sampling, CUDA Graph reuse | Backend + model crate |
 | Tensor path | Deterministic microbatching, leading-axis stack/split, device-resident reviewed graph chains | Runtime |
 | Speculation | Prompt lookup, n-gram, native MTP, exact target verification, snapshots, rollback guard, FR projection | Runtime + adapter + artifact profile |
+| Prompt reuse | Explicit cache keys, authenticated namespaces, bounded KV lifetime, hit/miss/token metrics | Runtime + backend |
 | Scheduling | Model/device admission, continuous batches, session replicas, cancellation, monotonic deadlines | Runtime |
 | Host scheduling | CUDA stream priority, physical-core affinity, process priority, clock policy, single-service GPU use | Backend + host profile |
 | Weight I/O | Verified mmap, positional and direct reads, shards, replicas, encrypted/lossless sources, partial mirrors | Runtime |
@@ -41,6 +42,15 @@ geometry, or backend label.
 | Proof | Two-order A/B, output parity, quality gates, receipts, hardware bundles, offline hash verification | Runtime + client gate |
 
 These mechanisms are composable, not automatically enabled together.
+
+## Tune in lossless-first order
+
+For Agent, RAG, and coding workloads, first improve generated tokens per target
+pass with exact speculation, then remove repeated prefill with keyed prefix
+reuse. Consider quantization only after both paths have workload-wide evidence.
+Speculation targets decode; prefix reuse targets prefill and TTFT. Quantization
+changes the artifact and its value depends on concurrency, kernels, and memory
+pressure.
 
 ## Graph shapes and kernels
 
@@ -102,6 +112,14 @@ Continuous batches admit new members only at the next execution step and commit
 each step atomically. Exclusive session-replica leases serve KV caches,
 recurrent state, OCR contexts, embedding sessions, and multimodal state without
 a model-family branch.
+
+The hosted API also accepts an explicit `prompt_cache_key`. Power validates and
+hash-scopes it by authentication, endpoint, and model, then forwards it only to
+a backend that advertises exact prefix reuse. llama.cpp text requests currently
+use a per-model bounded LRU/TTL context map and turn an unprovable recurrent
+rollback into a measured miss; other paths fail closed. Native MTP
+and cached sessions do not compose yet. See the
+[canonical cache contract](https://github.com/A3S-Lab/Power/blob/main/docs/prompt-prefix-cache.md).
 
 High-priority CUDA streams, physical-core affinity, process priority, power and
 clock policy, and a single loaded/concurrent model are host profiles. They can

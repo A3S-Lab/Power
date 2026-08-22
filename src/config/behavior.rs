@@ -116,6 +116,23 @@ impl PowerConfig {
     pub fn validate(&self) -> Result<()> {
         self.gpu.validate()?;
 
+        if self.prompt_cache_max_entries == 0
+            || self.prompt_cache_max_entries > MAX_PROMPT_CACHE_ENTRIES
+        {
+            return Err(PowerError::Config(format!(
+                "prompt_cache_max_entries must be between 1 and {MAX_PROMPT_CACHE_ENTRIES}, got {}",
+                self.prompt_cache_max_entries
+            )));
+        }
+        if self.prompt_cache_ttl_seconds == 0
+            || self.prompt_cache_ttl_seconds > MAX_PROMPT_CACHE_TTL_SECONDS
+        {
+            return Err(PowerError::Config(format!(
+                "prompt_cache_ttl_seconds must be between 1 and {MAX_PROMPT_CACHE_TTL_SECONDS}, got {}",
+                self.prompt_cache_ttl_seconds
+            )));
+        }
+
         if !is_valid_spec_mode(&self.spec_mode) {
             return Err(PowerError::Config(format!(
                 "unsupported spec_mode '{}'; expected one of: auto, off, prompt-lookup, ngram-context, draft-model, mtp, dflash, dspark",
@@ -361,6 +378,16 @@ impl PowerConfig {
         if let Ok(max_str) = std::env::var("A3S_POWER_MAX_MODELS") {
             self.max_loaded_models =
                 parse_required_env_override::<usize>("A3S_POWER_MAX_MODELS", &max_str)?;
+        }
+
+        if let Ok(value) = std::env::var("A3S_POWER_PROMPT_CACHE_MAX_ENTRIES") {
+            self.prompt_cache_max_entries =
+                parse_required_env_override::<usize>("A3S_POWER_PROMPT_CACHE_MAX_ENTRIES", &value)?;
+        }
+
+        if let Ok(value) = std::env::var("A3S_POWER_PROMPT_CACHE_TTL_SECONDS") {
+            self.prompt_cache_ttl_seconds =
+                parse_required_env_override::<u64>("A3S_POWER_PROMPT_CACHE_TTL_SECONDS", &value)?;
         }
 
         if let Ok(keep_alive) = std::env::var("A3S_POWER_KEEP_ALIVE") {

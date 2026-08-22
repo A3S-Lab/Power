@@ -10,6 +10,8 @@ fn test_config_new_fields_defaults() {
     assert!(config.num_thread.is_none());
     assert!(!config.flash_attention);
     assert_eq!(config.num_parallel, 1);
+    assert_eq!(config.prompt_cache_max_entries, 1);
+    assert_eq!(config.prompt_cache_ttl_seconds, 300);
 }
 
 #[test]

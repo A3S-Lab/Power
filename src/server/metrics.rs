@@ -8,6 +8,7 @@ use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
+use crate::backend::prompt_cache::PromptCacheMetricsSnapshot;
 use crate::server::lock::{read_lock, write_lock};
 use crate::server::state::AppState;
 
@@ -603,6 +604,86 @@ impl Metrics {
 
         output
     }
+
+    /// Render process metrics plus backend-owned prompt-cache counters.
+    pub fn render_with_prompt_cache(
+        &self,
+        prompt_cache: &[(&str, PromptCacheMetricsSnapshot)],
+    ) -> String {
+        let mut output = self.render();
+        append_prompt_cache_metrics(&mut output, prompt_cache);
+        output
+    }
+}
+
+fn append_prompt_cache_metrics(
+    output: &mut String,
+    snapshots: &[(&str, PromptCacheMetricsSnapshot)],
+) {
+    let definitions = [
+        (
+            "power_prompt_cache_requests_total",
+            "Total requests carrying prompt_cache_key.",
+            "counter",
+        ),
+        (
+            "power_prompt_cache_hits_total",
+            "Prompt-cache lookups that reused at least one token.",
+            "counter",
+        ),
+        (
+            "power_prompt_cache_misses_total",
+            "Prompt-cache lookups that reused no tokens.",
+            "counter",
+        ),
+        (
+            "power_prompt_cache_reused_tokens_total",
+            "Prompt tokens skipped through verified KV-prefix reuse.",
+            "counter",
+        ),
+        (
+            "power_prompt_cache_evaluated_tokens_total",
+            "Prompt tokens evaluated for keyed prompt-cache requests.",
+            "counter",
+        ),
+        (
+            "power_prompt_cache_evictions_total",
+            "Prompt-cache entries evicted by TTL or capacity.",
+            "counter",
+        ),
+        (
+            "power_prompt_cache_entries",
+            "Resident reusable prompt-cache contexts.",
+            "gauge",
+        ),
+    ];
+    for (name, help, metric_type) in definitions {
+        output.push_str(&format!("# HELP {name} {help}\n"));
+        output.push_str(&format!("# TYPE {name} {metric_type}\n"));
+        for (backend, snapshot) in snapshots {
+            let value = match name {
+                "power_prompt_cache_requests_total" => snapshot.requests,
+                "power_prompt_cache_hits_total" => snapshot.hits,
+                "power_prompt_cache_misses_total" => snapshot.misses,
+                "power_prompt_cache_reused_tokens_total" => snapshot.reused_tokens,
+                "power_prompt_cache_evaluated_tokens_total" => snapshot.evaluated_tokens,
+                "power_prompt_cache_evictions_total" => snapshot.evictions,
+                "power_prompt_cache_entries" => snapshot.entries,
+                _ => continue,
+            };
+            output.push_str(&format!(
+                "{name}{{backend=\"{}\"}} {value}\n",
+                prometheus_label(backend)
+            ));
+        }
+    }
+}
+
+fn prometheus_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 /// Normalize a request path for metric labels (strip IDs, query strings).
@@ -618,7 +699,8 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
         .models_loaded
         .store(state.loaded_model_count() as u64, Ordering::Relaxed);
 
-    let body = state.metrics.render();
+    let prompt_cache = state.backends.prompt_cache_metrics();
+    let body = state.metrics.render_with_prompt_cache(&prompt_cache);
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
@@ -657,6 +739,28 @@ mod tests {
         let metrics = Metrics::new();
         assert_eq!(metrics.models_loaded.load(Ordering::Relaxed), 0);
         assert_eq!(metrics.model_evictions.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_render_prompt_cache_metrics() {
+        let metrics = Metrics::new();
+        let output = metrics.render_with_prompt_cache(&[(
+            "llama.cpp",
+            PromptCacheMetricsSnapshot {
+                requests: 3,
+                hits: 2,
+                misses: 1,
+                reused_tokens: 1024,
+                evaluated_tokens: 128,
+                evictions: 1,
+                entries: 1,
+            },
+        )]);
+        assert!(output.contains("power_prompt_cache_hits_total{backend=\"llama.cpp\"} 2"));
+        assert!(
+            output.contains("power_prompt_cache_reused_tokens_total{backend=\"llama.cpp\"} 1024")
+        );
+        assert!(output.contains("power_prompt_cache_entries{backend=\"llama.cpp\"} 1"));
     }
 
     #[test]

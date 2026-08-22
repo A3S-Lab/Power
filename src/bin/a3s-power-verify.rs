@@ -1753,6 +1753,7 @@ mod tests {
             functions: None,
             function_call: None,
             parallel_tool_calls: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         }
@@ -1796,6 +1797,7 @@ mod tests {
             seed: Some(7),
             response_format: None,
             suffix: None,
+            prompt_cache_key: None,
             keep_alive: None,
             unsupported: Default::default(),
         }

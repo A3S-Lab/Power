@@ -96,6 +96,8 @@ jobs:
         run: tools/test-release-evidence-commit.sh
       - name: Test release workflow contract
         run: tools/test-release-workflow-contract.sh
+      - name: Test prompt-cache benchmark client
+        run: python3 -m unittest tools/test_prompt_cache_benchmark.py
 
   windows-embedded:
     name: Check (windows-embedded-inference)

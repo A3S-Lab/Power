@@ -27,6 +27,10 @@ use crate::model::manifest::{ModelFormat, ModelManifest};
 #[cfg(feature = "llamacpp")]
 use super::chat_template::{self, ChatTemplateKind};
 #[cfg(feature = "llamacpp")]
+use super::prompt_cache::{
+    BoundedPromptCache, PromptCacheMetricsSnapshot, PromptCacheSupport, PromptCacheTelemetry,
+};
+#[cfg(feature = "llamacpp")]
 use super::types::EffectivePromptDigest;
 use super::types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk, EmbeddingRequest,
@@ -354,16 +358,10 @@ struct CachedContext {
     evaluated_tokens: Vec<llama_cpp_2::token::LlamaToken>,
     /// Context size this was created with.
     ctx_size: u32,
-    /// Last time this cache entry was used (for TTL eviction).
-    last_used: std::time::Instant,
 }
 
 #[cfg(feature = "llamacpp")]
-type SessionCache = Arc<Mutex<HashMap<String, CachedContext>>>;
-
-/// TTL for idle session KV caches. Sessions not used within this duration are evicted.
-#[cfg(feature = "llamacpp")]
-const SESSION_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+type SessionCache = Arc<Mutex<BoundedPromptCache<CachedContext>>>;
 
 /// Safety: LlamaContext wraps a C pointer that is safe to send between threads
 /// when accessed sequentially (protected by Mutex). The llama.cpp library is
@@ -385,7 +383,7 @@ unsafe impl Send for SendableLoraAdapter {}
 #[cfg(feature = "llamacpp")]
 fn lock_session_cache(
     cache: &SessionCache,
-) -> Result<MutexGuard<'_, HashMap<String, CachedContext>>> {
+) -> Result<MutexGuard<'_, BoundedPromptCache<CachedContext>>> {
     cache.lock().map_err(|_| {
         PowerError::InferenceFailed("llama.cpp: session cache lock poisoned".to_string())
     })
@@ -399,12 +397,79 @@ fn cache_session_context(cache: &SessionCache, session_id: &str, context: Cached
         }
         Err(e) => {
             tracing::warn!(
-                session = %session_id,
                 error = %e,
                 "llama.cpp: failed to return context to session cache"
             );
         }
     }
+}
+
+#[cfg(feature = "llamacpp")]
+fn cache_prompt_boundary_context(
+    cache: &SessionCache,
+    session_id: &str,
+    mut ctx: llama_cpp_2::context::LlamaContext<'static>,
+    mut prompt_tokens: Vec<llama_cpp_2::token::LlamaToken>,
+    ctx_size: u32,
+    checkpoint: Option<&llama_cpp_2::SeqState>,
+) {
+    let restored = match checkpoint {
+        Some(checkpoint) => match ctx.state_seq_set(checkpoint, 0) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "llama.cpp: failed to restore prompt-boundary recurrent state; clearing cached context"
+                );
+                false
+            }
+        },
+        None => true,
+    };
+    let truncated = u32::try_from(prompt_tokens.len())
+        .ok()
+        .filter(|_| restored)
+        .map(|prompt_len| ctx.clear_kv_cache_seq(Some(0), Some(prompt_len), None));
+    if !matches!(&truncated, Some(Ok(true))) {
+        tracing::debug!(
+            result = ?truncated,
+            "llama.cpp: prompt-boundary normalization unavailable; retaining an allocated cache miss"
+        );
+        ctx.clear_kv_cache();
+        prompt_tokens.clear();
+    }
+    cache_session_context(
+        cache,
+        session_id,
+        CachedContext {
+            ctx,
+            evaluated_tokens: prompt_tokens,
+            ctx_size,
+        },
+    );
+}
+
+/// Return the prefix that may stay resident while still producing fresh logits.
+///
+/// If the entire new prompt matches, llama.cpp must decode its final token
+/// again. KV truncation alone does not restore the logits row for that token;
+/// the context may still expose logits from a generated suffix.
+#[cfg(feature = "llamacpp")]
+fn matched_and_reusable_prompt_prefix_len<T: PartialEq>(
+    cached: &[T],
+    prompt: &[T],
+) -> (usize, usize) {
+    let common_len = cached
+        .iter()
+        .zip(prompt.iter())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let reusable_len = if common_len == prompt.len() {
+        common_len.saturating_sub(1)
+    } else {
+        common_len
+    };
+    (common_len, reusable_len)
 }
 
 #[cfg(feature = "llamacpp")]
@@ -571,6 +636,8 @@ pub struct LlamaCppBackend {
     models: RwLock<HashMap<String, LoadedModel>>,
     #[cfg(feature = "llamacpp")]
     llama_backend: std::sync::OnceLock<llama_cpp_2::llama_backend::LlamaBackend>,
+    #[cfg(feature = "llamacpp")]
+    prompt_cache_telemetry: Arc<PromptCacheTelemetry>,
     #[allow(dead_code)]
     config: Arc<PowerConfig>,
 }
@@ -582,8 +649,19 @@ impl LlamaCppBackend {
             models: RwLock::new(HashMap::new()),
             #[cfg(feature = "llamacpp")]
             llama_backend: std::sync::OnceLock::new(),
+            #[cfg(feature = "llamacpp")]
+            prompt_cache_telemetry: Arc::new(PromptCacheTelemetry::default()),
             config,
         }
+    }
+
+    #[cfg(feature = "llamacpp")]
+    fn new_session_cache(&self) -> SessionCache {
+        Arc::new(Mutex::new(BoundedPromptCache::new(
+            self.config.prompt_cache_max_entries,
+            std::time::Duration::from_secs(self.config.prompt_cache_ttl_seconds),
+            self.prompt_cache_telemetry.clone(),
+        )))
     }
 }
 
@@ -600,6 +678,14 @@ impl Backend for LlamaCppBackend {
 
     fn supports(&self, format: &ModelFormat) -> bool {
         matches!(format, ModelFormat::Gguf)
+    }
+
+    fn prompt_cache_support(&self) -> PromptCacheSupport {
+        PromptCacheSupport::PrefixMatch
+    }
+
+    fn prompt_cache_metrics(&self) -> Option<PromptCacheMetricsSnapshot> {
+        Some(self.prompt_cache_telemetry.snapshot())
     }
 
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {
@@ -785,7 +871,7 @@ impl Backend for LlamaCppBackend {
                 load_mode: LoadMode::Inference,
                 n_ctx_train,
                 speculative_capabilities,
-                session_cache: Arc::new(Mutex::new(HashMap::new())),
+                session_cache: self.new_session_cache(),
                 lora_adapter,
                 projector_path: manifest.projector_path.clone(),
                 mtmd_ctx,
@@ -1188,12 +1274,6 @@ impl Backend for LlamaCppBackend {
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<CompletionResponseChunk>>(32);
 
-        // Evict stale session caches before starting inference.
-        {
-            let mut cache = lock_session_cache(&session_cache)?;
-            cache.retain(|_, v| v.last_used.elapsed() < SESSION_CACHE_TTL);
-        }
-
         let session_id = request.session_id.clone();
         // Anonymous greedy requests receive a fresh context, so their stateless
         // sampler can be owned by that context and executed in the CUDA graph.
@@ -1201,6 +1281,7 @@ impl Backend for LlamaCppBackend {
         // a request-specific backend sampler.
         let plain_backend_greedy = session_id.is_none() && use_backend_greedy(&sampling_settings);
         let session_cache_for_return = session_cache.clone();
+        let prompt_cache_telemetry = self.prompt_cache_telemetry.clone();
 
         // Run inference in a blocking task
         tokio::task::spawn_blocking(move || {
@@ -1485,7 +1566,7 @@ impl Backend for LlamaCppBackend {
             // always get a fresh context to prevent cross-request cache leakage.
             let cached = match session_id.as_deref() {
                 Some(sid) => match lock_session_cache(&session_cache) {
-                    Ok(mut cache) => cache.remove(sid),
+                    Ok(mut cache) => cache.take(sid),
                     Err(e) => {
                         send_completion_result(&tx, Err(e));
                         return;
@@ -1496,28 +1577,33 @@ impl Backend for LlamaCppBackend {
             let (mut ctx, skip_tokens) = match cached {
                 Some(mut cached) if cached.ctx_size == ctx_size => {
                     // Find common prefix between cached tokens and new tokens
-                    let common_len = cached
-                        .evaluated_tokens
-                        .iter()
-                        .zip(tokens.iter())
-                        .take_while(|(a, b)| a == b)
-                        .count();
+                    let (common_len, mut reusable_len) =
+                        matched_and_reusable_prompt_prefix_len(&cached.evaluated_tokens, &tokens);
 
                     if common_len > 0 && common_len <= tokens.len() {
                         // Remove KV cache entries after the common prefix
-                        if common_len < cached.evaluated_tokens.len() {
-                            let _ = cached.ctx.clear_kv_cache_seq(
+                        if reusable_len < cached.evaluated_tokens.len() {
+                            let truncated = cached.ctx.clear_kv_cache_seq(
                                 Some(0),
-                                Some(common_len as u32),
+                                Some(reusable_len as u32),
                                 None,
                             );
+                            if !matches!(&truncated, Ok(true)) {
+                                tracing::debug!(
+                                    result = ?truncated,
+                                    "llama.cpp cannot roll this cached state back partially; using an exact cache miss"
+                                );
+                                cached.ctx.clear_kv_cache();
+                                reusable_len = 0;
+                            }
                         }
                         tracing::debug!(
-                            common = common_len,
+                            matched = common_len,
+                            reused = reusable_len,
                             total = tokens.len(),
                             "Reusing KV cache prefix"
                         );
-                        (cached.ctx, common_len)
+                        (cached.ctx, reusable_len)
                     } else {
                         // No useful prefix — clear and reuse the context
                         cached.ctx.clear_kv_cache();
@@ -1526,10 +1612,11 @@ impl Backend for LlamaCppBackend {
                 }
                 _ => {
                     // No cached context or size mismatch — create new
+                    let cache_rollback_snapshots = u32::from(session_id.is_some());
                     let ctx_params = context_settings.params(
                         llama_cpp_2::context::params::LlamaContextType::Default,
-                        0,
-                        1,
+                        cache_rollback_snapshots,
+                        cache_rollback_snapshots.saturating_add(1),
                         1,
                     );
                     let context_result = if plain_backend_greedy {
@@ -1571,6 +1658,10 @@ impl Backend for LlamaCppBackend {
                     }
                 }
             };
+            if session_id.is_some() {
+                prompt_cache_telemetry
+                    .record_lookup(skip_tokens, tokens.len().saturating_sub(skip_tokens));
+            }
 
             // Only evaluate tokens not already in the KV cache
             let tokens_to_eval = &tokens[skip_tokens..];
@@ -1648,6 +1739,26 @@ impl Backend for LlamaCppBackend {
             }
             let prompt_eval_duration_ns = prompt_eval_start.elapsed().as_nanos() as u64;
 
+            // Preserve recurrent/SWA state at the prompt boundary on the same
+            // device. Generation may advance the context; the boundary is
+            // restored before the reusable context returns to the cache.
+            let prompt_boundary_checkpoint = if session_id.is_some() {
+                let flags = llama_cpp_2::LlamaStateSeqFlags::PARTIAL_ONLY
+                    | llama_cpp_2::LlamaStateSeqFlags::ON_DEVICE;
+                match ctx.state_seq_get(0, flags) {
+                    Ok(checkpoint) => Some(checkpoint),
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "llama.cpp: failed to capture prompt-boundary recurrent state"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             let mut sampler = match build_llamacpp_sampler(&model_arc, &sampling_settings) {
                 Ok(sampler) => sampler,
                 Err(error) => {
@@ -1658,7 +1769,7 @@ impl Backend for LlamaCppBackend {
 
             let eos_token = model_arc.token_eos();
             let mut generated_text = String::new();
-            let mut all_tokens = tokens.clone(); // Track all tokens for cache
+            let prompt_tokens_for_cache = tokens.clone();
 
             // Generate tokens
             for generated_count in 0..max_tokens {
@@ -1677,23 +1788,18 @@ impl Backend for LlamaCppBackend {
                         }),
                     );
                     // Return context to session cache (only when session_id is set).
-                    all_tokens.push(new_token);
                     if let Some(ref sid) = session_id {
-                        cache_session_context(
+                        cache_prompt_boundary_context(
                             &session_cache_for_return,
                             sid,
-                            CachedContext {
-                                ctx,
-                                evaluated_tokens: all_tokens,
-                                ctx_size,
-                                last_used: std::time::Instant::now(),
-                            },
+                            ctx,
+                            prompt_tokens_for_cache,
+                            ctx_size,
+                            prompt_boundary_checkpoint.as_ref(),
                         );
                     }
                     return;
                 }
-
-                all_tokens.push(new_token);
 
                 let text = {
                     let mut decoder = encoding_rs::UTF_8.new_decoder();
@@ -1738,15 +1844,13 @@ impl Backend for LlamaCppBackend {
                 ) {
                     // Receiver dropped — cache context if session is set
                     if let Some(ref sid) = session_id {
-                        cache_session_context(
+                        cache_prompt_boundary_context(
                             &session_cache_for_return,
                             sid,
-                            CachedContext {
-                                ctx,
-                                evaluated_tokens: all_tokens,
-                                ctx_size,
-                                last_used: std::time::Instant::now(),
-                            },
+                            ctx,
+                            prompt_tokens_for_cache,
+                            ctx_size,
+                            prompt_boundary_checkpoint.as_ref(),
                         );
                     }
                     return;
@@ -1755,15 +1859,13 @@ impl Backend for LlamaCppBackend {
                 if should_stop {
                     // Return context to session cache
                     if let Some(ref sid) = session_id {
-                        cache_session_context(
+                        cache_prompt_boundary_context(
                             &session_cache_for_return,
                             sid,
-                            CachedContext {
-                                ctx,
-                                evaluated_tokens: all_tokens,
-                                ctx_size,
-                                last_used: std::time::Instant::now(),
-                            },
+                            ctx,
+                            prompt_tokens_for_cache,
+                            ctx_size,
+                            prompt_boundary_checkpoint.as_ref(),
                         );
                     }
                     return;
@@ -1804,15 +1906,13 @@ impl Backend for LlamaCppBackend {
                 }),
             );
             if let Some(ref sid) = session_id {
-                cache_session_context(
+                cache_prompt_boundary_context(
                     &session_cache_for_return,
                     sid,
-                    CachedContext {
-                        ctx,
-                        evaluated_tokens: all_tokens,
-                        ctx_size,
-                        last_used: std::time::Instant::now(),
-                    },
+                    ctx,
+                    prompt_tokens_for_cache,
+                    ctx_size,
+                    prompt_boundary_checkpoint.as_ref(),
                 );
             }
         });
@@ -1910,7 +2010,7 @@ impl Backend for LlamaCppBackend {
                     load_mode: LoadMode::Embedding,
                     n_ctx_train,
                     speculative_capabilities,
-                    session_cache: Arc::new(Mutex::new(HashMap::new())),
+                    session_cache: self.new_session_cache(),
                     lora_adapter,
                     projector_path,
                     mtmd_ctx: None, // Embedding models don't use multimodal projectors
@@ -2381,7 +2481,11 @@ mod tests {
     #[cfg(feature = "llamacpp")]
     #[test]
     fn test_session_cache_lock_poison_returns_error() {
-        let cache: SessionCache = Arc::new(Mutex::new(HashMap::new()));
+        let cache: SessionCache = Arc::new(Mutex::new(BoundedPromptCache::new(
+            1,
+            std::time::Duration::from_secs(300),
+            Arc::new(PromptCacheTelemetry::default()),
+        )));
         let poison_cache = Arc::clone(&cache);
         let _ = std::panic::catch_unwind(move || {
             let _guard = poison_cache.lock().unwrap();
@@ -2393,6 +2497,24 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("session cache lock poisoned"));
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_reusable_prompt_prefix_keeps_fresh_logits_boundary() {
+        assert_eq!(
+            matched_and_reusable_prompt_prefix_len(&[1, 2, 3, 9], &[1, 2, 4]),
+            (2, 2)
+        );
+        assert_eq!(
+            matched_and_reusable_prompt_prefix_len(&[1, 2, 3, 9], &[1, 2, 3]),
+            (3, 2)
+        );
+        assert_eq!(matched_and_reusable_prompt_prefix_len(&[1], &[1]), (1, 0));
+        assert_eq!(
+            matched_and_reusable_prompt_prefix_len(&[1, 2], &[3, 4]),
+            (0, 0)
+        );
     }
 
     #[cfg(feature = "llamacpp")]

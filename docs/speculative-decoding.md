@@ -11,6 +11,11 @@ while the target model remains the source of truth for every emitted token.
 Power exposes one control plane for zero-weight lookup, independent draft
 models, native MTP heads, DFlash, DSpark, and future proposal algorithms.
 
+DFlash and DSpark are strategy identities, not implemented speed labels. The
+current backend capability detector advertises native MTP only when compatible
+prediction tensors exist. No reviewed DFlash or DSpark adapter artifact and
+graph is present, so explicitly selecting either mode fails closed.
+
 ## Ownership boundary
 
 Power owns model-independent behavior:
@@ -53,6 +58,20 @@ Current executable adapters are:
 `draft-model`, `dflash`, and `dspark` are part of the shared protocol but stay
 unavailable until the loaded model supplies a compatible adapter artifact and
 the backend implements its graph. This is intentional fail-closed behavior.
+
+## Prefix-cache composition
+
+Prompt-prefix caching reduces repeated prefill; it is not a speculative
+proposal algorithm. The public `prompt_cache_key` contract currently reaches
+the llama.cpp text path through an identity-, endpoint-, and model-scoped
+opaque key.
+
+Native MTP and cached llama.cpp sessions do not yet compose. MTP checkpoints
+target KV, recurrent draft state, sampler state, and rollback snapshots, while
+the current cache owns an ordinary target context across requests. Until one
+adapter owns that complete lifecycle, explicit `mtp` plus a cache key fails
+closed and `auto` selects target-only decoding for the keyed request. See
+[Keyed Prompt-Prefix Cache](prompt-prefix-cache.md).
 
 ## Verification transaction
 

@@ -56,6 +56,19 @@ cargo build --locked --release --no-default-features \
 
 健康检查与模型检查端点公开实际生效的非敏感配置，使基准和部署自动化能够拒绝配置漂移。
 
+## 带键的提示词前缀复用
+
+后续请求会共享长前缀时，可在文本对话或补全请求中加入 `prompt_cache_key`。llama.cpp 只在 KV 与循环状态都能精确回滚时复用 token 前缀，再计算剩余后缀；无法证明的混合循环状态回滚会成为可观测的 miss。mistral.rs、picolm、proxy 与多模态请求目前返回 `prompt_cache_unsupported`，不会静默忽略该字段。
+
+```text
+prompt_cache_max_entries = 1
+prompt_cache_ttl_seconds = 300
+```
+
+Power 按认证身份、端点与模型对 key 做哈希隔离；原始 key 不进入后端缓存或回执。`/health` 公布支持后端和容量边界，`/metrics` 公布请求、命中、未命中、复用／实际计算 token、驱逐与常驻条目。开启 usage 的补全流会把后端 prefill 时长与 TTFT 分开公布；规范基准客户端同时检查这些时长和严格的 miss／hit 计数差值。
+
+当前原生 llama.cpp MTP 还不能与跨请求缓存上下文共用同一套状态事务。显式 MTP 加缓存 key 会失败关闭；`auto` 为该请求选择精确的目标模型单路解码。前缀缓存优化的是重复 prefill 与 TTFT，不是稳态 decode token/s。完整约束见[规范缓存文档](https://github.com/A3S-Lab/Power/blob/main/docs/prompt-prefix-cache.md)。
+
 ## 制品安装
 
 制品安装器要求提供预期文件名、最大字节数与 SHA-256 摘要。它将数据流式写入私有暂存文件，验证精确字节，再在跨进程锁下原子提交。离线策略找不到已验证制品时会失败关闭。

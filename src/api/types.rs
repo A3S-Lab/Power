@@ -146,6 +146,9 @@ pub struct ChatCompletionRequest {
     /// because the local backend cannot enforce single tool-call generation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
+    /// A3S extension: opaque caller-selected identity for prompt-prefix KV reuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
     /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
     /// Overrides the server default for this request only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -700,6 +703,9 @@ pub struct CompletionRequest {
     /// fill-in-the-middle path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suffix: Option<String>,
+    /// A3S extension: opaque caller-selected identity for prompt-prefix KV reuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
     /// How long to keep the model loaded after the request (e.g. "5m", "0", "1h").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,
@@ -908,6 +914,9 @@ pub struct Usage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamingPerformance {
     pub time_to_first_token_ns: u64,
+    /// Backend-measured prompt evaluation time, when the backend reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_eval_duration_ns: Option<u64>,
     pub inter_token_duration_ns: u64,
     pub completion_token_intervals: u32,
 }
@@ -943,6 +952,22 @@ mod tests {
         assert!(req.stream.is_none());
         assert!(req.temperature.is_none());
         assert!(req.tools.is_none());
+    }
+
+    #[test]
+    fn test_chat_completion_request_accepts_prompt_cache_key_extension() {
+        let json = r#"{
+            "model": "llama3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "prompt_cache_key": "agent-system-prompt-v1"
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            req.prompt_cache_key.as_deref(),
+            Some("agent-system-prompt-v1")
+        );
+        assert!(req.unsupported_fields().is_empty());
     }
 
     #[test]
@@ -1258,6 +1283,19 @@ mod tests {
         let req: CompletionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.model, "llama3");
         assert_eq!(req.prompt, "Hello");
+    }
+
+    #[test]
+    fn test_completion_request_accepts_prompt_cache_key_extension() {
+        let json = r#"{
+            "model": "llama3",
+            "prompt": "Hello",
+            "prompt_cache_key": "shared-document-v2"
+        }"#;
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(req.prompt_cache_key.as_deref(), Some("shared-document-v2"));
+        assert!(req.unsupported_fields().is_empty());
     }
 
     #[test]

@@ -392,6 +392,30 @@ fn test_validate_rejects_unknown_spec_mode() {
 }
 
 #[test]
+fn test_validate_rejects_unbounded_prompt_cache_settings() {
+    for config in [
+        PowerConfig {
+            prompt_cache_max_entries: 0,
+            ..Default::default()
+        },
+        PowerConfig {
+            prompt_cache_max_entries: MAX_PROMPT_CACHE_ENTRIES + 1,
+            ..Default::default()
+        },
+        PowerConfig {
+            prompt_cache_ttl_seconds: 0,
+            ..Default::default()
+        },
+        PowerConfig {
+            prompt_cache_ttl_seconds: MAX_PROMPT_CACHE_TTL_SECONDS + 1,
+            ..Default::default()
+        },
+    ] {
+        assert!(config.validate().is_err());
+    }
+}
+
+#[test]
 fn test_validate_accepts_model_neutral_dspark_strategy() {
     let config = PowerConfig {
         spec_mode: "dspark".to_string(),
