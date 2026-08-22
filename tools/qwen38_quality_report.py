@@ -53,6 +53,7 @@ def pair_metrics(base: dict[str, Any], candidate: dict[str, Any]) -> dict[str, A
         if not is_truncated(left) and not is_truncated(right)
     ]
     return {
+        "task_count": len(pairs),
         "base_correct": sum(row["correct"] for row, _ in pairs),
         "candidate_correct": sum(row["correct"] for _, row in pairs),
         "gains": gains,
@@ -95,6 +96,19 @@ def describe(values: Iterable[float | None]) -> dict[str, float | None]:
         "minimum": min(selected),
         "maximum": max(selected),
     }
+
+
+def one_speculative_strategy(reports: Iterable[dict[str, Any]]) -> str | None:
+    strategies = {
+        report.get("strategy")
+        for report in reports
+        if report.get("strategy") is not None
+    }
+    if len(strategies) > 1:
+        raise ValueError(
+            f"runtime reports mix speculative strategies: {sorted(strategies)}"
+        )
+    return next(iter(strategies), None)
 
 
 def aggregate_reports(
@@ -205,6 +219,7 @@ def aggregate_reports(
         ]
         if runtime_reports:
             modes[mode]["speculative_runtime"] = {
+                "strategy": one_speculative_strategy(runtime_reports),
                 "overall": {
                     field: describe(
                         report["overall"].get(field, 0) for report in runtime_reports
@@ -322,15 +337,19 @@ def aggregate_sweep_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "task_count": len(items[0]["results"]),
         }
-        runtime = [
-            item["speculative_runtime"]["overall"]
+        runtime_reports = [
+            item["speculative_runtime"]
             for item in items
             if item.get("speculative_runtime") is not None
         ]
-        if runtime:
+        if runtime_reports:
+            runtime = [report["overall"] for report in runtime_reports]
             mode_summary["speculative_runtime"] = {
-                field: describe(report.get(field) for report in runtime)
-                for field in runtime_fields
+                "strategy": one_speculative_strategy(runtime_reports),
+                **{
+                    field: describe(report.get(field) for report in runtime)
+                    for field in runtime_fields
+                },
             }
         modes[mode] = mode_summary
 
@@ -393,6 +412,7 @@ def render_markdown(aggregate: dict[str, Any]) -> str:
         "tbq4-off": "TBQ4 mixed artifact, speculation off",
         "tbq4-mtp-fr": "TBQ4 + MTP + FR",
         "tbq4-mtp-full-vocab": "TBQ4 + full-vocabulary MTP",
+        "q6-dspark": "Untouched Q6_K + DSpark Q4",
     }
     lines = [
         "# Qwen3.8-27B quality and workload-throughput matrix",
@@ -420,4 +440,22 @@ def render_markdown(aggregate: dict[str, Any]) -> str:
             "",
         ]
     )
+    if aggregate["paired_runs"]:
+        lines.extend(
+            [
+                "## Paired comparisons",
+                "",
+                "| Pair | Repetition | Score gains / losses | Strict gains / losses | Exact output hashes |",
+                "| --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for pair, runs in aggregate["paired_runs"].items():
+            for repetition, metrics in enumerate(runs, start=1):
+                lines.append(
+                    f"| {pair} | {repetition} | {metrics['gains']} / "
+                    f"{metrics['losses']} | {metrics['strict_gains']} / "
+                    f"{metrics['strict_losses']} | "
+                    f"{metrics['content_sha256_parity']}/{metrics['task_count']} |"
+                )
+        lines.append("")
     return "\n".join(lines)

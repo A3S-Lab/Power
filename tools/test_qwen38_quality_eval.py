@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import qwen38_quality_eval as quality
+import qwen38_quality_report as quality_report
 
 
 def result_row(
@@ -63,10 +64,10 @@ class PredictionTests(unittest.TestCase):
 
 class HttpTests(unittest.TestCase):
     def test_completion_body_locks_logical_batch_size(self) -> None:
-        body = quality.completion_body("model", "prompt", 32, 42, 14)
+        body = quality.completion_body("model", "prompt", 32, 42, 512, 12)
 
-        self.assertEqual(body["num_batch"], 14)
-        self.assertEqual(body["num_ctx"], 4096)
+        self.assertEqual(body["num_batch"], 12)
+        self.assertEqual(body["num_ctx"], 512)
 
     def test_transient_url_error_is_retried(self) -> None:
         class Response:
@@ -147,6 +148,7 @@ class TaskTests(unittest.TestCase):
         )
 
         self.assertEqual(args.num_batch, 14)
+        self.assertEqual(args.num_ctx, 4096)
 
     def test_atomic_write_retries_a_transient_windows_reader_lock(self) -> None:
         with (
@@ -246,8 +248,9 @@ class RuntimeLogTests(unittest.TestCase):
                 "\n".join([line(4, 1), line(10, 4), line(12, 6)]),
                 encoding="utf-8",
             )
-            metrics = quality.parse_mtp_log(path, 2)
+            metrics = quality.parse_speculative_log(path, 2)
         assert metrics is not None
+        self.assertEqual(metrics["strategy"], "mtp")
         self.assertEqual(metrics["overall"]["accepted_tokens"], 10)
         self.assertEqual(metrics["overall"]["drafted_tokens"], 16)
         self.assertEqual(metrics["overall"]["fallback_replays"], 2)
@@ -266,7 +269,7 @@ class RuntimeLogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "server.log"
             path.write_text(line, encoding="utf-8")
-            metrics = quality.parse_mtp_log(path, 1)
+            metrics = quality.parse_speculative_log(path, 1)
 
         assert metrics is not None
         overall = metrics["overall"]
@@ -291,7 +294,7 @@ class RuntimeLogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "server.log"
             path.write_text(line, encoding="utf-8")
-            metrics = quality.parse_mtp_log(path, 1)
+            metrics = quality.parse_speculative_log(path, 1)
 
         assert metrics is not None
         overall = metrics["overall"]
@@ -299,6 +302,25 @@ class RuntimeLogTests(unittest.TestCase):
         self.assertAlmostEqual(
             overall["fr_correction_outside_token_id_prefix_fraction"], 0.5
         )
+
+    def test_speculative_log_parser_accepts_dspark_and_rejects_mixed_modes(self) -> None:
+        def line(strategy: str) -> str:
+            return (
+                f'speculative completion finished strategy="{strategy}" rounds=2 '
+                "drafted_tokens=4 accepted_tokens=3 emitted_tokens=4 "
+                "verified_emitted_tokens=4 tokens_per_second=80.0 fallback_replays=0"
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.log"
+            path.write_text(line("dspark"), encoding="utf-8")
+            metrics = quality.parse_speculative_log(path, 1)
+            assert metrics is not None
+            self.assertEqual(metrics["strategy"], "dspark")
+
+            path.write_text("\n".join([line("mtp"), line("dspark")]), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "mix strategies"):
+                quality.parse_speculative_log(path, 2)
 
 
 class AggregateTests(unittest.TestCase):
@@ -319,6 +341,7 @@ class AggregateTests(unittest.TestCase):
             "request": {
                 "num_ctx": 4096,
                 "num_batch": 14,
+                "max_tokens_cap": 256,
                 "warmup_requests": 1,
             },
             "results": rows,
@@ -332,6 +355,8 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(metadata["result_count"], 1)
         self.assertEqual(metadata["completed"], 1)
         self.assertFalse(metadata["has_speculative_runtime"])
+        self.assertIsNone(metadata["speculative_strategy"])
+        self.assertEqual(metadata["max_tokens_cap"], 256)
         self.assertNotIn("content", metadata)
 
     def test_arbitrary_sweep_modes_are_aggregated(self) -> None:
@@ -349,6 +374,7 @@ class AggregateTests(unittest.TestCase):
                     "results": rows,
                     "summary": quality.report_summary(rows),
                     "speculative_runtime": {
+                        "strategy": "mtp",
                         "overall": {
                             "weighted_acceptance_rate": 0.5,
                             "verified_tokens_per_target_pass": 2.0,
@@ -372,6 +398,58 @@ class AggregateTests(unittest.TestCase):
             ["weighted_acceptance_rate"]["mean"],
             0.5,
         )
+        self.assertEqual(
+            aggregate["modes"]["fr8192-k7-b14-fixed"]["speculative_runtime"]
+            ["strategy"],
+            "mtp",
+        )
+
+    def test_dspark_strategy_and_exact_output_parity_are_aggregated(self) -> None:
+        rows = [
+            result_row("a", "A", "A", strict_prediction="A", content_hash="one"),
+            result_row("b", "B", "B", strict_prediction="B", content_hash="two"),
+        ]
+        runtime = {
+            "strategy": "dspark",
+            "overall": {},
+            "by_benchmark": {
+                benchmark: {} for benchmark in ("mmlu", "gsm8k", "ceval")
+            },
+        }
+        reports = []
+        for order, mode in enumerate(("q6-off", "q6-dspark"), 1):
+            reports.append(
+                {
+                    "mode_label": mode,
+                    "repetition": 1,
+                    "order_index": order,
+                    "model_sha256": "same-q6-model",
+                    "tasks_sha256": "tasks",
+                    "server_sha256": "server",
+                    "results": rows,
+                    "summary": quality.report_summary(rows),
+                    "speculative_runtime": runtime if mode == "q6-dspark" else None,
+                }
+            )
+
+        aggregate = quality.aggregate_reports(
+            reports, comparisons=[("q6-off", "q6-dspark")]
+        )
+        paired = aggregate["paired_runs"]["q6-off -> q6-dspark"][0]
+
+        self.assertEqual(
+            aggregate["modes"]["q6-dspark"]["speculative_runtime"]["strategy"],
+            "dspark",
+        )
+        self.assertEqual(paired["task_count"], 2)
+        self.assertEqual(paired["content_sha256_parity"], 2)
+        self.assertIn("Untouched Q6_K + DSpark Q4", quality.render_markdown(aggregate))
+
+    def test_mixed_speculative_strategies_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "mix speculative strategies"):
+            quality_report.one_speculative_strategy(
+                [{"strategy": "mtp"}, {"strategy": "dspark"}]
+            )
 
     def test_three_mode_reports_are_aggregated(self) -> None:
         reports = []

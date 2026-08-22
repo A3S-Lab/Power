@@ -390,7 +390,7 @@ def report_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def parse_mtp_log(path: Path, task_count: int) -> dict[str, Any] | None:
+def parse_speculative_log(path: Path, task_count: int) -> dict[str, Any] | None:
     if not path.exists():
         return None
     fields = (
@@ -426,7 +426,10 @@ def parse_mtp_log(path: Path, task_count: int) -> dict[str, Any] | None:
         line = ANSI_ESCAPE.sub("", raw_line)
         if "speculative completion finished" not in line:
             continue
-        record: dict[str, Any] = {}
+        strategy = re.search(r'\bstrategy="?([a-z0-9-]+)"?', line)
+        if strategy is None:
+            raise ValueError("missing strategy in speculative completion log")
+        record: dict[str, Any] = {"strategy": strategy.group(1)}
         for field in fields:
             match = re.search(rf"\b{field}=([0-9]+(?:\.[0-9]+)?)", line)
             if match is None:
@@ -449,8 +452,15 @@ def parse_mtp_log(path: Path, task_count: int) -> dict[str, Any] | None:
     if not records:
         return None
     if len(records) < task_count:
-        raise ValueError(f"expected at least {task_count} MTP records, got {len(records)}")
+        raise ValueError(
+            f"expected at least {task_count} speculative records, got {len(records)}"
+        )
     records = records[-task_count:]
+    strategies = {record["strategy"] for record in records}
+    if len(strategies) != 1:
+        raise ValueError(
+            f"speculative completion records mix strategies: {sorted(strategies)}"
+        )
 
     def summarize(selected: list[dict[str, Any]]) -> dict[str, Any]:
         drafted = sum(row["drafted_tokens"] for row in selected)
@@ -537,7 +547,7 @@ def parse_mtp_log(path: Path, task_count: int) -> dict[str, Any] | None:
             "aggregate_reported_tokens_per_second": emitted / measured,
         }
 
-    result = {"overall": summarize(records)}
+    result = {"strategy": strategies.pop(), "overall": summarize(records)}
     if task_count == 100:
         result["by_benchmark"] = {
             "mmlu": summarize(records[:50]),
@@ -552,6 +562,7 @@ def completion_body(
     prompt: str,
     max_tokens: int,
     seed: int,
+    num_ctx: int,
     num_batch: int,
 ) -> dict[str, Any]:
     return {
@@ -560,7 +571,7 @@ def completion_body(
         "temperature": 0.0,
         "top_p": 1.0,
         "max_tokens": max_tokens,
-        "num_ctx": 4096,
+        "num_ctx": num_ctx,
         "num_batch": num_batch,
         "seed": seed,
         "stream": False,
@@ -579,7 +590,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
     request_settings = {
         "temperature": 0.0,
         "top_p": 1.0,
-        "num_ctx": 4096,
+        "num_ctx": args.num_ctx,
         "num_batch": args.num_batch,
         "seed": args.seed,
         "warmup_requests": args.warmup_requests,
@@ -595,6 +606,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
                 "Return exactly `FINAL: B`. What is 17 * 6? A. 92 B. 102 C. 112 D. 122",
                 64,
                 args.seed,
+                args.num_ctx,
                 args.num_batch,
             ),
             timeout_seconds=args.timeout_seconds,
@@ -646,6 +658,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
                     task["prompt"],
                     max_tokens,
                     args.seed,
+                    args.num_ctx,
                     args.num_batch,
                 ),
                 timeout_seconds=args.timeout_seconds,
@@ -705,7 +718,9 @@ def run_evaluation(args: argparse.Namespace) -> None:
 
     report["completed_at"] = utc_now()
     report["summary"] = report_summary(report["results"])
-    report["speculative_runtime"] = parse_mtp_log(args.server_log, len(tasks))
+    report["speculative_runtime"] = parse_speculative_log(
+        args.server_log, len(tasks)
+    )
     atomic_write(args.output, report)
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
 
@@ -727,12 +742,16 @@ def report_metadata(report: dict[str, Any]) -> dict[str, Any]:
         "seed": report.get("seed"),
         "num_ctx": request.get("num_ctx"),
         "num_batch": request.get("num_batch"),
+        "max_tokens_cap": request.get("max_tokens_cap"),
         "warmup_requests": request.get("warmup_requests"),
         "result_count": len(report.get("results") or []),
         "completed_at": report.get("completed_at"),
         "completed": overall.get("completed"),
         "errors": overall.get("errors"),
         "has_speculative_runtime": report.get("speculative_runtime") is not None,
+        "speculative_strategy": (report.get("speculative_runtime") or {}).get(
+            "strategy"
+        ),
     }
 
 
@@ -819,6 +838,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--server-log", type=Path, required=True)
     run.add_argument("--seed", type=int, default=42)
+    run.add_argument("--num-ctx", type=int, default=4096)
     run.add_argument("--num-batch", type=int, default=14)
     run.add_argument("--max-tokens-cap", type=int)
     run.add_argument("--warmup-requests", type=int, default=1)

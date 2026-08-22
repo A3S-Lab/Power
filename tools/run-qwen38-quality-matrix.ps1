@@ -2,10 +2,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Q6PowerHome,
 
-    [Parameter(Mandatory = $true)]
     [string]$Tbq4PowerHome,
 
-    [ValidateSet('prefix-fr-release', 'full-vocabulary-current')]
+    [ValidateSet('prefix-fr-release', 'full-vocabulary-current', 'dspark-q4')]
     [string]$Profile = 'prefix-fr-release',
 
     [string]$RuntimeConfig,
@@ -15,6 +14,12 @@ param(
 
     [ValidateRange(1, 4096)]
     [int]$NumBatch = 14,
+
+    [ValidateRange(128, 131072)]
+    [int]$NumCtx = 4096,
+
+    [ValidateRange(0, 4096)]
+    [int]$MaxTokensCap = 0,
 
     [ValidateRange(1, 65535)]
     [int]$Port = 11436,
@@ -35,6 +40,9 @@ param(
 
     [ValidatePattern('^[0-9a-fA-F]{64}$')]
     [string]$Tbq4ModelHash = '5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6',
+
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$DsparkDraftHash = '12003c7f2642e2e87e979729e16947a913e2213d82136cb5024a36ec4871fef2',
 
     [string]$PythonLauncher = 'py',
 
@@ -65,6 +73,8 @@ $config = if (-not [string]::IsNullOrWhiteSpace($RuntimeConfig)) {
     [System.IO.Path]::GetFullPath($RuntimeConfig)
 } elseif ($Profile -eq 'full-vocabulary-current') {
     Join-Path $benchmarkRoot 'full-vocabulary-current.acl'
+} elseif ($Profile -eq 'dspark-q4') {
+    Join-Path $qwenBenchmarkRoot 'dspark\quality-k10-s6.acl'
 } else {
     Join-Path $benchmarkRoot 'matrix.acl'
 }
@@ -98,7 +108,9 @@ function Assert-PortAvailable {
 function Get-ModelIdentity {
     param(
         [string]$PowerHome,
-        [string]$ExpectedHash
+        [string]$ExpectedHash,
+        [string]$ExpectedExternalDraftKind,
+        [string]$ExpectedExternalDraftHash
     )
 
     $manifestPath = Join-Path $PowerHome "models\manifests\$Model.json"
@@ -122,6 +134,46 @@ function Get-ModelIdentity {
             throw "GGUF SHA-256 mismatch: $($modelManifest.path)"
         }
     }
+    $externalDraftIdentity = $null
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedExternalDraftKind)) {
+        if ($null -eq $modelManifest.external_draft) {
+            throw "Model manifest does not bind an external draft: $manifestPath"
+        }
+        $draft = $modelManifest.external_draft
+        if ($draft.kind -ne $ExpectedExternalDraftKind) {
+            throw "External draft kind mismatch in $manifestPath"
+        }
+        if ($draft.sha256 -ne $ExpectedExternalDraftHash) {
+            throw "External draft hash mismatch in $manifestPath"
+        }
+        if ($draft.target_sha256 -ne $ExpectedHash) {
+            throw "External draft target hash mismatch in $manifestPath"
+        }
+        if (-not (Test-Path -LiteralPath $draft.path -PathType Leaf)) {
+            throw "External draft GGUF does not exist: $($draft.path)"
+        }
+        $draftFile = Get-Item -LiteralPath $draft.path
+        if ($draftFile.Length -ne $draft.size) {
+            throw "External draft byte length differs from the manifest: $($draft.path)"
+        }
+        if ($VerifyModelFiles) {
+            $actualDraftHash = (Get-FileHash -LiteralPath $draft.path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualDraftHash -ne $ExpectedExternalDraftHash) {
+                throw "External draft GGUF SHA-256 mismatch: $($draft.path)"
+            }
+        }
+        $externalDraftIdentity = [ordered]@{
+            kind = $draft.kind
+            path = [System.IO.Path]::GetFullPath($draft.path)
+            size = [int64]$draft.size
+            sha256 = $draft.sha256
+            target_sha256 = $draft.target_sha256
+            source = $draft.source
+            revision = $draft.revision
+            license = $draft.license
+            file_hash_verified = $VerifyModelFiles
+        }
+    }
     [ordered]@{
         power_home = [System.IO.Path]::GetFullPath($PowerHome)
         manifest = [System.IO.Path]::GetFullPath($manifestPath)
@@ -129,6 +181,7 @@ function Get-ModelIdentity {
         size = [int64]$modelManifest.size
         sha256 = $modelManifest.sha256
         file_hash_verified = $VerifyModelFiles
+        external_draft = $externalDraftIdentity
     }
 }
 
@@ -194,17 +247,22 @@ function Invoke-ModeRun {
                 ($existing.power_commit -eq $PowerCommit -or
                     $ReuseCompatibleReportsAcrossCommits) -and
                 [int]$existing.seed -eq 42 -and
-                [int]$existing.num_ctx -eq 4096 -and
+                [int]$existing.num_ctx -eq $NumCtx -and
                 [int]$existing.num_batch -eq $NumBatch -and
+                (($MaxTokensCap -eq 0 -and $null -eq $existing.max_tokens_cap) -or
+                    [int]$existing.max_tokens_cap -eq $MaxTokensCap) -and
                 [int]$existing.warmup_requests -eq 1
             $isComplete =
                 [int]$existing.result_count -eq $expectedTaskCount -and
                 $existing.completed_at -and
                 [int]$existing.completed -eq $expectedTaskCount -and
                 [int]$existing.errors -eq 0
-            $runtimeMatches =
-                ($Mode.spec_mode -ne 'mtp') -or
-                [bool]$existing.has_speculative_runtime
+            $runtimeMatches = if ($Mode.spec_mode -eq 'off') {
+                -not [bool]$existing.has_speculative_runtime
+            } else {
+                [bool]$existing.has_speculative_runtime -and
+                    $existing.speculative_strategy -eq $Mode.spec_mode
+            }
             if ($identityMatches -and $isComplete -and $runtimeMatches) {
                 Write-Output "Reusing complete report: $report"
                 return
@@ -286,10 +344,14 @@ function Invoke-ModeRun {
             '--output', $report,
             '--server-log', $stdout,
             '--warmup-requests', '1',
+            '--num-ctx', [string]$NumCtx,
             '--num-batch', [string]$NumBatch,
             '--seed', '42',
             '--timeout-seconds', '900'
         )
+        if ($MaxTokensCap -gt 0) {
+            $arguments += @('--max-tokens-cap', [string]$MaxTokensCap)
+        }
         if ($IncludeContent) {
             $arguments += '--include-content'
         }
@@ -340,41 +402,77 @@ if ($RequireHighPerformancePowerPlan -and
 }
 
 New-Item -ItemType Directory -Force -Path $output | Out-Null
-$q6Identity = Get-ModelIdentity -PowerHome $Q6PowerHome -ExpectedHash $Q6ModelHash
-$tbq4Identity = Get-ModelIdentity -PowerHome $Tbq4PowerHome -ExpectedHash $Tbq4ModelHash
-$mtpLabel = if ($Profile -eq 'full-vocabulary-current') {
-    'tbq4-mtp-full-vocab'
+$q6Identity = if ($Profile -eq 'dspark-q4') {
+    Get-ModelIdentity -PowerHome $Q6PowerHome -ExpectedHash $Q6ModelHash `
+        -ExpectedExternalDraftKind 'dspark' `
+        -ExpectedExternalDraftHash $DsparkDraftHash
 } else {
-    'tbq4-mtp-fr'
+    Get-ModelIdentity -PowerHome $Q6PowerHome -ExpectedHash $Q6ModelHash
 }
-$mtpFrVocabSize = if ($Profile -eq 'full-vocabulary-current') { $null } else { 8192 }
-$modes = @(
-    @{
-        label = 'q6-off'
-        power_home = $q6Identity.power_home
-        model_hash = $Q6ModelHash
-        spec_mode = 'off'
-        fr_vocab_size = $null
-    },
-    @{
-        label = 'tbq4-off'
-        power_home = $tbq4Identity.power_home
-        model_hash = $Tbq4ModelHash
-        spec_mode = 'off'
-        fr_vocab_size = $null
-    },
-    @{
-        label = $mtpLabel
-        power_home = $tbq4Identity.power_home
-        model_hash = $Tbq4ModelHash
-        spec_mode = 'mtp'
-        fr_vocab_size = $mtpFrVocabSize
+$tbq4Identity = $null
+if ($Profile -eq 'dspark-q4') {
+    $modes = @(
+        @{
+            label = 'q6-off'
+            power_home = $q6Identity.power_home
+            model_hash = $Q6ModelHash
+            spec_mode = 'off'
+            fr_vocab_size = $null
+            external_draft_sha256 = $DsparkDraftHash
+        },
+        @{
+            label = 'q6-dspark'
+            power_home = $q6Identity.power_home
+            model_hash = $Q6ModelHash
+            spec_mode = 'dspark'
+            fr_vocab_size = $null
+            external_draft_sha256 = $DsparkDraftHash
+        }
+    )
+    $comparisons = @(, @('q6-off', 'q6-dspark'))
+} else {
+    if ([string]::IsNullOrWhiteSpace($Tbq4PowerHome)) {
+        throw "Tbq4PowerHome is required for profile '$Profile'"
     }
-)
-$comparisons = @(
-    @('q6-off', 'tbq4-off'),
-    @('tbq4-off', $modes[2].label)
-)
+    $tbq4Identity = Get-ModelIdentity `
+        -PowerHome $Tbq4PowerHome -ExpectedHash $Tbq4ModelHash
+    $mtpLabel = if ($Profile -eq 'full-vocabulary-current') {
+        'tbq4-mtp-full-vocab'
+    } else {
+        'tbq4-mtp-fr'
+    }
+    $mtpFrVocabSize = if ($Profile -eq 'full-vocabulary-current') { $null } else { 8192 }
+    $modes = @(
+        @{
+            label = 'q6-off'
+            power_home = $q6Identity.power_home
+            model_hash = $Q6ModelHash
+            spec_mode = 'off'
+            fr_vocab_size = $null
+            external_draft_sha256 = $null
+        },
+        @{
+            label = 'tbq4-off'
+            power_home = $tbq4Identity.power_home
+            model_hash = $Tbq4ModelHash
+            spec_mode = 'off'
+            fr_vocab_size = $null
+            external_draft_sha256 = $null
+        },
+        @{
+            label = $mtpLabel
+            power_home = $tbq4Identity.power_home
+            model_hash = $Tbq4ModelHash
+            spec_mode = 'mtp'
+            fr_vocab_size = $mtpFrVocabSize
+            external_draft_sha256 = $null
+        }
+    )
+    $comparisons = @(
+        @('q6-off', 'tbq4-off'),
+        @('tbq4-off', $modes[2].label)
+    )
+}
 $serverHash = (Get-FileHash -LiteralPath $server -Algorithm SHA256).Hash.ToLowerInvariant()
 $gpu = @(& nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap,pstate,power.limit --format=csv,noheader,nounits)
 $cpu = Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors
@@ -407,7 +505,9 @@ $environment = [ordered]@{
         }
         logical_processor_count = [Environment]::ProcessorCount
     }
+    num_ctx = $NumCtx
     num_batch = $NumBatch
+    max_tokens_cap = if ($MaxTokensCap -gt 0) { $MaxTokensCap } else { $null }
     repetitions = $Repetitions
     profile = $Profile
     compatible_report_commit_reuse = [bool]$ReuseCompatibleReportsAcrossCommits
@@ -417,6 +517,7 @@ $environment = [ordered]@{
             model_sha256 = $_.model_hash.ToLowerInvariant()
             spec_mode = $_.spec_mode
             fr_vocab_size = $_.fr_vocab_size
+            external_draft_sha256 = $_.external_draft_sha256
         }
     })
     order = "$($modes.Count)-mode cyclic Latin rotation"
@@ -435,12 +536,19 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
                     -not [bool]$environment.dirty_worktree)) -and
             $previous.server.sha256 -eq $environment.server.sha256 -and
             $previous.q6_model.sha256 -eq $environment.q6_model.sha256 -and
+            $previous.q6_model.external_draft.sha256 -eq
+                $environment.q6_model.external_draft.sha256 -and
             $previous.tbq4_model.sha256 -eq $environment.tbq4_model.sha256 -and
             $previous.active_power_scheme -eq $environment.active_power_scheme -and
             $previous.process_priority -eq $environment.process_priority -and
             $previous.process_affinity.requested_mask -eq
                 $environment.process_affinity.requested_mask -and
+            [int]$previous.num_ctx -eq $environment.num_ctx -and
             [int]$previous.num_batch -eq $environment.num_batch -and
+            (($null -eq $previous.max_tokens_cap -and
+                    $null -eq $environment.max_tokens_cap) -or
+                [int]$previous.max_tokens_cap -eq
+                    [int]$environment.max_tokens_cap) -and
             [int]$previous.repetitions -eq $environment.repetitions -and
             $previous.profile -eq $environment.profile -and
             (@($previous.modes.label) -join ',') -eq
