@@ -135,6 +135,103 @@ fn release_bundle_verifier_rejects_partial_platform_evidence() {
 }
 
 #[test]
+fn release_capture_verifier_checks_digest_revision_and_platform() {
+    let capture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs/benchmarks/release-contract-windows-20260821/cpu.json");
+    let capture: ReleaseCapture =
+        serde_json::from_slice(&std::fs::read(&capture_path).unwrap()).unwrap();
+    let revision = ReleaseRevisionBinding::from_capture(&capture).unwrap();
+
+    let verified = Command::new(env!("CARGO_BIN_EXE_a3s-power-tensor-batch-bench"))
+        .arg("verify-release-capture")
+        .arg("--capture")
+        .arg(&capture_path)
+        .arg("--platform")
+        .arg("cpu")
+        .arg("--power-version")
+        .arg(&revision.power_version)
+        .arg("--power-commit")
+        .arg(&revision.power_commit)
+        .output()
+        .expect("release capture verifier should start");
+    assert!(
+        verified.status.success(),
+        "release capture verification failed: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let receipt: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(
+        receipt["schema"],
+        "a3s.power.release-capture-verification.v1"
+    );
+    assert_eq!(receipt["verified"], true);
+    assert_eq!(receipt["scope"], "single-capture");
+    assert_eq!(receipt["strictV1BundleRequired"], true);
+    assert_eq!(receipt["captureSha256"], capture.sha256);
+    assert_eq!(receipt["revision"]["powerVersion"], revision.power_version);
+    assert_eq!(receipt["revision"]["powerCommit"], revision.power_commit);
+    assert_eq!(receipt["platformBinding"]["platform"], "cpu");
+
+    let wrong_platform = Command::new(env!("CARGO_BIN_EXE_a3s-power-tensor-batch-bench"))
+        .arg("verify-release-capture")
+        .arg("--capture")
+        .arg(&capture_path)
+        .arg("--platform")
+        .arg("cuda")
+        .arg("--power-version")
+        .arg(&revision.power_version)
+        .arg("--power-commit")
+        .arg(&revision.power_commit)
+        .output()
+        .unwrap();
+    assert!(!wrong_platform.status.success());
+    assert!(
+        String::from_utf8_lossy(&wrong_platform.stderr).contains("has platform Cpu, expected Cuda")
+    );
+
+    let wrong_revision = Command::new(env!("CARGO_BIN_EXE_a3s-power-tensor-batch-bench"))
+        .arg("verify-release-capture")
+        .arg("--capture")
+        .arg(&capture_path)
+        .arg("--platform")
+        .arg("cpu")
+        .arg("--power-version")
+        .arg(&revision.power_version)
+        .arg("--power-commit")
+        .arg("ffffffffffffffffffffffffffffffffffffffff")
+        .output()
+        .unwrap();
+    assert!(!wrong_revision.status.success());
+    assert!(String::from_utf8_lossy(&wrong_revision.stderr)
+        .contains("does not match the expected Power version and source revision"));
+
+    let directory = tempfile::tempdir().unwrap();
+    let tampered_path = directory.path().join("tampered.json");
+    let mut tampered = serde_json::to_value(&capture).unwrap();
+    tampered["tensorBatch"]["exactOutputParity"] = serde_json::Value::Bool(false);
+    std::fs::write(
+        &tampered_path,
+        serde_json::to_vec_pretty(&tampered).unwrap(),
+    )
+    .unwrap();
+    let tampered_output = Command::new(env!("CARGO_BIN_EXE_a3s-power-tensor-batch-bench"))
+        .arg("verify-release-capture")
+        .arg("--capture")
+        .arg(&tampered_path)
+        .arg("--platform")
+        .arg("cpu")
+        .arg("--power-version")
+        .arg(&revision.power_version)
+        .arg("--power-commit")
+        .arg(&revision.power_commit)
+        .output()
+        .unwrap();
+    assert!(!tampered_output.status.success());
+    assert!(String::from_utf8_lossy(&tampered_output.stderr)
+        .contains("tensor batch benchmark report shape is invalid"));
+}
+
+#[test]
 fn release_bundle_builder_rejects_mislabeled_captures_without_partial_outputs() {
     let capture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("docs/benchmarks/release-contract-windows-20260821/cpu.json");

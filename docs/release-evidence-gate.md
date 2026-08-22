@@ -246,6 +246,13 @@ guide carries the same contract onto named hardware, preserves raw vendor
 evidence, creates the confidential source/declaration pair, and invokes strict
 proof-backed promotion without adding a model-specific release path.
 
+Before transfer or bundle assembly, `verify-release-capture` bounded-reads one
+capture, denies unknown JSON fields, replays every nested and canonical digest,
+and requires the operator's exact platform, Power version, and source revision.
+The emitted receipt marks its scope as one capture and states that the strict v1
+bundle is still required. It therefore catches corruption, relabeling, and
+revision drift early without claiming cross-platform production eligibility.
+
 After all four captures exist, `build-release-bundle` derives their common
 revision and platform-specific bindings instead of asking a release operator to
 copy digest fields. It requires each capture under its typed CPU, CUDA, Metal,

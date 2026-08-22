@@ -121,6 +121,13 @@ Capture a local CUDA source plus a confidential accelerator declaration:
 The source capture remains local until a3s-power-verify validates a real
 SEV-SNP and NVIDIA NRAS report and promotes it into confidential-GPU evidence.
 
+Verify one bounded release capture before cross-host bundle assembly:
+  a3s-power-tensor-batch-bench verify-release-capture \
+    --capture <capture.json> \
+    --platform <cpu|cuda|metal|confidential-gpu> \
+    --power-version <exact-crate-version> \
+    --power-commit <exact-lowercase-git-revision>
+
 Build a pinned production v1 release-evidence bundle from four captures:
   a3s-power-tensor-batch-bench build-release-bundle \
     --cpu-capture <cpu.json> \
@@ -240,6 +247,7 @@ fn run() -> Result<()> {
             write_json_output(&receipt, None)?;
             return Ok(());
         }
+        "verify-release-capture" => release_bundle::verify_capture(&mut arguments)?,
         "verify-release-bundle" => release_bundle::verify(&mut arguments)?,
         "run" => {
             let common = parse_common(&mut arguments)?;

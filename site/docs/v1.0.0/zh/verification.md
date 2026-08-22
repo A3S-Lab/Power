@@ -99,6 +99,18 @@ model_hash "your-model" {
 
 受信任的构造路径由类型系统约束。严格的机密 GPU 验证会返回一个绑定到精确报告的不可构造证明；只有 `ReleaseCapture::promote_confidential_gpu` 能用它把有效的本地 CUDA 捕获提升为机密 GPU 捕获。原始报告、反序列化标签或调用方写入的布尔值都不能铸造这类发布证据。生成的 bundle 仍须由发布信任根认证。
 
+组装前，验证每份跨主机传输的捕获：
+
+```bash
+a3s-power-tensor-batch-bench verify-release-capture \
+  --capture <文件> \
+  --platform <cpu|cuda|metal|confidential-gpu> \
+  --power-version <版本> \
+  --power-commit <revision>
+```
+
+命令会检查有界 JSON、规范摘要、平台与源码身份；回执明确标记为单捕获范围，只有严格的四平台 bundle 才能授权生产发布。
+
 当前[干净 revision 的 CPU/CUDA 完整捕获](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/release-contract-windows-20260821/README.md)可回放为一个经过验证的两平台部分 bundle。在 Metal 与机密 GPU 捕获补齐前，严格的四平台 v1 策略仍不会通过。
 
 ## 生产发布信任链

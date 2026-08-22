@@ -243,7 +243,10 @@ promotion, and the checked-in external capture runbook carries that API through
 raw vendor-evidence preservation and create-new CLI output. The generic runner
 also materializes persistent fixture weights and creates the local CUDA
 source/declaration pair atomically; caller-owned graphs retain their model-owned
-declaration path. A production release
+declaration path. The release CLI now also verifies each transferred capture
+against an exact platform, version, and source revision before assembly while
+marking that result as single-capture scope rather than production eligibility.
+A production release
 exists only when its signed evidence child proves that all of these gates pass:
 
 1. one immutable revision supplies CPU, CUDA, Metal, and confidential-GPU

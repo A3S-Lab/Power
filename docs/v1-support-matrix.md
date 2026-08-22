@@ -83,6 +83,25 @@ and rolls back ordinary partial-output failures:
 version="$(cargo metadata --locked --no-deps --format-version 1 \
   | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
 source_commit="$(git rev-parse HEAD)"
+
+for platform_capture in \
+  "cpu:/reviewed/cpu.json" \
+  "cuda:/reviewed/cuda.json" \
+  "metal:/reviewed/metal.json" \
+  "confidential-gpu:/reviewed/confidential-gpu.json"
+do
+  platform="${platform_capture%%:*}"
+  capture="${platform_capture#*:}"
+  cargo run --locked --release --no-default-features \
+    --features embedded-inference \
+    --bin a3s-power-tensor-batch-bench -- \
+    verify-release-capture \
+    --capture "$capture" \
+    --platform "$platform" \
+    --power-version "$version" \
+    --power-commit "$source_commit"
+done
+
 mkdir -p "release/v${version}"
 
 cargo run --locked --release --no-default-features \

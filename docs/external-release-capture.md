@@ -439,6 +439,25 @@ power_version="$(cargo metadata --locked --no-deps --format-version 1 \
   | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
 source_commit="$(git rev-parse HEAD)"
 release_dir="release/v${power_version}"
+
+for platform_capture in \
+  "cpu:/reviewed/cpu.json" \
+  "cuda:/reviewed/cuda.json" \
+  "metal:/reviewed/metal.json" \
+  "confidential-gpu:/reviewed/confidential-gpu.json"
+do
+  platform="${platform_capture%%:*}"
+  capture="${platform_capture#*:}"
+  cargo run --locked --release --no-default-features \
+    --features embedded-inference \
+    --bin a3s-power-tensor-batch-bench -- \
+    verify-release-capture \
+    --capture "$capture" \
+    --platform "$platform" \
+    --power-version "$power_version" \
+    --power-commit "$source_commit"
+done
+
 mkdir -p "$release_dir"
 
 cargo run --locked --release --no-default-features \
@@ -477,7 +496,12 @@ git tag -s "v${power_version}" -m "A3S Power v${power_version}"
 git push origin "v${power_version}"
 ```
 
-The builder independently verifies every capture, its argument-to-platform
+The single-capture verifier bounded-reads one unknown-field-denying JSON file,
+recomputes its nested and canonical digests, and checks the expected platform,
+version, and source revision. Its receipt explicitly reports
+`scope = "single-capture"` and `strictV1BundleRequired = true`: it is an early
+cross-host transfer check, not a production-release decision. The builder then
+independently verifies every capture, its argument-to-platform
 mapping, the exact common revision and workload, distinct tensor evidence,
 all platform-specific bindings, and the SEV-SNP confidential boundary. Both
 outputs use create-new semantics. If creating or synchronizing either file

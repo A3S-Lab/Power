@@ -120,6 +120,20 @@ local CUDA capture. A raw report, deserialized label, or caller-authored boolean
 cannot mint confidential release evidence. The resulting bundle still needs an
 authenticated release trust root.
 
+Validate each transferred capture before assembly:
+
+```bash
+a3s-power-tensor-batch-bench verify-release-capture \
+  --capture <file> \
+  --platform <cpu|cuda|metal|confidential-gpu> \
+  --power-version <version> \
+  --power-commit <revision>
+```
+
+The command checks bounded JSON, canonical digests, platform, and source
+identity. Its receipt remains explicitly single-capture scope; only the strict
+four-platform bundle can authorize a production release.
+
 The current [clean-revision CPU/CUDA captures](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/release-contract-windows-20260821/README.md)
 replay as one verified two-platform partial bundle. Metal and confidential-GPU
 captures remain required before the strict four-platform v1 policy can pass.

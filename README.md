@@ -310,7 +310,11 @@ independent reference output. `release-fixture` is only a reproducible Add-graph
 calibration path. Its persistent cross-host weights are created with
 `materialize-release-fixture-weights`; `release-confidential-fixture` then
 writes a local CUDA source plus active residency declaration as a validated
-create-new pair. SafeTensors startup pins, attestation, embedded execution, and
+create-new pair. `verify-release-capture` independently bounded-reads a received
+capture, recomputes its canonical digest, and checks its exact platform,
+version, and source revision before bundle assembly; its receipt explicitly
+states that the strict four-platform bundle is still required. SafeTensors
+startup pins, attestation, embedded execution, and
 accelerator declarations share one canonical collection digest. Neither the
 collector nor the evidence schema contains a
 tokenizer, container format, generation mode, model family, or architecture

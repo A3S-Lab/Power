@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use a3s_power::error::{PowerError, Result};
-use a3s_power::inference::{ReleaseCapture, ReleaseEvidenceBundle, ReleasePlatform};
+use a3s_power::inference::{
+    ReleaseCapture, ReleaseEvidenceBundle, ReleasePlatform, ReleasePlatformBinding,
+    ReleaseRevisionBinding,
+};
 use a3s_power::tee::attestation::TeeType;
 use serde::Serialize;
 
@@ -31,6 +34,54 @@ struct ReleaseBundleBuild<'a> {
     power_commit: &'a str,
     platform_count: usize,
     confidential_tee: TeeType,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleaseCaptureVerification<'a> {
+    schema: &'static str,
+    verified: bool,
+    scope: &'static str,
+    strict_v1_bundle_required: bool,
+    capture_sha256: &'a str,
+    revision: ReleaseRevisionBinding,
+    platform_binding: ReleasePlatformBinding,
+}
+
+pub(super) fn verify_capture(arguments: &mut Arguments) -> Result<serde_json::Value> {
+    let capture_path = arguments.required_path("--capture")?;
+    let expected_platform = parse_platform(&arguments.required("--platform")?)?;
+    let expected_power_version = arguments.required("--power-version")?;
+    let expected_power_commit = arguments.required("--power-commit")?;
+
+    let capture = read_capture(&capture_path, "release capture")?;
+    let actual_platform = capture.platform()?;
+    if actual_platform != expected_platform {
+        return Err(PowerError::PolicyViolation(format!(
+            "release capture has platform {actual_platform:?}, expected {expected_platform:?}"
+        )));
+    }
+    let revision = ReleaseRevisionBinding::from_capture(&capture)?;
+    if revision.power_version != expected_power_version
+        || revision.power_commit != expected_power_commit
+    {
+        return Err(PowerError::PolicyViolation(
+            "release capture does not match the expected Power version and source revision"
+                .to_string(),
+        ));
+    }
+    let platform_binding = capture.platform_binding()?;
+
+    serde_json::to_value(ReleaseCaptureVerification {
+        schema: "a3s.power.release-capture-verification.v1",
+        verified: true,
+        scope: "single-capture",
+        strict_v1_bundle_required: true,
+        capture_sha256: &capture.sha256,
+        revision,
+        platform_binding,
+    })
+    .map_err(PowerError::from)
 }
 
 pub(super) fn verify(arguments: &mut Arguments) -> Result<serde_json::Value> {
@@ -130,6 +181,18 @@ fn read_capture(path: &Path, label: &str) -> Result<ReleaseCapture> {
     Ok(capture)
 }
 
+fn parse_platform(value: &str) -> Result<ReleasePlatform> {
+    match value {
+        "cpu" => Ok(ReleasePlatform::Cpu),
+        "cuda" => Ok(ReleasePlatform::Cuda),
+        "metal" => Ok(ReleasePlatform::Metal),
+        "confidential-gpu" => Ok(ReleasePlatform::ConfidentialGpu),
+        _ => Err(PowerError::InvalidRequest(
+            "release platform must be cpu, cuda, metal, or confidential-gpu".to_string(),
+        )),
+    }
+}
+
 fn read_sha256_pin(path: &Path) -> Result<String> {
     let bytes = read_bounded_regular(path, MAX_PIN_BYTES, "release evidence SHA-256 pin")?;
     let digest = match bytes.as_slice() {
@@ -178,5 +241,16 @@ mod tests {
             std::fs::write(&path, contents).unwrap();
             assert!(read_sha256_pin(&path).is_err());
         }
+    }
+
+    #[test]
+    fn release_platform_parser_is_exact() {
+        assert_eq!(parse_platform("cpu").unwrap(), ReleasePlatform::Cpu);
+        assert_eq!(
+            parse_platform("confidential-gpu").unwrap(),
+            ReleasePlatform::ConfidentialGpu
+        );
+        assert!(parse_platform("CPU").is_err());
+        assert!(parse_platform("gpu").is_err());
     }
 }

@@ -161,6 +161,9 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
 - [x] Assemble typed four-platform captures with a machine-enforced CLI that
       derives the strict policy, verifies the exact version/revision, writes a
       create-new bundle and digest pin, and attaches both to non-`0.x` releases.
+- [x] Expose a bounded single-capture verifier that rejects digest corruption,
+      platform relabeling, and revision drift before cross-host bundle assembly
+      without overclaiming strict four-platform release eligibility.
 - [x] Require non-`0.x` tags to point to a single-parent evidence commit whose
       complete diff adds only the bundle and pin; build and publish artifacts
       from its frozen source parent. The child must be reachable from `main` and
