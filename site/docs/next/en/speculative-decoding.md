@@ -86,21 +86,37 @@ The untouched Q6_K peak combines:
 - the original 22,884,408,288-byte Q6_K artifact;
 - native MTP with an 8,192-row draft-only token-ID prefix;
 - seven proposals and six recurrent snapshots;
+- fixed B11 target-verification capacity and normal CUDA Graphs;
 - batched target and draft greedy CUDA sampling;
-- Flash Attention and full CUDA layer offload;
+- short-batch Flash Attention off and full CUDA layer offload;
+- high-priority CUDA streams, physical-core affinity, and single-model,
+  single-request scheduling;
 - exact target verification and deterministic output digests.
 
-It reached 176.6109 token/s median steady decode versus 147.0207 token/s for
-the same-artifact full-vocabulary K7/S7 control. On the one-pass 12-task
-calibration, however, full-vocabulary K7/S6 reached 47.032 token/s
-request-wide while prefix FR reached 37.290 token/s. The peak profile has not
-yet completed the repeated 100-task matrix.
+The current clean nine-run capture reached 172.835 token/s median steady
+decode, 171.298 minimum, and 175.533 maximum while the shared Windows display
+GPU already showed 5–8% utilization. The earlier quiet-host high-water mark is
+176.6109 token/s; the same-artifact full-vocabulary K7/S7 control reached
+147.0207 token/s.
+
+The general short-task profile uses fixed K6/S6/B8. In the current paired
+12-task, 256-token calibration it reached 46.923 token/s versus 28.713 token/s
+with speculation off, a 63.42% gain. Both modes retained all 12 final answers
+and the 9/12 score. Acceptance was 26.81%, verified tokens per target pass were
+2.591, and replay was zero.
+
+Stable shapes mattered more than nominal acceptance. Adaptive K raised
+acceptance on the same representative workload to 50.07% but fell to 35.178
+token/s because changing verification shapes reduced CUDA Graph reuse.
+Disabling CUDA Graphs also reduced the peak workload to 133.876 token/s. K, S,
+target batch, and graph shape must be tuned as one system.
 
 The previous mixed-artifact K7/S7 profile remains the representative quality
 capture: 175.2089 token/s median steady decode, 83.228 token/s request-wide,
 and no observed regression against its TBQ4 autoregressive control. That sample
 does not establish a general intelligence improvement.
 
-See [Performance evidence](/performance) for the complete interpretation and
+See the [Optimization playbook](./optimization) for the complete execution
+path, [Performance evidence](./performance) for the measurement interpretation, and
 the [canonical speculative-decoding design](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)
 for adapter APIs, benchmark commands, and acceptance rules.

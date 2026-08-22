@@ -99,6 +99,7 @@ gpu {
 ## 下一步
 
 - [理解执行与职责边界](/architecture)
+- [按图、张量、调度、权重和证据选择优化](/optimization)
 - [检查 Qwen3.8 的实测性能与质量证据](/performance)
 - [了解推测解码如何保持目标模型的绝对裁决权](/speculative-decoding)
 - [选择后端与生产构建配置](/operations)

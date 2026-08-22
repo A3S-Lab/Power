@@ -1,6 +1,6 @@
 ---
 title: Performance evidence
-description: Reproducible Qwen3.8-27B speed, quality, rollback, and artifact evidence measured through the A3S Power API.
+description: A3S Power's model-neutral performance-evidence method and a reproducible Qwen3.8-27B Q6_K case study measured through the real API.
 ---
 
 # Performance evidence
@@ -24,6 +24,8 @@ against the same input identities.
 | Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
+| **Untouched Q6_K + prefix-FR8192, fixed K6/S6/B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **46.923 token/s** | - |
+| **Untouched Q6_K + prefix-FR8192, fixed K7/S6/B11, high-priority CUDA** | Fixed peak prompt retained the same output digest | - | **172.835 token/s** on a shared WDDM desktop |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact greedy parity on the fixed peak prompt | - | 147.0207 token/s |
 | Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x; 11 truncated) | **47.032 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x; 11 truncated) | 37.290 token/s | **176.6109 token/s** |
@@ -37,23 +39,42 @@ against the same input identities.
 overhead. `Steady decode` is a warmed-up, repetitive 1,024-token shape. A dash
 means there is no defensible apples-to-apples capture for that cell.
 
-## What the pure-Q6_K 176.61 boundary means
+## The untouched-Q6_K execution-path case study
 
-The untouched 22,884,408,288-byte Q6_K artifact reached a 176.6109 token/s
-median across nine 1,024-token samples with prefix-FR8192 K7/S6. Its minimum
-was 173.2630 and seven samples were at least 175. The same-artifact
-full-vocabulary K7/S7 control reached 147.0207 token/s, so the peak profile
-improved median steady decode by 20.13%. Every output digest matched.
+The 22,884,408,288-byte Q6_K artifact was not requantized. The current clean
+capture uses fixed K7/S6/B11, an 8,192-row draft-only token-ID prefix,
+short-batch Flash Attention off, normal CUDA Graphs, high-priority CUDA
+streams, full CUDA offload, physical-core affinity, and one loaded model with
+one concurrent request. Across nine 1,024-token samples it reached 172.835
+token/s median, 171.298 minimum, and 175.533 maximum while the shared Windows
+display GPU already showed 5–8% utilization.
 
-No model weight was requantized. The speedup comes from native MTP, exact target
-verification, an 8,192-row draft-only token-ID prefix, six resident recurrent
-snapshots, batched GPU greedy sampling, Flash Attention, full CUDA offload,
-batch 14, and host controls.
+The earlier quiet-host high-water mark for the same artifact remains 176.6109
+token/s. Its 20.13% comparison used the full-vocabulary K7/S7 control at
+147.0207 token/s. Both captures retained the same deterministic output digest;
+the earlier result is not a service floor for the current shared desktop.
 
-This is a high-coverage peak, **not** a service floor or universal default. On
-the one-pass 12-task calibration, full-vocabulary K7/S6 reached 47.032 token/s
-request-wide with 52.30% acceptance, while prefix FR reached 37.290 token/s
-with 24.82% acceptance. Eleven tasks per mode hit the output cap.
+The general short-task profile uses fixed K6/S6/B8. The current paired
+12-task, 256-token capture reached 46.923 token/s versus 28.713 token/s for the
+target-only control, a 63.42% gain. Proposal acceptance was 26.81%, yet each
+target pass committed 2.591 verified tokens and replay remained zero.
+
+From first principles, throughput is approximately emitted tokens per target
+pass divided by draft, target verification, synchronization, and sampling
+cost. The peak prompt already reaches 96.64% acceptance and 7.75 emitted
+tokens per target pass, leaving only about 3.2% perfect-acceptance headroom.
+Shared WDDM contention is now the main stable-175 boundary.
+
+Negative results remain part of the evidence. Disabling CUDA Graphs reached
+133.876 token/s; `GGML_CUDA_GRAPH_OPT=1` reached 160.613; and
+`CUDA_DEVICE_MAX_CONNECTIONS=32` reached 168.900. Adaptive K raised
+representative-workload acceptance to 50.07% but fell to 35.178 token/s because
+shape variation reduced graph reuse. Flash Attention is therefore
+profile-specific, not a global switch.
+
+This is one llama.cpp/CUDA integration, **not** a service floor or universal
+default. Power supplies finite-shape, scheduling, exact-fallback, and evidence
+contracts. Other backends and models must select their own shapes and kernels.
 
 The previous mixed-artifact boundary remains separate. Its rollback-complete
 K7/S7 profile reached 175.2089 token/s steady decode and 83.228 token/s on the
@@ -66,11 +87,15 @@ not a portable product default.
 
 ## Did quality fall?
 
-The exact pure-Q6_K prefix-FR profile has not yet completed the repeated
-100-task matrix. Its 12-task, 128-token calibration is too truncated to support
-a general intelligence claim. Exact target verification establishes
-fixed-prompt greedy output identity; it does not replace a representative
-quality evaluation.
+In the current pure-Q6_K K6/S6/B8 pair, all 12 final answers matched, both modes
+scored 9/12 lenient and strict, eight complete content digests matched, and
+three tasks per mode reached the 256-token cap. Batched and serial target
+kernels can follow different floating-point trajectories, so exact target
+verification does not promise byte-identical prose.
+
+This sample is still too small for a general-intelligence claim. Exact target
+verification proves that every committed token remains target-authoritative;
+it does not replace a representative quality evaluation.
 
 For the previous mixed-artifact K7/S7 profile, no regression was observed on
 the fixed repeated sample:
@@ -103,10 +128,12 @@ The full replay has two levels:
 2. **Performance replay** rebuilds the pinned CUDA profile, verifies the exact
    artifact, prompt, ACL, and binaries, then runs Power's streaming API workload.
 
-The current gate fixes one warm-up, nine measured requests, 1,024 generated
-tokens per request, batch 14, greedy sampling, and a deterministic output
-SHA-256. The runner fails on a changed model identity, wrong backend, short
-output, non-deterministic digest, missing host control, or missed median gate.
+The current clean capture fixes one warm-up, nine measured requests, 1,024
+generated tokens per request, batch 11, greedy sampling, high-priority CUDA
+streams, and a deterministic output SHA-256. The runner fails on a changed
+model identity, wrong backend, short output, non-deterministic digest, missing
+host control, or a missed explicit gate. The offline verifier pins 23 evidence
+hashes and recomputes both current and historical statistics.
 
 Use the repository's checked-in guide and raw evidence:
 

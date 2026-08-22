@@ -152,10 +152,12 @@ release permits and verify receipt
 ```
 
 The detailed design includes tensor batches, residency budgets, partial mirrors,
-prefetch hints, heterogeneous meshes, sealed state, and tuning evidence. Read
+prefetch hints, heterogeneous meshes, sealed state, and tuning evidence. The
+[Optimization playbook](./optimization) inventories every shared, model-owned,
+backend, and host-profile mechanism by execution layer. Read
 the [canonical architecture document](https://github.com/A3S-Lab/Power/blob/main/docs/embedded-inference-architecture.md)
 for the complete APIs, invariants, and validation gates. The
-[shape-profile contract](https://github.com/A3S-Lab/Power/blob/main/docs/shape-profiles.md)
+[shape-profile contract](https://github.com/A3S-Lab/Power/blob/main/docs/shape-profiles.md),
 [session-replica contract](https://github.com/A3S-Lab/Power/blob/main/docs/session-replicas.md),
 and [resident-graph contract](https://github.com/A3S-Lab/Power/blob/main/docs/device-resident-graphs.md)
 document their model-neutral ownership boundaries and reproduction commands.

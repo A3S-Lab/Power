@@ -1,6 +1,6 @@
 ---
 title: 复现实验
-description: 从离线证据验真到 RTX 4090 完整复跑，复现 A3S Power 的 Qwen3.8-27B 性能边界。
+description: 从 23 个离线证据哈希到 RTX 4090 完整复跑，复现 A3S Power 当前 Q6_K 执行路径案例。
 ---
 
 # 复现实验
@@ -18,10 +18,11 @@ description: 从离线证据验真到 RTX 4090 完整复跑，复现 A3S Power �
 | 模型制品 | 原始 Q6_K GGUF，22,884,408,288 字节 |
 | 模型 SHA-256 | `562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727` |
 | 峰值模式 | 前缀 FR8192 MTP K7/S6；目标模型精确校验 |
-| 工作形状 | 1 次预热 + 9 次实测；每次生成 1,024 token；batch 14；greedy |
-| 稳态门槛 | 中位数 175 token/s；已提交结果 **176.6109**，最低 173.2630；7 / 9 个样本不低于 175 |
+| 工作形状 | 1 次预热 + 9 次实测；每次生成 1,024 token；batch 11；greedy；短批量 Flash Attention 关闭 |
+| 当前共享桌面采集 | **172.8353 token/s 中位数**；最低 171.2981；最高 175.5329；1 / 9 个样本不低于 175 |
+| 较安静主机历史高水位 | **176.6109 token/s 中位数**；最低 173.2630；7 / 9 个样本不低于 175 |
 | 全词表对照 | 中位数 147.0207 token/s，最低 146.0917 |
-| 12 题请求全程校准 | 关闭 MTP 29.713；全词表 47.032；前缀 FR 37.290 token/s |
+| 当前 12 题配对校准 | 关闭 MTP 28.713；固定 K6/S6/B8 为 46.923 token/s；提升 63.42% |
 | 输出 SHA-256 | `a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523` |
 
 ## 1. 获取源码并冻结实验身份
@@ -40,11 +41,11 @@ if ($dirtyFiles.Count -ne 0) {
 $powerCommit
 ```
 
-当前原始 Q6_K 门槛记录的干净源码 revision 为 `eb6aeda59561eff3e4e7592704cab6fc863b72c7`。从更新的干净 revision 复跑是允许的，但结果应作为新实验保存，不能覆盖已提交 JSON。
+当前深度优化采集的干净源码 revision 为 `f6326bb05bb8101c2335ec7c3c2f1e261fd86071`。从更新的干净 revision 复跑是允许的，但结果应作为新实验保存，不能覆盖已提交 JSON。
 
 ## 2. 先做无需模型的离线验真
 
-这个命令不加载 22.88 GB 模型，也不需要 NVIDIA GPU。它验证 14 个文件 SHA-256，并重新计算样本数、中位数、最低值、质量分数、请求全程吞吐、接受率、重放次数与确定性输出身份：
+这个命令不加载 22.88 GB 模型，也不需要 NVIDIA GPU。它验证 23 个文件 SHA-256，并重新计算样本数、中位数、最低值、质量分数、请求全程吞吐、接受率、重放次数、配对答案与确定性输出身份：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -56,7 +57,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 ```json
 {
   "status": "passed",
-  "verified_file_hashes": 14,
+  "verified_file_hashes": 23,
   "quality": {
     "completed_requests": 900,
     "request_wide_tokens_per_second": 83.22814601950864
@@ -64,6 +65,19 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   "pure_q6": {
     "full_vocabulary_k7_s7_median": 147.020656574707,
     "prefix_fr8192_k7_s6_median": 176.6108685085471
+  },
+  "deep_optimization": {
+    "peak": {
+      "median_decode_tokens_per_second": 172.8353133057359,
+      "minimum_decode_tokens_per_second": 171.29810355919784
+    },
+    "general": {
+      "target_only_tokens_per_second": 28.71272184998198,
+      "mtp_tokens_per_second": 46.92338764288924,
+      "speedup_percent": 63.4236833695329,
+      "paired_final_answers": 12,
+      "fallback_replays": 0
+    }
   }
 }
 ```
@@ -72,14 +86,14 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 3. 对齐验收主机
 
-176.61 token/s 是下面这台机器上的边界，不是跨硬件承诺：
+这些 token/s 数值是下面这台机器上的边界，不是跨硬件承诺：
 
 | 层级 | 验收环境 |
 | --- | --- |
 | OS | Windows 11 build 22631 |
 | GPU | NVIDIA GeForce RTX 4090，24,564 MiB，compute capability 8.9 |
 | CPU | Intel Xeon w5-2445，10 核 / 20 线程 |
-| 驱动与 CUDA | NVIDIA 610.74；CUDA 12.6 |
+| 驱动与 CUDA | NVIDIA 610.74；CUDA UMD 13.3；构建工具链按环境回执固定 |
 | 工具链 | Rust 1.97.1、受支持的 MSVC、CMake、Ninja、libclang |
 | 主机控制 | High Performance 电源计划；进程优先级 High；GPU 2745 MHz |
 | CPU 亲和性 | `0x55555`（十进制 `349525`，只适用于该 CPU 拓扑） |
@@ -101,7 +115,7 @@ cargo build --release --bins `
   --features llamacpp-cuda,llamacpp-mtp-fr
 ```
 
-补丁工具必须确认绑定层与内嵌 llama.cpp 补丁都已应用。runner 会拒绝任何不是独占 `llama.cpp` 的后端。
+补丁工具必须确认绑定层、MTP/FR 与高优先级 CUDA stream 三组补丁都已应用。runner 会拒绝任何不是独占 `llama.cpp` 的后端。
 
 ## 5. 校验模型与输入
 
@@ -111,7 +125,8 @@ cargo build --release --bins `
 | --- | --- |
 | `prompt.txt` | `d95a5e4dad822ba9c84138f7a120017318bcb3a6a90e77246a8ec4ede0e65d89` |
 | 原始 Q6_K 全词表 K7/S7 ACL | `eb445101c1e33a035c9b1d120fec12d9b21e6ce1b2fe5486ad46bee52878a588` |
-| 原始 Q6_K 前缀 FR8192 K7/S6 ACL | `9b1213df972ea3731010a1fa72b0d553ba73da42f31e92eaa4fecd3156cbf2ef` |
+| 当前原始 Q6_K 前缀 FR8192 K7/S6/B11 ACL | `674d3a36e0f0019c9e39e60994ea40eee0477615827464edee1fb9627a74cdec` |
+| 当前原始 Q6_K 前缀 FR8192 K6/S6/B8 ACL | `b4f3db4229bfad05371bbed0ce1fec165aa2b05279405078aa8f7721721abb37` |
 
 ```powershell
 $powerHome = 'D:\models\a3s-power\qwen38\power-home'
@@ -129,22 +144,24 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $model.FullName).Hash -ne
 
 ## 6. 完整复跑前缀 FR8192 峰值
 
-关闭占用 GPU 的程序，并在允许锁定 GPU 时钟的终端中执行：
+关闭不必要的 GPU 程序，并在允许锁定 GPU 时钟的终端中执行。这里使用零性能门槛采集真实测量；只有安静主机的独立服务门槛才应要求每个样本都不低于 175：
 
 ```powershell
 $benchmarkRoot = 'D:\models\a3s-power\qwen38\benchmark'
 $powerHome = 'D:\models\a3s-power\qwen38\power-home'
 
 .\tools\run-qwen38-q6k-benchmark.ps1 `
-  -Label pure-q6-fr8192-k7s6-replay `
-  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\pure-q6-mtp7-snap6-fr8192-host-staged.acl `
+  -Label pure-q6-fr8192-k7s6-b11-cudahigh `
+  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\pure-q6-mtp7-snap6-fr8192-rtx4090-throughput.acl `
   -PromptFile .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\prompt.txt `
   -BenchmarkRoot $benchmarkRoot `
   -PowerHome $powerHome `
   -ModelHash 562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727 `
-  -MaxTokens 1024 -NumBatch 14 -WarmupRuns 1 -Samples 9 `
-  -MinimumTokensPerSecond 175 -ProcessPriority High `
+  -MaxTokens 1024 -NumBatch 11 -WarmupRuns 1 -Samples 9 `
+  -MinimumTokensPerSecond 0 -ProcessPriority High `
   -ProcessorAffinityMask 349525 -LockGpuClockMHz 2745 `
+  -CudaHighPriority `
+  -MaximumIdleGpuUtilizationPercent 8 -IdleGpuSampleCount 3 `
   -TargetDirectory target-native-sm89-ninja `
   -RequireHighPerformancePowerPlan -RequireCleanTree
 ```
@@ -155,10 +172,11 @@ runner 在 `finally` 中恢复 GPU 时钟，并把失败报告也保留下来，
 
 在 `$benchmarkRoot` 中保留以下文件：
 
-- `pure-q6-fr8192-k7s6-replay.json`：9 个原始样本、统计值和输出摘要；
-- `pure-q6-fr8192-k7s6-replay.environment.json`：Git、二进制、模型、ACL、提示词、GPU、进程与电源状态；
+- `pure-q6-fr8192-k7s6-b11-cudahigh.json`：9 个原始样本、统计值和输出摘要；
+- `pure-q6-fr8192-k7s6-b11-cudahigh.environment.json`：Git、二进制、模型、ACL、提示词、GPU、进程与电源状态；
+- `pure-q6-fr8192-k7s6-b11-cudahigh.preflight.json`：启动前身份与主机控制检查；
 - 对应 stdout / stderr 日志：后端初始化与失败诊断。
 
-只有同时满足以下条件才算通过：9 个请求都生成 1,024 token；稳态中位数不低于 175 token/s；所有输出 SHA-256 一致；模型身份精确匹配；后端独占；工作树干净；要求的主机控制真实生效。
+只有同时满足以下条件才是有效采集：9 个请求都生成 1,024 token；所有输出 SHA-256 一致；模型身份精确匹配；后端独占；工作树干净；高优先级 stream、亲和性、时钟与电源控制真实生效。是否达到部署门槛由调用方根据该主机的独立 SLO 决定，不能把历史 176.61 直接当成当前共享桌面的失败阈值。
 
 完整的 [Windows/CUDA 长版流程](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) 还包含配对全词表对照、原始 Q6_K 12 题校准与此前的混合制品门槛；[质量矩阵协议](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md#reproduce) 说明如何重复现有 100 题 × 3 轮测试。

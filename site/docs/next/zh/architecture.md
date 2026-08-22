@@ -104,4 +104,4 @@ Power 只计算初始自有输入与最终实体化输出的摘要，不伪造�
 释放许可并验证回执
 ```
 
-详细设计还覆盖张量批处理、驻留预算、局部镜像、预取提示、异构网格、密封状态与调优证据。完整 API、不变量与验证门槛参阅[规范架构文档](https://github.com/A3S-Lab/Power/blob/main/docs/embedded-inference-architecture.md)；模型中立的职责边界与复现命令见[形状配置契约](https://github.com/A3S-Lab/Power/blob/main/docs/shape-profiles.md)、[会话副本契约](https://github.com/A3S-Lab/Power/blob/main/docs/session-replicas.md)与[驻留图链契约](https://github.com/A3S-Lab/Power/blob/main/docs/device-resident-graphs.md)。
+详细设计还覆盖张量批处理、驻留预算、局部镜像、预取提示、异构网格、密封状态与调优证据。[优化手册](./optimization)按执行层列出所有通用、模型自有、后端和主机配置。完整 API、不变量与验证门槛参阅[规范架构文档](https://github.com/A3S-Lab/Power/blob/main/docs/embedded-inference-architecture.md)；模型中立的职责边界与复现命令见[形状配置契约](https://github.com/A3S-Lab/Power/blob/main/docs/shape-profiles.md)、[会话副本契约](https://github.com/A3S-Lab/Power/blob/main/docs/session-replicas.md)与[驻留图链契约](https://github.com/A3S-Lab/Power/blob/main/docs/device-resident-graphs.md)。

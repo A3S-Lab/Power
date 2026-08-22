@@ -30,7 +30,7 @@ const routeChecks = [
     file: "index.html",
     lang: "zh",
     copy: [
-      "Rust 模型推理",
+      "通用 Rust 推理",
       "运行时。",
       "简体中文",
       "v1.0.0",
@@ -42,15 +42,16 @@ const routeChecks = [
       "文档",
       "性能",
       "复现实验",
-      "176.6109",
+      "172.835",
+      "23 / 23",
     ],
   },
   {
     file: path.join("en", "index.html"),
     lang: "en",
     copy: [
-      "A Rust runtime",
-      "for model inference.",
+      "General-purpose Rust",
+      "inference runtime.",
       "English",
       "v1.0.0",
       "v0.9.0",
@@ -61,14 +62,15 @@ const routeChecks = [
       "Docs",
       "Performance",
       "Reproduce",
-      "176.6109",
+      "172.835",
+      "23 / 23",
     ],
   },
   {
     file: path.join("v1.0.0", "index.html"),
     lang: "zh",
     copy: [
-      "Rust 模型推理",
+      "通用 Rust 推理",
       "运行时。",
       "简体中文",
       "next",
@@ -79,15 +81,16 @@ const routeChecks = [
       "文档",
       "性能",
       "复现实验",
-      "176.6109",
+      "172.835",
+      "23 / 23",
     ],
   },
   {
     file: path.join("v1.0.0", "en", "index.html"),
     lang: "en",
     copy: [
-      "A Rust runtime",
-      "for model inference.",
+      "General-purpose Rust",
+      "inference runtime.",
       "English",
       "next",
       "MTP speculative decoding",
@@ -97,14 +100,15 @@ const routeChecks = [
       "Docs",
       "Performance",
       "Reproduce",
-      "176.6109",
+      "172.835",
+      "23 / 23",
     ],
   },
   {
     file: path.join("v0.9.0", "index.html"),
     lang: "zh",
     copy: [
-      "Rust 模型推理",
+      "通用 Rust 推理",
       "运行时。",
       "简体中文",
       "next",
@@ -115,15 +119,16 @@ const routeChecks = [
       "文档",
       "性能",
       "复现实验",
-      "176.6109",
+      "172.835",
+      "23 / 23",
     ],
   },
   {
     file: path.join("v0.9.0", "en", "index.html"),
     lang: "en",
     copy: [
-      "A Rust runtime",
-      "for model inference.",
+      "General-purpose Rust",
+      "inference runtime.",
       "English",
       "next",
       "MTP speculative decoding",
@@ -133,18 +138,41 @@ const routeChecks = [
       "Docs",
       "Performance",
       "Reproduce",
-      "176.6109",
+      "172.835",
+      "23 / 23",
+    ],
+  },
+  {
+    file: "optimization.html",
+    lang: "zh",
+    copy: [
+      "优化手册",
+      "完整优化地图",
+      "Power 可以约束并记录模型自有决策",
+      "K7/S6/B11",
+      "63.42%",
+    ],
+  },
+  {
+    file: path.join("en", "optimization.html"),
+    lang: "en",
+    copy: [
+      "Optimization playbook",
+      "Complete optimization map",
+      "Power may constrain and record model-owned choices",
+      "K7/S6/B11",
+      "63.42%",
     ],
   },
   {
     file: "performance.html",
     lang: "zh",
-    copy: ["性能证据", "176.6109", "智力水平下降了吗？"],
+    copy: ["性能证据", "172.835", "63.42%", "智力水平下降了吗？"],
   },
   {
     file: path.join("en", "performance.html"),
     lang: "en",
-    copy: ["Performance evidence", "176.6109", "Did quality fall?"],
+    copy: ["Performance evidence", "172.835", "63.42%", "Did quality fall?"],
   },
   {
     file: path.join("v1.0.0", "performance.html"),
@@ -305,9 +333,9 @@ if (logoHash !== expectedLogoHash) {
   throw new Error(`Built A3S OS logo has an unexpected SHA-256: ${logoHash}`);
 }
 
-if (htmlFiles.length < 49) {
+if (htmlFiles.length < 51) {
   throw new Error(
-    `Expected 48 localized/versioned pages plus 404, found ${htmlFiles.length}`,
+    `Expected 50 localized/versioned pages plus 404, found ${htmlFiles.length}`,
   );
 }
 

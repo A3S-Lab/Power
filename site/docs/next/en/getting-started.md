@@ -107,6 +107,7 @@ model hashes; see [Verification](/verification).
 ## Next steps
 
 - [Understand the execution and ownership boundary](/architecture)
+- [Choose optimization by graph, tensor, scheduling, weights, and evidence](/optimization)
 - [Inspect measured Qwen3.8 performance and quality evidence](/performance)
 - [See how speculative decoding preserves exact target authority](/speculative-decoding)
 - [Choose a backend and production build profile](/operations)

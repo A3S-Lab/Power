@@ -6,6 +6,7 @@ import {
 } from "@rspress/core/runtime";
 
 import { SpeculativeDecodingDemo } from "./SpeculativeDecodingDemo";
+import { OptimizationAtlas } from "./OptimizationAtlas";
 import "./PerformanceProof.css";
 
 type Locale = "zh" | "en";
@@ -18,16 +19,16 @@ const modeData = [
     steady: "35.5793*",
   },
   {
-    mode: "Q6_K + MTP / full",
-    quality: "5 / 3†",
-    request: "47.032†",
-    steady: "147.0207",
+    mode: "Q6_K + MTP / FR · K6/S6/B8",
+    quality: "9 / 9†",
+    request: "46.923",
+    steady: "—",
   },
   {
-    mode: "Q6_K + MTP / FR8192",
-    quality: "4 / 3†",
-    request: "37.290†",
-    steady: "176.6109",
+    mode: "Q6_K + MTP / FR · K7/S6/B11",
+    quality: "same digest",
+    request: "—",
+    steady: "172.835",
     current: true,
   },
   {
@@ -38,23 +39,23 @@ const modeData = [
   },
 ];
 
-const heroFactValues = ["176.6109", "47.032", "14/14"];
-const benchmarkMetricValues = ["176.6109", "47.032", "20.13%", "14 / 14"];
+const heroFactValues = ["3", "4", "23 / 23"];
+const benchmarkMetricValues = ["172.835", "46.923", "63.42%", "23 / 23"];
 
 const homeCopy = {
   zh: {
-    titleFull: "Rust 模型推理运行时。",
-    title: "Rust 模型推理",
+    titleFull: "通用 Rust 模型推理运行时。",
+    title: "通用 Rust 推理",
     titleAccent: "运行时。",
     summary:
-      "Power 统一管理模型制品、GPU 资源、请求准入和执行回执，可嵌入 Rust 进程，也可提供 OpenAI 兼容接口。",
-    primaryAction: "查看运行时架构",
+      "Power 为语言、视觉、OCR、嵌入、音频和自有计算图统一管理制品、设备、调度与证据；模型语义留在后端和模型 crate。",
+    primaryAction: "查看优化体系",
     evidenceAction: "查看性能数据",
     cargoLabel: "Cargo 依赖",
     facts: [
-      "原始 Q6_K 峰值稳态 token/s",
-      "全词表 12 题请求全程 token/s",
-      "证据文件离线验真",
+      "CPU、CUDA、Metal 类型化设备",
+      "后端与模型自有图入口",
+      "当前 Q6_K 证据离线验真",
     ],
     principlesTitle: "资源限制、执行身份和验收规则都写进接口。",
     principles: [
@@ -71,20 +72,20 @@ const homeCopy = {
         body: "客户端定义允许的度量、哈希和证据字段，服务端不能降低验收门槛。",
       },
     ],
-    measuredTitle: "同一模型、同一输入、同一测试协议。",
+    measuredTitle: "测量执行策略，不拿模型名称代替证据。",
     reproduce: "复现基准测试",
     benchmarkContext:
-      "RTX 4090 · Qwen3.8-27B · 原始 Q6_K · 全词表 / 前缀 FR8192 配对采集 · 1 次预热 + 9 × 1,024 token",
+      "RTX 4090 · Qwen3.8-27B · 原始 Q6_K · clean f6326bb · K7/S6/B11 · 1 次预热 + 9 × 1,024 token",
     metrics: [
-      "前缀 FR 稳态中位数 token/s",
-      "全词表校准请求全程 token/s",
-      "相对全词表稳态提升",
+      "共享 WDDM 桌面稳态中位数 token/s",
+      "通用 K6/S6/B8 请求全程 token/s",
+      "相对配对自回归请求全程提升",
       "离线验真的证据文件",
     ],
     columns: ["模型制品 / 模式", "宽松 / 严格", "请求全程 t/s", "稳态 t/s"],
     current: "当前",
     note:
-      "* 较早的稳态记录。† 12 题单轮校准中有 11 题触及输出上限；176.6109 是原始 Q6_K 的高覆盖峰值，不是服务下限。TBQ4 行来自独立的 100 题 × 3 轮矩阵。",
+      "* 较早的稳态记录。† 当前 12 题配对校准有 3 题触及输出上限；172.835 是 5–8% WDDM 背景负载下的干净九次中位数，较安静主机的历史高水位为 176.6109。Qwen 行只是一个后端案例，不是引擎边界。",
     surfacesTitle: "库、服务和制品安装器共用同一套运行时约束。",
     surfaces: [
       {
@@ -116,24 +117,24 @@ const homeCopy = {
       ["提交", "绑定制品、策略与输入输出"],
       ["验证", "按客户端策略接受"],
     ],
-    ctaTitle: "继续看 MTP 如何让一次目标模型前向验证多个 token。",
-    ctaBody: "文档逐步说明 proposal、快照、精确验证、回滚和提交。",
-    speculationAction: "阅读推测解码",
+    ctaTitle: "从一个模型开始，但不要把运行时写死在模型里。",
+    ctaBody: "按设备、形状、调度、权重路径和验收证据组合优化；模型 crate 保留自己的拓扑与数值语义。",
+    optimizationAction: "阅读优化手册",
     sourceAction: "查看源码",
   },
   en: {
-    titleFull: "A Rust runtime for model inference.",
-    title: "A Rust runtime",
-    titleAccent: "for model inference.",
+    titleFull: "A general-purpose Rust inference runtime.",
+    title: "General-purpose Rust",
+    titleAccent: "inference runtime.",
     summary:
-      "Power manages model artifacts, GPU resources, admission, and receipts behind an embedded or OpenAI-compatible API.",
-    primaryAction: "Read runtime architecture",
+      "Power gives language, vision, OCR, embedding, audio, and caller-owned graphs one artifact, device, scheduling, and evidence layer while model semantics stay in backends and model crates.",
+    primaryAction: "Explore the optimization system",
     evidenceAction: "View benchmark data",
     cargoLabel: "Cargo dependency",
     facts: [
-      "untouched-Q6_K peak token/s",
-      "full-vocabulary 12-task token/s",
-      "evidence files verified offline",
+      "typed CPU, CUDA, and Metal devices",
+      "backend and model-owned graph paths",
+      "current Q6_K evidence files verified offline",
     ],
     principlesTitle:
       "Resource limits, execution identity, and acceptance rules are explicit in the interface.",
@@ -151,14 +152,14 @@ const homeCopy = {
         body: "Clients define accepted measurements, hashes, and evidence fields. The server cannot lower that threshold.",
       },
     ],
-    measuredTitle: "The same model, input, and benchmark protocol.",
+    measuredTitle: "Measure the execution policy, not the model label.",
     reproduce: "Reproduce the benchmark",
     benchmarkContext:
-      "RTX 4090 · Qwen3.8-27B · untouched Q6_K · paired full-vocabulary / prefix-FR8192 capture · 1 warm-up + 9 × 1,024 tokens",
+      "RTX 4090 · Qwen3.8-27B · untouched Q6_K · clean f6326bb · K7/S6/B11 · 1 warm-up + 9 × 1,024 tokens",
     metrics: [
-      "prefix-FR median steady token/s",
-      "full-vocabulary calibration token/s",
-      "steady gain over full vocabulary",
+      "median steady token/s on a shared WDDM desktop",
+      "general K6/S6/B8 request-wide token/s",
+      "request-wide gain over paired autoregressive",
       "offline-verified evidence files",
     ],
     columns: [
@@ -169,7 +170,7 @@ const homeCopy = {
     ],
     current: "CURRENT",
     note:
-      "* Earlier steady capture. † The one-pass 12-task calibration truncated 11 tasks. The 176.6109 result is an untouched-Q6_K high-coverage peak, not a service floor. The TBQ4 row comes from a separate 3 × 100-task matrix.",
+      "* Earlier steady capture. † The current 12-task paired calibration truncated 3 tasks. The clean nine-run median is 172.835 under 5–8% WDDM background load; the earlier quiet-host high-water mark is 176.6109. Qwen is one backend case study, not the engine boundary.",
     surfacesTitle:
       "Library, service, and provisioner paths use the same runtime constraints.",
     surfaces: [
@@ -203,10 +204,10 @@ const homeCopy = {
       ["VERIFY", "Accept against client policy"],
     ],
     ctaTitle:
-      "See how MTP verifies several tokens in one target-model pass.",
+      "Start with one model without hard-wiring the runtime to that model.",
     ctaBody:
-      "The design covers proposals, snapshots, exact verification, rollback, and commit.",
-    speculationAction: "Read speculative decoding",
+      "Compose optimization by device, shape, scheduling, weight path, and acceptance evidence while the model crate retains topology and numerical semantics.",
+    optimizationAction: "Read the optimization playbook",
     sourceAction: "View source",
   },
 } as const;
@@ -239,9 +240,12 @@ export function HomeLayout() {
   };
 
   const architectureHref = route("/architecture");
+  const optimizationHref =
+    version && version !== defaultVersion
+      ? withBase("/optimization")
+      : route("/optimization");
   const benchmarkHref = route("/performance");
   const reproduceHref = route("/reproduction");
-  const speculationHref = route("/speculative-decoding");
 
   return (
     <main className="power-home">
@@ -253,7 +257,7 @@ export function HomeLayout() {
           </h1>
           <p className="power-hero__summary">{copy.summary}</p>
           <div className="power-hero__actions">
-            <a className="power-action power-action--primary" href={architectureHref}>
+            <a className="power-action power-action--primary" href={optimizationHref}>
               {copy.primaryAction} <ArrowIcon />
             </a>
             <a className="power-action power-action--secondary" href={benchmarkHref}>
@@ -288,6 +292,8 @@ export function HomeLayout() {
           ))}
         </div>
       </section>
+
+      <OptimizationAtlas href={optimizationHref} locale={locale} />
 
       <section className="power-section power-proof" aria-labelledby="proof-title">
         <header className="power-section__header power-section__header--split">
@@ -354,8 +360,8 @@ export function HomeLayout() {
       <section className="power-cta">
         <div><h2>{copy.ctaTitle}</h2><span>{copy.ctaBody}</span></div>
         <div>
-          <a className="power-action power-action--primary" href={speculationHref}>
-            {copy.speculationAction} <ArrowIcon />
+          <a className="power-action power-action--primary" href={optimizationHref}>
+            {copy.optimizationAction} <ArrowIcon />
           </a>
           <a className="power-action power-action--secondary" href="https://github.com/A3S-Lab/Power">
             {copy.sourceAction}

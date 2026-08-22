@@ -57,17 +57,23 @@ FR 只减少 MTP draft head 投影的行数。它可以提高窄词表分布上�
 
 ## 当前实测配置
 
-原始 Q6_K 峰值组合了：
+原始 Q6_K 峰值配置组合了：
 
 - 原始 22,884,408,288 字节 Q6_K 制品；
 - 带 8,192 行 draft-only token-ID 前缀的原生 MTP；
 - 7 个 proposal 与 6 个循环状态快照；
+- 固定 B11 目标验证容量与普通 CUDA Graph；
 - 目标与草稿模型的批量 greedy CUDA 采样；
-- Flash Attention 与完整 CUDA 层 offload；
+- 短批量 Flash Attention 关闭与完整 CUDA 层 offload；
+- 高优先级 CUDA stream、物理核亲和性和单模型／单请求调度；
 - 精确目标验证与确定性输出摘要。
 
-它的稳态解码中位数为 176.6109 token/s；同一制品的全词表 K7/S7 对照为 147.0207 token/s。但在单轮 12 题校准中，全词表 K7/S6 的请求全程吞吐为 47.032 token/s，前缀 FR 只有 37.290 token/s。该峰值配置尚未完成重复 100 题矩阵。
+当前干净九次采集的稳态中位数为 172.835 token/s，最低 171.298，最高 175.533；采集前共享 Windows 显示 GPU 已有 5–8% 利用率。较安静主机的历史高水位为 176.6109 token/s；同一制品全词表 K7/S7 对照为 147.0207 token/s。
+
+通用短任务配置使用固定 K6/S6/B8，在当前 12 题、256-token 配对校准中达到 46.923 token/s；关闭推测执行为 28.713 token/s，提升 63.42%。两种模式的 12 个最终答案和 9/12 分数相同，接受率为 26.81%，每次目标前向提交 2.591 个已验证 token，回放为零。
+
+固定形状比更高的名义接受率更重要。自适应 K 把同一代表性负载的接受率提高到 50.07%，却因验证形状变化减少 CUDA Graph 复用而降至 35.178 token/s。关闭 CUDA Graph 也把峰值工作负载降至 133.876 token/s。K、S、目标 batch 与图形状必须作为一个整体调优。
 
 此前的混合制品 K7/S7 仍是代表性质量记录：稳态解码中位数 175.2089 token/s，请求全程吞吐 83.228 token/s，相对 TBQ4 自回归对照没有观察到回归。该样本同样不能证明通用智力提升。
 
-完整解读参阅[性能证据](/performance)，适配器 API、基准命令与验收规则参阅[规范推测解码设计](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)。
+完整执行路径参阅[优化手册](./optimization)，数字解读参阅[性能证据](./performance)，适配器 API、基准命令与验收规则参阅[规范推测解码设计](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)。

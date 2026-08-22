@@ -14,6 +14,7 @@ interface NavigationLabels {
   architecture: string;
   docs: string;
   gettingStarted: string;
+  optimization: string;
   operations: string;
   performance: string;
   reproduce: string;
@@ -42,6 +43,9 @@ function createNavigation(
         items: [
           { text: labels.gettingStarted, link: route("getting-started") },
           { text: labels.architecture, link: route("architecture") },
+          ...(version === "next"
+            ? [{ text: labels.optimization, link: route("optimization") }]
+            : []),
           {
             text: labels.speculativeDecoding,
             link: route("speculative-decoding"),
@@ -50,6 +54,16 @@ function createNavigation(
           { text: labels.operations, link: route("operations") },
         ],
       },
+      ...(version === "next"
+        ? [
+            {
+              text: labels.optimization,
+              link: route("optimization"),
+              activeMatch: "/optimization",
+              position: "left" as const,
+            },
+          ]
+        : []),
       {
         text: labels.performance,
         link: route("performance"),
@@ -72,6 +86,7 @@ const zhNavigation = createNavigation("", {
   architecture: "架构设计",
   docs: "文档",
   gettingStarted: "快速开始",
+  optimization: "优化",
   operations: "部署运维",
   performance: "性能",
   reproduce: "复现实验",
@@ -83,6 +98,7 @@ const enNavigation = createNavigation("en", {
   architecture: "Architecture",
   docs: "Docs",
   gettingStarted: "Getting started",
+  optimization: "Optimization",
   operations: "Operations",
   performance: "Performance",
   reproduce: "Reproduce",

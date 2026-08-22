@@ -511,6 +511,7 @@ current production boundary and failure policy.
 | [Documentation home - English](https://a3s-lab.github.io/Power/en/) | English `next` documentation |
 | [v1.0.0 release documentation](https://a3s-lab.github.io/Power/v1.0.0/) | Versioned bilingual production-release snapshot |
 | [v0.9.0 release documentation](https://a3s-lab.github.io/Power/v0.9.0/) | Versioned bilingual release snapshot |
+| [Optimization playbook](docs/optimization-playbook.md) | Complete model-neutral map of graph, tensor, speculation, scheduling, storage, residency, accelerator, and evidence techniques |
 | [Embedded Inference Architecture](docs/embedded-inference-architecture.md) | Graph execution, placement, scheduling, state, and receipts |
 | [Model-Owned Shape Profiles](docs/shape-profiles.md) | Finite opaque classes, stale-binding rejection, fallback, and receipt v5 |
 | [Model-Neutral Session Replicas](docs/session-replicas.md) | Exclusive mutable contexts, shared device admission, residency bounds, and cancellation |

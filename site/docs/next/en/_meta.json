@@ -11,6 +11,11 @@
   },
   {
     "type": "file",
+    "name": "optimization",
+    "label": "Optimization playbook"
+  },
+  {
+    "type": "file",
     "name": "performance",
     "label": "Performance evidence"
   },

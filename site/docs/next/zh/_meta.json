@@ -11,6 +11,11 @@
   },
   {
     "type": "file",
+    "name": "optimization",
+    "label": "优化手册"
+  },
+  {
+    "type": "file",
     "name": "performance",
     "label": "性能证据"
   },

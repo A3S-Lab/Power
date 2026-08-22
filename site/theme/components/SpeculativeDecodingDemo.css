@@ -677,14 +677,16 @@
   }
 
   .power-mtp-lanes {
-    overflow-x: auto;
-    scrollbar-color: var(--power-line-strong) transparent;
-    scrollbar-width: thin;
+    overflow: hidden;
   }
 
   .power-mtp-lane {
     display: block;
-    min-width: 450px;
+    min-width: 0;
+  }
+
+  .power-mtp-lane > ol {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
   }
 
   .power-mtp-lane__label {
@@ -697,6 +699,10 @@
 
   .power-mtp-token {
     min-height: 45px;
+  }
+
+  .power-mtp-token > span {
+    font-size: 7px;
   }
 
   .power-mtp-snapshots {

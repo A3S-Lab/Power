@@ -850,13 +850,20 @@ html.dark .power-cta {
 
   .power-hero__actions {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .power-action {
     min-width: 0;
     padding-right: 12px;
     padding-left: 12px;
+    line-height: 1.35;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .power-hero__facts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .power-hero__facts > div {
@@ -868,7 +875,8 @@ html.dark .power-cta {
   }
 
   .power-hero__facts dd {
-    font-size: 8px;
+    overflow-wrap: anywhere;
+    font-size: 10px;
   }
 
   .power-section {
