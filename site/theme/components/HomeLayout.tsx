@@ -14,200 +14,191 @@ type Locale = "zh" | "en";
 const modeData = [
   {
     mode: "Q6_K / AR",
-    quality: "67 / 60",
+    quality: { zh: "67 / 60", en: "67 / 60" },
     request: "30.883",
-    steady: "35.5793*",
+    steady: "35.5793",
   },
   {
     mode: "Q6_K + MTP / FR · K6/S6/B8",
-    quality: "9 / 9†",
+    quality: { zh: "9 / 9", en: "9 / 9" },
     request: "46.923",
     steady: "—",
   },
   {
     mode: "Q6_K + MTP / FR · K7/S6/B11",
-    quality: "same digest",
+    quality: { zh: "输出哈希一致", en: "Matching digest" },
     request: "—",
     steady: "172.835",
     current: true,
   },
   {
     mode: "TBQ4 + MTP / full",
-    quality: "76 / 66",
+    quality: { zh: "76 / 66", en: "76 / 66" },
     request: "83.228",
     steady: "175.2089",
   },
 ];
 
-const heroFactValues = ["3", "4", "23 / 23"];
 const benchmarkMetricValues = ["172.835", "46.923", "63.42%", "23 / 23"];
 
 const homeCopy = {
   zh: {
-    titleFull: "通用 Rust 模型推理运行时。",
-    title: "通用 Rust 推理",
-    titleAccent: "运行时。",
+    titleFull: "模型由你定义。执行交给 Power。",
+    title: "模型由你定义。",
+    titleAccent: "执行交给 Power。",
     summary:
-      "Power 为语言、视觉、OCR、嵌入、音频和自有计算图统一管理制品、设备、调度与证据；模型语义留在后端和模型 crate。",
-    primaryAction: "查看优化体系",
-    evidenceAction: "查看性能数据",
+      "在 Rust 进程或服务端运行语言、视觉、OCR、嵌入和音频模型。Power 统一处理设备、队列、权重和执行记录，不改写模型逻辑。",
+    primaryAction: "开始接入",
+    evidenceAction: "查看实测性能",
     cargoLabel: "Cargo 依赖",
     facts: [
-      "CPU、CUDA、Metal 类型化设备",
-      "后端与模型自有图入口",
-      "当前 Q6_K 证据离线验真",
+      { value: "3", label: "CPU、CUDA、Metal 设备" },
+      { value: "4", label: "种后端与嵌入路径" },
+      { value: "23 / 23", label: "性能证据通过校验" },
     ],
-    principlesTitle: "资源限制、执行身份和验收规则都写进接口。",
+    principlesTitle: "一套运行时，守住三件事。",
     principles: [
       {
-        title: "先做资源准入",
-        body: "请求进入执行前检查内存、算力和队列容量；取消与微批处理使用同一组限制。",
+        title: "资源有边界",
+        body: "先检查内存、设备和队列，再执行。超出限制就明确拒绝，不靠隐式回退兜底。",
       },
       {
-        title: "记录本次执行",
-        body: "回执绑定模型字节、运行策略、设备路径、输入与输出，可由调用方独立校验。",
+        title: "结果可追溯",
+        body: "模型、配置、设备、输入和输出写入同一份执行回执，之后可以独立核对。",
       },
       {
-        title: "由客户端验收",
-        body: "客户端定义允许的度量、哈希和证据字段，服务端不能降低验收门槛。",
+        title: "验收权在调用方",
+        body: "客户端按自己的哈希和策略验收，服务端不能悄悄放宽条件。",
       },
     ],
-    measuredTitle: "测量执行策略，不拿模型名称代替证据。",
-    reproduce: "复现基准测试",
+    measuredTitle: "一台 RTX 4090，一组可复现结果。",
+    reproduce: "复现这组数据",
     benchmarkContext:
-      "RTX 4090 · Qwen3.8-27B · 原始 Q6_K · clean f6326bb · K7/S6/B11 · 1 次预热 + 9 × 1,024 token",
+      "Qwen3.8-27B · 原始 Q6_K · revision f6326bb · K7/S6/B11 · 1 次预热 + 9 × 1,024 token",
     metrics: [
-      "共享 WDDM 桌面稳态中位数 token/s",
-      "通用 K6/S6/B8 请求全程 token/s",
-      "相对配对自回归请求全程提升",
-      "离线验真的证据文件",
+      "Q6_K 稳态解码中位数 token/s",
+      "通用配置的请求全程 token/s",
+      "相对自回归的请求全程提升",
+      "证据文件通过哈希校验",
     ],
-    columns: ["模型制品 / 模式", "宽松 / 严格", "请求全程 t/s", "稳态 t/s"],
+    columns: ["模式", "质量证据", "请求全程 t/s", "稳态 t/s"],
     current: "当前",
     note:
-      "* 较早的稳态记录。† 当前 12 题配对校准有 3 题触及输出上限；172.835 是 5–8% WDDM 背景负载下的干净九次中位数，较安静主机的历史高水位为 176.6109。Qwen 行只是一个后端案例，不是引擎边界。",
-    surfacesTitle: "库、服务和制品安装器共用同一套运行时约束。",
+      "172.835 token/s 是共享 WDDM 桌面上的 9 次稳态中位数，不是服务保底值。各行质量数据使用对应的归档校准集，完整口径见性能页。",
+    surfacesTitle: "按你的方式接入。",
     surfaces: [
       {
-        label: "库",
-        title: "嵌入模型运行时",
-        body: "在进程内复用 GPU、准入、放置、状态与回执；模型 crate 保留拓扑、分词和预处理。",
+        label: "Rust 库",
+        title: "直接嵌入进程",
+        body: "不监听端口，不启动子进程。模型代码直接使用设备、队列、状态和执行回执。",
         meta: "embedded-inference",
       },
       {
-        label: "服务",
-        title: "暴露 OpenAI 兼容 API",
-        body: "通过 HTTP、RA-TLS 或 vsock 提供对话、补全、嵌入、模型生命周期、指标与证明接口。",
+        label: "推理服务",
+        title: "接入现有客户端",
+        body: "提供 OpenAI 兼容 API，支持对话、补全、嵌入和模型管理；需要时可启用 RA-TLS 或 vsock。",
         meta: "server + backend",
       },
       {
-        label: "制品安装器",
-        title: "安装精确的制品包",
-        body: "把制品流式写入私有暂存区，检查大小和 SHA-256，再在跨进程锁内原子提交。",
+        label: "制品安装",
+        title: "安全落盘模型",
+        body: "流式下载模型，校验大小与 SHA-256，最后在跨进程锁内一次原子提交。",
         meta: "artifact-provisioning",
       },
     ],
-    boundaryTitle: "Power 管执行，模型 crate 管模型逻辑。",
+    boundaryTitle: "Power 管执行，不替模型做决定。",
     boundaryBody:
-      "Power 不接管拓扑、分词、预处理或质量策略。它只为模型代码提供共享设备、资源、完整性、状态、隐私与证据机制。",
-    architectureAction: "阅读架构设计",
+      "模型 crate 决定拓扑、分词、预处理和质量策略；Power 提供设备、调度、完整性、隐私和验证。接入新模型不需要修改运行时核心。",
+    architectureAction: "查看架构边界",
     trace: [
-      ["准入", "约束队列与内存"],
-      ["执行", "选择精确设备路径"],
-      ["提交", "绑定制品、策略与输入输出"],
-      ["验证", "按客户端策略接受"],
+      ["准入", "内存和队列够不够？"],
+      ["执行", "使用哪条设备路径？"],
+      ["提交", "这次输出绑定了什么？"],
+      ["验收", "调用方是否接受？"],
     ],
-    ctaTitle: "从一个模型开始，但不要把运行时写死在模型里。",
-    ctaBody: "按设备、形状、调度、权重路径和验收证据组合优化；模型 crate 保留自己的拓扑与数值语义。",
-    optimizationAction: "阅读优化手册",
+    ctaTitle: "先接入一个模型。",
+    ctaBody: "用嵌入式运行时开始，或直接启动 OpenAI 兼容服务。性能优化和执行验证都可以沿用同一套接口。",
+    gettingStartedAction: "快速开始",
     sourceAction: "查看源码",
   },
   en: {
-    titleFull: "A general-purpose Rust inference runtime.",
-    title: "General-purpose Rust",
-    titleAccent: "inference runtime.",
+    titleFull: "You define the model. Power runs it.",
+    title: "You define the model.",
+    titleAccent: "Power runs it.",
     summary:
-      "Power gives language, vision, OCR, embedding, audio, and caller-owned graphs one artifact, device, scheduling, and evidence layer while model semantics stay in backends and model crates.",
-    primaryAction: "Explore the optimization system",
-    evidenceAction: "View benchmark data",
+      "Run language, vision, OCR, embedding, and audio models inside a Rust process or behind an API. Power handles devices, queues, weights, and execution records without rewriting model logic.",
+    primaryAction: "Get started",
+    evidenceAction: "See measured performance",
     cargoLabel: "Cargo dependency",
     facts: [
-      "typed CPU, CUDA, and Metal devices",
-      "backend and model-owned graph paths",
-      "current Q6_K evidence files verified offline",
+      { value: "3", label: "CPU, CUDA, and Metal devices" },
+      { value: "4", label: "backend and embedded paths" },
+      { value: "23 / 23", label: "performance artifacts verified" },
     ],
-    principlesTitle:
-      "Resource limits, execution identity, and acceptance rules are explicit in the interface.",
+    principlesTitle: "One runtime. Three hard guarantees.",
     principles: [
       {
-        title: "Check resources first",
-        body: "Memory, compute, and queue capacity are checked before execution. Cancellation and microbatching use the same limits.",
+        title: "Resources stay bounded",
+        body: "Power checks memory, devices, and queues before execution. It rejects work that cannot fit instead of hiding a fallback.",
       },
       {
-        title: "Record each execution",
-        body: "The receipt binds artifact bytes, runtime policy, device path, input, and output for independent verification.",
+        title: "Results stay traceable",
+        body: "Model, configuration, device, input, and output are bound into one execution receipt that can be checked later.",
       },
       {
-        title: "Let clients verify",
-        body: "Clients define accepted measurements, hashes, and evidence fields. The server cannot lower that threshold.",
+        title: "Callers set the bar",
+        body: "Clients verify against their own hashes and policy. The server cannot quietly relax the acceptance rules.",
       },
     ],
-    measuredTitle: "Measure the execution policy, not the model label.",
-    reproduce: "Reproduce the benchmark",
+    measuredTitle: "One RTX 4090. One reproducible result.",
+    reproduce: "Reproduce these numbers",
     benchmarkContext:
-      "RTX 4090 · Qwen3.8-27B · untouched Q6_K · clean f6326bb · K7/S6/B11 · 1 warm-up + 9 × 1,024 tokens",
+      "Qwen3.8-27B · untouched Q6_K · revision f6326bb · K7/S6/B11 · 1 warm-up + 9 × 1,024 tokens",
     metrics: [
-      "median steady token/s on a shared WDDM desktop",
-      "general K6/S6/B8 request-wide token/s",
-      "request-wide gain over paired autoregressive",
-      "offline-verified evidence files",
+      "median Q6_K steady decode token/s",
+      "request-wide token/s on the general profile",
+      "request-wide gain over autoregressive",
+      "evidence artifacts passed hash checks",
     ],
-    columns: [
-      "Artifact / mode",
-      "Lenient / strict",
-      "Request-wide t/s",
-      "Steady t/s",
-    ],
+    columns: ["Mode", "Quality evidence", "Request-wide t/s", "Steady t/s"],
     current: "CURRENT",
     note:
-      "* Earlier steady capture. † The current 12-task paired calibration truncated 3 tasks. The clean nine-run median is 172.835 under 5–8% WDDM background load; the earlier quiet-host high-water mark is 176.6109. Qwen is one backend case study, not the engine boundary.",
-    surfacesTitle:
-      "Library, service, and provisioner paths use the same runtime constraints.",
+      "172.835 token/s is the median of nine steady runs on a shared WDDM desktop, not a service floor. Each row uses its corresponding archived quality set; see Performance for the full methodology.",
+    surfacesTitle: "Use Power your way.",
     surfaces: [
       {
-        label: "LIBRARY",
-        title: "Embed the model runtime",
-        body: "Reuse GPU access, admission, placement, state, and receipts in process. The model crate keeps topology, tokenization, and preprocessing.",
+        label: "Rust library",
+        title: "Embed it in your process",
+        body: "No listener and no child process. Model code uses devices, queues, state, and execution receipts directly.",
         meta: "embedded-inference",
       },
       {
-        label: "SERVICE",
-        title: "Expose an OpenAI-compatible API",
-        body: "Serve chat, completions, embeddings, model lifecycle, metrics, and attestation over HTTP, RA-TLS, or vsock.",
+        label: "Inference service",
+        title: "Keep your existing clients",
+        body: "Use an OpenAI-compatible API for chat, completions, embeddings, and model management, with RA-TLS or vsock when needed.",
         meta: "server + backend",
       },
       {
-        label: "PROVISIONER",
-        title: "Install an exact artifact bundle",
-        body: "Stream artifacts into private staging, check size and SHA-256, then commit atomically under a cross-process lock.",
+        label: "Artifact install",
+        title: "Put models on disk safely",
+        body: "Stream the model, verify size and SHA-256, then commit it once under a cross-process lock.",
         meta: "artifact-provisioning",
       },
     ],
-    boundaryTitle: "Power handles execution. Model crates handle model logic.",
+    boundaryTitle: "Power runs the model. It does not redefine it.",
     boundaryBody:
-      "Power does not take over topology, tokenization, preprocessing, or quality policy. It supplies shared device, resource, integrity, state, privacy, and evidence mechanisms.",
-    architectureAction: "Read the architecture",
+      "Model crates own topology, tokenization, preprocessing, and quality policy. Power supplies devices, scheduling, integrity, privacy, and verification, so a new model does not require a new runtime core.",
+    architectureAction: "See the architecture boundary",
     trace: [
-      ["ADMIT", "Bound queue and memory"],
-      ["EXECUTE", "Select an exact device path"],
-      ["COMMIT", "Bind artifacts, policy, and I/O"],
-      ["VERIFY", "Accept against client policy"],
+      ["ADMIT", "Do memory and queue capacity fit?"],
+      ["EXECUTE", "Which device path runs this request?"],
+      ["COMMIT", "What does this output bind?"],
+      ["ACCEPT", "Does the caller accept it?"],
     ],
-    ctaTitle:
-      "Start with one model without hard-wiring the runtime to that model.",
+    ctaTitle: "Start with one model.",
     ctaBody:
-      "Compose optimization by device, shape, scheduling, weight path, and acceptance evidence while the model crate retains topology and numerical semantics.",
-    optimizationAction: "Read the optimization playbook",
+      "Embed the runtime or launch the OpenAI-compatible service. Performance tuning and execution verification use the same interfaces when you need them.",
+    gettingStartedAction: "Get started",
     sourceAction: "View source",
   },
 } as const;
@@ -240,6 +231,7 @@ export function HomeLayout() {
   };
 
   const architectureHref = route("/architecture");
+  const gettingStartedHref = route("/getting-started");
   const optimizationHref =
     version && version !== defaultVersion
       ? withBase("/optimization")
@@ -257,7 +249,7 @@ export function HomeLayout() {
           </h1>
           <p className="power-hero__summary">{copy.summary}</p>
           <div className="power-hero__actions">
-            <a className="power-action power-action--primary" href={optimizationHref}>
+            <a className="power-action power-action--primary" href={gettingStartedHref}>
               {copy.primaryAction} <ArrowIcon />
             </a>
             <a className="power-action power-action--secondary" href={benchmarkHref}>
@@ -269,9 +261,14 @@ export function HomeLayout() {
             <code>cargo add a3s-power --no-default-features -F embedded-inference</code>
           </div>
           <dl className="power-hero__facts">
-            <div><dt>{heroFactValues[0]}</dt><dd>{copy.facts[0]}</dd></div>
-            <div><dt>{heroFactValues[1]}</dt><dd>{copy.facts[1]}</dd></div>
-            <div><dt className="power-is-verified">{heroFactValues[2]}</dt><dd>{copy.facts[2]}</dd></div>
+            {copy.facts.map((fact, index) => (
+              <div key={fact.value}>
+                <dt className={index === 2 ? "power-is-verified" : undefined}>
+                  {fact.value}
+                </dt>
+                <dd>{fact.label}</dd>
+              </div>
+            ))}
           </dl>
         </div>
 
@@ -318,7 +315,7 @@ export function HomeLayout() {
               {modeData.map((mode) => (
                 <tr className={mode.current ? "power-current-row" : undefined} key={mode.mode}>
                   <th>{mode.mode}{mode.current && <span>{copy.current}</span>}</th>
-                  <td>{mode.quality}</td><td>{mode.request}</td><td>{mode.steady}</td>
+                  <td>{mode.quality[locale]}</td><td>{mode.request}</td><td>{mode.steady}</td>
                 </tr>
               ))}
             </tbody>
@@ -360,8 +357,8 @@ export function HomeLayout() {
       <section className="power-cta">
         <div><h2>{copy.ctaTitle}</h2><span>{copy.ctaBody}</span></div>
         <div>
-          <a className="power-action power-action--primary" href={optimizationHref}>
-            {copy.optimizationAction} <ArrowIcon />
+          <a className="power-action power-action--primary" href={gettingStartedHref}>
+            {copy.gettingStartedAction} <ArrowIcon />
           </a>
           <a className="power-action power-action--secondary" href="https://github.com/A3S-Lab/Power">
             {copy.sourceAction}

@@ -43,9 +43,6 @@ function createNavigation(
         items: [
           { text: labels.gettingStarted, link: route("getting-started") },
           { text: labels.architecture, link: route("architecture") },
-          ...(version === "next"
-            ? [{ text: labels.optimization, link: route("optimization") }]
-            : []),
           {
             text: labels.speculativeDecoding,
             link: route("speculative-decoding"),
@@ -87,11 +84,11 @@ const zhNavigation = createNavigation("", {
   docs: "文档",
   gettingStarted: "快速开始",
   optimization: "优化",
-  operations: "部署运维",
+  operations: "部署",
   performance: "性能",
-  reproduce: "复现实验",
+  reproduce: "复现",
   speculativeDecoding: "推测解码",
-  verification: "独立验证",
+  verification: "验证",
 });
 
 const enNavigation = createNavigation("en", {
@@ -112,7 +109,7 @@ const config: UserConfig = {
   siteOrigin,
   title: "A3S Power",
   description:
-    "面向嵌入式、托管与 TEE 环境的模型中立 Rust 推理运行时。",
+    "在 Rust 进程或服务端运行语言、视觉、OCR、嵌入和音频模型，统一管理设备、调度、制品和执行验证。",
   lang: "zh",
   icon: "/a3s-os-logo.png",
   logo: "/a3s-os-logo.png",
@@ -131,14 +128,15 @@ const config: UserConfig = {
       lang: "zh",
       label: "简体中文",
       title: "A3S Power",
-      description: "面向嵌入式、托管与 TEE 环境的模型中立 Rust 推理运行时。",
+      description:
+        "在 Rust 进程或服务端运行语言、视觉、OCR、嵌入和音频模型，统一管理设备、调度、制品和执行验证。",
     },
     {
       lang: "en",
       label: "English",
       title: "A3S Power",
       description:
-        "A model-neutral Rust runtime for bounded, verifiable inference in embedded, hosted, and TEE environments.",
+        "Run language, vision, OCR, embedding, and audio models in a Rust process or behind an API, with shared device, scheduling, artifact, and verification controls.",
     },
   ],
   head: [
