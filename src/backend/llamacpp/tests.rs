@@ -123,7 +123,7 @@ fn test_llamacpp_mtp_weights_follow_runtime_mode() {
     assert!(!llamacpp_loads_mtp_weights("prompt-lookup", false));
 }
 
-#[cfg(feature = "llamacpp")]
+#[cfg(feature = "llamacpp-external-draft")]
 #[test]
 fn test_external_draft_selection_is_typed_and_fail_closed() {
     use crate::model::external_draft::{ExternalDraftArtifact, ExternalDraftKind};
@@ -158,6 +158,31 @@ fn test_external_draft_selection_is_typed_and_fail_closed() {
     assert!(selected_external_draft(&manifest, "off").unwrap().is_none());
     let error = selected_external_draft(&manifest, "dflash").unwrap_err();
     assert!(error.to_string().contains("found 'dspark'"));
+}
+
+#[cfg(all(feature = "llamacpp", not(feature = "llamacpp-external-draft")))]
+#[test]
+fn test_external_draft_selection_requires_reviewed_binding_feature() {
+    use crate::model::external_draft::{ExternalDraftArtifact, ExternalDraftKind};
+
+    let mut manifest = ModelManifest::remote("target");
+    manifest.sha256 = "a".repeat(64);
+    manifest.external_draft = Some(ExternalDraftArtifact {
+        kind: ExternalDraftKind::Dspark,
+        path: std::path::PathBuf::from("draft.gguf"),
+        size: 42,
+        sha256: "b".repeat(64),
+        target_sha256: manifest.sha256.clone(),
+        source: None,
+        revision: None,
+        license: None,
+    });
+
+    assert!(selected_external_draft(&manifest, "auto")
+        .unwrap()
+        .is_none());
+    let error = selected_external_draft(&manifest, "dspark").unwrap_err();
+    assert!(error.to_string().contains("llamacpp-external-draft"));
 }
 
 #[cfg(feature = "llamacpp")]

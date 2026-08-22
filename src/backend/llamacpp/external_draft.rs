@@ -29,6 +29,9 @@ pub(super) fn selected_external_draft(
     manifest: &ModelManifest,
     spec_mode: &str,
 ) -> Result<Option<ExternalDraftArtifact>> {
+    #[cfg(not(feature = "llamacpp-external-draft"))]
+    let _ = manifest;
+
     let requested = SpeculativeStrategy::parse(spec_mode)
         .ok_or_else(|| PowerError::Config(format!("unsupported spec_mode '{spec_mode}'")))?;
     let expected_kind = match requested {
@@ -37,24 +40,37 @@ pub(super) fn selected_external_draft(
         _ => None,
     };
     if let Some(expected_kind) = expected_kind {
-        let artifact = manifest.external_draft.as_ref().ok_or_else(|| {
-            PowerError::Config(format!(
-                "spec_mode '{}' requires model manifest.external_draft",
-                expected_kind.as_str()
-            ))
-        })?;
-        if artifact.kind != expected_kind {
-            return Err(PowerError::Config(format!(
-                "spec_mode '{}' requires an external_draft of kind '{}', found '{}'",
-                expected_kind.as_str(),
-                expected_kind.as_str(),
-                artifact.kind.as_str()
-            )));
+        #[cfg(not(feature = "llamacpp-external-draft"))]
+        return Err(PowerError::Config(format!(
+            "spec_mode '{}' requires the llamacpp-external-draft crate feature and reviewed llama-cpp-rs patch",
+            expected_kind.as_str()
+        )));
+
+        #[cfg(feature = "llamacpp-external-draft")]
+        {
+            let artifact = manifest.external_draft.as_ref().ok_or_else(|| {
+                PowerError::Config(format!(
+                    "spec_mode '{}' requires model manifest.external_draft",
+                    expected_kind.as_str()
+                ))
+            })?;
+            if artifact.kind != expected_kind {
+                return Err(PowerError::Config(format!(
+                    "spec_mode '{}' requires an external_draft of kind '{}', found '{}'",
+                    expected_kind.as_str(),
+                    expected_kind.as_str(),
+                    artifact.kind.as_str()
+                )));
+            }
+            return Ok(Some(artifact.clone()));
         }
-        return Ok(Some(artifact.clone()));
     }
     if matches!(requested, SpeculativeStrategy::Auto) {
+        #[cfg(feature = "llamacpp-external-draft")]
         return Ok(manifest.external_draft.clone());
+
+        #[cfg(not(feature = "llamacpp-external-draft"))]
+        return Ok(None);
     }
     Ok(None)
 }

@@ -72,9 +72,13 @@ llamacpp = [
     "dep:encoding_rs",
     "llama-cpp-2?/mtmd",
 ]
-# Experimental reduced-vocabulary MTP projection. The pinned llama.cpp source
-# must first receive patches/llama-cpp-rs-dfd12e4-mtp-fr-spec.patch.
-llamacpp-mtp-fr = ["llamacpp"]
+# Verified external DFlash/DSpark execution. The pinned llama-cpp-rs source
+# must first receive patches/llama-cpp-rs-dfd12e4-external-draft.patch.
+llamacpp-external-draft = ["llamacpp"]
+# Experimental reduced-vocabulary MTP projection. The patch installer applies
+# the complete reviewed speculative patch set, so this profile also exposes the
+# external-draft binding while preserving the existing build command.
+llamacpp-mtp-fr = ["llamacpp-external-draft"]
 # CUDA execution for the llama.cpp backend. Kept separate so CPU-only and TEE
 # builds do not require a CUDA toolchain.
 llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda", "llama-cpp-sys-2/cuda"]

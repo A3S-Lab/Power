@@ -1,10 +1,12 @@
+#[cfg(feature = "llamacpp-external-draft")]
+use super::external_target_context_params;
 #[cfg(feature = "llamacpp-mtp-fr")]
 use super::llamacpp_context_mtp_fr_vocab;
 use super::metrics::FrCoverageMetrics;
 use super::{
-    ensure_mtp_fr_available, external_target_context_params, llamacpp_context_output_limits,
-    metadata_entry_enables_mtp, mtp_speculative_params, use_backend_greedy, use_greedy_fast_path,
-    LlamaContextSettings, LlamaSamplingSettings, MtpCompletionSettings,
+    ensure_mtp_fr_available, llamacpp_context_output_limits, metadata_entry_enables_mtp,
+    mtp_speculative_params, use_backend_greedy, use_greedy_fast_path, LlamaContextSettings,
+    LlamaSamplingSettings, MtpCompletionSettings,
 };
 use llama_cpp_2::context::params::LlamaContextType;
 
@@ -204,6 +206,7 @@ fn reduced_vocabulary_requires_the_explicit_patched_feature() {
     assert!(error.to_string().contains("llamacpp-mtp-fr"));
 }
 
+#[cfg(feature = "llamacpp-external-draft")]
 #[test]
 fn external_target_context_reserves_every_rejected_draft_state() {
     let params = external_target_context_params(

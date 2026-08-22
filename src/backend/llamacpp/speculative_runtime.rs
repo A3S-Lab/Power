@@ -14,10 +14,11 @@ mod streaming;
 use llama_cpp_2::context::params::LlamaContextType;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::LlamaModel;
+#[cfg(feature = "llamacpp-external-draft")]
 use llama_cpp_2::speculative::{
     ExternalDraftSpeculative, ExternalDraftSpeculativeKind, ExternalDraftSpeculativeParams,
-    MtpSpeculative, MtpSpeculativeParams,
 };
+use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
 
 use super::{backend_ref, send_completion_result};
 use crate::backend::types::CompletionResponseChunk;
@@ -29,6 +30,7 @@ use crate::speculative::{
 };
 
 use self::adapter::LlamaSpeculativeAdapter;
+#[cfg(feature = "llamacpp-external-draft")]
 use self::context_settings::external_target_context_params;
 #[cfg(all(test, feature = "llamacpp-mtp-fr"))]
 use self::context_settings::llamacpp_context_mtp_fr_vocab;
@@ -98,12 +100,15 @@ pub(super) fn llamacpp_speculative_capabilities(
     if has_mtp {
         capabilities = capabilities.with(SpeculativeStrategy::Mtp);
     }
+    #[cfg(feature = "llamacpp-external-draft")]
     if let Some(kind) = external_draft {
         capabilities = capabilities.with(match kind {
             ExternalDraftKind::Dflash => SpeculativeStrategy::Dflash,
             ExternalDraftKind::Dspark => SpeculativeStrategy::Dspark,
         });
     }
+    #[cfg(not(feature = "llamacpp-external-draft"))]
+    let _ = external_draft;
     capabilities
 }
 
@@ -308,6 +313,7 @@ pub(super) fn run_mtp_completion(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "llamacpp-external-draft")]
 pub(super) fn run_external_draft_completion(
     model: &LlamaModel,
     model_name: &str,
@@ -425,6 +431,26 @@ pub(super) fn run_external_draft_completion(
         telemetry,
         tx,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(feature = "llamacpp-external-draft"))]
+pub(super) fn run_external_draft_completion(
+    _model: &LlamaModel,
+    _model_name: &str,
+    _draft_model: &LlamaModel,
+    draft_kind: ExternalDraftKind,
+    _tokens: Vec<llama_cpp_2::token::LlamaToken>,
+    _context_settings: LlamaContextSettings,
+    _sampling_settings: &LlamaSamplingSettings,
+    _settings: MtpCompletionSettings,
+    _telemetry: &SpeculativeTelemetry,
+    _tx: &tokio::sync::mpsc::Sender<Result<CompletionResponseChunk>>,
+) -> Result<()> {
+    Err(PowerError::Config(format!(
+        "spec_mode '{}' requires the llamacpp-external-draft crate feature and reviewed llama-cpp-rs patch",
+        draft_kind.as_str()
+    )))
 }
 
 #[allow(clippy::too_many_arguments)]

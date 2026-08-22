@@ -1,6 +1,7 @@
 use llama_cpp_2::context::params::{LlamaContextParams, LlamaContextType};
 
 use super::super::nonzero_context_size;
+#[cfg(feature = "llamacpp-external-draft")]
 use crate::speculative::minimum_mtp_batch;
 
 #[derive(Debug, Clone, Copy)]
@@ -98,6 +99,7 @@ pub(super) fn llamacpp_context_output_limits(params: &LlamaContextParams) -> (u3
     (raw.n_outputs_max, raw.n_outputs_max_per_seq)
 }
 
+#[cfg(feature = "llamacpp-external-draft")]
 pub(super) fn external_target_context_params(
     context_settings: LlamaContextSettings,
     draft_max: u32,

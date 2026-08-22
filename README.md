@@ -358,6 +358,7 @@ Qwen-, GGUF-, or backend-specific release path.
 | `mistralrs` | Default Candle-based GGUF, SafeTensors, vision, and embedding backend | No C++ inference engine |
 | `llamacpp` | Mature GGUF backend with native MTP support | CMake, C++ compiler, and libclang |
 | `llamacpp-cuda` | CUDA execution for llama.cpp | CUDA toolkit |
+| `llamacpp-external-draft` | Verified external DFlash or DSpark draft execution | Reviewed external-draft patch to the pinned llama-cpp-rs source |
 | `llamacpp-mtp-fr` | Experimental reduced-vocabulary MTP draft projection | Reviewed patch to the pinned llama.cpp source |
 | `picolm` | Pure-Rust layer-streaming GGUF backend for constrained TEE memory | No C/C++ inference engine |
 | `embedded-cuda` / `embedded-metal` | Accelerators for model-owned embedded graphs | Platform toolkit |

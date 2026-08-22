@@ -1,5 +1,7 @@
 use llama_cpp_2::llama_batch::LlamaBatch;
-use llama_cpp_2::speculative::{ExternalDraftSpeculative, MtpSpeculative};
+#[cfg(feature = "llamacpp-external-draft")]
+use llama_cpp_2::speculative::ExternalDraftSpeculative;
+use llama_cpp_2::speculative::MtpSpeculative;
 
 use crate::error::{PowerError, Result};
 
@@ -59,6 +61,7 @@ impl<'model> LlamaSpeculativeAdapter<'model, 'model> for MtpSpeculative<'model> 
     }
 }
 
+#[cfg(feature = "llamacpp-external-draft")]
 impl<'target, 'draft> LlamaSpeculativeAdapter<'target, 'draft>
     for ExternalDraftSpeculative<'target, 'draft>
 {
