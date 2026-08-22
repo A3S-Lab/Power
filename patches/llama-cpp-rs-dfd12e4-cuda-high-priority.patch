@@ -1,0 +1,21 @@
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index d27d8ac..d8658a0 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -1486,7 +1486,15 @@ struct ggml_backend_cuda_context {
+     cudaStream_t stream(int device, int stream) {
+         if (streams[device][stream] == nullptr) {
+             ggml_cuda_set_device(device);
+-            CUDA_CHECK(cudaStreamCreateWithFlags(&streams[device][stream], cudaStreamNonBlocking));
++            if (getenv("GGML_CUDA_HIGH_PRIORITY") != nullptr) {
++                int least_priority;
++                int greatest_priority;
++                CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&least_priority, &greatest_priority));
++                CUDA_CHECK(cudaStreamCreateWithPriority(
++                    &streams[device][stream], cudaStreamNonBlocking, greatest_priority));
++            } else {
++                CUDA_CHECK(cudaStreamCreateWithFlags(&streams[device][stream], cudaStreamNonBlocking));
++            }
+         }
+         return streams[device][stream];
+     }

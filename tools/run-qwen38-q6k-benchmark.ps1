@@ -35,6 +35,8 @@ param(
     [ValidateRange(0, 10000)]
     [int]$LockGpuClockMHz = 0,
 
+    [switch]$CudaHighPriority,
+
     [ValidateRange(0, 100)]
     [int]$MaximumIdleGpuUtilizationPercent = 100,
 
@@ -94,6 +96,7 @@ $runnerParameters = @{
     ProcessPriority = $ProcessPriority
     ProcessorAffinityMask = $ProcessorAffinityMask
     LockGpuClockMHz = $LockGpuClockMHz
+    CudaHighPriority = $CudaHighPriority
     MaximumIdleGpuUtilizationPercent = $MaximumIdleGpuUtilizationPercent
     IdleGpuSampleCount = $IdleGpuSampleCount
     IdleGpuSampleIntervalMilliseconds = $IdleGpuSampleIntervalMilliseconds

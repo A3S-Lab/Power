@@ -31,7 +31,13 @@ param(
     [ValidateSet('Normal', 'AboveNormal', 'High')]
     [string]$ProcessPriority = 'High',
 
+    [UInt64]$ProcessorAffinityMask = 0,
+
+    [switch]$CudaHighPriority,
+
     [string]$TargetDirectory = 'target-native-sm89-ninja',
+
+    [string]$RuntimeConfig,
 
     [string]$OutputRoot = 'target-qwen38-mtp-sweep',
 
@@ -58,7 +64,11 @@ $powerRoot = Split-Path -Parent $PSScriptRoot
 $server = Join-Path $powerRoot "$TargetDirectory\release\a3s-power.exe"
 $evaluator = Join-Path $PSScriptRoot 'qwen38_quality_eval.py'
 $benchmarkRoot = Join-Path $powerRoot 'docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality'
-$config = Join-Path $benchmarkRoot 'matrix.acl'
+$config = if ([string]::IsNullOrWhiteSpace($RuntimeConfig)) {
+    Join-Path $benchmarkRoot 'matrix.acl'
+} else {
+    [System.IO.Path]::GetFullPath($RuntimeConfig)
+}
 $tasks = Join-Path $benchmarkRoot 'tasks-v1.json'
 $manifest = Join-Path $benchmarkRoot 'tasks-v1.manifest.json'
 $selection = Join-Path $benchmarkRoot 'calibration-v1.selection.json'
@@ -79,6 +89,13 @@ function Invoke-Python {
     if ($LASTEXITCODE -ne 0) {
         throw "Python evaluator exited with code $LASTEXITCODE"
     }
+}
+
+function Read-Utf8Json {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+    [System.IO.File]::ReadAllText($Path, $utf8) | ConvertFrom-Json
 }
 
 function Assert-PortAvailable {
@@ -126,7 +143,7 @@ $modelManifestPath = Join-Path $PowerHome "models\manifests\$Model.json"
 if (-not (Test-Path -LiteralPath $modelManifestPath -PathType Leaf)) {
     throw "Model manifest does not exist: $modelManifestPath"
 }
-$modelManifest = Get-Content -LiteralPath $modelManifestPath -Raw | ConvertFrom-Json
+$modelManifest = Read-Utf8Json -Path $modelManifestPath
 if ($modelManifest.sha256 -ne $ModelHash) {
     throw "Model manifest hash differs from -ModelHash"
 }
@@ -200,7 +217,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 $gitStatus = @(& git -C $powerRoot status --porcelain=v1)
 $gpu = @(& nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap --format=csv,noheader,nounits)
-$selectionPayload = Get-Content -LiteralPath $selection -Raw | ConvertFrom-Json
+$selectionPayload = Read-Utf8Json -Path $selection
 $taskCount = $selectionPayload.task_ids.Count
 $environmentIdentity = [ordered]@{
     power_commit = $powerCommit
@@ -210,6 +227,12 @@ $environmentIdentity = [ordered]@{
     gpu = $gpu
     active_power_scheme = $activePowerScheme.Trim()
     process_priority = $ProcessPriority
+    process_affinity_mask = if ($ProcessorAffinityMask -gt 0) {
+        '0x{0:x}' -f $ProcessorAffinityMask
+    } else {
+        $null
+    }
+    cuda_high_priority = [bool]$CudaHighPriority
     repetitions = $Repetitions
     max_tokens_cap = $MaxTokensCap
     config_sha256 = (Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -229,7 +252,7 @@ $environment = [ordered]@{
 $reuseCompatible = $false
 if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
     try {
-        $previous = Get-Content -LiteralPath $environmentPath -Raw | ConvertFrom-Json
+        $previous = Read-Utf8Json -Path $environmentPath
         $previousIdentity = $previous.identity | ConvertTo-Json -Depth 12 -Compress
         $currentIdentity = $environmentIdentity | ConvertTo-Json -Depth 12 -Compress
         $reuseCompatible = $previous.schema -eq $environment.schema -and
@@ -250,6 +273,7 @@ $environmentNames = @(
     'A3S_POWER_SPEC_MTP_RECURRENT_CHAIN',
     'A3S_POWER_SPEC_MTP_ADAPTIVE',
     'A3S_POWER_SPEC_MTP_FR_VOCAB_SIZE',
+    'GGML_CUDA_HIGH_PRIORITY',
     'RUST_LOG'
 )
 $savedEnvironment = @{}
@@ -260,6 +284,11 @@ foreach ($name in $environmentNames) {
 $reportPaths = @()
 
 try {
+    if ($CudaHighPriority) {
+        $env:GGML_CUDA_HIGH_PRIORITY = '1'
+    } else {
+        Remove-Item Env:GGML_CUDA_HIGH_PRIORITY -ErrorAction SilentlyContinue
+    }
     for ($repetition = 1; $repetition -le $Repetitions; $repetition++) {
         for ($position = 0; $position -lt $modes.Count; $position++) {
             $mode = $modes[($position + $repetition - 1) % $modes.Count]
@@ -272,7 +301,7 @@ try {
 
             if ($reuseCompatible -and (Test-Path -LiteralPath $report -PathType Leaf)) {
                 try {
-                    $existing = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+                    $existing = Read-Utf8Json -Path $report
                     $existingFr = $existing.health.speculative.mtp_fr_vocab_size
                     $expectedFr = if ($mode.fr_vocab_size -eq 0) { $null } else { $mode.fr_vocab_size }
                     $canReuse =
@@ -290,7 +319,7 @@ try {
                             [bool]$existing.health.speculative.mtp_recurrent_chain -eq $mode.recurrent_chain -and
                             [bool]$existing.health.speculative.mtp_adaptive -eq $mode.adaptive
                         )) -and
-                        $existingFr -eq $expectedFr -and
+                        ($mode.spec_mode -eq 'off' -or $existingFr -eq $expectedFr) -and
                         $existing.results.Count -eq $taskCount -and
                         [int]$existing.summary.overall.errors -eq 0 -and
                         ($mode.spec_mode -eq 'off' -or $null -ne $existing.speculative_runtime)
@@ -340,6 +369,14 @@ try {
                     -WindowStyle Hidden `
                     -PassThru
                 $process.PriorityClass = $ProcessPriority
+                if ($ProcessorAffinityMask -gt 0) {
+                    $process.ProcessorAffinity = [IntPtr]::new([int64]$ProcessorAffinityMask)
+                    $effectiveAffinity = [uint64]$process.ProcessorAffinity.ToInt64()
+                    if ($effectiveAffinity -ne $ProcessorAffinityMask) {
+                        throw ('Requested processor affinity 0x{0:x} became 0x{1:x}' -f `
+                            $ProcessorAffinityMask, $effectiveAffinity)
+                    }
+                }
                 $ready = $false
                 for ($attempt = 0; $attempt -lt 240; $attempt++) {
                     if ($process.HasExited) {
@@ -386,7 +423,7 @@ try {
                     $arguments += '--include-content'
                 }
                 Invoke-Python -Arguments $arguments
-                $completed = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+                $completed = Read-Utf8Json -Path $report
                 if ($completed.results.Count -ne $taskCount -or
                     [int]$completed.summary.overall.errors -ne 0) {
                     throw "Sweep mode $($mode.label) did not complete $taskCount error-free requests"

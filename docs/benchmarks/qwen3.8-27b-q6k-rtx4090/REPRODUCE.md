@@ -85,7 +85,7 @@ stable across clones.
 ## 1. Build the CUDA profile
 
 Install Rust 1.97.1, CUDA 12.6, CMake, Ninja, a supported MSVC toolchain, and
-libclang. Fetch the pinned binding, apply both reviewed patches idempotently,
+libclang. Fetch the pinned binding, apply all reviewed patches idempotently,
 then build the SM 89 release profile:
 
 ```powershell
@@ -101,9 +101,9 @@ cargo build --release --bins `
   --features llamacpp-cuda,llamacpp-mtp-fr
 ```
 
-The patch command must report that the binding and nested llama.cpp patches are
-applied. The benchmark runner later rejects a server that initializes anything
-other than the exclusive `llama.cpp` backend.
+The patch command must report the binding, MTP/FR, and CUDA stream-priority
+patches as applied. The benchmark runner later rejects a server that
+initializes anything other than the exclusive `llama.cpp` backend.
 
 ## 2. Verify the model, prompt, and ACL
 
@@ -131,6 +131,10 @@ $purePeakConfig = Join-Path $evidenceRoot `
   'pure-q6-mtp7-snap6-fr8192-host-staged.acl'
 $pureFullConfig = Join-Path $evidenceRoot `
   'pure-q6-mtp7-snap7-host-staged.acl'
+$currentPeakConfig = Join-Path $evidenceRoot `
+  'pure-q6-mtp7-snap6-fr8192-rtx4090-throughput.acl'
+$currentGeneralConfig = Join-Path $evidenceRoot `
+  'pure-q6-mtp6-snap6-fr8192-rtx4090-general.acl'
 $promptPath = Join-Path $evidenceRoot 'prompt.txt'
 
 $expectedHashes = @{
@@ -138,6 +142,10 @@ $expectedHashes = @{
     '9B1213DF972EA3731010A1FA72B0D553BA73DA42F31E92EAA4FECD3156CBF2EF'
   $pureFullConfig =
     'EB445101C1E33A035C9B1D120FEC12D9B21E6CE1B2FE5486AD46BEE52878A588'
+  $currentPeakConfig =
+    '674D3A36E0F0019C9E39E60994EA40EEE0477615827464EDEE1FB9627A74CDEC'
+  $currentGeneralConfig =
+    'B4F3DB4229BFAD05371BBED0CE1FEC165AA2B05279405078AA8F7721721ABB37'
   $promptPath =
     'D95A5E4DAD822BA9C84138F7A120017318BCB3A6A90E77246A8EC4EDE0E65D89'
 }
@@ -195,7 +203,7 @@ terminal and is reset by the runner in its `finally` block. The runner records
 the current Git revision, clean/dirty state, executable hashes, prompt and ACL
 hashes, requested and effective CPU affinity, power plan, GPU state, and GPU
 process snapshot in a companion environment file. Run the full-vocabulary
-control first, then the prefix-FR8192 peak with the same model and work shape:
+control first, then the current prefix-FR8192 peak profile:
 
 ```powershell
 .\tools\run-qwen38-q6k-benchmark.ps1 `
@@ -212,24 +220,26 @@ control first, then the prefix-FR8192 peak with the same model and work shape:
   -RequireHighPerformancePowerPlan -RequireCleanTree
 
 .\tools\run-qwen38-q6k-benchmark.ps1 `
-  -Label pure-q6-fr8192-k7s6-replay `
-  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\pure-q6-mtp7-snap6-fr8192-host-staged.acl `
+  -Label pure-q6-fr8192-k7s6-b11-cudahigh `
+  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\pure-q6-mtp7-snap6-fr8192-rtx4090-throughput.acl `
   -PromptFile .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\prompt.txt `
   -BenchmarkRoot D:\models\a3s-power\qwen38\benchmark `
   -PowerHome D:\models\a3s-power\qwen38\power-home `
   -ModelHash 562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727 `
-  -MaxTokens 1024 -NumBatch 14 -WarmupRuns 1 -Samples 9 `
-  -MinimumTokensPerSecond 175 -ProcessPriority High `
+  -MaxTokens 1024 -NumBatch 11 -WarmupRuns 1 -Samples 9 `
+  -MinimumTokensPerSecond 0 -ProcessPriority High `
   -ProcessorAffinityMask 349525 -LockGpuClockMHz 2745 `
+  -CudaHighPriority `
+  -MaximumIdleGpuUtilizationPercent 8 -IdleGpuSampleCount 3 `
   -TargetDirectory target-native-sm89-ninja `
   -RequireHighPerformancePowerPlan -RequireCleanTree
 ```
 
-The peak command fails when the median misses 175 token/s, the model identity
-changes, the output is non-deterministic, a request stops before 1,024 tokens,
-the backend is not exclusive, or a required host control is absent. The
-full-vocabulary control deliberately uses a zero threshold because its purpose
-is the paired 147.0207 token/s baseline, not the 175 gate.
+These commands are measurement captures, so they deliberately use a zero
+throughput threshold. They still fail when model identity changes, output is
+non-deterministic, a request stops before 1,024 tokens, the backend is not
+exclusive, or a required host control is absent. Use the separate promotion
+command below for a 175 token/s service-floor claim.
 
 ### Promote a stable 175 token/s floor
 
@@ -240,17 +250,17 @@ an independent all-sample gate and reject a busy GPU before model startup:
 ```powershell
 .\tools\run-qwen38-q6k-benchmark.ps1 `
   -Label pure-q6-fr8192-stable-175-candidate `
-  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\pure-q6-mtp7-snap6-fr8192-host-staged.acl `
+  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\pure-q6-mtp7-snap6-fr8192-rtx4090-throughput.acl `
   -PromptFile .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\prompt.txt `
   -BenchmarkRoot D:\models\a3s-power\qwen38\benchmark `
   -PowerHome D:\models\a3s-power\qwen38\power-home `
   -ModelHash 562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727 `
-  -MaxTokens 1024 -NumBatch 14 -WarmupRuns 2 -Samples 9 `
+  -MaxTokens 1024 -NumBatch 11 -WarmupRuns 2 -Samples 9 `
   -MinimumTokensPerSecond 175 -MinimumSampleTokensPerSecond 175 `
   -NvidiaGpuIndices 0 `
   -MaximumIdleGpuUtilizationPercent 2 `
   -IdleGpuSampleCount 21 -IdleGpuSampleIntervalMilliseconds 500 `
-  -ProcessPriority High -ProcessorAffinityMask 349525 `
+  -ProcessPriority High -ProcessorAffinityMask 349525 -CudaHighPriority `
   -LockGpuClockMHz 2745 -TargetDirectory target-native-sm89-ninja `
   -RequireHighPerformancePowerPlan -RequireCleanTree
 ```
@@ -402,25 +412,31 @@ foreach ($entry in $expectedHashes.GetEnumerator()) {
 
 ## 5. Reproduce the representative quality tests
 
-Replay the current pure-Q6_K 12-task throughput and acceptance calibration with
-a splatted argument table. Supplying the Boolean recurrent-chain option this
-way avoids PowerShell's cross-process Boolean argument ambiguity:
+Replay the current pure-Q6_K paired mixed-task profile with a splatted argument
+table. Supplying the Boolean recurrent-chain option this way avoids
+PowerShell's cross-process Boolean argument ambiguity. The run compares the
+same Q6_K bytes, B8 target capacity, host controls, and task selection with
+speculation off and fixed K6/S6 MTP:
 
 ```powershell
 $sweepArgs = @{
   PowerHome = 'D:\models\a3s-power\qwen38\power-home'
-  FrVocabSizes = @(0, 8192)
-  DraftMaxValues = @(7)
+  FrVocabSizes = @(8192)
+  DraftMaxValues = @(6)
   MtpRecurrentSnapshots = 6
   MtpRecurrentChain = $false
-  NumBatchValues = @(14)
+  NumBatchValues = @(8)
   Policies = @('fixed')
   IncludeOffBaseline = $true
   Repetitions = 1
-  MaxTokensCap = 128
+  MaxTokensCap = 256
   ProcessPriority = 'High'
+  ProcessorAffinityMask = 349525
+  CudaHighPriority = $true
   TargetDirectory = 'target-native-sm89-ninja'
-  OutputRoot = 'target-qwen38-pure-q6-calibration'
+  RuntimeConfig =
+    '.\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\pure-q6-mtp6-snap6-fr8192-rtx4090-general.acl'
+  OutputRoot = 'target-qwen38-pure-q6-general-paired'
   ModelHash =
     '562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727'
   VerifyModelFile = $true
@@ -429,11 +445,16 @@ $sweepArgs = @{
 .\tools\run-qwen38-mtp-sweep.ps1 @sweepArgs
 ```
 
-The expected mode labels are `off-b14`, `frfull-k7-s6-b14-fixed`, and
-`fr8192-k7-s6-b14-fixed`. Compare the new `sweep.json` with the checked-in
-[raw calibration](quality/pure-q6-fr8192-calibration-rtx4090-1x.json). Eleven
-of twelve tasks per mode were truncated at 128 tokens in the accepted capture;
-do not present its answer counts as a general quality score.
+The expected labels are `off-b8` and `fr8192-k6-s6-b8-fixed`. The 2026-08-22
+capture completed all 24 requests without error, measured 29.381 and 49.025
+token/s request-wide, retained all 12 final answers, scored 9/12 in both modes,
+and recorded zero MTP replay. Three tasks per mode reached the 256-token cap;
+this remains a calibration rather than a general intelligence score.
+
+To reproduce the target-batch decision, set `NumBatchValues = @(8, 10)` and
+`Repetitions = 2`. Cyclic ordering measured 48.096 and 48.178 token/s. The
+0.17% difference is below host noise; B8 is selected because it had the higher
+minimum, higher proposal acceptance, and smaller legal allocation.
 
 The separate [quality matrix guide](quality/README.md#reproduce) contains the
 complete commands for:
@@ -449,23 +470,20 @@ request-wide throughput directly with the steady-state decode rate above.
 ## 6. Re-run implementation validation
 
 The pre-submit source and evidence state used for this documentation passed the
-following checks. Documentation and general library checks were rerun on
-2026-08-21; the unchanged CUDA implementation rows retain the 2026-08-20
-release validation:
+following checks on 2026-08-22:
 
 | Check | Result |
 | --- | --- |
-| Rust library tests | 1,538 passed, 0 failed |
-| CUDA speculative-runtime tests | 14 passed, 0 failed |
+| Rust library tests | 1,546 passed, 0 failed |
+| CUDA speculative-runtime tests | 20 passed, 0 failed |
 | CUDA release build | Passed |
 | CUDA release Clippy with warnings denied | Passed |
 | Python harness tests | 28 passed, 0 failed |
 | Rust formatting | Passed |
-| PowerShell syntax | 3 benchmark scripts and 21 documentation blocks parsed |
+| PowerShell syntax | 5 changed scripts and 17 documentation blocks parsed |
 | Benchmark evidence | One-command verifier passed; pure-Q6_K and mixed assertions plus 14 pinned file hashes verified |
-| Quality archive | 900 current requests completed; aggregate, environment, manifest, ACL, and source hashes pinned |
+| Quality archive | 900-request historical matrix plus 24-request current paired calibration completed without request errors |
 | Documentation links | All local links in changed documents resolved, 0 missing |
-| Documentation site | TypeScript passed; 33 bilingual/versioned pages built and verified |
 
 Re-run the same checks with:
 

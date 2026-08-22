@@ -18,6 +18,8 @@ that cell.
 | Artifact and runtime mode | Quality proxy | Request-wide throughput | Median steady decode | Interpretation |
 | --- | --- | ---: | ---: | --- |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) | Current fixed-task baseline; steady column is a separate historical shape |
+| **Untouched Q6_K + prefix-FR8192 MTP, fixed K6/S6, B8** | 9/12 lenient and strict in both off/MTP modes (1x; 3 truncated) | **49.025 token/s** | -- | General short-task profile; 66.86% faster than its 29.381 token/s paired off control |
+| **Untouched Q6_K + prefix-FR8192 MTP, fixed K7/S6, B11, high-priority CUDA** | Same fixed-prompt digest as the controls | -- | **172.252 token/s** under a contended desktop | Current peak profile; the earlier quiet-host capture remains 176.6109 token/s |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact parity on the fixed peak prompt | -- | 147.0207 token/s | Current balanced steady-decode control |
 | Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x; 11 truncated) | **47.032 token/s** | -- | Current small mixed-workload calibration winner |
 | **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x; 11 truncated) | 37.290 token/s | **176.6109 token/s** | Peak-only profile; proposal coverage is workload-sensitive |
@@ -34,6 +36,92 @@ The complete protocols and raw evidence are in the
 [untouched-Q6_K report](PURE-Q6.md), the
 [100-task and 12-task quality report](quality/README.md), the sections below,
 and the sibling [UD-Q8_K_XL boundary capture](../qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md).
+
+## Q6_K deep-optimization result, 2026-08-22
+
+The target GGUF remained byte-for-byte unchanged. The optimized server used
+the same 22,884,408,288-byte Q6_K file and SHA-256
+`562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727`.
+Only execution shape and scheduling changed.
+
+### Peak steady decode
+
+All rows below used K7/S6, prefix-FR8192, one warm-up, three measured
+1,024-token greedy requests, ten physical-core threads (`0x55555`), and the
+same output SHA-256 `a54538ea...90523`. The shared Windows desktop reported
+roughly 5--8% GPU utilization before these captures.
+
+| Shape or scheduler | Median decode | Minimum | Result |
+| --- | ---: | ---: | --- |
+| Previous B14, Flash Attention on, ordinary CUDA streams | 160.932 token/s | 160.706 token/s | Loaded-desktop control |
+| B11, Flash Attention off, rebuilt ordinary streams | 170.184 token/s | 166.895 token/s | Stable graph-shape and kernel-path gain |
+| B11, Flash Attention off, high-priority CUDA streams, first order | 171.854 token/s | 168.920 token/s | Peak sample 174.452 token/s |
+| B11, Flash Attention off, high-priority CUDA streams, reverse order | **172.252 token/s** | **171.250 token/s** | Best current contended-desktop repeat |
+| B11 with CUDA graphs disabled | 133.876 token/s | -- | Rejected; graph launch reuse is essential |
+| B11 with `GGML_CUDA_GRAPH_OPT=1` | 160.613 token/s | -- | Rejected; extra concurrent-graph work regressed this hybrid model |
+| B11 with `CUDA_DEVICE_MAX_CONNECTIONS=32` | 168.900 token/s | -- | Rejected; CUDA's default connection count was faster |
+
+The default CUDA graph implementation is therefore retained. B11 is the
+selected fixed verification capacity for K7: one anchor plus seven proposals
+forms an eight-row target graph, while the extra physical capacity satisfies
+llama.cpp's recurrent splitter without inflating the B14 allocation. Flash
+Attention remains enabled for long-context and portable default profiles, but is
+disabled in the RTX 4090 short-batch throughput profiles because the recurrent
+and small attention regions do not amortize its setup cost. This is a measured
+architecture-specific choice, not a model-neutral default.
+
+The optional `GGML_CUDA_HIGH_PRIORITY=1` backend patch creates all llama.cpp
+CUDA streams at the device's greatest available priority. It improved median
+and tail behavior under WDDM contention without changing weights, sampling, or
+the fixed-prompt output. It is priority isolation, not physical GPU
+exclusivity: `max_loaded_models=1`, `max_concurrent_requests=1`, and
+`num_parallel=1` prevent competing Power work, but Windows display and other
+processes can still preempt the GPU.
+
+### Mixed-task profile
+
+The best peak width is not the best general-task width. A paired 12-task,
+256-token-cap run used the same Q6_K model, B8, Flash Attention off, and
+high-priority CUDA streams:
+
+| Mode | Request-wide throughput | Draft acceptance | Verified tokens / target pass | Score | Replays |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Speculation off, B8 | 29.381 token/s | -- | -- | 9/12 lenient and strict | -- |
+| Fixed prefix-FR8192 K6/S6, B8 | **49.025 token/s** | 26.81% | 2.591 | 9/12 lenient and strict | 0 |
+| Fixed prefix-FR8192 K7/S6, B11 | 40.095 token/s | 24.90% | 2.490 | 9/12 lenient; 9/12 strict | 12 |
+| Adaptive prefix-FR8192 K7/S6, B11 | 35.178 token/s | 50.07% | 2.529 | 8/12 lenient and strict | 0 |
+
+K6/S6 B8 was 66.86% faster than its paired target-only control, retained all
+12 final answers, and matched the score; eight of twelve complete response
+digests were identical. The remaining content differences are expected
+floating-point trajectory differences between serial and batched target
+graphs, so this small calibration is evidence of no observed score regression,
+not proof of general intelligence parity.
+
+The adaptive controller demonstrates why acceptance percentage is not the
+objective. It raised measured acceptance by shortening proposals and sent 8 of
+12 requests through a one-token target-only circuit, but variable K shapes
+lost CUDA graph reuse and reduced throughput by 12.3% versus fixed K7/S6.
+Fixed K7/S7 removed replay and reached 45.543 token/s; fixed K6/S6 removed the
+same replay with a smaller stable graph and reached 46.579 token/s at B11. A
+two-order B8/B10 follow-up measured 48.096 and 48.178 token/s respectively;
+the 0.17% difference is noise, so B8 wins on the higher minimum, higher
+acceptance, and smallest legal allocation.
+
+The two checked-in profiles make that workload split explicit:
+
+- [`pure-q6-mtp7-snap6-fr8192-rtx4090-throughput.acl`](pure-q6-mtp7-snap6-fr8192-rtx4090-throughput.acl): peak K7/S6 profile; send `num_batch=11`.
+- [`pure-q6-mtp6-snap6-fr8192-rtx4090-general.acl`](pure-q6-mtp6-snap6-fr8192-rtx4090-general.acl): mixed-task K6/S6 profile; send `num_batch=8`.
+
+From first principles, steady throughput is approximately emitted tokens per
+target pass divided by draft, verification, synchronization, and sampling
+time. On the peak prompt K7 already accepts 96.64% of proposals and emits 7.75
+tokens per target pass, leaving only about 3.2% perfect-acceptance headroom.
+The remaining stable-175 gap on this machine is host contention: the current
+software reaches 170--174 token/s with a 5--8% busy WDDM desktop, while the
+earlier quiet-host run reached a 176.611 token/s median. A defensible 175+
+service floor therefore requires a quiet/dedicated GPU or headless compute
+host; it cannot be guaranteed by another inference flag.
 
 ## Current untouched-Q6_K boundary
 
@@ -447,15 +535,24 @@ minimum, and 3.0834x speedup with `draft_max=6` and `num_batch=8`.
   mixed-workload default. Four or fewer snapshots cross the replay boundary
   even more often. Raising `draft_p_min` above 0.7 also increased target-pass
   count and slowed decoding.
-- Current batch-12 and batch-16 peak trials ended early with EOS and changed the
-  output trajectory. They were rejected rather than reported as throughput
-  improvements; batch 14 remains the validated long-window CUDA graph shape.
-- Disabling Flash Attention overlapped the enabled result. Temporary
-  instrumentation observed 531 llama.cpp output-reorder calls in a 64-token
-  request and zero pending row swaps in every call, ruling out CPU vocabulary
-  row reordering as the apparent hot spot. Phase timings instead place the
-  remaining boundary in asynchronous CUDA draft/target execution and result
-  synchronization.
+- The 2026-08-22 B9--B16 peak sweep supersedes the earlier batch-14 guidance.
+  B11 was the stable K7 CUDA graph shape: on 1,024-token repeats it composed
+  with Flash Attention off and high-priority CUDA streams to reach a 172.252
+  token/s median under desktop contention. The mixed-task K6 profile instead
+  uses the minimum legal B8 shape; B8 and B10 differed by only 0.17% across a
+  two-order 256-token sweep.
+- Flash Attention is now profile-specific. Disabling it for the K7/B11
+  short-batch hybrid path raised a repeated 1,024-token median from 164.678 to
+  169.500 token/s with the same output digest. Long-context profiles
+  retain Flash Attention because this result does not characterize prompt
+  ingestion or large attention regions. Temporary instrumentation also
+  observed 531 llama.cpp output-reorder calls in a 64-token request and zero
+  pending row swaps, ruling out CPU vocabulary row reordering as the hot spot.
+- CUDA graphs remain enabled: disabling them fell to 133.876 token/s, while
+  `GGML_CUDA_GRAPH_OPT=1` regressed to 160.613 token/s. A reviewed optional
+  high-priority-stream patch improved the current contended reverse-order
+  repeat to 172.252 token/s median and 171.250 minimum. This mitigates WDDM
+  tail latency but does not reserve the physical GPU from other processes.
 - Ranked reduced-vocabulary follow-ups did not recover representative
   throughput. A 65,536-row candidate reached 69.264 token/s at 43.2% draft
   acceptance, while a 131,072-row candidate reached 74.980 token/s at 50.4%.

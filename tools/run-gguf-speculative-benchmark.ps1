@@ -51,6 +51,8 @@ param(
     [ValidateRange(0, 10000)]
     [int]$LockGpuClockMHz = 0,
 
+    [switch]$CudaHighPriority,
+
     [ValidateRange(0, 100)]
     [int]$MaximumIdleGpuUtilizationPercent = 100,
 
@@ -174,6 +176,12 @@ $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 
 $env:A3S_POWER_HOME = $PowerHome
 $env:RUST_LOG = $RustLog
+$savedCudaHighPriority = Get-Item Env:GGML_CUDA_HIGH_PRIORITY -ErrorAction SilentlyContinue
+if ($CudaHighPriority) {
+    $env:GGML_CUDA_HIGH_PRIORITY = '1'
+} else {
+    Remove-Item Env:GGML_CUDA_HIGH_PRIORITY -ErrorAction SilentlyContinue
+}
 $lockedGpuIndices = @()
 $gpuSnapshot = @()
 $gpuProcessSnapshot = @()
@@ -338,6 +346,7 @@ try {
         }
         gpu = [ordered]@{
             provider = if ($NvidiaGpuIndices.Count -gt 0) { 'nvidia' } else { 'none' }
+            cuda_high_priority = [bool]$CudaHighPriority
             indices = $NvidiaGpuIndices
             requested_clock_lock_mhz = if ($LockGpuClockMHz -gt 0) { $LockGpuClockMHz } else { $null }
             clock_lock_applied_indices = $lockedGpuIndices
@@ -532,6 +541,7 @@ try {
         }
         gpu = [ordered]@{
             provider = if ($NvidiaGpuIndices.Count -gt 0) { 'nvidia' } else { 'none' }
+            cuda_high_priority = [bool]$CudaHighPriority
             indices = $NvidiaGpuIndices
             clock_lock_mhz = if ($lockedGpuIndices.Count -gt 0) { $LockGpuClockMHz } else { $null }
             maximum_idle_utilization_percent = if ($NvidiaGpuIndices.Count -gt 0) {
@@ -588,5 +598,10 @@ try {
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "Failed to reset NVIDIA GPU $gpuIndex graphics clock"
         }
+    }
+    if ($savedCudaHighPriority) {
+        $env:GGML_CUDA_HIGH_PRIORITY = $savedCudaHighPriority.Value
+    } else {
+        Remove-Item Env:GGML_CUDA_HIGH_PRIORITY -ErrorAction SilentlyContinue
     }
 }

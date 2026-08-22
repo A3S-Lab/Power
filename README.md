@@ -69,6 +69,8 @@ topology and semantics.
 | Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Mean request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
+| **Untouched Q6_K + prefix-FR8192, fixed K6/S6, B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **49.025 token/s** | - |
+| **Untouched Q6_K + prefix-FR8192, fixed K7/S6, B11, high-priority CUDA** | Fixed peak prompt retained the control digest | - | **172.252 token/s** on a contended desktop |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Fixed peak prompt has exact greedy parity | - | 147.0207 token/s |
 | Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x calibration; 11 truncated) | **47.032 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x calibration; 11 truncated) | 37.290 token/s | **176.6109 token/s** |
@@ -83,6 +85,15 @@ token/s median across nine 1,024-token samples, with a 173.2630 minimum and
 seven samples at or above 175. Prefix-FR8192 improved steady decode by 20.13%
 over its 147.0207 token/s full-vocabulary K7/S7 control, and both emitted the
 same deterministic output digest. No model weight was requantized.
+
+The 2026-08-22 execution-only follow-up kept those exact bytes and separated
+two workload shapes. The peak K7/S6/B11 profile disables Flash Attention only
+for short-batch decode and uses high-priority CUDA streams; it reached 172.252
+token/s median and 171.250 minimum while the Windows display GPU already had
+5--8% background utilization. The mixed-task K6/S6/B8 profile reached 49.025
+token/s versus a paired 29.381 token/s target-only control, a 66.86% gain, with
+the same 12 final answers, the same 9/12 score, and zero replay. CUDA graphs are
+essential: disabling them fell to 133.876 token/s on the peak workload.
 
 That capture crosses 175 as a median boundary; it does **not** establish a
 175 token/s service floor because two samples were below it. New acceptance
@@ -103,8 +114,10 @@ The earlier mixed-artifact K7/S7 profile sustained a 175.2089 token/s median
 and completed all 900 requests in its repeated quality matrix with 51.33%
 proposal acceptance and no replay. That separate 19,187,686,464-byte artifact
 uses Q4_0 main FFN tensors, a Q6_K MTP block, and a Q4_K draft head. Both
-boundaries depend on Flash Attention, full CUDA offload, batched target/draft
-greedy sampling, host controls, and exact target verification.
+boundaries depend on full CUDA offload, stable batched target/draft graphs,
+host controls, and exact target verification. Flash Attention is profile-
+specific: retained for long contexts and disabled only where the
+measured hybrid short-batch kernel mix is faster without it.
 
 The quality values are task-accuracy proxies, not general intelligence or IQ
 measurements. On the fixed current matrix, K7/S7 moved from 70 to 76 lenient and

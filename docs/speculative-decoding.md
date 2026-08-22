@@ -129,7 +129,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 On non-Windows hosts, apply
 `patches/llama-cpp-rs-dfd12e4-mtp-dynamic-k.patch` to the fetched
 `llama-cpp-rs` checkout, then apply
-`patches/llama-cpp-rs-dfd12e4-mtp-fr-spec.patch` to its nested
+`patches/llama-cpp-rs-dfd12e4-mtp-fr-spec.patch` and
+`patches/llama-cpp-rs-dfd12e4-cuda-high-priority.patch` to its nested
 `llama-cpp-sys-2/llama.cpp` checkout. Then build both executables:
 
 ```console
@@ -185,7 +186,10 @@ each selected NVIDIA device it records a configurable pre-start utilization
 window, the process set, binary and input hashes, clock request, power plan,
 and effective CPU affinity. Use
 `tools/run-qwen38-q6k-benchmark.ps1` only as a compatibility wrapper for the
-published Qwen capture.
+published Qwen capture. `-CudaHighPriority` opts into the reviewed
+`GGML_CUDA_HIGH_PRIORITY=1` path and records that choice in both preflight and
+environment receipts. The runner removes the variable for ordinary-stream
+controls and restores the caller's environment in `finally`.
 
 For a claimed service floor, set both gates. The median gate alone proves a
 typical run; the all-sample gate requires the slowest measured request to meet
@@ -199,8 +203,11 @@ the floor:
   -ModelHash <64-lowercase-hex> `
   -PromptFile .\benchmark-prompt.txt `
   -PowerHome D:\models\power-home `
-  -Mode mtp -MaxTokens 1024 -NumCtx 4096 -NumBatch 14 `
+  -Mode mtp -MaxTokens 1024 -NumCtx 4096 -NumBatch 11 `
   -WarmupRuns 2 -Samples 9 `
+  -ProcessPriority High `
+  -ProcessorAffinityMask 349525 `
+  -CudaHighPriority `
   -MinimumTokensPerSecond 175 `
   -MinimumSampleTokensPerSecond 175 `
   -NvidiaGpuIndices 0 `
@@ -232,10 +239,13 @@ The correctness minimum is `num_batch >= spec_draft_max + 2`: one target
 anchor plus the proposal rows and one staging slot required because
 llama.cpp's recurrent splitter requires the physical batch to be strictly
 larger than its anchor-plus-snapshot tail. The conservative `draft_max=6`
-capture used `--num-batch 8`; the tuned RTX 4090 capture used `draft_max=7`
-and `--num-batch 24`. Batch size is also a CUDA graph shape, so benchmark it
-rather than assuming the minimum is fastest. Always use the identical value
-for the baseline and candidate.
+profile uses `--num-batch 8`; the current RTX 4090 peak profile uses
+`draft_max=7` and `--num-batch 11`. Batch size is also a CUDA graph shape: a
+fixed K6/B8 mixed-task path and K7/B11 peak path outperformed larger allocations
+on this host, while request-local variable K lost graph reuse. Benchmark the
+actual model and workload instead of assuming either the minimum or a large
+batch is universally fastest. Always use the identical value for a paired
+baseline and candidate.
 
 `spec_mtp_recurrent_snapshots` bounds resident target rollback state separately
 from draft width. The effective value is capped by `spec_draft_max`. When a
@@ -325,6 +335,25 @@ digest. A 12-task calibration reversed the ranking: full vocabulary reached
 47.032 token/s request-wide with 52.30% proposal acceptance, while prefix FR
 reached 37.290 token/s with 24.82% acceptance. Eleven tasks hit the output cap,
 so the result establishes workload sensitivity rather than a quality score.
+
+A 2026-08-22 execution-only follow-up kept those exact Q6_K bytes and split
+the policy by workload. The peak profile uses fixed K7/S6, B11, Flash Attention
+off, physical-core affinity, and high-priority CUDA streams. It reached a
+172.252 token/s median and 171.250 minimum under a 5--8% busy Windows desktop;
+the earlier quiet-host 176.6109 median remains the measured high-water mark.
+Disabling CUDA graphs fell to 133.876 token/s, enabling the experimental graph
+optimizer reached only 160.613 token/s, and `CUDA_DEVICE_MAX_CONNECTIONS=32`
+reached 168.900 token/s. Those alternatives were rejected.
+
+The paired mixed-task profile uses fixed K6/S6 and the minimum legal B8 shape.
+At a 256-token cap it reached 49.025 token/s versus 29.381 token/s with
+speculation off, a 66.86% gain, with identical final answers and the same 9/12
+lenient and strict score in both modes. Proposal acceptance was only 26.81%,
+but the fixed graph emitted 2.591 verified tokens per target pass with no
+replay. Adaptive K reported a higher 50.07% acceptance yet slowed to 35.178
+token/s because variable verification shapes and a target-only circuit reduced
+CUDA graph reuse. Optimize useful tokens per total phase time, not acceptance
+percentage in isolation.
 
 The CUDA backend already uses dynamic Q8_1 activation quantization for
 quantized matrix-matrix kernels. Forcing the eight-row Q6 verification shape

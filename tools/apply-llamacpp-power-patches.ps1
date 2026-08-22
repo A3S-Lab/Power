@@ -9,10 +9,11 @@ $ErrorActionPreference = "Stop"
 $powerRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $llamaPatchPath = Join-Path $powerRoot "patches\llama-cpp-rs-dfd12e4-mtp-fr-spec.patch"
 $bindingPatchPath = Join-Path $powerRoot "patches\llama-cpp-rs-dfd12e4-mtp-dynamic-k.patch"
+$cudaPriorityPatchPath = Join-Path $powerRoot "patches\llama-cpp-rs-dfd12e4-cuda-high-priority.patch"
 $expectedBindingRevision = "dfd12e4d334846367e4284a2a7763fe92c1bf676"
 $expectedLlamaRevision = "e79e4bf660e19f2ad851e06c6913f7a8c5852621"
 
-foreach ($patchPath in @($llamaPatchPath, $bindingPatchPath)) {
+foreach ($patchPath in @($llamaPatchPath, $bindingPatchPath, $cudaPriorityPatchPath)) {
     if (-not (Test-Path -LiteralPath $patchPath -PathType Leaf)) {
         throw "Power llama.cpp patch is missing: $patchPath"
     }
@@ -79,3 +80,4 @@ function Apply-ReviewedPatch {
 
 Apply-ReviewedPatch -Root $bindingRoot -Patch $bindingPatchPath -Label 'binding'
 Apply-ReviewedPatch -Root $LlamaCppRoot -Patch $llamaPatchPath -Label 'llama.cpp'
+Apply-ReviewedPatch -Root $LlamaCppRoot -Patch $cudaPriorityPatchPath -Label 'CUDA high-priority stream'

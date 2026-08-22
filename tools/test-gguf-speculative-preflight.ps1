@@ -44,6 +44,7 @@ $config = Join-Path $tempRoot 'test.acl'
 $prompt = Join-Path $tempRoot 'prompt.txt'
 $originalFakeUtilization = $env:A3S_POWER_FAKE_NVIDIA_UTILIZATION
 $originalFakeLog = $env:A3S_POWER_FAKE_NVIDIA_LOG
+$originalCudaHighPriority = $env:GGML_CUDA_HIGH_PRIORITY
 $originalNvidiaSmiFunction = Get-Item `
     -LiteralPath 'Function:\global:nvidia-smi.exe' `
     -ErrorAction SilentlyContinue
@@ -173,6 +174,8 @@ try {
     $successParameters.MaximumIdleGpuUtilizationPercent = 2
     $successParameters.IdleGpuSampleCount = 3
     $successParameters.LockGpuClockMHz = 2745
+    $successParameters.CudaHighPriority = $true
+    $env:GGML_CUDA_HIGH_PRIORITY = 'restore-after-preflight'
     & $runner @successParameters | Out-Null
 
     $successReceiptPath = Join-Path $outputRoot 'preflight-only-success.preflight.json'
@@ -184,6 +187,10 @@ try {
         'Successful preflight maximum utilization'
     Assert-Equal ([int]$successReceipt.gpu.clock_lock_applied_indices[0]) 0 `
         'Successful preflight clock-lock device'
+    Assert-Equal ([bool]$successReceipt.gpu.cuda_high_priority) $true `
+        'Successful preflight CUDA stream priority'
+    Assert-Equal $env:GGML_CUDA_HIGH_PRIORITY 'restore-after-preflight' `
+        'Preflight must restore the caller CUDA stream-priority environment'
     Assert-Equal `
         (Test-Path -LiteralPath (Join-Path $outputRoot 'preflight-only-success.json')) `
         $false `
@@ -221,6 +228,11 @@ try {
         Remove-Item Env:A3S_POWER_FAKE_NVIDIA_LOG -ErrorAction SilentlyContinue
     } else {
         $env:A3S_POWER_FAKE_NVIDIA_LOG = $originalFakeLog
+    }
+    if ($null -eq $originalCudaHighPriority) {
+        Remove-Item Env:GGML_CUDA_HIGH_PRIORITY -ErrorAction SilentlyContinue
+    } else {
+        $env:GGML_CUDA_HIGH_PRIORITY = $originalCudaHighPriority
     }
 
     $resolvedPowerRoot = [System.IO.Path]::GetFullPath($powerRoot).TrimEnd('\')
