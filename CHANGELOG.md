@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evaluation, evictions, and entries. Final opted-in SSE usage events expose
   backend prompt-evaluation time, and a hash-bound cold/warm benchmark client
   turns those timings and cache counters into reproducible evidence.
+- Fixed `serve --config` so omitted `--host` and `--port` flags preserve the
+  ACL values instead of silently replacing them with CLI defaults. `/health`
+  now reports effective token-metric suppression, including the privacy policy
+  automatically activated by `redact_logs`, so benchmark preflight cannot
+  mistake rounded counters for exact evidence.
 
 ## [1.0.0] - 2026-08-22
 

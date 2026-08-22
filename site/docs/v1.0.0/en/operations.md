@@ -75,6 +75,11 @@ prompt_cache_max_entries = 1
 prompt_cache_ttl_seconds = 300
 ```
 
+Exact cache benchmarks require both `redact_logs = false` and
+`suppress_token_metrics = false` in an isolated process. Log redaction
+deliberately activates metric suppression; `/health` reports the effective
+policy so the benchmark client fails before accepting rounded evidence.
+
 Power hashes and scopes each key by authenticated identity, endpoint, and model.
 The raw key is not stored in the backend or receipt. `/health` reports support
 and bounds; `/metrics` reports requests, hits, misses, reused/evaluated tokens,

@@ -22,8 +22,12 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 PowerConfig::load()?
             };
-            config.host = args.host;
-            config.port = args.port;
+            if let Some(host) = args.host {
+                config.host = host;
+            }
+            if let Some(port) = args.port {
+                config.port = port;
+            }
             a3s_power::server::start(config).await?;
         }
         Some(Command::Models(cmd)) => {

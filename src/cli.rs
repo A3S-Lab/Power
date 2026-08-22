@@ -36,12 +36,12 @@ pub enum Command {
 #[derive(Parser, Debug)]
 pub struct ServeArgs {
     /// Bind address
-    #[arg(long, default_value = "127.0.0.1")]
-    pub host: String,
+    #[arg(long)]
+    pub host: Option<String>,
 
     /// Port
-    #[arg(long, default_value = "11434")]
-    pub port: u16,
+    #[arg(long)]
+    pub port: Option<u16>,
 
     /// Config file path
     #[arg(long)]
@@ -144,4 +144,35 @@ pub struct PsArgs {
     /// Server URL
     #[arg(long, default_value = "http://127.0.0.1:11434")]
     pub url: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serve_config_preserves_unspecified_bind_values() {
+        let cli = Cli::try_parse_from(["a3s-power", "serve", "--config", "power.acl"])
+            .expect("serve arguments should parse");
+        let Some(Command::Serve(args)) = cli.command else {
+            panic!("expected serve command");
+        };
+
+        assert_eq!(args.config.as_deref(), Some("power.acl"));
+        assert_eq!(args.host, None);
+        assert_eq!(args.port, None);
+    }
+
+    #[test]
+    fn serve_cli_bind_values_remain_explicit_overrides() {
+        let cli =
+            Cli::try_parse_from(["a3s-power", "serve", "--host", "0.0.0.0", "--port", "18080"])
+                .expect("serve arguments should parse");
+        let Some(Command::Serve(args)) = cli.command else {
+            panic!("expected serve command");
+        };
+
+        assert_eq!(args.host.as_deref(), Some("0.0.0.0"));
+        assert_eq!(args.port, Some(18080));
+    }
 }

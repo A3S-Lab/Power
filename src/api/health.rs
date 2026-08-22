@@ -148,7 +148,7 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
             use_mlock: state.config.use_mlock,
             use_mmap: state.config.use_mmap,
             tee_mode: state.config.tee_mode,
-            suppress_token_metrics: state.config.suppress_token_metrics,
+            suppress_token_metrics: state.suppress_token_metrics(),
             timing_padding_ms: state.config.timing_padding_ms,
         },
         prompt_cache: PromptCacheStatus {
@@ -172,6 +172,7 @@ mod tests {
     use crate::config::PowerConfig;
     use crate::model::registry::ModelRegistry;
     use crate::tee::attestation::DefaultTeeProvider;
+    use crate::tee::privacy::DefaultPrivacyProvider;
     use axum::extract::State;
     use std::sync::Arc;
 
@@ -262,6 +263,29 @@ mod tests {
         assert_eq!(health.prompt_cache.max_entries_per_model, 4);
         assert_eq!(health.prompt_cache.ttl_seconds, 900);
         assert!(health.prompt_cache.authenticated_namespace);
+    }
+
+    #[tokio::test]
+    async fn test_health_reports_effective_privacy_metric_suppression() {
+        let config = Arc::new(PowerConfig {
+            redact_logs: true,
+            suppress_token_metrics: false,
+            ..Default::default()
+        });
+        let privacy = DefaultPrivacyProvider::new(true).with_suppress_token_metrics(true);
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            config,
+        )
+        .with_privacy(Arc::new(privacy));
+
+        let response = handler(State(state)).await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
+        assert!(health.inference.suppress_token_metrics);
     }
 
     #[tokio::test]

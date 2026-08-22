@@ -169,6 +169,12 @@ metrics, and `spec_mode = "off"` or `"auto"`; the client fails otherwise. The
 capture contains hashes and timing/counter evidence, but not the raw prefix,
 caller keys, or generated text. Run its deterministic unit tests with:
 
+`redact_logs = true` intentionally enables token-metric suppression as part of
+the privacy policy even when the standalone `suppress_token_metrics` setting is
+false. `/health` reports this effective policy. Use an isolated benchmark
+process with both settings false when exact counts and timing are required; do
+not weaken a production privacy policy in place.
+
 ```text
 python3 -m unittest tools/test_prompt_cache_benchmark.py
 ```

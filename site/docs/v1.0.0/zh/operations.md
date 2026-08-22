@@ -65,6 +65,10 @@ prompt_cache_max_entries = 1
 prompt_cache_ttl_seconds = 300
 ```
 
+精确缓存基准必须在隔离进程中同时设置 `redact_logs = false` 与
+`suppress_token_metrics = false`。日志脱敏会有意启用指标抑制；`/health`
+报告最终生效的策略，因此复现客户端会在接收被取整的证据之前失败关闭。
+
 Power 按认证身份、端点与模型对 key 做哈希隔离；原始 key 不进入后端缓存或回执。`/health` 公布支持后端和容量边界，`/metrics` 公布请求、命中、未命中、复用／实际计算 token、驱逐与常驻条目。开启 usage 的补全流会把后端 prefill 时长与 TTFT 分开公布；规范基准客户端同时检查这些时长和严格的 miss／hit 计数差值。
 
 当前原生 llama.cpp MTP 还不能与跨请求缓存上下文共用同一套状态事务。显式 MTP 加缓存 key 会失败关闭；`auto` 为该请求选择精确的目标模型单路解码。前缀缓存优化的是重复 prefill 与 TTFT，不是稳态 decode token/s。完整约束见[规范缓存文档](https://github.com/A3S-Lab/Power/blob/main/docs/prompt-prefix-cache.md)。
