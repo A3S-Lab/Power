@@ -71,6 +71,11 @@ prompt_cache_ttl_seconds = 300
 
 Power 按认证身份、端点与模型对 key 做哈希隔离；原始 key 不进入后端缓存或回执。`/health` 公布支持后端和容量边界，`/metrics` 公布请求、命中、未命中、复用／实际计算 token、驱逐与常驻条目。开启 usage 的补全流会把后端 prefill 时长与 TTFT 分开公布；规范基准客户端同时检查这些时长和严格的 miss／hit 计数差值。
 
+仓库内的 RTX 4090 Q6_K 实测包含五组冷／热请求：后端 prefill 中位数从
+786.1375 ms 降到 33.4102 ms（23.5299 倍），TTFT 中位数从 950.0142 ms
+降到 72.1932 ms（13.1593 倍），累计复用 9,740 个提示 token。
+[查看原始报告与复现命令](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/prompt-cache)。
+
 当前原生 llama.cpp MTP 还不能与跨请求缓存上下文共用同一套状态事务。显式 MTP 加缓存 key 会失败关闭；`auto` 为该请求选择精确的目标模型单路解码。前缀缓存优化的是重复 prefill 与 TTFT，不是稳态 decode token/s。完整约束见[规范缓存文档](https://github.com/A3S-Lab/Power/blob/main/docs/prompt-prefix-cache.md)。
 
 ## 制品安装

@@ -37,6 +37,23 @@ The complete protocols and raw evidence are in the
 [100-task and 12-task quality report](quality/README.md), the sections below,
 and the sibling [UD-Q8_K_XL boundary capture](../qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md).
 
+## Prompt-prefix cache, 2026-08-22
+
+An independent target-only capture isolates repeated-prefix reuse from decode
+throughput. Across five fresh cold/warm pairs, the exact Q6_K model reused
+9,740 tokens and reduced evaluated prompt tokens by 99.3843%.
+
+| Paired metric | Cold median | Warm median | Speedup |
+| --- | ---: | ---: | ---: |
+| Backend prompt evaluation | 786.1375 ms | 33.4102 ms | **23.5299x** |
+| Time to first token | 950.0142 ms | 72.1932 ms | **13.1593x** |
+
+Flash Attention was enabled and speculation was disabled. The
+[protocol, exact commands, ACL, and raw report](prompt-cache/README.md) bind
+commit `84e1eec`, the unchanged model digest, health policy, metric deltas, and
+each result receipt. This is prefill/TTFT evidence, not a steady-decode or
+DFlash/DSpark result.
+
 ## Q6_K deep-optimization result, 2026-08-22
 
 The target GGUF remained byte-for-byte unchanged. The optimized server used

@@ -164,6 +164,12 @@ py -3 tools/prompt_cache_benchmark.py `
   --output .\target-prompt-cache\capture.json
 ```
 
+The checked-in RTX 4090 Qwen3.8-27B Q6_K capture ran five cold/warm pairs on
+commit `84e1eec`. It measured a 23.5299x median backend-prefill speedup, a
+13.1593x median TTFT speedup, 9,740 reused tokens, and 99.3843% fewer evaluated
+prompt tokens. See the [raw report, pinned ACL, limitations, and exact replay
+commands](benchmarks/qwen3.8-27b-q6k-rtx4090/prompt-cache/README.md).
+
 The server must expose `num_parallel = 1`, no timing padding, unsuppressed token
 metrics, and `spec_mode = "off"` or `"auto"`; the client fails otherwise. The
 capture contains hashes and timing/counter evidence, but not the raw prefix,

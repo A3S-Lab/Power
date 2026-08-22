@@ -126,7 +126,15 @@ measurements. On the fixed current matrix, K7/S7 moved from 70 to 76 lenient and
 observed in that sample. The paired comparison did not reach conventional
 statistical significance and is not evidence that MTP improves intelligence.
 
+The lossless prefix-cache path was measured separately with the unchanged
+Q6_K model, target-only decoding, and Flash Attention enabled. Five fresh
+cold/warm pairs reduced median backend prefill from 786.1375 ms to 33.4102 ms
+(23.5299x) and median TTFT from 950.0142 ms to 72.1932 ms (13.1593x), while
+reusing 9,740 prompt tokens. This is repeated-context latency evidence, not a
+steady-decode or DFlash/DSpark claim.
+
 - [Current Q6_K/TBQ4/MTP benchmark, raw samples, and limitations](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
+- [Q6_K prefix-cache cold/warm capture and exact reproduction](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/prompt-cache/README.md)
 - [Untouched-Q6_K 176.61 token/s boundary and dynamic-quantization analysis](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/PURE-Q6.md)
 - [Repeated quality matrix and reproducible environment](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [Step-by-step reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md)

@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now reports effective token-metric suppression, including the privacy policy
   automatically activated by `redact_logs`, so benchmark preflight cannot
   mistake rounded counters for exact evidence.
+- Published a clean five-pair RTX 4090 Qwen3.8-27B Q6_K prompt-cache capture.
+  With Flash Attention enabled and speculation disabled, median backend
+  prefill improved 23.5299x, median TTFT improved 13.1593x, and evaluated
+  prompt tokens fell 99.3843%; the report binds the server commit, exact model
+  digest, health policy, metrics, and request receipts.
 
 ## [1.0.0] - 2026-08-22
 

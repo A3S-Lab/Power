@@ -87,6 +87,11 @@ evictions, and resident entries. Opted-in completion streams expose backend
 prompt-evaluation time separately from TTFT; the canonical benchmark client
 checks both timings against exact miss/hit counter deltas.
 
+The checked-in RTX 4090 Q6_K capture measured five cold/warm pairs: median
+backend prefill fell from 786.1375 ms to 33.4102 ms (23.5299x), median TTFT fell
+from 950.0142 ms to 72.1932 ms (13.1593x), and 9,740 prompt tokens were reused.
+[Inspect the raw report and replay commands](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/prompt-cache).
+
 Native llama.cpp MTP does not yet share a state transaction with a cached
 context. Explicit MTP plus a cache key fails closed; `auto` selects exact
 target-only decoding. Prefix caching improves repeated prefill and TTFT, not
