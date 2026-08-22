@@ -419,6 +419,7 @@ fn test_validate_rejects_unbounded_prompt_cache_settings() {
 fn test_validate_accepts_model_neutral_dspark_strategy() {
     let config = PowerConfig {
         spec_mode: "dspark".to_string(),
+        spec_mtp_adaptive: true,
         ..Default::default()
     };
 

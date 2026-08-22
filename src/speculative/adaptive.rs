@@ -160,6 +160,12 @@ impl AdaptiveSpeculationController {
             self.current = self.current.div_ceil(2).max(self.min);
         } else if accepted == drafted {
             self.current = self.current.saturating_add(1).min(self.max);
+        } else if accepted.saturating_mul(2) >= drafted {
+            // A target pass that commits at least half of the proposal is
+            // already well amortized. Treat this as a healthy partial round
+            // and preserve the current graph shape instead of reacting to one
+            // rejected tail. Low-yield rounds below this boundary still use
+            // the accepted-prefix EMA to narrow quickly.
         } else {
             // One exploratory slot beyond the expected accepted prefix lets K
             // recover when the local distribution improves without repeatedly

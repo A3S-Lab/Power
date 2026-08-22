@@ -368,11 +368,12 @@ pub struct PowerConfig {
     #[serde(default)]
     pub spec_draft_max: Option<u32>,
 
-    /// Maximum resident recurrent-state rollback snapshots for llama.cpp MTP.
+    /// Maximum resident recurrent-state rollback snapshots for llama.cpp
+    /// model-backed speculative decoding.
     ///
     /// The effective count is capped by `spec_draft_max`. Smaller values reduce
-    /// GPU memory pressure at the cost of exact target-prefix replay when a
-    /// rejected suffix is longer than the resident snapshot window.
+    /// GPU memory pressure at the cost of target-prefix replay when a rejected
+    /// suffix is longer than the resident snapshot window.
     #[serde(default = "default_spec_mtp_recurrent_snapshots")]
     pub spec_mtp_recurrent_snapshots: u32,
 
@@ -383,12 +384,12 @@ pub struct PowerConfig {
     #[serde(default = "default_spec_mtp_recurrent_chain")]
     pub spec_mtp_recurrent_chain: bool,
 
-    /// Adapt MTP proposal width to the observed accepted prefix and switch a
-    /// persistently low-yield request to exact target-only decoding.
+    /// Adapt model-backed proposal width to the observed accepted prefix and
+    /// switch a persistently low-yield request to target-only decoding.
     ///
     /// This is an opt-in protection policy for low-yield draft heads. A fixed
-    /// width is the default because it provides higher throughput when the MTP
-    /// head already has healthy acceptance.
+    /// width is the default because it provides higher throughput when the
+    /// selected MTP, DFlash, or DSpark head already has healthy acceptance.
     #[serde(default = "default_spec_mtp_adaptive")]
     pub spec_mtp_adaptive: bool,
 

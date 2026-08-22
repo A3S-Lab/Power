@@ -322,7 +322,7 @@ pub(super) fn run_external_draft_completion(
     tokens: Vec<llama_cpp_2::token::LlamaToken>,
     context_settings: LlamaContextSettings,
     sampling_settings: &LlamaSamplingSettings,
-    mut settings: MtpCompletionSettings,
+    settings: MtpCompletionSettings,
     telemetry: &SpeculativeTelemetry,
     tx: &tokio::sync::mpsc::Sender<Result<CompletionResponseChunk>>,
 ) -> Result<()> {
@@ -355,11 +355,18 @@ pub(super) fn run_external_draft_completion(
             settings.recurrent_snapshots
         )));
     }
+    if settings.adaptive && settings.recurrent_snapshots < settings.draft_min.max(1) {
+        return Err(PowerError::Config(format!(
+            "spec_mtp_recurrent_snapshots ({}) must cover spec_draft_min ({}) when adaptive external drafting is enabled",
+            settings.recurrent_snapshots,
+            settings.draft_min.max(1)
+        )));
+    }
 
-    // DSpark already carries a confidence-aware trained head. Keep Power's
-    // MTP-only target-disable controller out of this path until an independent
-    // external-draft policy has been calibrated.
-    settings.adaptive = false;
+    // The controller observes only accepted-prefix lengths and target replay
+    // pressure, so it is independent of the proposal model architecture. This
+    // lets a healthy external drafter retain its configured wide path while a
+    // low-yield request narrows or returns to target-only decoding.
     let backend_greedy = use_backend_greedy(sampling_settings);
     let minimum_batch = minimum_mtp_batch(settings.draft_max);
     let rollback_window = settings.draft_max.min(settings.recurrent_snapshots);
@@ -408,6 +415,7 @@ pub(super) fn run_external_draft_completion(
         draft_max = settings.draft_max,
         draft_min = settings.draft_min,
         draft_p_min = settings.draft_p_min,
+        adaptive = settings.adaptive,
         rollback_window,
         "Configured external-draft target sampling"
     );
@@ -838,6 +846,14 @@ fn run_speculative_completion<'target, 'draft, S: LlamaSpeculativeAdapter<'targe
             })?;
         }
         let rejected_suffix = drafts.len().saturating_sub(verified.accepted);
+        tracing::trace!(
+            strategy = strategy_name,
+            round = metrics.rounds.saturating_add(1),
+            drafted = drafts.len(),
+            accepted = verified.accepted,
+            rejected_suffix,
+            "Completed speculative verification round"
+        );
         timings.accepted_prefix_histogram[verified.accepted.min(64)] =
             timings.accepted_prefix_histogram[verified.accepted.min(64)].saturating_add(1);
         timings.max_rejected_suffix = timings.max_rejected_suffix.max(rejected_suffix);

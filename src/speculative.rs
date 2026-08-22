@@ -815,6 +815,16 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_speculation_keeps_width_when_target_pass_is_well_amortized() {
+        let mut controller = AdaptiveSpeculationController::new(10, 1, 10, 6);
+
+        controller.observe(5, 10);
+        assert_eq!(controller.draft_limit(), Some(10));
+        controller.observe(7, 10);
+        assert_eq!(controller.draft_limit(), Some(10));
+    }
+
+    #[test]
     fn adaptive_speculation_opens_target_only_circuit_for_sustained_low_yield() {
         let mut controller = AdaptiveSpeculationController::new(7, 1, 7, 7);
 

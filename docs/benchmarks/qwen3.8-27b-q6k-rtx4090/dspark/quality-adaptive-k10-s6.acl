@@ -1,0 +1,24 @@
+host = "127.0.0.1"
+port = 11436
+max_loaded_models = 1
+max_concurrent_requests = 1
+spec_mode = "dspark"
+spec_draft_max = 10
+spec_mtp_recurrent_snapshots = 6
+spec_mtp_adaptive = true
+spec_draft_min = 1
+spec_draft_p_min = 0.0
+keep_alive = "-1"
+use_mlock = false
+use_mmap = true
+num_thread = 10
+flash_attention = true
+num_parallel = 1
+tee_mode = false
+redact_logs = false
+suppress_token_metrics = false
+
+gpu {
+  gpu_layers = -1
+  main_gpu = 0
+}
