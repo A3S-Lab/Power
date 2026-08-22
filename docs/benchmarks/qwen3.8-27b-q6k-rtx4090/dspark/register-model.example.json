@@ -1,0 +1,12 @@
+{
+  "name": "qwen3.8-27b-q6-k-dspark-q4",
+  "path": "D:/models/a3s-power/qwen38/full/Qwen3.8-27B-Q6_K.gguf",
+  "format": "gguf",
+  "external_draft": {
+    "kind": "dspark",
+    "path": "D:/models/a3s-power/qwen38/dspark/Qwen3.8-27B-DSpark-Q4_K_M.gguf",
+    "source": "https://huggingface.co/DimInfer/Qwen3.8-27B-Dspark-v1",
+    "revision": "10b6bccfcc109bda0666d0aed4b7871aac357b99",
+    "license": "Apache-2.0"
+  }
+}

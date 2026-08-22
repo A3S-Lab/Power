@@ -37,11 +37,19 @@ emitted target sample and never for an unobserved rejected suffix.
 | picolm | `off`, `prompt-lookup`, `ngram-context` |
 | llama.cpp without native prediction tensors | `off` |
 | llama.cpp with `*.nextn_predict_layers > 0` | `off`, `mtp` |
+| llama.cpp with a verified external DFlash GGUF | `off`, `dflash` |
+| llama.cpp with a verified external DSpark GGUF | `off`, `dspark` |
 
-The shared strategy vocabulary also includes `draft-model`, `dflash`, and
-`dspark`. They remain unavailable until a compatible adapter artifact and graph
-exist. An explicit unsupported mode returns an error; Power never silently
-substitutes a cheaper algorithm or relabels n-gram lookup.
+`draft-model` remains a reserved shared strategy without a production
+llama.cpp adapter. DFlash and DSpark use different external-artifact contracts;
+they are not interchangeable and do not stack. Power parses and hashes both
+GGUF files, binds the draft to the target digest, validates artifact-specific
+metadata and tensors, then compares the complete target/draft vocabularies when
+their contexts bind. An explicit unsupported or mismatched mode fails closed.
+
+`auto` selects a verified external artifact when the model manifest contains
+one; otherwise it considers native MTP. Power does not load both draft
+mechanisms because they would compete for device memory and mutable state.
 
 ## Draft width and rollback width are different
 
@@ -101,6 +109,17 @@ capture: 175.2089 token/s median steady decode, 83.228 token/s request-wide,
 and no observed regression against its TBQ4 autoregressive control. That sample
 does not establish a general intelligence improvement.
 
+The native external-DSpark acceptance capture is a separate context-512,
+batch-12 boundary. The untouched Q6_K target-only control reached 32.249
+token/s median; DSpark Q4 K10/S6 reached 169.324 token/s median and 167.102
+minimum, a 5.250x decode gain. All three 256-token outputs and execution
+receipts matched the control exactly, proposal acceptance was 90.873%, and
+fallback replay was zero. Peak VRAM was 23,847 MiB, so this profile requires a
+quiet 24 GB device. A genuine DFlash artifact has not yet been benchmarked; a
+DSpark artifact mislabeled as DFlash is rejected and is not a DFlash result.
+
 See [Performance evidence](/performance) for the complete interpretation and
 the [canonical speculative-decoding design](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)
-for adapter APIs, benchmark commands, and acceptance rules.
+for adapter APIs and acceptance rules, and the
+[DSpark evidence package](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
+for raw paired reports and exact replay commands.

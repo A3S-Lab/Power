@@ -24,6 +24,8 @@ against the same input identities.
 | Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
+| Untouched Q6_K, paired DSpark control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s |
+| **Untouched Q6_K + external DSpark Q4, K10/S6** | Exact paired request/output/receipt hashes; broader matrix not run | **65.825 token/s median** | **169.324 token/s** |
 | **Untouched Q6_K + prefix-FR8192, fixed K6/S6/B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **46.923 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K7/S6/B11, high-priority CUDA** | Fixed peak prompt retained the same output digest | - | **172.835 token/s** on a shared WDDM desktop |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact greedy parity on the fixed peak prompt | - | 147.0207 token/s |
@@ -38,6 +40,28 @@ against the same input identities.
 `Request-wide` includes prompt processing, generation, HTTP, and request
 overhead. `Steady decode` is a warmed-up, repetitive 1,024-token shape. A dash
 means there is no defensible apples-to-apples capture for that cell.
+
+The DSpark rows use a shorter context-512, 256-token acceptance shape rather
+than the 1,024-token MTP peak shape. They are paired with each other, not with
+the historical autoregressive row.
+
+## Native external-DSpark boundary
+
+Power's verified external-draft path keeps the target Q6_K bytes unchanged and
+loads a separate 1.10 GB DSpark Q4 proposal model. Fixed K10/S6 produced
+169.561, 167.102, and 169.324 token/s, a 169.324 median and 5.250x gain over
+its 32.249 token/s paired target-only control. Proposal acceptance was 90.873%,
+verified tokens per target pass were 9.8077, and replay was zero.
+
+Every paired request, 256-token output, and execution receipt had the same
+digest. That is exact evidence for this deterministic request, not a
+cross-prompt intelligence result. The profile peaked at 23,847 MiB and left
+only 717 MiB on the recorded RTX 4090, so low utilization alone does not prove
+that model admission will be stable.
+
+DFlash is not part of this number. It uses a different artifact contract and
+cannot be layered onto DSpark. No genuine DFlash GGUF has completed the
+acceptance gate on this host.
 
 ## The untouched-Q6_K execution-path case study
 
@@ -142,6 +166,7 @@ Use the repository's checked-in guide and raw evidence:
 - [Untouched-Q6_K boundary and dynamic-quantization analysis](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/PURE-Q6.md)
 - [Repeated 100-task quality protocol](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [Current compact machine-readable evidence](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/full-vocabulary-s7-current-rtx4090-3x.json)
+- [Native DSpark Q4 reports and exact reproduction](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
 - [UD-Q8_K_XL heterogeneous-placement boundary](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 Treat a replay on different silicon, driver, display load, clock policy, model

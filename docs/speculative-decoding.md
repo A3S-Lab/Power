@@ -11,10 +11,13 @@ while the target model remains the source of truth for every emitted token.
 Power exposes one control plane for zero-weight lookup, independent draft
 models, native MTP heads, DFlash, DSpark, and future proposal algorithms.
 
-DFlash and DSpark are strategy identities, not implemented speed labels. The
-current backend capability detector advertises native MTP only when compatible
-prediction tensors exist. No reviewed DFlash or DSpark adapter artifact and
-graph is present, so explicitly selecting either mode fails closed.
+DFlash and DSpark are distinct external-draft contracts, not interchangeable
+speed labels and not an additive mode. The llama.cpp backend now admits one
+content-addressed DFlash or DSpark GGUF after validating its artifact kind,
+tensor metadata, target binding, tokenizer contract, provenance, and digest.
+DSpark Q4 has a native Power acceptance capture. The DFlash contract is
+implemented, but no compatible DFlash artifact has passed this host's
+acceptance gate; selecting it without one still fails closed.
 
 ## Ownership boundary
 
@@ -54,10 +57,43 @@ Current executable adapters are:
 | picolm | `off`, `prompt-lookup`, `ngram-context` |
 | llama.cpp without native prediction tensors | `off` |
 | llama.cpp with `*.nextn_predict_layers > 0` | `off`, `mtp` |
+| llama.cpp with a verified external DFlash GGUF | `off`, `dflash` |
+| llama.cpp with a verified external DSpark GGUF | `off`, `dspark` |
 
-`draft-model`, `dflash`, and `dspark` are part of the shared protocol but stay
-unavailable until the loaded model supplies a compatible adapter artifact and
-the backend implements its graph. This is intentional fail-closed behavior.
+`draft-model` remains part of the shared protocol without a production
+llama.cpp adapter. DFlash and DSpark require a matching external artifact;
+Power never treats one as the other and never substitutes prompt lookup or
+native MTP. `auto` selects the verified external artifact when one is bound to
+the manifest, otherwise it considers native MTP. Loading both draft mechanisms
+would duplicate device memory and state ownership, so that combination is not
+allowed.
+
+## External-draft admission
+
+Register the target and one external artifact through `POST /v1/models`:
+
+```json
+{
+  "name": "my-target-with-dspark",
+  "path": "D:/models/target.gguf",
+  "format": "gguf",
+  "external_draft": {
+    "kind": "dspark",
+    "path": "D:/models/dspark.gguf",
+    "source": "https://example.invalid/model",
+    "revision": "pinned-revision",
+    "license": "artifact-license"
+  }
+}
+```
+
+The client supplies locations and provenance, not integrity assertions. Power
+parses both GGUF files, hashes their bytes outside the async executor, computes
+size and target binding itself, and stores the result in the model manifest.
+Load repeats the file-identity checks before allocating a graph. DFlash
+requires DFlash architecture metadata; DSpark requires its Markov and
+confidence tensors. DSpark-only tensors under a DFlash declaration are an
+error rather than a low-acceptance fallback.
 
 ## Prefix-cache composition
 
@@ -115,6 +151,7 @@ contracts, not by branches in the Power scheduler.
    use the same model digest, prompts, sampling settings, context, and hardware.
 5. A separate DSpark artifact is admitted only after its target/tokenizer
    compatibility, provenance, peak memory, exactness, and speedup are measured.
+   The first accepted Qwen3.8 Q6_K + DSpark Q4 capture meets that gate.
 6. At least one non-Qwen adapter must pass the same transaction and exactness
    suite before DSpark support is considered cross-architecture complete.
 
@@ -128,6 +165,15 @@ The current clean untouched-Q6_K capture raises the observed boundary to a
 samples at or above 175. Its full-vocabulary K7/S7 control reached 147.0207
 token/s. This remains benchmark evidence for one artifact, prompt, backend,
 and RTX 4090 host; it does not change the model-neutral runtime contract.
+
+The separate native external-DSpark gate uses a 256-token, context-512,
+batch-12 request. Its paired target-only median is 32.249 token/s; DSpark Q4
+K10/S6 reaches 169.324 token/s median and 167.102 minimum, with identical
+request, output, and receipt hashes. It accepts 90.873% of proposals, commits
+9.8077 tokens per target pass, and performs zero replay. See the
+[raw reports and reproduction protocol](benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/README.md).
+This 5.250x decode gain is a narrow single-request boundary, not a universal
+service floor or cross-prompt quality conclusion.
 
 ## Reproducible Power API benchmark
 
@@ -148,6 +194,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 On non-Windows hosts, apply
 `patches/llama-cpp-rs-dfd12e4-mtp-dynamic-k.patch` to the fetched
 `llama-cpp-rs` checkout, then apply
+`patches/llama-cpp-rs-dfd12e4-external-draft.patch` to that checkout. Apply
 `patches/llama-cpp-rs-dfd12e4-mtp-fr-spec.patch` and
 `patches/llama-cpp-rs-dfd12e4-cuda-high-priority.patch` to its nested
 `llama-cpp-sys-2/llama.cpp` checkout. Then build both executables:

@@ -5,7 +5,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use reqwest::{Client, RequestBuilder, Response, Url};
+use reqwest::{Client, RequestBuilder, Response, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -292,10 +292,7 @@ async fn measure_completion(
         .await
         .map_err(http_error)?;
     if !response.status().is_success() {
-        return Err(invalid(format!(
-            "Power completion request failed with HTTP {}",
-            response.status()
-        )));
+        return Err(response_failure("completion", response).await?);
     }
     let is_sse = response
         .headers()
@@ -441,10 +438,7 @@ async fn get_json<T: DeserializeOwned>(
         .await
         .map_err(http_error)?;
     if !response.status().is_success() {
-        return Err(invalid(format!(
-            "Power control request failed with HTTP {}",
-            response.status()
-        )));
+        return Err(response_failure("control", response).await?);
     }
     let bytes = bounded_body(response, MAX_CONTROL_RESPONSE_BYTES).await?;
     Ok(serde_json::from_slice(&bytes)?)
@@ -463,6 +457,23 @@ async fn bounded_body(response: Response, maximum: usize) -> Result<Vec<u8>> {
         body.extend_from_slice(&chunk);
     }
     Ok(body)
+}
+
+async fn response_failure(kind: &str, response: Response) -> Result<PowerError> {
+    let status = response.status();
+    let body = bounded_body(response, MAX_CONTROL_RESPONSE_BYTES).await?;
+    Ok(format_response_failure(kind, status, &body))
+}
+
+fn format_response_failure(kind: &str, status: StatusCode, body: &[u8]) -> PowerError {
+    let detail = String::from_utf8_lossy(body);
+    let detail = detail.trim();
+    let message = if detail.is_empty() {
+        format!("Power {kind} request failed with HTTP {status}")
+    } else {
+        format!("Power {kind} request failed with HTTP {status}: {detail}")
+    };
+    invalid(message)
 }
 
 fn authorize(builder: RequestBuilder, api_key: Option<&str>) -> RequestBuilder {
@@ -814,6 +825,28 @@ mod tests {
             .push(b"event: message\ndata: first\ndata: second\n\n")
             .unwrap();
         assert_eq!(events, vec![b"first\nsecond".to_vec()]);
+    }
+
+    #[test]
+    fn benchmark_http_failure_preserves_bounded_server_diagnostic() {
+        let error = format_response_failure(
+            "completion",
+            StatusCode::SERVICE_UNAVAILABLE,
+            br#"{"error":{"code":"model_load_failed","message":"device allocation failed"}}"#,
+        );
+        let message = error.to_string();
+        assert!(message.contains("503 Service Unavailable"));
+        assert!(message.contains("model_load_failed"));
+        assert!(message.contains("device allocation failed"));
+    }
+
+    #[test]
+    fn benchmark_http_failure_handles_empty_body() {
+        let error = format_response_failure("control", StatusCode::BAD_GATEWAY, b"  \r\n");
+        assert_eq!(
+            error.to_string(),
+            "Invalid request: Power control request failed with HTTP 502 Bad Gateway"
+        );
     }
 
     #[test]

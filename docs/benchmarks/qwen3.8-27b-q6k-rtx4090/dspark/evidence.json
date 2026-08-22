@@ -1,0 +1,105 @@
+{
+  "schema": "a3s.power.dspark-evidence.v1",
+  "captured_at": "2026-08-22T16:40:47.8074409Z",
+  "source": {
+    "power_commit": "c272e35365fb25a057a8ee4c04c20d8a35cb4b05",
+    "dirty_worktree": false,
+    "llama_cpp_rs_revision": "dfd12e4d334846367e4284a2a7763fe92c1bf676",
+    "llama_cpp_revision": "e79e4bf660e19f2ad851e06c6913f7a8c5852621",
+    "external_draft_patch_sha256": "664683a1f1641d64ee5342056e4388e2e70062d1c54d2c15f1a885513df1b3be",
+    "server_sha256": "c95031269b7626ebd8e843b5e0f25e9e2378b25c3b078ba8df3e26613cb05498",
+    "benchmark_client_sha256": "c6813ecceaede07aebe82d74cd91c797ca097c430fd8986491d3db6790e26bfd"
+  },
+  "hardware": {
+    "os": "Windows 11 build 22631",
+    "cpu": "Intel Xeon w5-2445, 10 cores / 20 logical processors",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "gpu_vram_mib": 24564,
+    "driver": "610.74",
+    "cuda_umd": "13.3",
+    "driver_model": "WDDM",
+    "power_plan": "High performance"
+  },
+  "artifacts": {
+    "target": {
+      "name": "Qwen3.8-27B-Q6_K.gguf",
+      "bytes": 22884408288,
+      "sha256": "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727"
+    },
+    "draft": {
+      "name": "Qwen3.8-27B-DSpark-Q4_K_M.gguf",
+      "bytes": 1104594816,
+      "sha256": "12003c7f2642e2e87e979729e16947a913e2213d82136cb5024a36ec4871fef2",
+      "source": "https://huggingface.co/DimInfer/Qwen3.8-27B-Dspark-v1",
+      "revision": "10b6bccfcc109bda0666d0aed4b7871aac357b99",
+      "license": "Apache-2.0"
+    },
+    "prompt_sha256": "d95a5e4dad822ba9c84138f7a120017318bcb3a6a90e77246a8ec4ede0e65d89"
+  },
+  "workload": {
+    "request_sha256": "d49166116d50d478cd475287fd90a4b57b98848877119e71636b310c87ec8181",
+    "warmup_runs": 1,
+    "measured_runs": 3,
+    "max_tokens": 256,
+    "num_ctx": 512,
+    "num_batch": 12,
+    "seed": 42,
+    "temperature": 0.0,
+    "top_p": 1.0
+  },
+  "target_only": {
+    "checked_in_report": "target-only.json",
+    "checked_in_report_sha256": "549988cd4bcdcea0a6f055168b3dabd8cb037d4303009eae251926a7bde9838e",
+    "raw_report_sha256": "1cf49f1031504ca45cc645b575a11c833b997fb0bda3db888d74e365a88b4583",
+    "raw_environment_sha256": "69466d8aaa6634506f195a469b55be11d130f0fd27cb2f0ec4200695e26965f5",
+    "raw_preflight_sha256": "261aa66356ac33eb3d78d3031060dd2d50132628f7c0e0c18fdca51c77bbfd11",
+    "median_decode_tokens_per_second": 32.24930559656978,
+    "minimum_decode_tokens_per_second": 32.024247001635686,
+    "median_end_to_end_tokens_per_second": 25.170764463843938,
+    "peak_gpu_memory_used_mib": 21860,
+    "peak_gpu_utilization_percent": 99,
+    "peak_gpu_power_watts": 356.04,
+    "runtime_gpu_samples": 218
+  },
+  "dspark": {
+    "checked_in_report": "dspark-q4-k10-s6.json",
+    "checked_in_report_sha256": "6d36f3121b96b51b563ab9cde160bef34552d22a74bc91c784d2962065c0e0f9",
+    "raw_report_sha256": "134bda6b3f7eb5bd6ccea6fe39befe9592a92c78447e2135306c18d81f574bdc",
+    "raw_environment_sha256": "e55cbe65bc05c1d979a76ea358448d06a87ff609209e841daeac52909a9b8b83",
+    "raw_preflight_sha256": "b9d5e89b9621bc98d86d635bf2cdef26805c025526ff8e862bf6c78252c7e4e4",
+    "draft_max": 10,
+    "rollback_snapshots": 6,
+    "median_decode_tokens_per_second": 169.32386722166825,
+    "minimum_decode_tokens_per_second": 167.10229032365027,
+    "median_end_to_end_tokens_per_second": 65.82464940788928,
+    "drafted_tokens_per_request": 252,
+    "accepted_tokens_per_request": 229,
+    "acceptance_rate": 0.9087301587301587,
+    "tokens_per_target_pass": 9.807692307692308,
+    "target_rounds_per_request": 26,
+    "fallback_replays": 0,
+    "maximum_rejected_suffix": 6,
+    "peak_gpu_memory_used_mib": 23847,
+    "peak_gpu_utilization_percent": 97,
+    "peak_gpu_power_watts": 277.09,
+    "runtime_gpu_samples": 297
+  },
+  "comparison": {
+    "decode_speedup": 5.250465524432207,
+    "decode_gain_percent": 425.0465524432207,
+    "end_to_end_speedup": 2.6151231720610566,
+    "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+    "receipt_sha256": "e798e6f418cbf503d1c0101a4a8fc3d7376ba30004d1949ba53300e6a14cd798",
+    "exact_greedy_output_match": true
+  },
+  "scope": {
+    "claim": "A single-request, short-context, deterministic decode boundary on the recorded host",
+    "not_claimed": [
+      "A universal service floor",
+      "Cross-prompt quality equivalence",
+      "Concurrent throughput",
+      "A valid DFlash result",
+      "A stackable DFlash plus DSpark mode"
+    ]
+  }
+}

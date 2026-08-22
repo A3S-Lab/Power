@@ -1,0 +1,223 @@
+# Native DSpark Q4 on Qwen3.8-27B Q6_K
+
+This capture measures Power's native external-draft path through the real
+streaming `POST /v1/completions` API. The target remains the untouched Q6_K
+GGUF. A separate DSpark Q4 artifact proposes tokens; the Q6_K target verifies
+every emitted token.
+
+## Accepted result
+
+The paired runs use the same clean Power commit, CUDA binaries, target model,
+prompt, request shape, greedy sampling, and output limit.
+
+| Mode | Measured decode samples | Median decode | Minimum | Median end to end | Peak VRAM |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Q6_K target only | 32.645, 32.249, 32.024 token/s | 32.249 token/s | 32.024 token/s | 25.171 token/s | 21,860 MiB |
+| Q6_K + DSpark Q4, K10/S6 | 169.561, 167.102, 169.324 token/s | **169.324 token/s** | **167.102 token/s** | **65.825 token/s** | 23,847 MiB |
+
+The median decode speedup is **5.250x** and the median request-wide speedup is
+**2.615x**. All three DSpark samples passed the 160 token/s all-sample gate.
+The request SHA-256, every 256-token output SHA-256, and every execution receipt
+SHA-256 match the target-only control exactly.
+
+The DSpark run accepted 229 of 252 proposed tokens per request (90.873%), used
+26 target verification rounds, emitted 9.8077 verified tokens per target pass,
+and performed zero fallback replays. Its longest rejected suffix was six
+tokens, exactly the resident S6 rollback window.
+
+Run the offline verifier without a model or GPU:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\verify-dspark-evidence.ps1 -Json
+```
+
+The checked-in [target-only report](target-only.json),
+[DSpark report](dspark-q4-k10-s6.json), and
+[compact environment receipt](evidence.json) bind the raw samples, artifact
+identities, executable hashes, telemetry summary, and capture revision.
+
+## What was optimized
+
+The result is not a DFlash-plus-DSpark stack. DFlash and DSpark define different
+draft-model tensor contracts and proposal graphs. Power admits one declared
+external draft per target and selects the matching strategy. Labeling a DSpark
+artifact as DFlash is rejected by the model inspector because the DSpark-only
+Markov and confidence tensors are present.
+
+The accepted DSpark path combines:
+
+- a content-addressed external GGUF draft whose kind, provenance, tensor
+  contract, and artifact identity are verified at registration and load, with
+  full target/draft vocabulary compatibility checked when contexts bind;
+- separate target and draft llama.cpp model instances with one shared exact
+  verification transaction;
+- ten-token fixed proposals so one expensive target pass can commit about ten
+  output tokens;
+- six resident recurrent rollback snapshots, with exact committed-prefix
+  replay available when a rejected suffix exceeds that window;
+- stable batch-12 CUDA Graph shapes, full target/draft GPU offload, Flash
+  Attention, high-priority CUDA streams, and single-model/single-request
+  scheduling;
+- path-free loaded-artifact proof in health, process-lifetime speculative
+  counters, and per-run GPU telemetry.
+
+Development sweeps showed why K and S must be tuned together. K4/S4 reached
+about 118 token/s, K6/S6 141 token/s, and K8/S6 149 token/s. Wider complete
+rollback profiles crossed a VRAM allocation cliff: K7/S7 and K8/S8 fell to
+roughly 48 and 60 token/s. K10/S5 triggered one exact replay and fell to
+101.066 token/s; K10/S6 avoided replay and became the accepted profile.
+
+## DFlash status
+
+A genuine DFlash artifact has **not** been benchmarked. The only DFlash-named
+diagnostic deliberately forced the DSpark artifact through a DFlash command;
+it accepted 10 of 970 proposals (1.031%, mean accepted length 1.04) and ran at
+roughly 17.3 token/s. That is negative compatibility evidence, not a DFlash
+performance result. A defensible DFlash comparison requires a GGUF whose
+declared architecture, block size, target-layer metadata, tokenizer, and
+target identity satisfy the DFlash contract.
+
+Consequently:
+
+- DSpark Q4: implemented and measured natively in Power;
+- DFlash: contract implemented and fail-closed, but no compatible artifact has
+  been accepted on this host;
+- DFlash + DSpark: not an additive execution mode; a future router may select
+  one compatible drafter per model/request, but it must not execute both as one
+  proposal graph.
+
+## Fixed identities
+
+| Item | Value |
+| --- | --- |
+| Power commit | `c272e35365fb25a057a8ee4c04c20d8a35cb4b05` |
+| Target | 22,884,408,288 bytes; `562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727` |
+| DSpark Q4 | 1,104,594,816 bytes; `12003c7f2642e2e87e979729e16947a913e2213d82136cb5024a36ec4871fef2` |
+| DSpark source | `DimInfer/Qwen3.8-27B-Dspark-v1`, revision `10b6bccfcc109bda0666d0aed4b7871aac357b99`, Apache-2.0 |
+| Prompt | `../prompt.txt`; `d95a5e4dad822ba9c84138f7a120017318bcb3a6a90e77246a8ec4ede0e65d89` |
+| Request | `d49166116d50d478cd475287fd90a4b57b98848877119e71636b310c87ec8181` |
+| Output | `584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb` |
+| Server binary | `c95031269b7626ebd8e843b5e0f25e9e2378b25c3b078ba8df3e26613cb05498` |
+| Benchmark client | `c6813ecceaede07aebe82d74cd91c797ca097c430fd8986491d3db6790e26bfd` |
+| Host | Windows 11 build 22631; RTX 4090 24,564 MiB; driver 610.74; CUDA UMD 13.3; Xeon w5-2445 |
+
+## Reproduce the capture
+
+### 1. Verify the model files
+
+Place the target and DSpark files at paths of your choice, then verify both
+before registration:
+
+```powershell
+$target = 'D:\models\a3s-power\qwen38\full\Qwen3.8-27B-Q6_K.gguf'
+$draft = 'D:\models\a3s-power\qwen38\dspark\Qwen3.8-27B-DSpark-Q4_K_M.gguf'
+
+(Get-Item -LiteralPath $target).Length
+(Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash
+(Get-Item -LiteralPath $draft).Length
+(Get-FileHash -Algorithm SHA256 -LiteralPath $draft).Hash
+```
+
+Edit only the local paths in [the registration body](register-model.example.json)
+and the `data_dir` in both ACL files. Do not add client-supplied `size`,
+`sha256`, or `target_sha256` fields: Power computes and stores those identities
+from the actual files.
+
+### 2. Build the pinned CUDA backend
+
+```powershell
+cargo fetch --locked
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\apply-llamacpp-power-patches.ps1
+
+$env:CMAKE_GENERATOR = 'Ninja'
+$env:CMAKE_CUDA_ARCHITECTURES = '89'
+cargo build --locked --release --no-default-features `
+  --features llamacpp-cuda,llamacpp-mtp-fr `
+  --target-dir target-native-sm89-ninja `
+  --bin a3s-power --bin a3s-power-speculative-bench
+```
+
+The patch tool must apply or confirm the dynamic-K, FR, high-priority CUDA, and
+external-draft patches. A build with `llamacpp` instead of `llamacpp-cuda` is a
+CPU control and cannot reproduce these numbers.
+
+### 3. Register the target and draft once
+
+Start Power temporarily with either checked-in ACL:
+
+```powershell
+.\target-native-sm89-ninja\release\a3s-power.exe serve `
+  --config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\target-only.acl
+```
+
+In a second terminal:
+
+```powershell
+$body = Get-Content -Raw -Encoding UTF8 `
+  .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\register-model.example.json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:11439/v1/models `
+  -ContentType 'application/json' -Body $body
+```
+
+Stop the temporary server. Registration parses both GGUF headers, validates the
+declared DSpark tensor contract, hashes both files off the async executor, and
+writes a manifest bound to the target digest. Runtime binding additionally
+compares the target and draft vocabulary type, size, BOS/EOS policy, and every
+token string before accepting the decoder pair.
+
+### 4. Run the paired API benchmark
+
+Use a clean worktree and the Windows High performance power plan. The accepted
+run used a shared display GPU with 6--9% idle utilization, high process
+priority, CUDA high-priority streams, one warm-up, and three measured samples:
+
+```powershell
+$common = @{
+  Model = 'qwen3.8-27b-q6-k-dspark-q4'
+  ModelHash = '562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727'
+  PromptFile = '.\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\prompt.txt'
+  PowerHome = 'D:\models\a3s-power\dspark-home'
+  BenchmarkRoot = 'D:\models\a3s-power\dspark-benchmark'
+  Samples = 3
+  WarmupRuns = 1
+  MaxTokens = 256
+  NumCtx = 512
+  NumBatch = 12
+  ProcessPriority = 'High'
+  NvidiaGpuIndices = 0
+  MaximumIdleGpuUtilizationPercent = 20
+  TargetDirectory = 'target-native-sm89-ninja'
+  Port = 11439
+  CudaHighPriority = $true
+  RequireHighPerformancePowerPlan = $true
+  RequireCleanTree = $true
+}
+
+.\tools\run-gguf-speculative-benchmark.ps1 @common `
+  -Label native-target-only-c512-b12-256t-3x `
+  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\target-only.acl `
+  -Mode off
+
+.\tools\run-gguf-speculative-benchmark.ps1 @common `
+  -Label native-dspark-q4-k10-s6-c512-b12-256t-3x `
+  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\dspark-q4-k10-s6.acl `
+  -Mode dspark -MinimumTokensPerSecond 160 `
+  -MinimumSampleTokensPerSecond 160
+```
+
+The DSpark profile peaked at 23,847 MiB, leaving only 717 MiB on this GPU.
+Model load can fail under extra WDDM allocations even when utilization is low.
+Treat a quiet GPU and adequate free VRAM as admission requirements; if the host
+cannot provide that margin, reduce context or proposal shape and record a new
+result rather than presenting an unstable K10/S6 number.
+
+## Claim boundary
+
+This is a single-request, short-context, deterministic boundary on one prompt
+and one RTX 4090. Exact output identity proves no change for these measured
+requests; it is not a cross-domain intelligence evaluation. The DSpark draft
+does not alter target weights, but other prompts, stochastic sampling,
+concurrency, long contexts, drivers, and GPU memory pressure require their own
+quality and performance gates.

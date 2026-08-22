@@ -156,8 +156,15 @@ Available adapter families include:
 
 - prompt lookup and n-gram context for compatible picolm paths;
 - native MTP when a llama.cpp artifact exposes prediction tensors;
-- shared protocol identities for future draft-model, dflash, and dspark
-  adapters, which remain unavailable until a reviewed implementation exists.
+- verified external DFlash or DSpark GGUF artifacts for llama.cpp; the first
+  native DSpark Q4 acceptance capture is published, while DFlash still awaits
+  a compatible accepted artifact;
+- the shared `draft-model` protocol identity, which still awaits a production
+  llama.cpp adapter.
+
+DFlash and DSpark are alternative draft contracts, not layers in one graph.
+Power loads at most one external drafter, validates its declared tensor family,
+and refuses a kind mismatch instead of silently relabeling the proposal path.
 
 Every emitted token remains target-authoritative. The transaction checkpoints
 target, draft, sampler, and decoder state; verifies the anchor and proposal

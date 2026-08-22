@@ -18,6 +18,8 @@ that cell.
 | Artifact and runtime mode | Quality proxy | Request-wide throughput | Median steady decode | Interpretation |
 | --- | --- | ---: | ---: | --- |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) | Current fixed-task baseline; steady column is a separate historical shape |
+| Untouched Q6_K, paired DSpark control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s | Same request shape and clean binary as the external-draft candidate |
+| **Untouched Q6_K + external DSpark Q4, K10/S6** | Exact paired request/output/receipt hashes; broader matrix not run | **65.825 token/s median** | **169.324 token/s** | 5.250x decode speedup; 90.873% acceptance; zero replay; all samples above 160 token/s |
 | **Untouched Q6_K + prefix-FR8192 MTP, fixed K6/S6, B8** | 9/12 lenient and strict in both off/MTP modes (1x; 3 truncated) | **46.923 token/s** | -- | General short-task profile; 63.42% faster than its 28.713 token/s paired off control |
 | **Untouched Q6_K + prefix-FR8192 MTP, fixed K7/S6, B11, high-priority CUDA** | Same fixed-prompt digest as the controls | -- | **172.835 token/s** under a contended desktop | Current clean 9x peak profile; the earlier quiet-host capture remains 176.6109 token/s |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact parity on the fixed peak prompt | -- | 147.0207 token/s | Current balanced steady-decode control |
@@ -36,6 +38,13 @@ The complete protocols and raw evidence are in the
 [untouched-Q6_K report](PURE-Q6.md), the
 [100-task and 12-task quality report](quality/README.md), the sections below,
 and the sibling [UD-Q8_K_XL boundary capture](../qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md).
+
+The native [DSpark Q4 paired capture](dspark/README.md) is deliberately
+separate from the MTP and TBQ4 matrices below. It uses a content-addressed
+1.10 GB external drafter, keeps the 22.88 GB target unchanged, and records a
+single-request context-512 boundary. Its exact output match is evidence for
+the measured deterministic request, not a substitute for the repeated quality
+matrix.
 
 ## Prompt-prefix cache, 2026-08-22
 

@@ -554,3 +554,19 @@ clock control, and an exclusive benchmark window. The previous mixed gate uses
 its separate 19.19 GB artifact identity. The checked-in JSON remains the
 auditable result; new measurements should be added as new captures instead of
 overwriting it.
+
+## Native external-DSpark acceptance package
+
+The Q6_K + external DSpark Q4 result is a separate paired context-512,
+batch-12 experiment. Verify its checked-in reports without loading a model:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\verify-dspark-evidence.ps1 -Json
+```
+
+Then follow the [DSpark-specific registration and replay guide](dspark/README.md).
+It contains the typed registration body, both ACL profiles, exact artifact
+revisions and hashes, paired runner commands, raw three-sample reports, the
+160 token/s all-sample gate, VRAM boundary, and DFlash non-result. Do not merge
+its 256-token statistics with the 1,024-token native-MTP peak above.

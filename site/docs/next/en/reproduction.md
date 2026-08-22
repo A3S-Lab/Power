@@ -179,4 +179,29 @@ Retain these files under `$benchmarkRoot`:
 
 The capture is valid only when all nine requests generate 1,024 tokens, every output SHA-256 is identical, model identity matches exactly, the backend is exclusive, the worktree is clean, and stream priority, affinity, clock, and power controls actually took effect. The caller decides whether it meets a host-specific deployment SLO; the historical 176.61 result is not an automatic failure threshold for the current shared desktop.
 
+## 8. Reproduce the native DSpark gate
+
+The external-DSpark package is a separate paired experiment. It keeps the same
+22,884,408,288-byte Q6_K target and binds the 1,104,594,816-byte DSpark Q4
+artifact with SHA-256
+`12003c7f2642e2e87e979729e16947a913e2213d82136cb5024a36ec4871fef2`.
+Run its model-free verifier first:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\verify-dspark-evidence.ps1 -Json
+```
+
+The accepted context-512, batch-12 capture reports 32.249 token/s target-only
+and 169.324 token/s with DSpark K10/S6, with a 167.102 token/s minimum. All
+three 256-token outputs and receipts match exactly. Peak VRAM is 23,847 MiB,
+so a quiet device and adequate free memory are required even when GPU
+utilization is low.
+
+Use the [DSpark reproduction package](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
+for the typed registration body, target-only and DSpark ACL files, raw reports,
+artifact revisions, and exact paired runner commands. DFlash is not part of
+that result: DFlash and DSpark are alternative artifact contracts, and no
+compatible DFlash GGUF has completed this gate.
+
 The complete [Windows/CUDA guide](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) also covers the paired full-vocabulary control, the 12-task pure-Q6_K calibration, and the previous mixed-artifact gates. The [quality-matrix protocol](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md#reproduce) explains how to rerun the existing 100-task × 3-run evaluation.

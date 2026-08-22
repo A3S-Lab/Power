@@ -1,0 +1,91 @@
+{
+  "schema": "a3s.power.speculative-benchmark.v1",
+  "identity": {
+    "power_commit": "c272e35365fb25a057a8ee4c04c20d8a35cb4b05",
+    "server_version": "1.0.0",
+    "model": "qwen3.8-27b-q6-k-dspark-q4",
+    "model_sha256": "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+    "model_bytes": 22884408288,
+    "speculative": {
+      "mode": "off",
+      "draft_max": 4,
+      "mtp_recurrent_snapshots": 7,
+      "mtp_recurrent_chain": true,
+      "mtp_adaptive": false,
+      "draft_min": 1,
+      "draft_p_min": 0.0
+    },
+    "inference": {
+      "gpu_layers": -1,
+      "main_gpu": 0,
+      "tensor_split": [],
+      "num_thread": 10,
+      "flash_attention": true,
+      "num_parallel": 1,
+      "use_mlock": false,
+      "use_mmap": true,
+      "tee_mode": false,
+      "suppress_token_metrics": false
+    },
+    "system": {
+      "label": "RTX 4090 / Xeon w5-2445 / Qwen3.8-27B Q6_K native target-only",
+      "os": "windows",
+      "architecture": "x86_64",
+      "gpu_backend": "cuda",
+      "gpu_name": "NVIDIA GeForce RTX 4090",
+      "gpu_vram_bytes": 25757220864,
+      "gpu_driver": "610.74"
+    }
+  },
+  "workload": {
+    "prompt_sha256": "d95a5e4dad822ba9c84138f7a120017318bcb3a6a90e77246a8ec4ede0e65d89",
+    "request_sha256": "d49166116d50d478cd475287fd90a4b57b98848877119e71636b310c87ec8181",
+    "max_tokens": 256,
+    "num_ctx": 512,
+    "num_batch": 12,
+    "seed": 42,
+    "temperature": 0.0,
+    "top_p": 1.0
+  },
+  "warmup_runs": 1,
+  "samples": [
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 260269400,
+      "inter_token_duration_ns": 7811275000,
+      "total_duration_ns": 10110814500,
+      "decode_tokens_per_second": 32.645118754620725,
+      "end_to_end_tokens_per_second": 25.31942406815989,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "e798e6f418cbf503d1c0101a4a8fc3d7376ba30004d1949ba53300e6a14cd798"
+    },
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 266046100,
+      "inter_token_duration_ns": 7907147000,
+      "total_duration_ns": 10170529400,
+      "decode_tokens_per_second": 32.24930559656978,
+      "end_to_end_tokens_per_second": 25.170764463843938,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "e798e6f418cbf503d1c0101a4a8fc3d7376ba30004d1949ba53300e6a14cd798"
+    },
+    {
+      "completion_tokens": 256,
+      "completion_token_intervals": 255,
+      "time_to_first_token_ns": 291197300,
+      "inter_token_duration_ns": 7962716500,
+      "total_duration_ns": 11851844600,
+      "decode_tokens_per_second": 32.024247001635686,
+      "end_to_end_tokens_per_second": 21.60001321650809,
+      "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+      "receipt_sha256": "e798e6f418cbf503d1c0101a4a8fc3d7376ba30004d1949ba53300e6a14cd798"
+    }
+  ],
+  "output_sha256": "584e2b93ba21d7c727456567762c6bbacc150d43156c73ed91c1c0cbb13be6eb",
+  "median_decode_tokens_per_second": 32.24930559656978,
+  "minimum_decode_tokens_per_second": 32.024247001635686,
+  "min_required_tokens_per_second": 0.0,
+  "threshold_passed": true
+}
