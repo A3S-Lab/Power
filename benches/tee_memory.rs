@@ -87,6 +87,7 @@ fn bench_load_rss(c: &mut Criterion) {
             parameters: None,
             created_at: chrono::Utc::now(),
             path: model_path.clone(),
+            external_draft: None,
             system_prompt: None,
             template_override: None,
             default_parameters: None,
