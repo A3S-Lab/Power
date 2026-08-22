@@ -1,0 +1,25 @@
+source_commit=ec90acc78cccd43d108cf55b05d2b56dae327125
+workflow_commit=afc33d7e7df72b3ea26b827ce82ac397f16a4889
+github_run_id=32542474475
+github_run_attempt=1
+runner_name=GitHub Actions 1000047864
+runner_os=macOS
+runner_arch=ARM64
+image_os=macos26
+image_version=20260728.0273.1
+mac_model=VirtualMac2,1
+cpu_model=Apple M1 (Virtual)
+ram_bytes=7516192768
+macos_version=26.5.2
+kernel=Darwin iad20-eo1210-4c252dd1-538c-47be-bc34-58a0baf605bc-36E68D33D2F6.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:26:00 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_VMAPPLE arm64
+rustc=rustc 1.98.0 (88d9e12ae 2026-08-18)
+cargo=cargo 1.98.0 (797e8a9bc 2026-08-05)
+xcode=Xcode 26.6;Build version 17F113;
+metal_device_begin
+name=Apple Paravirtual device
+registry_id=4294967703
+has_unified_memory=true
+recommended_max_working_set_size=5010800640
+metal_device_end
+display_devices_begin
+display_devices_end
