@@ -69,8 +69,8 @@ topology and semantics.
 | Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Mean request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
-| **Untouched Q6_K + prefix-FR8192, fixed K6/S6, B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **49.025 token/s** | - |
-| **Untouched Q6_K + prefix-FR8192, fixed K7/S6, B11, high-priority CUDA** | Fixed peak prompt retained the control digest | - | **172.252 token/s** on a contended desktop |
+| **Untouched Q6_K + prefix-FR8192, fixed K6/S6, B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **46.923 token/s** | - |
+| **Untouched Q6_K + prefix-FR8192, fixed K7/S6, B11, high-priority CUDA** | Fixed peak prompt retained the control digest | - | **172.835 token/s** on a contended desktop |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Fixed peak prompt has exact greedy parity | - | 147.0207 token/s |
 | Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x calibration; 11 truncated) | **47.032 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x calibration; 11 truncated) | 37.290 token/s | **176.6109 token/s** |
@@ -88,10 +88,11 @@ same deterministic output digest. No model weight was requantized.
 
 The 2026-08-22 execution-only follow-up kept those exact bytes and separated
 two workload shapes. The peak K7/S6/B11 profile disables Flash Attention only
-for short-batch decode and uses high-priority CUDA streams; it reached 172.252
-token/s median and 171.250 minimum while the Windows display GPU already had
-5--8% background utilization. The mixed-task K6/S6/B8 profile reached 49.025
-token/s versus a paired 29.381 token/s target-only control, a 66.86% gain, with
+for short-batch decode and uses high-priority CUDA streams; its clean nine-run
+capture reached 172.835 token/s median and 171.298 minimum while the Windows
+display GPU already had 5--8% background utilization. The mixed-task K6/S6/B8
+profile reached 46.923 token/s versus a paired 28.713 token/s target-only
+control, a 63.42% gain, with
 the same 12 final answers, the same 9/12 score, and zero replay. CUDA graphs are
 essential: disabling them fell to 133.876 token/s on the peak workload.
 

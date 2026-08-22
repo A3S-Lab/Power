@@ -1,0 +1,464 @@
+{
+  "schema": "a3s.power.quality-eval.sweep.v1",
+  "created_at": "2026-08-22T04:50:43.181145+00:00",
+  "tasks_sha256": "bf8e3c044fe21863361ca2d8be6cf47483290042bc93d53663a7a59cefb2d8c7",
+  "server_sha256": "a2b1ef3eab435dca02ca6dc41415f21c91c0f84d424ebfd0c7c589a992c555cc",
+  "repetitions": 1,
+  "modes": {
+    "fr8192-k6-s6-b8-fixed": {
+      "model_sha256": "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+      "request": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "num_ctx": 4096,
+        "num_batch": 8,
+        "seed": 42,
+        "warmup_requests": 1,
+        "max_tokens_cap": 256,
+        "template": "manual-qwen-chatml-v1"
+      },
+      "health": {
+        "status": "ok",
+        "version": "1.0.0",
+        "uptime_seconds": 0,
+        "loaded_models": 0,
+        "speculative": {
+          "mode": "mtp",
+          "draft_max": 6,
+          "mtp_recurrent_snapshots": 6,
+          "mtp_recurrent_chain": false,
+          "mtp_adaptive": false,
+          "mtp_fr_vocab_size": 8192,
+          "draft_min": 0,
+          "draft_p_min": 0.0
+        },
+        "inference": {
+          "gpu_layers": -1,
+          "main_gpu": 0,
+          "tensor_split": [],
+          "num_thread": 10,
+          "flash_attention": false,
+          "num_parallel": 1,
+          "use_mlock": false,
+          "use_mmap": true,
+          "tee_mode": false,
+          "suppress_token_metrics": false
+        }
+      },
+      "runs": [
+        {
+          "repetition": 1,
+          "order_index": 2,
+          "summary": {
+            "mmlu": {
+              "total": 4,
+              "completed": 4,
+              "errors": 0,
+              "correct": 3,
+              "accuracy": 0.75,
+              "strict_correct": 3,
+              "strict_accuracy": 0.75,
+              "truncated": 1,
+              "prediction_missing": 0,
+              "explicit_prediction_missing": 1,
+              "median_latency_seconds": 2.8756876499392092,
+              "mean_latency_seconds": 3.604688349994831,
+              "total_latency_seconds": 14.418753399979323,
+              "completion_tokens": 656,
+              "aggregate_completion_tokens_per_second": 45.49630483318625
+            },
+            "gsm8k": {
+              "total": 4,
+              "completed": 4,
+              "errors": 0,
+              "correct": 3,
+              "accuracy": 0.75,
+              "strict_correct": 3,
+              "strict_accuracy": 0.75,
+              "truncated": 1,
+              "prediction_missing": 0,
+              "explicit_prediction_missing": 1,
+              "median_latency_seconds": 2.9333550500450656,
+              "mean_latency_seconds": 2.9130283750128,
+              "total_latency_seconds": 11.6521135000512,
+              "completion_tokens": 718,
+              "aggregate_completion_tokens_per_second": 61.6197224646709
+            },
+            "ceval": {
+              "total": 4,
+              "completed": 4,
+              "errors": 0,
+              "correct": 3,
+              "accuracy": 0.75,
+              "strict_correct": 3,
+              "strict_accuracy": 0.75,
+              "truncated": 1,
+              "prediction_missing": 0,
+              "explicit_prediction_missing": 1,
+              "median_latency_seconds": 5.1552017500507645,
+              "mean_latency_seconds": 5.198189300019294,
+              "total_latency_seconds": 20.792757200077176,
+              "completion_tokens": 825,
+              "aggregate_completion_tokens_per_second": 39.67727762419781
+            },
+            "overall": {
+              "total": 12,
+              "completed": 12,
+              "errors": 0,
+              "correct": 9,
+              "accuracy": 0.75,
+              "strict_correct": 9,
+              "strict_accuracy": 0.75,
+              "truncated": 3,
+              "prediction_missing": 0,
+              "explicit_prediction_missing": 3,
+              "median_latency_seconds": 3.383813999942504,
+              "mean_latency_seconds": 3.9053020083423085,
+              "total_latency_seconds": 46.8636241001077,
+              "completion_tokens": 2199,
+              "aggregate_completion_tokens_per_second": 46.92338764288924
+            }
+          },
+          "speculative_runtime": {
+            "overall": {
+              "requests": 12,
+              "drafted_tokens": 5042,
+              "accepted_tokens": 1352,
+              "weighted_acceptance_rate": 0.26814756049186833,
+              "verified_tokens_per_target_pass": 2.5912322274881516,
+              "fallback_replays": 0,
+              "rollback_guard_requests": 0,
+              "rollback_guard_activations": 0,
+              "target_only_requests": 0,
+              "target_only_tokens": 0,
+              "fr_target_samples": 2196,
+              "fr_target_samples_in_token_id_prefix": 1580,
+              "fr_target_token_id_prefix_fraction": 0.7194899817850637,
+              "fr_rejected_rounds": 779,
+              "fr_corrections_outside_token_id_prefix": 605,
+              "fr_correction_outside_token_id_prefix_fraction": 0.7766367137355584,
+              "draft_limit_histogram": [
+                2,
+                1,
+                0,
+                0,
+                1,
+                3,
+                837,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "phase_duration_ns": {
+                "draft": 4427092300,
+                "target_decode": 1944287300,
+                "target_only_decode": 0,
+                "accepted_prefix_sync": 530340900,
+                "sampling": 29975767600
+              },
+              "median_reported_tokens_per_second": 66.37367788598951,
+              "aggregate_reported_tokens_per_second": 59.57811412526697
+            }
+          }
+        }
+      ],
+      "accuracy": {
+        "mean": 0.75,
+        "median": 0.75,
+        "minimum": 0.75,
+        "maximum": 0.75
+      },
+      "strict_accuracy": {
+        "mean": 0.75,
+        "median": 0.75,
+        "minimum": 0.75,
+        "maximum": 0.75
+      },
+      "aggregate_completion_tokens_per_second": {
+        "mean": 46.92338764288924,
+        "median": 46.92338764288924,
+        "minimum": 46.92338764288924,
+        "maximum": 46.92338764288924
+      },
+      "median_latency_seconds": {
+        "mean": 3.383813999942504,
+        "median": 3.383813999942504,
+        "minimum": 3.383813999942504,
+        "maximum": 3.383813999942504
+      },
+      "prediction_stable_tasks": 12,
+      "task_count": 12,
+      "speculative_runtime": {
+        "weighted_acceptance_rate": {
+          "mean": 0.26814756049186833,
+          "median": 0.26814756049186833,
+          "minimum": 0.26814756049186833,
+          "maximum": 0.26814756049186833
+        },
+        "verified_tokens_per_target_pass": {
+          "mean": 2.5912322274881516,
+          "median": 2.5912322274881516,
+          "minimum": 2.5912322274881516,
+          "maximum": 2.5912322274881516
+        },
+        "fallback_replays": {
+          "mean": 0,
+          "median": 0,
+          "minimum": 0,
+          "maximum": 0
+        },
+        "rollback_guard_requests": {
+          "mean": 0,
+          "median": 0,
+          "minimum": 0,
+          "maximum": 0
+        },
+        "rollback_guard_activations": {
+          "mean": 0,
+          "median": 0,
+          "minimum": 0,
+          "maximum": 0
+        },
+        "aggregate_reported_tokens_per_second": {
+          "mean": 59.57811412526697,
+          "median": 59.57811412526697,
+          "minimum": 59.57811412526697,
+          "maximum": 59.57811412526697
+        },
+        "target_only_requests": {
+          "mean": 0,
+          "median": 0,
+          "minimum": 0,
+          "maximum": 0
+        },
+        "target_only_tokens": {
+          "mean": 0,
+          "median": 0,
+          "minimum": 0,
+          "maximum": 0
+        },
+        "fr_target_token_id_prefix_fraction": {
+          "mean": 0.7194899817850637,
+          "median": 0.7194899817850637,
+          "minimum": 0.7194899817850637,
+          "maximum": 0.7194899817850637
+        },
+        "fr_correction_outside_token_id_prefix_fraction": {
+          "mean": 0.7766367137355584,
+          "median": 0.7766367137355584,
+          "minimum": 0.7766367137355584,
+          "maximum": 0.7766367137355584
+        }
+      }
+    },
+    "off-b8": {
+      "model_sha256": "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+      "request": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "num_ctx": 4096,
+        "num_batch": 8,
+        "seed": 42,
+        "warmup_requests": 1,
+        "max_tokens_cap": 256,
+        "template": "manual-qwen-chatml-v1"
+      },
+      "health": {
+        "status": "ok",
+        "version": "1.0.0",
+        "uptime_seconds": 0,
+        "loaded_models": 0,
+        "speculative": {
+          "mode": "off",
+          "draft_max": 6,
+          "mtp_recurrent_snapshots": 6,
+          "mtp_recurrent_chain": false,
+          "mtp_adaptive": false,
+          "mtp_fr_vocab_size": 8192,
+          "draft_min": 0,
+          "draft_p_min": 0.0
+        },
+        "inference": {
+          "gpu_layers": -1,
+          "main_gpu": 0,
+          "tensor_split": [],
+          "num_thread": 10,
+          "flash_attention": false,
+          "num_parallel": 1,
+          "use_mlock": false,
+          "use_mmap": true,
+          "tee_mode": false,
+          "suppress_token_metrics": false
+        }
+      },
+      "runs": [
+        {
+          "repetition": 1,
+          "order_index": 1,
+          "summary": {
+            "mmlu": {
+              "total": 4,
+              "completed": 4,
+              "errors": 0,
+              "correct": 3,
+              "accuracy": 0.75,
+              "strict_correct": 3,
+              "strict_accuracy": 0.75,
+              "truncated": 1,
+              "prediction_missing": 0,
+              "explicit_prediction_missing": 1,
+              "median_latency_seconds": 5.275339499989059,
+              "mean_latency_seconds": 5.984882424992975,
+              "total_latency_seconds": 23.9395296999719,
+              "completion_tokens": 656,
+              "aggregate_completion_tokens_per_second": 27.402376246379227
+            },
+            "gsm8k": {
+              "total": 4,
+              "completed": 4,
+              "errors": 0,
+              "correct": 3,
+              "accuracy": 0.75,
+              "strict_correct": 3,
+              "strict_accuracy": 0.75,
+              "truncated": 1,
+              "prediction_missing": 0,
+              "explicit_prediction_missing": 1,
+              "median_latency_seconds": 5.839959099947009,
+              "mean_latency_seconds": 6.143775299977278,
+              "total_latency_seconds": 24.575101199909113,
+              "completion_tokens": 720,
+              "aggregate_completion_tokens_per_second": 29.297946492389737
+            },
+            "ceval": {
+              "total": 4,
+              "completed": 4,
+              "errors": 0,
+              "correct": 3,
+              "accuracy": 0.75,
+              "strict_correct": 3,
+              "strict_accuracy": 0.75,
+              "truncated": 1,
+              "prediction_missing": 0,
+              "explicit_prediction_missing": 1,
+              "median_latency_seconds": 6.862603749963455,
+              "mean_latency_seconds": 7.035321324976394,
+              "total_latency_seconds": 28.141285299905576,
+              "completion_tokens": 825,
+              "aggregate_completion_tokens_per_second": 29.316358197852754
+            },
+            "overall": {
+              "total": 12,
+              "completed": 12,
+              "errors": 0,
+              "correct": 9,
+              "accuracy": 0.75,
+              "strict_correct": 9,
+              "strict_accuracy": 0.75,
+              "truncated": 3,
+              "prediction_missing": 0,
+              "explicit_prediction_missing": 3,
+              "median_latency_seconds": 5.924646199971903,
+              "mean_latency_seconds": 6.387993016648882,
+              "total_latency_seconds": 76.65591619978659,
+              "completion_tokens": 2201,
+              "aggregate_completion_tokens_per_second": 28.71272184998198
+            }
+          },
+          "speculative_runtime": null
+        }
+      ],
+      "accuracy": {
+        "mean": 0.75,
+        "median": 0.75,
+        "minimum": 0.75,
+        "maximum": 0.75
+      },
+      "strict_accuracy": {
+        "mean": 0.75,
+        "median": 0.75,
+        "minimum": 0.75,
+        "maximum": 0.75
+      },
+      "aggregate_completion_tokens_per_second": {
+        "mean": 28.71272184998198,
+        "median": 28.71272184998198,
+        "minimum": 28.71272184998198,
+        "maximum": 28.71272184998198
+      },
+      "median_latency_seconds": {
+        "mean": 5.924646199971903,
+        "median": 5.924646199971903,
+        "minimum": 5.924646199971903,
+        "maximum": 5.924646199971903
+      },
+      "prediction_stable_tasks": 12,
+      "task_count": 12
+    }
+  },
+  "reports": [
+    {
+      "path": "r01-o01-off-b8.json",
+      "sha256": "86ce4bd3b912b20b90b6c42754500aad341f0b0131b90a88361073354e91b958"
+    },
+    {
+      "path": "r01-o02-fr8192-k6-s6-b8-fixed.json",
+      "sha256": "eb6cdd7b02f196fc3411ca4da8d88bab489bcc98274da18ee88d7ee826c0526d"
+    }
+  ]
+}

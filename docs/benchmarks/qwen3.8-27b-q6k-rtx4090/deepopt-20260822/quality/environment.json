@@ -1,0 +1,50 @@
+﻿{
+    "schema":  "a3s.power.mtp-sweep.environment.v1",
+    "created_at":  "2026-08-22T04:48:03.7143150+00:00",
+    "identity":  {
+                     "power_commit":  "f6326bb05bb8101c2335ec7c3c2f1e261fd86071",
+                     "server_sha256":  "a2b1ef3eab435dca02ca6dc41415f21c91c0f84d424ebfd0c7c589a992c555cc",
+                     "model_sha256":  "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+                     "model_bytes":  22884408288,
+                     "gpu":  [
+                                 "NVIDIA GeForce RTX 4090, 610.74, 24564, 8.9"
+                             ],
+                     "active_power_scheme":  "电源方案 GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (高性能)",
+                     "process_priority":  "High",
+                     "process_affinity_mask":  "0x55555",
+                     "cuda_high_priority":  true,
+                     "repetitions":  1,
+                     "max_tokens_cap":  256,
+                     "config_sha256":  "b4f3db4229bfad05371bbed0ce1fec165aa2b05279405078aa8f7721721abb37",
+                     "tasks_sha256":  "2fd18d52a2e011692c6ffac2547da41ec8b6594e2d35a8aa40fa8648df96b40a",
+                     "selection_sha256":  "7fa39a125714ce311d5a30f3b3b290e85495699bd5ceb38f415dfc49854de630",
+                     "modes":  [
+                                   {
+                                       "label":  "off-b8",
+                                       "spec_mode":  "off",
+                                       "fr_vocab_size":  0,
+                                       "draft_max":  6,
+                                       "recurrent_snapshots":  6,
+                                       "recurrent_chain":  false,
+                                       "num_batch":  8,
+                                       "adaptive":  false
+                                   },
+                                   {
+                                       "label":  "fr8192-k6-s6-b8-fixed",
+                                       "spec_mode":  "mtp",
+                                       "fr_vocab_size":  8192,
+                                       "draft_max":  6,
+                                       "recurrent_snapshots":  6,
+                                       "recurrent_chain":  false,
+                                       "num_batch":  8,
+                                       "adaptive":  false
+                                   }
+                               ]
+                 },
+    "dirty_worktree":  false,
+    "git_status":  [
+
+                   ],
+    "model_path":  "D:\\models\\a3s-power\\qwen38\\full\\Qwen3.8-27B-Q6_K.gguf",
+    "model_file_hash_verified":  true
+}

@@ -338,16 +338,17 @@ so the result establishes workload sensitivity rather than a quality score.
 
 A 2026-08-22 execution-only follow-up kept those exact Q6_K bytes and split
 the policy by workload. The peak profile uses fixed K7/S6, B11, Flash Attention
-off, physical-core affinity, and high-priority CUDA streams. It reached a
-172.252 token/s median and 171.250 minimum under a 5--8% busy Windows desktop;
+off, physical-core affinity, and high-priority CUDA streams. Its clean nine-run
+capture reached a 172.835 token/s median and 171.298 minimum under a 5--8% busy
+Windows desktop;
 the earlier quiet-host 176.6109 median remains the measured high-water mark.
 Disabling CUDA graphs fell to 133.876 token/s, enabling the experimental graph
 optimizer reached only 160.613 token/s, and `CUDA_DEVICE_MAX_CONNECTIONS=32`
 reached 168.900 token/s. Those alternatives were rejected.
 
 The paired mixed-task profile uses fixed K6/S6 and the minimum legal B8 shape.
-At a 256-token cap it reached 49.025 token/s versus 29.381 token/s with
-speculation off, a 66.86% gain, with identical final answers and the same 9/12
+At a 256-token cap it reached 46.923 token/s versus 28.713 token/s with
+speculation off, a 63.42% gain, with identical final answers and the same 9/12
 lenient and strict score in both modes. Proposal acceptance was only 26.81%,
 but the fixed graph emitted 2.591 verified tokens per target pass with no
 replay. Adaptive K reported a higher 50.07% acceptance yet slowed to 35.178

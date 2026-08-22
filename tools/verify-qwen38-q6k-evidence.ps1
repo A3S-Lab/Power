@@ -94,6 +94,22 @@ $purePeakConfigPath = Join-Path $resolvedEvidenceRoot `
   'pure-q6-mtp7-snap6-fr8192-host-staged.acl'
 $pureFullConfigPath = Join-Path $resolvedEvidenceRoot `
   'pure-q6-mtp7-snap7-host-staged.acl'
+$deepPeakReportPath = Join-Path $resolvedEvidenceRoot `
+  'deepopt-20260822\peak\deepopt-final-f6326bb-k7s6-b11-faoff-cudahigh-1024-9x.json'
+$deepPeakEnvironmentPath = Join-Path $resolvedEvidenceRoot `
+  'deepopt-20260822\peak\deepopt-final-f6326bb-k7s6-b11-faoff-cudahigh-1024-9x.environment.json'
+$deepPeakPreflightPath = Join-Path $resolvedEvidenceRoot `
+  'deepopt-20260822\peak\deepopt-final-f6326bb-k7s6-b11-faoff-cudahigh-1024-9x.preflight.json'
+$deepQualityRoot = Join-Path $resolvedEvidenceRoot 'deepopt-20260822\quality'
+$deepQualityEnvironmentPath = Join-Path $deepQualityRoot 'environment.json'
+$deepOffReportPath = Join-Path $deepQualityRoot 'r01-o01-off-b8.json'
+$deepMtpReportPath = Join-Path $deepQualityRoot `
+  'r01-o02-fr8192-k6-s6-b8-fixed.json'
+$deepSweepPath = Join-Path $deepQualityRoot 'sweep.json'
+$deepPeakConfigPath = Join-Path $resolvedEvidenceRoot `
+  'pure-q6-mtp7-snap6-fr8192-rtx4090-throughput.acl'
+$deepGeneralConfigPath = Join-Path $resolvedEvidenceRoot `
+  'pure-q6-mtp6-snap6-fr8192-rtx4090-general.acl'
 
 $expectedHashes = @(
   @{
@@ -165,6 +181,51 @@ $expectedHashes = @(
     Path = $pureFullConfigPath
     Hash = 'EB445101C1E33A035C9B1D120FEC12D9B21E6CE1B2FE5486AD46BEE52878A588'
     Label = 'Pure Q6 K7/S7 full-vocabulary configuration'
+  },
+  @{
+    Path = $deepPeakReportPath
+    Hash = '9D8D767EACCDBEA5C3AD09783556ED940A6D5E66ECFEA482E80B58DB631492CA'
+    Label = 'Deep-optimization peak report'
+  },
+  @{
+    Path = $deepPeakEnvironmentPath
+    Hash = '2C43D2AD8703AEE64051B363FD58735965950BDD6FFFB6607B09660A90934C63'
+    Label = 'Deep-optimization peak environment receipt'
+  },
+  @{
+    Path = $deepPeakPreflightPath
+    Hash = '6CA1259C687A4DD08C3759CC59F3A74FD4A5F7F2A0DEA96A6DE3DA6DF0995C2A'
+    Label = 'Deep-optimization peak preflight receipt'
+  },
+  @{
+    Path = $deepQualityEnvironmentPath
+    Hash = '162C9994B0000FCCAA9269770C1EFD7AA15561761D242E33E8015761D1DCA22B'
+    Label = 'Deep-optimization quality environment receipt'
+  },
+  @{
+    Path = $deepOffReportPath
+    Hash = '86CE4BD3B912B20B90B6C42754500AAD341F0B0131B90A88361073354E91B958'
+    Label = 'Deep-optimization target-only quality report'
+  },
+  @{
+    Path = $deepMtpReportPath
+    Hash = 'EB6CDD7B02F196FC3411CA4DA8D88BAB489BCC98274DA18EE88D7EE826C0526D'
+    Label = 'Deep-optimization MTP quality report'
+  },
+  @{
+    Path = $deepSweepPath
+    Hash = '05F29C83397E664D02563EF45396BFBCFABACA91AE2FBDE853063CF91A9B4E7F'
+    Label = 'Deep-optimization paired quality aggregate'
+  },
+  @{
+    Path = $deepPeakConfigPath
+    Hash = '674D3A36E0F0019C9E39E60994EA40EEE0477615827464EDEE1FB9627A74CDEC'
+    Label = 'Deep-optimization peak configuration'
+  },
+  @{
+    Path = $deepGeneralConfigPath
+    Hash = 'B4F3DB4229BFAD05371BBED0CE1FEC165AA2B05279405078AA8F7721721ABB37'
+    Label = 'Deep-optimization general configuration'
   }
 )
 
@@ -469,6 +530,161 @@ Assert-Equal ([int]$pureFrCalibration.runs[0].summary.overall.correct) 4 `
 Assert-Equal ([int]$pureFrCalibration.runs[0].summary.overall.strict_correct) 3 `
   'Pure Q6 prefix-FR strict score'
 
+$deepCommit = 'f6326bb05bb8101c2335ec7c3c2f1e261fd86071'
+$deepServerSha256 =
+  'a2b1ef3eab435dca02ca6dc41415f21c91c0f84d424ebfd0c7c589a992c555cc'
+$deepPeak = Get-Content -Raw -LiteralPath $deepPeakReportPath |
+  ConvertFrom-Json
+$deepPeakEnvironment = Get-Content -Raw `
+  -LiteralPath $deepPeakEnvironmentPath | ConvertFrom-Json
+$deepPeakPreflight = Get-Content -Raw `
+  -LiteralPath $deepPeakPreflightPath | ConvertFrom-Json
+$deepPeakRates = @($deepPeak.samples.decode_tokens_per_second | Sort-Object)
+$deepPeakEndToEnd = @(
+  $deepPeak.samples.end_to_end_tokens_per_second | Sort-Object
+)
+$deepPeakHashes = @($deepPeak.samples.output_sha256 | Sort-Object -Unique)
+
+Assert-Equal $deepPeak.schema 'a3s.power.speculative-benchmark.v1' `
+  'Deep-optimization peak report schema'
+Assert-Equal $deepPeak.identity.power_commit $deepCommit `
+  'Deep-optimization peak source revision'
+Assert-Equal $deepPeak.identity.model_sha256 $pureModelSha256 `
+  'Deep-optimization peak model identity'
+Assert-Equal ([long]$deepPeak.identity.model_bytes) ([long]22884408288) `
+  'Deep-optimization peak model byte length'
+Assert-Equal ([int]$deepPeak.identity.speculative.draft_max) 7 `
+  'Deep-optimization peak draft width'
+Assert-Equal `
+  ([int]$deepPeak.identity.speculative.mtp_recurrent_snapshots) 6 `
+  'Deep-optimization peak recurrent snapshots'
+Assert-Equal ([int]$deepPeak.identity.speculative.mtp_fr_vocab_size) 8192 `
+  'Deep-optimization peak FR row limit'
+Assert-Equal ([bool]$deepPeak.identity.inference.flash_attention) $false `
+  'Deep-optimization peak Flash Attention mode'
+Assert-Equal ([int]$deepPeak.workload.num_batch) 11 `
+  'Deep-optimization peak batch size'
+Assert-Equal $deepPeakRates.Count 9 'Deep-optimization peak sample count'
+Assert-Near ([double]$deepPeakRates[4]) 172.8353133057359 `
+  'Deep-optimization peak median steady decode'
+Assert-Near ([double]$deepPeakRates[0]) 171.29810355919784 `
+  'Deep-optimization peak minimum steady decode'
+Assert-Near ([double]$deepPeakEndToEnd[4]) 162.7538614545675 `
+  'Deep-optimization peak median end-to-end throughput'
+Assert-Equal @($deepPeakRates | Where-Object { $_ -ge 175 }).Count 1 `
+  'Deep-optimization peak samples at or above 175 token/s'
+Assert-Equal $deepPeakHashes.Count 1 `
+  'Deep-optimization peak unique output identity count'
+Assert-Equal $deepPeak.output_sha256 $pureOutputSha256 `
+  'Deep-optimization peak deterministic output identity'
+
+foreach ($receipt in @($deepPeakEnvironment, $deepPeakPreflight)) {
+  Assert-Equal $receipt.power_commit $deepCommit `
+    'Deep-optimization peak receipt revision'
+  Assert-Equal ([bool]$receipt.dirty_worktree) $false `
+    'Deep-optimization peak clean-worktree state'
+  Assert-Equal $receipt.server.sha256 $deepServerSha256 `
+    'Deep-optimization peak server identity'
+  Assert-Equal $receipt.config.sha256 `
+    '674d3a36e0f0019c9e39e60994ea40eee0477615827464edee1fb9627a74cdec' `
+    'Deep-optimization peak configuration identity'
+  Assert-Equal ([bool]$receipt.gpu.cuda_high_priority) $true `
+    'Deep-optimization peak CUDA stream priority'
+  Assert-Equal ([int]$receipt.gpu.maximum_observed_idle_utilization_percent) 7 `
+    'Deep-optimization peak observed idle utilization'
+}
+Assert-Equal $deepPeakEnvironment.process_affinity.requested_mask '0x55555' `
+  'Deep-optimization peak requested processor affinity'
+Assert-Equal $deepPeakEnvironment.process_affinity.effective_mask '0x55555' `
+  'Deep-optimization peak effective processor affinity'
+Assert-Equal ([int]$deepPeakEnvironment.gpu.clock_lock_mhz) 2745 `
+  'Deep-optimization peak GPU clock lock'
+
+$deepQualityEnvironment = Get-Content -Raw `
+  -LiteralPath $deepQualityEnvironmentPath | ConvertFrom-Json
+$deepSweep = Get-Content -Raw -LiteralPath $deepSweepPath | ConvertFrom-Json
+$deepOffReport = Get-Content -Raw -LiteralPath $deepOffReportPath |
+  ConvertFrom-Json
+$deepMtpReport = Get-Content -Raw -LiteralPath $deepMtpReportPath |
+  ConvertFrom-Json
+$deepOffMode = $deepSweep.modes.'off-b8'
+$deepMtpMode = $deepSweep.modes.'fr8192-k6-s6-b8-fixed'
+
+Assert-Equal $deepQualityEnvironment.identity.power_commit $deepCommit `
+  'Deep-optimization quality source revision'
+Assert-Equal $deepQualityEnvironment.identity.server_sha256 $deepServerSha256 `
+  'Deep-optimization quality server identity'
+Assert-Equal $deepQualityEnvironment.identity.model_sha256 $pureModelSha256 `
+  'Deep-optimization quality model identity'
+Assert-Equal ([bool]$deepQualityEnvironment.dirty_worktree) $false `
+  'Deep-optimization quality clean-worktree state'
+Assert-Equal ([bool]$deepQualityEnvironment.model_file_hash_verified) $true `
+  'Deep-optimization quality model hash verification'
+Assert-Equal $deepQualityEnvironment.identity.process_affinity_mask '0x55555' `
+  'Deep-optimization quality processor affinity'
+Assert-Equal ([bool]$deepQualityEnvironment.identity.cuda_high_priority) $true `
+  'Deep-optimization quality CUDA stream priority'
+Assert-Equal $deepQualityEnvironment.identity.config_sha256 `
+  'b4f3db4229bfad05371bbed0ce1fec165aa2b05279405078aa8f7721721abb37' `
+  'Deep-optimization quality configuration identity'
+Assert-Equal ([int]$deepQualityEnvironment.identity.max_tokens_cap) 256 `
+  'Deep-optimization quality output cap'
+Assert-Equal @($deepQualityEnvironment.identity.modes).Count 2 `
+  'Deep-optimization quality mode count'
+
+foreach ($mode in @($deepOffMode, $deepMtpMode)) {
+  Assert-Equal $mode.model_sha256 $pureModelSha256 `
+    'Deep-optimization quality mode model identity'
+  Assert-Equal ([int]$mode.request.num_batch) 8 `
+    'Deep-optimization quality batch size'
+  Assert-Equal ([int]$mode.request.max_tokens_cap) 256 `
+    'Deep-optimization quality request output cap'
+  Assert-Equal ([int]$mode.task_count) 12 `
+    'Deep-optimization quality task count'
+  Assert-Equal ([int]$mode.runs[0].summary.overall.completed) 12 `
+    'Deep-optimization quality completed task count'
+  Assert-Equal ([int]$mode.runs[0].summary.overall.errors) 0 `
+    'Deep-optimization quality error count'
+  Assert-Equal ([int]$mode.runs[0].summary.overall.correct) 9 `
+    'Deep-optimization quality lenient score'
+  Assert-Equal ([int]$mode.runs[0].summary.overall.strict_correct) 9 `
+    'Deep-optimization quality strict score'
+  Assert-Equal ([int]$mode.runs[0].summary.overall.truncated) 3 `
+    'Deep-optimization quality truncated task count'
+}
+Assert-Near ([double]$deepOffMode.aggregate_completion_tokens_per_second.mean) `
+  28.71272184998198 'Deep-optimization target-only throughput'
+Assert-Near ([double]$deepMtpMode.aggregate_completion_tokens_per_second.mean) `
+  46.92338764288924 'Deep-optimization MTP throughput'
+Assert-Near `
+  ([double]$deepMtpMode.speculative_runtime.weighted_acceptance_rate.mean) `
+  0.26814756049186833 'Deep-optimization MTP proposal acceptance'
+Assert-Near `
+  ([double]$deepMtpMode.speculative_runtime.verified_tokens_per_target_pass.mean) `
+  2.5912322274881516 'Deep-optimization verified tokens per target pass'
+Assert-Near ([double]$deepMtpMode.speculative_runtime.fallback_replays.mean) `
+  0.0 'Deep-optimization MTP fallback replays'
+
+$samePredictions = 0
+$sameContent = 0
+foreach ($offResult in @($deepOffReport.results)) {
+  $mtpResult = @($deepMtpReport.results | Where-Object {
+      $_.id -ceq $offResult.id
+    })
+  Assert-Equal $mtpResult.Count 1 `
+    "Deep-optimization paired result $($offResult.id)"
+  if ($offResult.prediction -ceq $mtpResult[0].prediction) {
+    $samePredictions++
+  }
+  if ($offResult.content_sha256 -ceq $mtpResult[0].content_sha256) {
+    $sameContent++
+  }
+}
+Assert-Equal $samePredictions 12 `
+  'Deep-optimization paired final-answer identity count'
+Assert-Equal $sameContent 8 `
+  'Deep-optimization paired full-content identity count'
+
 $completedRequests = [int]$current.workload.tasks *
   [int]$current.workload.repetitions * $currentModes.Count
 $result = [ordered]@{
@@ -512,6 +728,35 @@ $result = [ordered]@{
       prefix_fr8192_tokens_per_second =
         [double]$pureFrCalibration.aggregate_completion_tokens_per_second.mean
       truncated_tasks_per_mode = 11
+    }
+  }
+  deep_optimization = [ordered]@{
+    power_commit = $deepCommit
+    peak = [ordered]@{
+      median_decode_tokens_per_second = [double]$deepPeakRates[4]
+      minimum_decode_tokens_per_second = [double]$deepPeakRates[0]
+      samples_at_or_above_175 = @(
+        $deepPeakRates | Where-Object { $_ -ge 175 }
+      ).Count
+      cuda_high_priority = $true
+      observed_idle_gpu_utilization_percent = 7
+    }
+    general = [ordered]@{
+      target_only_tokens_per_second =
+        [double]$deepOffMode.aggregate_completion_tokens_per_second.mean
+      mtp_tokens_per_second =
+        [double]$deepMtpMode.aggregate_completion_tokens_per_second.mean
+      speedup_percent = (
+        ([double]$deepMtpMode.aggregate_completion_tokens_per_second.mean /
+          [double]$deepOffMode.aggregate_completion_tokens_per_second.mean) - 1.0
+      ) * 100.0
+      weighted_acceptance_rate =
+        [double]$deepMtpMode.speculative_runtime.weighted_acceptance_rate.mean
+      verified_tokens_per_target_pass =
+        [double]$deepMtpMode.speculative_runtime.verified_tokens_per_target_pass.mean
+      paired_final_answers = $samePredictions
+      paired_full_content = $sameContent
+      fallback_replays = 0
     }
   }
   deterministic_output_sha256 = $s7Gate.output_sha256

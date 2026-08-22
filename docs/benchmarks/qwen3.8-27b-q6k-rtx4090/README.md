@@ -18,8 +18,8 @@ that cell.
 | Artifact and runtime mode | Quality proxy | Request-wide throughput | Median steady decode | Interpretation |
 | --- | --- | ---: | ---: | --- |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) | Current fixed-task baseline; steady column is a separate historical shape |
-| **Untouched Q6_K + prefix-FR8192 MTP, fixed K6/S6, B8** | 9/12 lenient and strict in both off/MTP modes (1x; 3 truncated) | **49.025 token/s** | -- | General short-task profile; 66.86% faster than its 29.381 token/s paired off control |
-| **Untouched Q6_K + prefix-FR8192 MTP, fixed K7/S6, B11, high-priority CUDA** | Same fixed-prompt digest as the controls | -- | **172.252 token/s** under a contended desktop | Current peak profile; the earlier quiet-host capture remains 176.6109 token/s |
+| **Untouched Q6_K + prefix-FR8192 MTP, fixed K6/S6, B8** | 9/12 lenient and strict in both off/MTP modes (1x; 3 truncated) | **46.923 token/s** | -- | General short-task profile; 63.42% faster than its 28.713 token/s paired off control |
+| **Untouched Q6_K + prefix-FR8192 MTP, fixed K7/S6, B11, high-priority CUDA** | Same fixed-prompt digest as the controls | -- | **172.835 token/s** under a contended desktop | Current clean 9x peak profile; the earlier quiet-host capture remains 176.6109 token/s |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact parity on the fixed peak prompt | -- | 147.0207 token/s | Current balanced steady-decode control |
 | Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x; 11 truncated) | **47.032 token/s** | -- | Current small mixed-workload calibration winner |
 | **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x; 11 truncated) | 37.290 token/s | **176.6109 token/s** | Peak-only profile; proposal coverage is workload-sensitive |
@@ -49,17 +49,22 @@ Only execution shape and scheduling changed.
 All rows below used K7/S6, prefix-FR8192, one warm-up, three measured
 1,024-token greedy requests, ten physical-core threads (`0x55555`), and the
 same output SHA-256 `a54538ea...90523`. The shared Windows desktop reported
-roughly 5--8% GPU utilization before these captures.
+roughly 5--8% GPU utilization before these captures. The final row uses nine
+measured requests from clean commit `f6326bb05bb8101c2335ec7c3c2f1e261fd86071`.
 
 | Shape or scheduler | Median decode | Minimum | Result |
 | --- | ---: | ---: | --- |
 | Previous B14, Flash Attention on, ordinary CUDA streams | 160.932 token/s | 160.706 token/s | Loaded-desktop control |
 | B11, Flash Attention off, rebuilt ordinary streams | 170.184 token/s | 166.895 token/s | Stable graph-shape and kernel-path gain |
 | B11, Flash Attention off, high-priority CUDA streams, first order | 171.854 token/s | 168.920 token/s | Peak sample 174.452 token/s |
-| B11, Flash Attention off, high-priority CUDA streams, reverse order | **172.252 token/s** | **171.250 token/s** | Best current contended-desktop repeat |
+| B11, Flash Attention off, high-priority CUDA streams, reverse order | 172.252 token/s | 171.250 token/s | Development repeat |
+| [B11, Flash Attention off, high-priority CUDA streams, clean 9x](deepopt-20260822/peak/deepopt-final-f6326bb-k7s6-b11-faoff-cudahigh-1024-9x.json) | **172.835 token/s** | **171.298 token/s** | Final clean capture; peak sample 175.533 token/s |
 | B11 with CUDA graphs disabled | 133.876 token/s | -- | Rejected; graph launch reuse is essential |
 | B11 with `GGML_CUDA_GRAPH_OPT=1` | 160.613 token/s | -- | Rejected; extra concurrent-graph work regressed this hybrid model |
 | B11 with `CUDA_DEVICE_MAX_CONNECTIONS=32` | 168.900 token/s | -- | Rejected; CUDA's default connection count was faster |
+
+The clean peak evidence includes the [environment receipt](deepopt-20260822/peak/deepopt-final-f6326bb-k7s6-b11-faoff-cudahigh-1024-9x.environment.json)
+and [preflight receipt](deepopt-20260822/peak/deepopt-final-f6326bb-k7s6-b11-faoff-cudahigh-1024-9x.preflight.json).
 
 The default CUDA graph implementation is therefore retained. B11 is the
 selected fixed verification capacity for K7: one anchor plus seven proposals
@@ -86,12 +91,16 @@ high-priority CUDA streams:
 
 | Mode | Request-wide throughput | Draft acceptance | Verified tokens / target pass | Score | Replays |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Speculation off, B8 | 29.381 token/s | -- | -- | 9/12 lenient and strict | -- |
-| Fixed prefix-FR8192 K6/S6, B8 | **49.025 token/s** | 26.81% | 2.591 | 9/12 lenient and strict | 0 |
+| [Speculation off, B8](deepopt-20260822/quality/r01-o01-off-b8.json) | 28.713 token/s | -- | -- | 9/12 lenient and strict | -- |
+| [Fixed prefix-FR8192 K6/S6, B8](deepopt-20260822/quality/r01-o02-fr8192-k6-s6-b8-fixed.json) | **46.923 token/s** | 26.81% | 2.591 | 9/12 lenient and strict | 0 |
 | Fixed prefix-FR8192 K7/S6, B11 | 40.095 token/s | 24.90% | 2.490 | 9/12 lenient; 9/12 strict | 12 |
 | Adaptive prefix-FR8192 K7/S6, B11 | 35.178 token/s | 50.07% | 2.529 | 8/12 lenient and strict | 0 |
 
-K6/S6 B8 was 66.86% faster than its paired target-only control, retained all
+The clean paired [aggregate](deepopt-20260822/quality/sweep.json) and
+[environment receipt](deepopt-20260822/quality/environment.json) bind the task
+selection, server, model, ACL, affinity, and CUDA stream priority.
+
+K6/S6 B8 was 63.42% faster than its paired target-only control, retained all
 12 final answers, and matched the score; eight of twelve complete response
 digests were identical. The remaining content differences are expected
 floating-point trajectory differences between serial and batched target
@@ -118,7 +127,7 @@ target pass divided by draft, verification, synchronization, and sampling
 time. On the peak prompt K7 already accepts 96.64% of proposals and emits 7.75
 tokens per target pass, leaving only about 3.2% perfect-acceptance headroom.
 The remaining stable-175 gap on this machine is host contention: the current
-software reaches 170--174 token/s with a 5--8% busy WDDM desktop, while the
+software reaches 171--176 token/s with a 5--8% busy WDDM desktop, while the
 earlier quiet-host run reached a 176.611 token/s median. A defensible 175+
 service floor therefore requires a quiet/dedicated GPU or headless compute
 host; it cannot be guaranteed by another inference flag.
@@ -537,8 +546,9 @@ minimum, and 3.0834x speedup with `draft_max=6` and `num_batch=8`.
   count and slowed decoding.
 - The 2026-08-22 B9--B16 peak sweep supersedes the earlier batch-14 guidance.
   B11 was the stable K7 CUDA graph shape: on 1,024-token repeats it composed
-  with Flash Attention off and high-priority CUDA streams to reach a 172.252
-  token/s median under desktop contention. The mixed-task K6 profile instead
+  with Flash Attention off and high-priority CUDA streams to reach a 172.835
+  token/s clean nine-run median under desktop contention. The mixed-task K6
+  profile instead
   uses the minimum legal B8 shape; B8 and B10 differed by only 0.17% across a
   two-order 256-token sweep.
 - Flash Attention is now profile-specific. Disabling it for the K7/B11
@@ -550,8 +560,8 @@ minimum, and 3.0834x speedup with `draft_max=6` and `num_batch=8`.
   pending row swaps, ruling out CPU vocabulary row reordering as the hot spot.
 - CUDA graphs remain enabled: disabling them fell to 133.876 token/s, while
   `GGML_CUDA_GRAPH_OPT=1` regressed to 160.613 token/s. A reviewed optional
-  high-priority-stream patch improved the current contended reverse-order
-  repeat to 172.252 token/s median and 171.250 minimum. This mitigates WDDM
+  high-priority-stream patch produced a 172.835 token/s median and 171.298
+  minimum in the clean nine-run capture. This mitigates WDDM
   tail latency but does not reserve the physical GPU from other processes.
 - Ranked reduced-vocabulary follow-ups did not recover representative
   throughput. A 65,536-row candidate reached 69.264 token/s at 43.2% draft
@@ -591,6 +601,12 @@ minimum, and 3.0834x speedup with `draft_max=6` and `num_batch=8`.
 | ModelScope mirror revision | `3bce06d3ab9ceadbca9f5b7f496adbf6835b2f08` |
 | GGUF byte length | `22884408288` |
 | GGUF SHA-256 | `562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727` |
+| Deep-optimization Power commit | `f6326bb05bb8101c2335ec7c3c2f1e261fd86071` |
+| Deep-optimization server SHA-256 | `a2b1ef3eab435dca02ca6dc41415f21c91c0f84d424ebfd0c7c589a992c555cc` |
+| Clean peak report SHA-256 | `9d8d767eaccdbea5c3ad09783556ed940a6d5e66ecfea482e80b58db631492ca` |
+| Clean peak environment SHA-256 | `2c43d2ad8703aee64051b363fd58735965950bdd6fffb6607b09660a90934c63` |
+| Clean peak preflight SHA-256 | `6ca1259c687a4dd08c3759cc59f3a74fd4a5f7f2a0dea96a6de3da6df0995c2a` |
+| Clean general paired sweep SHA-256 | `05f29c83397e664d02563ef45396bfbcfabaca91ae2fbde853063cf91a9b4e7f` |
 | Optimized GGUF byte length | `19187686464` |
 | Optimized GGUF SHA-256 | `5f578b395f61dcaac9698fe222d988f461fd902ce9494e8a06d8b9aae4e7e2a6` |
 | Final affinity server SHA-256 | `3e7b990c511934a35e2886e73742846901e9dcdefa02a7324592a78aa4a5b24f` |

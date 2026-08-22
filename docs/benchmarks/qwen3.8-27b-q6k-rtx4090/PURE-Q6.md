@@ -138,6 +138,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\verify-qwen38-q6k-evidence.ps1 -Json
 ```
 
-A passing result reports `verified_file_hashes: 14`, the 176.6109 token/s
-pure-Q6_K peak, the 147.0207 token/s full-vocabulary control, and all three
+A passing result reports `verified_file_hashes: 23`, the historical 176.6109
+token/s quiet-host peak, the clean 172.8353 token/s contended-host peak, the
+147.0207 token/s full-vocabulary control, and both historical and current
 request-wide calibration rates.

@@ -18,21 +18,23 @@ host; do not copy them to a different topology without a new A/B measurement.
 | --- | --- |
 | Model | Untouched Q6_K GGUF, 22,884,408,288 bytes |
 | Model SHA-256 | `562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727` |
-| Clean source revision | `eb6aeda59561eff3e4e7592704cab6fc863b72c7` |
-| Workload | 1 warm-up, 9 measured requests, 1,024 generated tokens each, batch 14 |
+| Clean source revision | `f6326bb05bb8101c2335ec7c3c2f1e261fd86071` |
+| Workload | 1 warm-up, 9 measured requests, 1,024 generated tokens each, batch 11 |
 | Full-vocabulary K7/S7 control | 147.0207 token/s median; 146.0917 minimum |
-| Prefix-FR8192 K7/S6 peak | **176.6109 token/s median**; 173.2630 minimum; 7 / 9 at least 175 |
-| Peak median end to end | 167.3519 token/s |
+| Current prefix-FR8192 K7/S6 peak | **172.8353 token/s median**; 171.2981 minimum; 1 / 9 at least 175 under WDDM contention |
+| Earlier quiet-host prefix-FR8192 peak | **176.6109 token/s median**; 173.2630 minimum; 7 / 9 at least 175 |
+| Current peak median end to end | 162.7539 token/s |
 | Output SHA-256 | `a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523` |
-| Peak report | [`pure-q6-fr8192-1024-9x.json`](pure-q6-fr8192-1024-9x.json) |
+| Peak report | [`deepopt-20260822/peak/...1024-9x.json`](deepopt-20260822/peak/deepopt-final-f6326bb-k7s6-b11-faoff-cudahigh-1024-9x.json) |
 | Full-vocabulary report | [`pure-q6-full-vocabulary-1024-9x.json`](pure-q6-full-vocabulary-1024-9x.json) |
 
 Prefix-FR8192 is a peak profile for measured high-coverage workloads. The
 current full head uses target-token-ID order rather than a corpus-frequency
-`d2t` map. On the checked-in 12-task calibration, full-vocabulary K7/S6 was
-faster request-wide than prefix FR, so full vocabulary remains the balanced
-choice. The [pure-Q6_K report](PURE-Q6.md) separates that real-workload result
-from the long repetitive steady-decode gate.
+`d2t` map. The current checked-in 12-task K6/S6/B8 pair reached 46.923 token/s
+versus 28.713 token/s without speculation, but it is too small to replace the
+full-vocabulary 100-task matrix as the balanced quality evidence. The
+[pure-Q6_K report](PURE-Q6.md) separates real-workload results from the long
+repetitive steady-decode gate.
 
 ## Previous mixed-artifact acceptance targets
 
@@ -321,7 +323,7 @@ contention from other WDDM clients on a shared display GPU.
 ## 4. Verify the archived performance evidence offline
 
 Run the checked-in verifier first. It requires neither the model nor an NVIDIA
-GPU, verifies 14 pinned file hashes, and recomputes the pure-Q6_K and mixed
+GPU, verifies 23 pinned file hashes, and recomputes the pure-Q6_K and mixed
 quality, workload, steady-decode, and deterministic-output values:
 
 ```powershell
@@ -333,7 +335,7 @@ A passing run exits with code zero and reports `"status": "passed"`, including:
 
 ```json
 {
-  "verified_file_hashes": 14,
+  "verified_file_hashes": 23,
   "pure_q6": {
     "full_vocabulary_k7_s7_median": 147.020656574707,
     "prefix_fr8192_k7_s6_median": 176.6108685085471,
@@ -342,6 +344,19 @@ A passing run exits with code zero and reports `"status": "passed"`, including:
       "autoregressive_tokens_per_second": 29.712723837098697,
       "full_vocabulary_tokens_per_second": 47.03236986836804,
       "prefix_fr8192_tokens_per_second": 37.29003139316878
+    }
+  },
+  "deep_optimization": {
+    "peak": {
+      "median_decode_tokens_per_second": 172.8353133057359,
+      "minimum_decode_tokens_per_second": 171.29810355919784
+    },
+    "general": {
+      "target_only_tokens_per_second": 28.71272184998198,
+      "mtp_tokens_per_second": 46.92338764288924,
+      "speedup_percent": 63.4236833695329,
+      "paired_final_answers": 12,
+      "fallback_replays": 0
     }
   }
 }
@@ -446,7 +461,7 @@ $sweepArgs = @{
 ```
 
 The expected labels are `off-b8` and `fr8192-k6-s6-b8-fixed`. The 2026-08-22
-capture completed all 24 requests without error, measured 29.381 and 49.025
+capture completed all 24 requests without error, measured 28.713 and 46.923
 token/s request-wide, retained all 12 final answers, scored 9/12 in both modes,
 and recorded zero MTP replay. Three tasks per mode reached the 256-token cap;
 this remains a calibration rather than a general intelligence score.
@@ -481,7 +496,7 @@ following checks on 2026-08-22:
 | Python harness tests | 28 passed, 0 failed |
 | Rust formatting | Passed |
 | PowerShell syntax | 5 changed scripts and 17 documentation blocks parsed |
-| Benchmark evidence | One-command verifier passed; pure-Q6_K and mixed assertions plus 14 pinned file hashes verified |
+| Benchmark evidence | One-command verifier passed; historical and deep-optimization assertions plus 23 pinned file hashes verified |
 | Quality archive | 900-request historical matrix plus 24-request current paired calibration completed without request errors |
 | Documentation links | All local links in changed documents resolved, 0 missing |
 

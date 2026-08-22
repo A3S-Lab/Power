@@ -1,0 +1,120 @@
+{
+    "schema":  "a3s.power.speculative-benchmark.preflight.v1",
+    "created_at":  "2026-08-22T04:46:02.1739465+00:00",
+    "passed":  true,
+    "failure":  null,
+    "power_commit":  "f6326bb05bb8101c2335ec7c3c2f1e261fd86071",
+    "dirty_worktree":  false,
+    "git_status":  [
+
+                   ],
+    "requirements":  {
+                         "clean_tree":  true,
+                         "high_performance_power_plan":  true,
+                         "expected_exclusive_backend":  "llama.cpp"
+                     },
+    "active_power_scheme":  "电源方案 GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (高性能)",
+    "server":  {
+                   "path":  "D:\\code\\a3s\\crates\\power\\target-native-sm89-ninja\\release\\a3s-power.exe",
+                   "sha256":  "a2b1ef3eab435dca02ca6dc41415f21c91c0f84d424ebfd0c7c589a992c555cc"
+               },
+    "benchmark_client":  {
+                             "path":  "D:\\code\\a3s\\crates\\power\\target-native-sm89-ninja\\release\\a3s-power-speculative-bench.exe",
+                             "sha256":  "7e1c4a884a4c87f7f858770eb59d1b398df0610184b7e0e3d8327b7cc240eb3f"
+                         },
+    "config":  {
+                   "path":  "D:\\code\\a3s\\crates\\power\\docs\\benchmarks\\qwen3.8-27b-q6k-rtx4090\\pure-q6-mtp7-snap6-fr8192-rtx4090-throughput.acl",
+                   "sha256":  "674d3a36e0f0019c9e39e60994ea40eee0477615827464edee1fb9627a74cdec"
+               },
+    "prompt":  {
+                   "path":  "D:\\code\\a3s\\crates\\power\\docs\\benchmarks\\qwen3.8-27b-q6k-rtx4090\\prompt.txt",
+                   "sha256":  "d95a5e4dad822ba9c84138f7a120017318bcb3a6a90e77246a8ec4ede0e65d89"
+               },
+    "model":  {
+                  "name":  "qwen3.8-27b-q6-k",
+                  "sha256":  "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727"
+              },
+    "gpu":  {
+                "provider":  "nvidia",
+                "cuda_high_priority":  true,
+                "indices":  [
+                                0
+                            ],
+                "requested_clock_lock_mhz":  2745,
+                "clock_lock_applied_indices":  [
+                                                   0
+                                               ],
+                "maximum_idle_utilization_percent":  8,
+                "idle_sample_count":  3,
+                "idle_sample_interval_milliseconds":  500,
+                "idle_window_duration_milliseconds":  1000,
+                "observed_idle_window_started_at":  "2026-08-22T04:46:00.3050639+00:00",
+                "observed_idle_window_completed_at":  "2026-08-22T04:46:01.7446820+00:00",
+                "observed_idle_window_duration_milliseconds":  1432,
+                "maximum_observed_idle_utilization_percent":  7,
+                "idle_utilization_samples":  [
+                                                 {
+                                                     "sample":  0,
+                                                     "gpu_index":  0,
+                                                     "utilization_percent":  7,
+                                                     "observed_at":  "2026-08-22T04:46:00.4827730+00:00"
+                                                 },
+                                                 {
+                                                     "sample":  1,
+                                                     "gpu_index":  0,
+                                                     "utilization_percent":  7,
+                                                     "observed_at":  "2026-08-22T04:46:01.1173927+00:00"
+                                                 },
+                                                 {
+                                                     "sample":  2,
+                                                     "gpu_index":  0,
+                                                     "utilization_percent":  6,
+                                                     "observed_at":  "2026-08-22T04:46:01.7414377+00:00"
+                                                 }
+                                             ],
+                "nvidia_smi":  [
+                                   "0, NVIDIA GeForce RTX 4090, 610.74, P0, 2550, 3105, 450.00, 32, 24564"
+                               ],
+                "process_snapshot":  [
+                                         "Sat Aug 22 12:46:02 2026       ",
+                                         "+-----------------------------------------------------------------------------------------+",
+                                         "| NVIDIA-SMI 610.74                 KMD Version: 610.74        CUDA UMD Version: 13.3     |",
+                                         "+-----------------------------------------+------------------------+----------------------+",
+                                         "| GPU  Name                  Driver-Model | Bus-Id          Disp.A | Volatile Uncorr. ECC |",
+                                         "| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |",
+                                         "|                                         |                        |               MIG M. |",
+                                         "|=========================================+========================+======================|",
+                                         "|   0  NVIDIA GeForce RTX 4090      WDDM  |   00000000:BC:00.0 Off |                  Off |",
+                                         "| 31%   32C    P0             55W /  450W |     931MiB /  24564MiB |      7%      Default |",
+                                         "|                                         |                        |                  N/A |",
+                                         "+-----------------------------------------+------------------------+----------------------+",
+                                         "",
+                                         "+-----------------------------------------------------------------------------------------+",
+                                         "| Processes:                                                                              |",
+                                         "|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |",
+                                         "|        ID   ID                                                               Usage      |",
+                                         "|=========================================================================================|",
+                                         "|    0   N/A  N/A            1840    C+G   C:\\Windows\\System32\\WUDFHost.exe      N/A      |",
+                                         "|    0   N/A  N/A            2140    C+G   C:\\Windows\\System32\\dwm.exe           N/A      |",
+                                         "|    0   N/A  N/A            7676    C+G   ...ewer\\bin\\GameViewerServer.exe      N/A      |",
+                                         "|    0   N/A  N/A            9708    C+G   ...IA App\\CEF\\NVIDIA Overlay.exe      N/A      |",
+                                         "|    0   N/A  N/A           11608    C+G   ...t\\Edge\\Application\\msedge.exe      N/A      |",
+                                         "|    0   N/A  N/A           14552    C+G   ...IA App\\CEF\\NVIDIA Overlay.exe      N/A      |",
+                                         "|    0   N/A  N/A           17584    C+G   ...crosoft shared\\ink\\TabTip.exe      N/A      |",
+                                         "|    0   N/A  N/A           17868    C+G   ...ffice6\\promecefpluginhost.exe      N/A      |",
+                                         "|    0   N/A  N/A           20284    C+G   ....0.4129.59\\msedgewebview2.exe      N/A      |",
+                                         "|    0   N/A  N/A           20812    C+G   ...yb3d8bbwe\\WindowsTerminal.exe      N/A      |",
+                                         "|    0   N/A  N/A           25324    C+G   ...yb3d8bbwe\\WindowsTerminal.exe      N/A      |",
+                                         "|    0   N/A  N/A           29740    C+G   ...8bbwe\\PhoneExperienceHost.exe      N/A      |",
+                                         "|    0   N/A  N/A           95796    C+G   ...crosoft shared\\ink\\TabTip.exe      N/A      |",
+                                         "|    0   N/A  N/A          103972    C+G   ....0.4129.59\\msedgewebview2.exe      N/A      |",
+                                         "|    0   N/A  N/A          105816    C+G   ...y\\StartMenuExperienceHost.exe      N/A      |",
+                                         "|    0   N/A  N/A          108712    C+G   ..._cw5n1h2txyewy\\SearchHost.exe      N/A      |",
+                                         "|    0   N/A  N/A          109544    C+G   ...xyewy\\ShellExperienceHost.exe      N/A      |",
+                                         "|    0   N/A  N/A          111692    C+G   ...ffice6\\promecefpluginhost.exe      N/A      |",
+                                         "|    0   N/A  N/A          114668    C+G   ...5n1h2txyewy\\TextInputHost.exe      N/A      |",
+                                         "|    0   N/A  N/A          116416    C+G   C:\\Windows\\explorer.exe               N/A      |",
+                                         "+-----------------------------------------------------------------------------------------+"
+                                     ]
+            }
+}
