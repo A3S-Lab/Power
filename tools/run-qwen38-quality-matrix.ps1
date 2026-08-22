@@ -29,6 +29,24 @@ param(
 
     [UInt64]$ProcessorAffinityMask = 0,
 
+    [ValidateScript({ $_ -ge 0 })]
+    [int]$NvidiaGpuIndex = 0,
+
+    [ValidateRange(0, 100)]
+    [int]$MaximumIdleGpuUtilizationPercent = 100,
+
+    [ValidateRange(0, 262144)]
+    [int]$MinimumIdleGpuMemoryFreeMiB = 0,
+
+    [ValidateRange(1, 120)]
+    [int]$IdleGpuSampleCount = 3,
+
+    [ValidateRange(100, 60000)]
+    [int]$IdleGpuSampleIntervalMilliseconds = 500,
+
+    [ValidateRange(1, 300)]
+    [int]$IdleGpuWaitSeconds = 60,
+
     [string]$TargetDirectory = 'target-native-sm89-ninja',
 
     [string]$OutputRoot = 'target-qwen38-quality',
@@ -185,6 +203,75 @@ function Get-ModelIdentity {
     }
 }
 
+function Wait-NvidiaGpuIdleAdmission {
+    $nvidiaSmi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+    if (-not $nvidiaSmi) {
+        throw 'nvidia-smi.exe is required for the quality benchmark GPU admission gate'
+    }
+
+    $startedAt = [DateTimeOffset]::UtcNow
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $accepted = [System.Collections.Generic.List[object]]::new()
+    $observedSamples = 0
+    $lastSample = $null
+    while ($stopwatch.Elapsed.TotalSeconds -lt $IdleGpuWaitSeconds) {
+        $lines = @(& $nvidiaSmi.Source `
+            "--id=$NvidiaGpuIndex" `
+            '--query-gpu=index,utilization.gpu,memory.free' `
+            '--format=csv,noheader,nounits')
+        if ($LASTEXITCODE -ne 0 -or $lines.Count -ne 1) {
+            throw "Failed to sample NVIDIA GPU $NvidiaGpuIndex for idle admission"
+        }
+        $fields = @($lines[0].Split(',') | ForEach-Object { $_.Trim() })
+        if ($fields.Count -ne 3) {
+            throw "NVIDIA GPU $NvidiaGpuIndex returned malformed idle telemetry"
+        }
+        $reportedIndex = 0
+        $utilization = 0
+        $memoryFree = 0
+        if (-not [int]::TryParse($fields[0], [ref]$reportedIndex) -or
+            -not [int]::TryParse($fields[1], [ref]$utilization) -or
+            -not [int]::TryParse($fields[2], [ref]$memoryFree)) {
+            throw "NVIDIA GPU $NvidiaGpuIndex returned non-numeric idle telemetry"
+        }
+        if ($reportedIndex -ne $NvidiaGpuIndex) {
+            throw "NVIDIA GPU index mismatch: requested $NvidiaGpuIndex, got $reportedIndex"
+        }
+
+        $observedSamples++
+        $lastSample = [pscustomobject][ordered]@{
+            observed_at = [DateTimeOffset]::UtcNow.ToString('o')
+            gpu_index = $reportedIndex
+            utilization_percent = $utilization
+            memory_free_mib = $memoryFree
+        }
+        if ($utilization -le $MaximumIdleGpuUtilizationPercent -and
+            $memoryFree -ge $MinimumIdleGpuMemoryFreeMiB) {
+            $accepted.Add($lastSample)
+        } else {
+            $accepted.Clear()
+        }
+        if ($accepted.Count -eq $IdleGpuSampleCount) {
+            $stopwatch.Stop()
+            return [ordered]@{
+                started_at = $startedAt.ToString('o')
+                completed_at = [DateTimeOffset]::UtcNow.ToString('o')
+                elapsed_milliseconds = [int64]$stopwatch.ElapsedMilliseconds
+                observed_sample_count = $observedSamples
+                accepted_samples = $accepted.ToArray()
+            }
+        }
+        Start-Sleep -Milliseconds $IdleGpuSampleIntervalMilliseconds
+    }
+
+    $last = if ($lastSample) {
+        "$($lastSample.utilization_percent)% utilization, $($lastSample.memory_free_mib) MiB free"
+    } else {
+        'no valid sample'
+    }
+    throw "NVIDIA GPU $NvidiaGpuIndex did not satisfy the idle gate within $IdleGpuWaitSeconds seconds; last sample: $last"
+}
+
 function Invoke-Python {
     param([string[]]$Arguments)
 
@@ -231,6 +318,15 @@ function Invoke-ModeRun {
     $stderr = Join-Path $output "$runStem.stderr.log"
     $report = Join-Path $output "$runStem.json"
     $process = $null
+
+    $admission = Wait-NvidiaGpuIdleAdmission
+    $script:gpuAdmissions += [ordered]@{
+        run = $runStem
+        admission = $admission
+    }
+    $environment.gpu_admissions = @($script:gpuAdmissions)
+    $environment | ConvertTo-Json -Depth 8 |
+        Set-Content -LiteralPath $environmentPath -Encoding utf8
 
     if ($ReuseCompatible -and (Test-Path -LiteralPath $report -PathType Leaf)) {
         try {
@@ -505,6 +601,15 @@ $environment = [ordered]@{
         }
         logical_processor_count = [Environment]::ProcessorCount
     }
+    gpu_admission = [ordered]@{
+        gpu_index = $NvidiaGpuIndex
+        maximum_idle_utilization_percent = $MaximumIdleGpuUtilizationPercent
+        minimum_idle_memory_free_mib = $MinimumIdleGpuMemoryFreeMiB
+        consecutive_sample_count = $IdleGpuSampleCount
+        sample_interval_milliseconds = $IdleGpuSampleIntervalMilliseconds
+        wait_seconds = $IdleGpuWaitSeconds
+    }
+    gpu_admissions = @()
     num_ctx = $NumCtx
     num_batch = $NumBatch
     max_tokens_cap = if ($MaxTokensCap -gt 0) { $MaxTokensCap } else { $null }
@@ -543,6 +648,18 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
             $previous.process_priority -eq $environment.process_priority -and
             $previous.process_affinity.requested_mask -eq
                 $environment.process_affinity.requested_mask -and
+            [int]$previous.gpu_admission.gpu_index -eq
+                $environment.gpu_admission.gpu_index -and
+            [int]$previous.gpu_admission.maximum_idle_utilization_percent -eq
+                $environment.gpu_admission.maximum_idle_utilization_percent -and
+            [int]$previous.gpu_admission.minimum_idle_memory_free_mib -eq
+                $environment.gpu_admission.minimum_idle_memory_free_mib -and
+            [int]$previous.gpu_admission.consecutive_sample_count -eq
+                $environment.gpu_admission.consecutive_sample_count -and
+            [int]$previous.gpu_admission.sample_interval_milliseconds -eq
+                $environment.gpu_admission.sample_interval_milliseconds -and
+            [int]$previous.gpu_admission.wait_seconds -eq
+                $environment.gpu_admission.wait_seconds -and
             [int]$previous.num_ctx -eq $environment.num_ctx -and
             [int]$previous.num_batch -eq $environment.num_batch -and
             (($null -eq $previous.max_tokens_cap -and
@@ -562,6 +679,7 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
     }
 }
 Write-Output "Existing report environment compatible: $reuseCompatible"
+$gpuAdmissions = @()
 $environment | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $environmentPath -Encoding utf8
 
 if ($PreparedTaskCache) {
