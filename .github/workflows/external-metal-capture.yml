@@ -1,0 +1,212 @@
+name: Capture Metal release evidence
+
+on:
+  push:
+    branches:
+      - codex/v1-metal-capture-f433b97
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_COMMIT: f433b971ddadeabfed0665987367acc3829e5dfe
+  EVIDENCE_BRANCH: codex/v1-metal-capture-f433b97
+  TEE_POLICY_SHA256: e8706c8becf1dad80a5ff83004eb1028e1ef9c67ff3fa7fc978416dc8be4d3bd
+  WEIGHTS_SHA256: 0f3de53015794403689b151f172b05e0bd115ed1b61290318ec4eab882dca443
+
+jobs:
+  capture:
+    name: Metal capture
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out frozen source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          path: source
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Record bounded environment
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            printf 'source_commit=%s\n' "${SOURCE_COMMIT}"
+            printf 'workflow_commit=%s\n' "${GITHUB_SHA}"
+            printf 'github_run_id=%s\n' "${GITHUB_RUN_ID}"
+            printf 'github_run_attempt=%s\n' "${GITHUB_RUN_ATTEMPT}"
+            printf 'runner_name=%s\n' "${RUNNER_NAME}"
+            printf 'runner_os=%s\n' "${RUNNER_OS}"
+            printf 'runner_arch=%s\n' "${RUNNER_ARCH}"
+            printf 'image_os=%s\n' "${ImageOS:-unknown}"
+            printf 'image_version=%s\n' "${ImageVersion:-unknown}"
+            printf 'mac_model=%s\n' "$(sysctl -n hw.model)"
+            printf 'cpu_model=%s\n' "$(sysctl -n machdep.cpu.brand_string)"
+            printf 'ram_bytes=%s\n' "$(sysctl -n hw.memsize)"
+            printf 'macos_version=%s\n' "$(sw_vers -productVersion)"
+            printf 'kernel=%s\n' "$(uname -a)"
+            printf 'rustc=%s\n' "$(rustc --version)"
+            printf 'cargo=%s\n' "$(cargo --version)"
+            printf 'xcode=%s\n' "$(xcodebuild -version | tr '\n' ';')"
+            printf '%s\n' 'metal_device_begin'
+            swift -e '
+              import Metal
+              guard let device = MTLCreateSystemDefaultDevice() else {
+                fatalError("no default Metal device")
+              }
+              print("name=\(device.name)")
+              print("registry_id=\(device.registryID)")
+              print("has_unified_memory=\(device.hasUnifiedMemory)")
+              print("recommended_max_working_set_size=\(device.recommendedMaxWorkingSetSize)")
+            '
+            printf '%s\n' 'metal_device_end'
+            printf '%s\n' 'display_devices_begin'
+            system_profiler SPDisplaysDataType
+            printf '%s\n' 'display_devices_end'
+          } > metal-environment.txt
+
+      - name: Run exact Metal release capture
+        working-directory: source
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -euo pipefail
+          RAM_BYTES="$(sysctl -n hw.memsize)"
+          CPU_MODEL="$(sysctl -n machdep.cpu.brand_string)"
+          MAC_MODEL="$(sysctl -n hw.model)"
+          GPU_MODEL="$(swift -e '
+            import Metal
+            guard let device = MTLCreateSystemDefaultDevice() else {
+              fatalError("no default Metal device")
+            }
+            print(device.name)
+          ' | tr -d '\r\n')"
+          test -n "${GPU_MODEL}"
+          DEVICE_CLASS="${MAC_MODEL}; ${GPU_MODEL}; macOS $(sw_vers -productVersion); ${ImageOS:-unknown}-${ImageVersion:-unknown}"
+
+          cargo run --locked --release --no-default-features \
+            --features embedded-metal \
+            --bin a3s-power-tensor-batch-bench -- \
+            materialize-release-fixture-weights \
+            --directory release-fixture-weights \
+            --width 4096 \
+            --output release-fixture-weights.json
+
+          cargo run --locked --release --no-default-features \
+            --features embedded-metal \
+            --bin a3s-power-tensor-batch-bench -- \
+            release-fixture \
+            --output metal.json \
+            --fixture-weights release-fixture-weights \
+            --device metal:0 \
+            --power-commit "${SOURCE_COMMIT}" \
+            --filesystem-class 'GitHub-hosted APFS workspace' \
+            --device-class "${DEVICE_CLASS}" \
+            --cpu-model "${CPU_MODEL}" \
+            --ram-bytes "${RAM_BYTES}" \
+            --tee-policy-sha256 "${TEE_POLICY_SHA256}" \
+            --host-fixed-bytes 67108864 \
+            --host-scratch-bytes 67108864 \
+            --device-fixed-bytes 67108864 \
+            --device-scratch-bytes 67108864 \
+            --items 8 \
+            --width 4096 \
+            --warmup-rounds 2 \
+            --measured-rounds 9
+
+      - name: Validate and inventory capture
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          capture = json.loads(Path("metal.json").read_text(encoding="utf-8"))
+          weights = json.loads(
+              Path("release-fixture-weights.json").read_text(encoding="utf-8")
+          )
+          assert capture["schema"] == "a3s.power.release-capture.v1"
+          assert capture["security"]["kind"] == "local"
+          assert capture["tensorBatch"]["binding"]["powerVersion"] == "1.0.0"
+          assert capture["tensorBatch"]["binding"]["powerCommit"] == os.environ[
+              "SOURCE_COMMIT"
+          ]
+          assert capture["shapeBinding"]["runtimeDevice"] == {
+              "kind": "metal",
+              "ordinal": 0,
+          }
+          assert capture["shapeBinding"]["teePolicySha256"] == os.environ[
+              "TEE_POLICY_SHA256"
+          ]
+          assert weights["schema"] == "a3s.power.release-fixture-weights.v1"
+          assert weights["weightsSha256"] == os.environ["WEIGHTS_SHA256"]
+          assert capture["shapeBinding"]["weightsSha256"] == weights["weightsSha256"]
+          assert capture["tensorBatch"]["warmupRounds"] == 2
+          assert capture["tensorBatch"]["measuredRounds"] == 9
+          assert len(capture["tensorBatch"]["samples"]) == 18
+          assert capture["tensorBatch"]["exactOutputParity"] is True
+          assert "Metal device 0; see" not in capture["tensorBatch"]["system"][
+              "deviceClass"
+          ]
+          PY
+
+          shasum -a 256 \
+            metal.json \
+            metal-environment.txt \
+            release-fixture-weights.json \
+            release-fixture-weights/fixture.safetensors \
+            Cargo.lock \
+            docs/benchmarks/release-contract-windows-20260821/local-execution-policy.json \
+            target/release/a3s-power-tensor-batch-bench \
+            > metal-artifacts.sha256
+          cat metal-artifacts.sha256
+
+      - name: Upload immutable run artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: metal-f433b97-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            source/metal.json
+            source/metal-environment.txt
+            source/metal-artifacts.sha256
+            source/release-fixture-weights.json
+            source/release-fixture-weights/fixture.safetensors
+
+      - name: Check out evidence branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.EVIDENCE_BRANCH }}
+          path: evidence
+
+      - name: Preserve capture on evidence branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="evidence/external-capture/metal-${SOURCE_COMMIT:0:8}-${GITHUB_RUN_ID}"
+          test ! -e "${destination}"
+          mkdir -p "${destination}/release-fixture-weights"
+          cp source/metal.json "${destination}/metal.json"
+          cp source/metal-environment.txt "${destination}/metal-environment.txt"
+          cp source/metal-artifacts.sha256 "${destination}/metal-artifacts.sha256"
+          cp source/release-fixture-weights.json "${destination}/release-fixture-weights.json"
+          cp source/release-fixture-weights/fixture.safetensors \
+            "${destination}/release-fixture-weights/fixture.safetensors"
+
+          git -C evidence config user.name 'github-actions[bot]'
+          git -C evidence config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C evidence add -- external-capture
+          git -C evidence diff --cached --check
+          git -C evidence commit -m "test(release): preserve f433b97 Metal capture ${GITHUB_RUN_ID}"
+          git -C evidence push origin "HEAD:${EVIDENCE_BRANCH}"
