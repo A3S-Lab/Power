@@ -467,8 +467,11 @@ def parse_speculative_log(path: Path, task_count: int) -> dict[str, Any] | None:
         accepted = sum(row["accepted_tokens"] for row in selected)
         emitted = sum(row["emitted_tokens"] for row in selected)
         measured = sum(
-            row["emitted_tokens"] / row["tokens_per_second"] for row in selected
+            row["emitted_tokens"] / row["tokens_per_second"]
+            for row in selected
+            if row["tokens_per_second"] > 0
         )
+        target_rounds = sum(row["rounds"] for row in selected)
         fr_target_samples = sum(row["fr_target_samples"] for row in selected)
         fr_target_samples_in_token_id_prefix = sum(
             row["fr_target_samples_in_token_id_prefix"]
@@ -497,11 +500,13 @@ def parse_speculative_log(path: Path, task_count: int) -> dict[str, Any] | None:
             "requests": len(selected),
             "drafted_tokens": int(drafted),
             "accepted_tokens": int(accepted),
-            "weighted_acceptance_rate": accepted / drafted,
+            "weighted_acceptance_rate": accepted / drafted if drafted else 0.0,
             "verified_tokens_per_target_pass": sum(
                 row["verified_emitted_tokens"] for row in selected
             )
-            / sum(row["rounds"] for row in selected),
+            / target_rounds
+            if target_rounds
+            else 0.0,
             "fallback_replays": int(sum(row["fallback_replays"] for row in selected)),
             "rollback_guard_requests": sum(
                 row["rollback_guard_activations"] > 0 for row in selected
@@ -544,7 +549,9 @@ def parse_speculative_log(path: Path, task_count: int) -> dict[str, Any] | None:
             "median_reported_tokens_per_second": statistics.median(
                 row["tokens_per_second"] for row in selected
             ),
-            "aggregate_reported_tokens_per_second": emitted / measured,
+            "aggregate_reported_tokens_per_second": (
+                emitted / measured if measured else 0.0
+            ),
         }
 
     result = {"strategy": strategies.pop(), "overall": summarize(records)}

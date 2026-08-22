@@ -322,6 +322,24 @@ class RuntimeLogTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "mix strategies"):
                 quality.parse_speculative_log(path, 2)
 
+    def test_speculative_log_parser_handles_an_immediate_stop(self) -> None:
+        line = (
+            'speculative completion finished strategy="dspark" rounds=0 '
+            "drafted_tokens=0 accepted_tokens=0 emitted_tokens=0 "
+            "verified_emitted_tokens=0 tokens_per_second=0 fallback_replays=0"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.log"
+            path.write_text(line, encoding="utf-8")
+            metrics = quality.parse_speculative_log(path, 1)
+
+        assert metrics is not None
+        self.assertEqual(metrics["overall"]["weighted_acceptance_rate"], 0.0)
+        self.assertEqual(metrics["overall"]["verified_tokens_per_target_pass"], 0.0)
+        self.assertEqual(
+            metrics["overall"]["aggregate_reported_tokens_per_second"], 0.0
+        )
+
 
 class AggregateTests(unittest.TestCase):
     def test_report_metadata_excludes_untrusted_model_content(self) -> None:
