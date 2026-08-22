@@ -3,24 +3,39 @@
 //! This module contains backend mechanics only. Strategy selection, capability
 //! negotiation, block verification, and metrics remain in `crate::speculative`.
 
+mod adapter;
+mod context_settings;
 mod metrics;
 mod rollback_guard;
 mod sampling;
 mod stop_sequences;
+mod streaming;
 
-use llama_cpp_2::context::params::{LlamaContextParams, LlamaContextType};
+use llama_cpp_2::context::params::LlamaContextType;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::LlamaModel;
-use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
+use llama_cpp_2::speculative::{
+    ExternalDraftSpeculative, ExternalDraftSpeculativeKind, ExternalDraftSpeculativeParams,
+    MtpSpeculative, MtpSpeculativeParams,
+};
 
-use super::{backend_ref, nonzero_context_size, send_completion_result};
+use super::{backend_ref, send_completion_result};
 use crate::backend::types::CompletionResponseChunk;
 use crate::error::{PowerError, Result};
+use crate::model::external_draft::ExternalDraftKind;
 use crate::speculative::{
     bounded_draft_len, minimum_mtp_batch, verify_token_block_until, AdaptiveSpeculationController,
     SpeculativeCapabilities, SpeculativeMetrics, SpeculativeStrategy,
 };
 
+use self::adapter::LlamaSpeculativeAdapter;
+use self::context_settings::external_target_context_params;
+#[cfg(all(test, feature = "llamacpp-mtp-fr"))]
+use self::context_settings::llamacpp_context_mtp_fr_vocab;
+#[cfg(test)]
+use self::context_settings::llamacpp_context_output_limits;
+pub(super) use self::context_settings::{LlamaContextSettings, MtpCompletionSettings};
+pub(super) use self::metrics::SpeculativeTelemetry;
 use self::metrics::{elapsed_ns, log_metrics, MtpPhaseTimings};
 use self::rollback_guard::RollbackReplayGuard;
 #[cfg(test)]
@@ -29,6 +44,7 @@ pub(super) use self::sampling::{
     build_llamacpp_sampler, sample_target_token, use_backend_greedy, LlamaSamplingSettings,
 };
 use self::stop_sequences::StopSequenceTracker;
+use self::streaming::{stream_token, token_piece};
 
 fn metadata_entry_enables_mtp(key: &str, value: &str) -> bool {
     key.ends_with(".nextn_predict_layers")
@@ -61,138 +77,34 @@ pub(super) fn ensure_mtp_fr_available(
     Ok(())
 }
 
-pub(super) fn llamacpp_speculative_capabilities(model: &LlamaModel) -> SpeculativeCapabilities {
+pub(super) fn llamacpp_speculative_capabilities(
+    model: &LlamaModel,
+    mtp_weights_loaded: bool,
+    external_draft: Option<ExternalDraftKind>,
+) -> SpeculativeCapabilities {
     let mut capabilities = SpeculativeCapabilities::none();
-    let has_mtp = (0..model.meta_count()).any(|index| {
-        let Ok(key) = model.meta_key_by_index(index) else {
-            return false;
-        };
-        if !key.ends_with(".nextn_predict_layers") {
-            return false;
-        }
-        model
-            .meta_val_str_by_index(index)
-            .is_ok_and(|value| metadata_entry_enables_mtp(&key, &value))
-    });
+    let has_mtp = mtp_weights_loaded
+        && (0..model.meta_count()).any(|index| {
+            let Ok(key) = model.meta_key_by_index(index) else {
+                return false;
+            };
+            if !key.ends_with(".nextn_predict_layers") {
+                return false;
+            }
+            model
+                .meta_val_str_by_index(index)
+                .is_ok_and(|value| metadata_entry_enables_mtp(&key, &value))
+        });
     if has_mtp {
         capabilities = capabilities.with(SpeculativeStrategy::Mtp);
     }
+    if let Some(kind) = external_draft {
+        capabilities = capabilities.with(match kind {
+            ExternalDraftKind::Dflash => SpeculativeStrategy::Dflash,
+            ExternalDraftKind::Dspark => SpeculativeStrategy::Dspark,
+        });
+    }
     capabilities
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct LlamaContextSettings {
-    pub(super) ctx_size: u32,
-    pub(super) num_batch: Option<u32>,
-    pub(super) num_thread: Option<u32>,
-    pub(super) num_thread_batch: Option<u32>,
-    pub(super) flash_attention: bool,
-    pub(super) mtp_fr_vocab_size: Option<u32>,
-}
-
-impl LlamaContextSettings {
-    pub(super) fn params(
-        self,
-        context_type: LlamaContextType,
-        recurrent_snapshots: u32,
-        minimum_batch: u32,
-        output_rows_per_sequence: u32,
-    ) -> LlamaContextParams {
-        let mtp_fr_vocab = if matches!(context_type, LlamaContextType::Mtp) {
-            self.mtp_fr_vocab_size.unwrap_or(0)
-        } else {
-            0
-        };
-        let mut params = LlamaContextParams::default()
-            .with_n_ctx(Some(nonzero_context_size(self.ctx_size)))
-            .with_context_type(context_type)
-            .with_n_rs_seq(recurrent_snapshots);
-        if let Some(batch) = self.num_batch {
-            params = params.with_n_batch(batch.max(minimum_batch));
-        } else if minimum_batch > params.n_batch() {
-            params = params.with_n_batch(minimum_batch);
-        }
-        if let Some(threads) = self.num_thread {
-            params = params.with_n_threads(threads as i32);
-        }
-        if let Some(threads_batch) = self.num_thread_batch {
-            params = params.with_n_threads_batch(threads_batch as i32);
-        }
-        if self.flash_attention {
-            params = params.with_flash_attention_policy(1);
-        }
-        let output_rows = output_rows_per_sequence.max(1).min(params.n_batch());
-        with_llamacpp_context_extensions(params, output_rows, output_rows, mtp_fr_vocab)
-    }
-}
-
-// The reviewed llama-cpp-2 revision wraps `llama_context_params` in a
-// single-field Rust type, but does not yet expose Power's speculative context
-// extensions. Keep this bridge next to context construction and fail
-// compilation if that pinned representation changes. The direct sys package
-// is pinned to the exact same git revision in Cargo.toml.
-const _: () = {
-    assert!(
-        std::mem::size_of::<LlamaContextParams>()
-            == std::mem::size_of::<llama_cpp_sys_2::llama_context_params>()
-    );
-    assert!(
-        std::mem::align_of::<LlamaContextParams>()
-            == std::mem::align_of::<llama_cpp_sys_2::llama_context_params>()
-    );
-};
-
-fn with_llamacpp_context_extensions(
-    mut params: LlamaContextParams,
-    total: u32,
-    per_sequence: u32,
-    mtp_fr_vocab: u32,
-) -> LlamaContextParams {
-    // SAFETY: at the pinned llama-cpp-2 revision, `LlamaContextParams` contains
-    // exactly one `llama_context_params` field. Equal size and alignment are
-    // asserted above, so that sole non-zero-sized field starts at offset zero.
-    let raw = unsafe {
-        &mut *std::ptr::from_mut(&mut params).cast::<llama_cpp_sys_2::llama_context_params>()
-    };
-    raw.n_outputs_max = total;
-    raw.n_outputs_max_per_seq = per_sequence;
-    #[cfg(feature = "llamacpp-mtp-fr")]
-    {
-        raw.n_mtp_fr_vocab = mtp_fr_vocab;
-    }
-    #[cfg(not(feature = "llamacpp-mtp-fr"))]
-    {
-        debug_assert_eq!(mtp_fr_vocab, 0);
-    }
-    params
-}
-
-#[cfg(test)]
-fn llamacpp_context_output_limits(params: &LlamaContextParams) -> (u32, u32) {
-    // SAFETY: same pinned single-field representation as the setter above.
-    let raw =
-        unsafe { &*std::ptr::from_ref(params).cast::<llama_cpp_sys_2::llama_context_params>() };
-    (raw.n_outputs_max, raw.n_outputs_max_per_seq)
-}
-
-#[cfg(all(test, feature = "llamacpp-mtp-fr"))]
-fn llamacpp_context_mtp_fr_vocab(params: &LlamaContextParams) -> u32 {
-    // SAFETY: same pinned single-field representation as the setter above.
-    let raw =
-        unsafe { &*std::ptr::from_ref(params).cast::<llama_cpp_sys_2::llama_context_params>() };
-    raw.n_mtp_fr_vocab
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct MtpCompletionSettings {
-    pub(super) max_tokens: usize,
-    pub(super) stop_sequences: Vec<String>,
-    pub(super) draft_max: u32,
-    pub(super) recurrent_snapshots: u32,
-    pub(super) recurrent_chain: bool,
-    pub(super) adaptive: bool,
-    pub(super) draft_min: u32,
-    pub(super) draft_p_min: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -241,7 +153,6 @@ fn mtp_speculative_params(
             settings.draft_p_min
         )));
     }
-
     let requested_greedy_draft = greedy_draft && settings.draft_p_min == 0.0;
     let draft_greedy = cfg!(feature = "llamacpp-mtp-fr") && requested_greedy_draft;
     let recurrent_draft = cfg!(feature = "llamacpp-mtp-fr") && settings.recurrent_chain;
@@ -266,78 +177,9 @@ fn mtp_speculative_params(
     })
 }
 
-fn draft_mtp_tokens(
-    speculative: &mut MtpSpeculative<'_>,
-    n_past: i32,
-    anchor: llama_cpp_2::token::LlamaToken,
-    _draft_limit: usize,
-) -> Result<(Vec<llama_cpp_2::token::LlamaToken>, usize)> {
-    #[cfg(feature = "llamacpp-mtp-fr")]
-    let result = {
-        let drafts = speculative.draft_with_max(n_past, anchor, &[], _draft_limit);
-        drafts.map(|drafts| (drafts, speculative.last_recurrent_steps()))
-    };
-
-    #[cfg(not(feature = "llamacpp-mtp-fr"))]
-    let result = speculative
-        .draft(n_past, anchor, &[])
-        .map(|drafts| (drafts, 0));
-
-    result.map_err(|error| PowerError::InferenceFailed(format!("MTP drafting failed: {error}")))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn stream_token(
-    model: &LlamaModel,
-    token: llama_cpp_2::token::LlamaToken,
-    eos_token: llama_cpp_2::token::LlamaToken,
-    stop_tracker: &mut StopSequenceTracker,
-    generated_count: &mut usize,
-    stop_sequences: &[String],
-    prompt_token_count: u32,
-    prompt_eval_duration_ns: u64,
-    tx: &tokio::sync::mpsc::Sender<Result<CompletionResponseChunk>>,
-) -> bool {
-    if token == eos_token {
-        send_completion_result(
-            tx,
-            Ok(CompletionResponseChunk {
-                text: String::new(),
-                done: true,
-                prompt_tokens: Some(prompt_token_count),
-                done_reason: Some("stop".to_string()),
-                prompt_eval_duration_ns: Some(prompt_eval_duration_ns),
-                token_id: None,
-            }),
-        );
-        return false;
-    }
-
-    let text = token_piece(model, token);
-    *generated_count += 1;
-    let should_stop = stop_tracker.push(&text, stop_sequences);
-    send_completion_result(
-        tx,
-        Ok(CompletionResponseChunk {
-            text,
-            done: should_stop,
-            prompt_tokens: should_stop.then_some(prompt_token_count),
-            done_reason: should_stop.then(|| "stop".to_string()),
-            prompt_eval_duration_ns: should_stop.then_some(prompt_eval_duration_ns),
-            token_id: Some(token.0 as u32),
-        }),
-    ) && !should_stop
-}
-
-fn token_piece(model: &LlamaModel, token: llama_cpp_2::token::LlamaToken) -> String {
-    let mut decoder = encoding_rs::UTF_8.new_decoder();
-    model
-        .token_to_piece(token, &mut decoder, true, None)
-        .unwrap_or_default()
-}
-
-fn replay_target_prefix(
-    speculative: &mut MtpSpeculative<'_>,
+fn replay_target_prefix<'target, 'draft, S: LlamaSpeculativeAdapter<'target, 'draft>>(
+    speculative: &mut S,
+    strategy_name: &str,
     committed_tokens: &[llama_cpp_2::token::LlamaToken],
     sync_batch: &mut LlamaBatch<'_>,
 ) -> Result<()> {
@@ -351,21 +193,23 @@ fn replay_target_prefix(
         for (index, &token) in chunk.iter().enumerate() {
             let absolute = offset.saturating_add(index);
             let position = i32::try_from(absolute).map_err(|_| {
-                PowerError::InferenceFailed(
-                    "MTP target replay position exceeds llama.cpp limits".to_string(),
-                )
+                PowerError::InferenceFailed(format!(
+                    "{strategy_name} target replay position exceeds llama.cpp limits"
+                ))
             })?;
             batch.add(token, position, &[0], false).map_err(|_| {
-                PowerError::InferenceFailed(
-                    "Failed to add committed token to MTP target replay batch".to_string(),
-                )
+                PowerError::InferenceFailed(format!(
+                    "Failed to add committed token to {strategy_name} target replay batch"
+                ))
             })?;
         }
         speculative
             .target_context_mut()
             .decode(&mut batch)
             .map_err(|error| {
-                PowerError::InferenceFailed(format!("MTP committed target replay failed: {error}"))
+                PowerError::InferenceFailed(format!(
+                    "{strategy_name} committed target replay failed: {error}"
+                ))
             })?;
     }
     speculative
@@ -373,17 +217,20 @@ fn replay_target_prefix(
         .decode(sync_batch)
         .map_err(|error| {
             PowerError::InferenceFailed(format!(
-                "MTP accepted-prefix target replay failed: {error}"
+                "{strategy_name} accepted-prefix target replay failed: {error}"
             ))
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_mtp_completion(
     model: &LlamaModel,
+    model_name: &str,
     tokens: Vec<llama_cpp_2::token::LlamaToken>,
     context_settings: LlamaContextSettings,
     sampling_settings: &LlamaSamplingSettings,
     settings: MtpCompletionSettings,
+    telemetry: &SpeculativeTelemetry,
     tx: &tokio::sync::mpsc::Sender<Result<CompletionResponseChunk>>,
 ) -> Result<()> {
     let backend_greedy = use_backend_greedy(sampling_settings);
@@ -445,6 +292,158 @@ pub(super) fn run_mtp_completion(
             },
         )?;
 
+    run_speculative_completion(
+        model,
+        model_name,
+        tokens,
+        context_settings,
+        sampling_settings,
+        settings,
+        SpeculativeStrategy::Mtp,
+        recurrent_snapshots,
+        &mut speculative,
+        telemetry,
+        tx,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_external_draft_completion(
+    model: &LlamaModel,
+    model_name: &str,
+    draft_model: &LlamaModel,
+    draft_kind: ExternalDraftKind,
+    tokens: Vec<llama_cpp_2::token::LlamaToken>,
+    context_settings: LlamaContextSettings,
+    sampling_settings: &LlamaSamplingSettings,
+    mut settings: MtpCompletionSettings,
+    telemetry: &SpeculativeTelemetry,
+    tx: &tokio::sync::mpsc::Sender<Result<CompletionResponseChunk>>,
+) -> Result<()> {
+    if tokens.is_empty() {
+        return Err(PowerError::InferenceFailed(
+            "llama.cpp external drafting requires a non-empty tokenized prompt".to_string(),
+        ));
+    }
+    if settings.draft_max == 0 || settings.draft_max > 64 {
+        return Err(PowerError::Config(format!(
+            "spec_draft_max must be between 1 and 64 for llama.cpp external drafting, got {}",
+            settings.draft_max
+        )));
+    }
+    if settings.draft_min > settings.draft_max {
+        return Err(PowerError::Config(format!(
+            "spec_draft_min ({}) must not exceed spec_draft_max ({})",
+            settings.draft_min, settings.draft_max
+        )));
+    }
+    if !settings.draft_p_min.is_finite() || !(0.0..=1.0).contains(&settings.draft_p_min) {
+        return Err(PowerError::Config(format!(
+            "spec_draft_p_min must be finite and between 0 and 1, got {}",
+            settings.draft_p_min
+        )));
+    }
+    if settings.recurrent_snapshots == 0 || settings.recurrent_snapshots > 64 {
+        return Err(PowerError::Config(format!(
+            "spec_mtp_recurrent_snapshots must be between 1 and 64 for llama.cpp external drafting, got {}",
+            settings.recurrent_snapshots
+        )));
+    }
+
+    // DSpark already carries a confidence-aware trained head. Keep Power's
+    // MTP-only target-disable controller out of this path until an independent
+    // external-draft policy has been calibrated.
+    settings.adaptive = false;
+    let backend_greedy = use_backend_greedy(sampling_settings);
+    let minimum_batch = minimum_mtp_batch(settings.draft_max);
+    let rollback_window = settings.draft_max.min(settings.recurrent_snapshots);
+    let target_params =
+        external_target_context_params(context_settings, settings.draft_max, rollback_window);
+    let target_context_result = if backend_greedy {
+        let backend_sampler = build_llamacpp_sampler(model, sampling_settings)?;
+        model.new_context_with_samplers(backend_ref(), target_params, [(0, backend_sampler)])
+    } else {
+        model.new_context(backend_ref(), target_params)
+    };
+    let target_context = target_context_result.map_err(|error| {
+        PowerError::InferenceFailed(format!(
+            "Failed to create external-draft target context: {error}"
+        ))
+    })?;
+    let draft_params = context_settings.params(LlamaContextType::Default, 0, minimum_batch, 1);
+    let draft_context = draft_model
+        .new_context_with_ctx_other(backend_ref(), draft_params, &target_context)
+        .map_err(|error| {
+            PowerError::InferenceFailed(format!("Failed to create external-draft context: {error}"))
+        })?;
+    let strategy = match draft_kind {
+        ExternalDraftKind::Dflash => SpeculativeStrategy::Dflash,
+        ExternalDraftKind::Dspark => SpeculativeStrategy::Dspark,
+    };
+    let params = ExternalDraftSpeculativeParams {
+        kind: match draft_kind {
+            ExternalDraftKind::Dflash => ExternalDraftSpeculativeKind::Dflash,
+            ExternalDraftKind::Dspark => ExternalDraftSpeculativeKind::Dspark,
+        },
+        n_max: settings.draft_max as i32,
+        n_min: settings.draft_min as i32,
+        p_min: settings.draft_p_min,
+    };
+    let mut speculative = ExternalDraftSpeculative::new(target_context, draft_context, params)
+        .map_err(|error| {
+            PowerError::InferenceFailed(format!(
+                "Failed to initialize llama.cpp {} speculation: {error}",
+                strategy.as_str()
+            ))
+        })?;
+    tracing::info!(
+        strategy = strategy.as_str(),
+        backend_greedy,
+        draft_max = settings.draft_max,
+        draft_min = settings.draft_min,
+        draft_p_min = settings.draft_p_min,
+        rollback_window,
+        "Configured external-draft target sampling"
+    );
+
+    // DFlash-family draft state is transformer KV. The target may be hybrid
+    // recurrent, so retain only the configured bounded rollback window; a
+    // longer rejection is recovered by exact committed-prefix replay.
+    run_speculative_completion(
+        model,
+        model_name,
+        tokens,
+        LlamaContextSettings {
+            mtp_fr_vocab_size: None,
+            ..context_settings
+        },
+        sampling_settings,
+        settings,
+        strategy,
+        rollback_window,
+        &mut speculative,
+        telemetry,
+        tx,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_speculative_completion<'target, 'draft, S: LlamaSpeculativeAdapter<'target, 'draft>>(
+    model: &LlamaModel,
+    model_name: &str,
+    tokens: Vec<llama_cpp_2::token::LlamaToken>,
+    context_settings: LlamaContextSettings,
+    sampling_settings: &LlamaSamplingSettings,
+    settings: MtpCompletionSettings,
+    strategy: SpeculativeStrategy,
+    recurrent_snapshots: u32,
+    speculative: &mut S,
+    telemetry: &SpeculativeTelemetry,
+    tx: &tokio::sync::mpsc::Sender<Result<CompletionResponseChunk>>,
+) -> Result<()> {
+    let backend_greedy = use_backend_greedy(sampling_settings);
+    let strategy_name = strategy.as_str();
+
     let prompt_eval_started = std::time::Instant::now();
     let prompt_batch_size = usize::try_from(speculative.target_context().n_batch())
         .unwrap_or(usize::MAX)
@@ -455,31 +454,29 @@ pub(super) fn run_mtp_completion(
         for (index, &token) in chunk.iter().enumerate() {
             let absolute = offset.saturating_add(index);
             let position = i32::try_from(absolute).map_err(|_| {
-                PowerError::InferenceFailed(
-                    "MTP prompt position exceeds llama.cpp limits".to_string(),
-                )
+                PowerError::InferenceFailed(format!(
+                    "{strategy_name} prompt position exceeds llama.cpp limits"
+                ))
             })?;
             batch
                 .add(token, position, &[0], absolute + 1 == tokens.len())
                 .map_err(|_| {
-                    PowerError::InferenceFailed(
-                        "Failed to add MTP prompt token to batch".to_string(),
-                    )
+                    PowerError::InferenceFailed(format!(
+                        "Failed to add {strategy_name} prompt token to batch"
+                    ))
                 })?;
         }
         speculative
             .target_context_mut()
             .decode(&mut batch)
             .map_err(|error| {
-                PowerError::InferenceFailed(format!("MTP prompt decode failed: {error}"))
+                PowerError::InferenceFailed(format!(
+                    "{strategy_name} prompt decode failed: {error}"
+                ))
             })?;
-        speculative.process(&batch).map_err(|error| {
-            PowerError::InferenceFailed(format!("MTP prompt-state synchronization failed: {error}"))
-        })?;
+        speculative.process(&batch)?;
     }
-    speculative.begin(&tokens).map_err(|error| {
-        PowerError::InferenceFailed(format!("Failed to begin MTP generation: {error}"))
-    })?;
+    speculative.begin(&tokens)?;
     let prompt_eval_duration_ns = prompt_eval_started.elapsed().as_nanos() as u64;
 
     let mut sampler = build_llamacpp_sampler(model, sampling_settings)?;
@@ -505,7 +502,15 @@ pub(super) fn run_mtp_completion(
     let target_context_size = speculative.target_context().n_ctx() as usize;
     let mtp_fr_vocab_size = context_settings.mtp_fr_vocab_size;
     if settings.max_tokens == 0 {
-        log_metrics(metrics, timings, generated_count, decode_started);
+        log_metrics(
+            model_name,
+            strategy_name,
+            telemetry,
+            metrics,
+            timings,
+            generated_count,
+            decode_started,
+        );
         send_completion_result(
             tx,
             Ok(CompletionResponseChunk {
@@ -549,21 +554,28 @@ pub(super) fn run_mtp_completion(
         .streaming_ns
         .saturating_add(elapsed_ns(streaming_started));
     if !keep_streaming {
-        log_metrics(metrics, timings, generated_count, decode_started);
+        log_metrics(
+            model_name,
+            strategy_name,
+            telemetry,
+            metrics,
+            timings,
+            generated_count,
+            decode_started,
+        );
         return Ok(());
     }
 
     while generated_count < settings.max_tokens {
         if committed_tokens.len() >= target_context_size {
-            return Err(PowerError::InferenceFailed(
-                "llama.cpp MTP context capacity was exhausted before generation completed"
-                    .to_string(),
-            ));
+            return Err(PowerError::InferenceFailed(format!(
+                "llama.cpp {strategy_name} context capacity was exhausted before generation completed"
+            )));
         }
         let n_past = i32::try_from(committed_tokens.len()).map_err(|_| {
-            PowerError::InferenceFailed(
-                "MTP sequence position exceeds llama.cpp limits".to_string(),
-            )
+            PowerError::InferenceFailed(format!(
+                "{strategy_name} sequence position exceeds llama.cpp limits"
+            ))
         })?;
         if adaptive
             .as_ref()
@@ -571,17 +583,20 @@ pub(super) fn run_mtp_completion(
         {
             let mut target_batch = LlamaBatch::new(1, 1);
             target_batch.add(anchor, n_past, &[0], true).map_err(|_| {
-                PowerError::InferenceFailed(
-                    "Failed to add target-only MTP token to batch".to_string(),
-                )
+                PowerError::InferenceFailed(format!(
+                    "Failed to add target-only {strategy_name} token to batch"
+                ))
             })?;
             let target_decode_started = std::time::Instant::now();
             speculative
                 .target_context_mut()
                 .decode(&mut target_batch)
                 .map_err(|error| {
-                    PowerError::InferenceFailed(format!("MTP target-only decode failed: {error}"))
+                    PowerError::InferenceFailed(format!(
+                        "{strategy_name} target-only decode failed: {error}"
+                    ))
                 })?;
+            speculative.process(&target_batch)?;
             timings.target_only_decode_ns = timings
                 .target_only_decode_ns
                 .saturating_add(elapsed_ns(target_decode_started));
@@ -618,7 +633,15 @@ pub(super) fn run_mtp_completion(
                 .streaming_ns
                 .saturating_add(elapsed_ns(streaming_started));
             if !keep_streaming {
-                log_metrics(metrics, timings, generated_count, decode_started);
+                log_metrics(
+                    model_name,
+                    strategy_name,
+                    telemetry,
+                    metrics,
+                    timings,
+                    generated_count,
+                    decode_started,
+                );
                 return Ok(());
             }
             anchor = next;
@@ -643,12 +666,9 @@ pub(super) fn run_mtp_completion(
         let draft_started = std::time::Instant::now();
         let mut recurrent_draft_steps = 0usize;
         let mut drafts = if draft_limit >= settings.draft_min as usize && draft_limit > 0 {
-            // This handle contains only llama.cpp's MTP implementation. At the
-            // pinned revision MTP proposes from its synchronized recurrent
-            // state plus `anchor`; unlike n-gram drafters it never reads the
-            // history pointer. Avoid serializing and copying a growing token
-            // history across Rust and C++ on every speculative round.
-            let (drafts, steps) = draft_mtp_tokens(&mut speculative, n_past, anchor, draft_limit)?;
+            // Model-backed adapters propose from synchronized state plus the
+            // anchor and do not consume the full history on every round.
+            let (drafts, steps) = speculative.draft_with_max(n_past, anchor, draft_limit)?;
             recurrent_draft_steps = steps;
             drafts
         } else {
@@ -666,16 +686,16 @@ pub(super) fn run_mtp_completion(
 
         let state_management_started = std::time::Instant::now();
         let rollback_from = u32::try_from(committed_tokens.len()).map_err(|_| {
-            PowerError::InferenceFailed(
-                "MTP draft rollback position exceeds llama.cpp limits".to_string(),
-            )
+            PowerError::InferenceFailed(format!(
+                "{strategy_name} draft rollback position exceeds llama.cpp limits"
+            ))
         })?;
         speculative
             .draft_context_mut()
             .kv_cache_seq_rm(0, Some(rollback_from), None)
             .map_err(|error| {
                 PowerError::InferenceFailed(format!(
-                    "Failed to rewind MTP draft state before verification: {error}"
+                    "Failed to rewind {strategy_name} draft state before verification: {error}"
                 ))
             })?;
         timings.state_management_ns = timings
@@ -684,24 +704,26 @@ pub(super) fn run_mtp_completion(
 
         let mut verify_batch = LlamaBatch::new(drafts.len() + 1, 1);
         verify_batch.add(anchor, n_past, &[0], true).map_err(|_| {
-            PowerError::InferenceFailed("Failed to add MTP anchor token to batch".to_string())
+            PowerError::InferenceFailed(format!(
+                "Failed to add {strategy_name} anchor token to batch"
+            ))
         })?;
         for (index, &draft) in drafts.iter().enumerate() {
             let position = n_past
                 .checked_add(i32::try_from(index + 1).map_err(|_| {
-                    PowerError::InferenceFailed(
-                        "MTP draft position exceeds llama.cpp limits".to_string(),
-                    )
+                    PowerError::InferenceFailed(format!(
+                        "{strategy_name} draft position exceeds llama.cpp limits"
+                    ))
                 })?)
                 .ok_or_else(|| {
-                    PowerError::InferenceFailed(
-                        "MTP draft position exceeds llama.cpp limits".to_string(),
-                    )
+                    PowerError::InferenceFailed(format!(
+                        "{strategy_name} draft position exceeds llama.cpp limits"
+                    ))
                 })?;
             verify_batch.add(draft, position, &[0], true).map_err(|_| {
-                PowerError::InferenceFailed(
-                    "Failed to add MTP draft token to verification batch".to_string(),
-                )
+                PowerError::InferenceFailed(format!(
+                    "Failed to add {strategy_name} draft token to verification batch"
+                ))
             })?;
         }
 
@@ -710,7 +732,9 @@ pub(super) fn run_mtp_completion(
             .target_context_mut()
             .decode(&mut verify_batch)
             .map_err(|error| {
-                PowerError::InferenceFailed(format!("MTP target verification failed: {error}"))
+                PowerError::InferenceFailed(format!(
+                    "{strategy_name} target verification failed: {error}"
+                ))
             })?;
         timings.target_decode_ns = timings
             .target_decode_ns
@@ -748,9 +772,9 @@ pub(super) fn run_mtp_completion(
             .saturating_add(elapsed_ns(sampling_started));
         if verified.accepted < drafts.len() {
             let correction = verified.emitted.last().ok_or_else(|| {
-                PowerError::InferenceFailed(
-                    "MTP rejection did not emit a target correction".to_string(),
-                )
+                PowerError::InferenceFailed(format!(
+                    "{strategy_name} rejection did not emit a target correction"
+                ))
             })?;
             timings
                 .fr
@@ -765,26 +789,26 @@ pub(super) fn run_mtp_completion(
         let accepted_prefix_sync_started = std::time::Instant::now();
         let mut sync_batch = LlamaBatch::new(verified.accepted.saturating_add(1), 1);
         sync_batch.add(anchor, n_past, &[0], true).map_err(|_| {
-            PowerError::InferenceFailed(
-                "Failed to add MTP anchor token to synchronization batch".to_string(),
-            )
+            PowerError::InferenceFailed(format!(
+                "Failed to add {strategy_name} anchor token to synchronization batch"
+            ))
         })?;
         for (index, &draft) in drafts.iter().take(verified.accepted).enumerate() {
             let position = n_past
                 .checked_add(i32::try_from(index + 1).map_err(|_| {
-                    PowerError::InferenceFailed(
-                        "MTP synchronization position exceeds llama.cpp limits".to_string(),
-                    )
+                    PowerError::InferenceFailed(format!(
+                        "{strategy_name} synchronization position exceeds llama.cpp limits"
+                    ))
                 })?)
                 .ok_or_else(|| {
-                    PowerError::InferenceFailed(
-                        "MTP synchronization position exceeds llama.cpp limits".to_string(),
-                    )
+                    PowerError::InferenceFailed(format!(
+                        "{strategy_name} synchronization position exceeds llama.cpp limits"
+                    ))
                 })?;
             sync_batch.add(draft, position, &[0], true).map_err(|_| {
-                PowerError::InferenceFailed(
-                    "Failed to add accepted MTP token to synchronization batch".to_string(),
-                )
+                PowerError::InferenceFailed(format!(
+                    "Failed to add accepted {strategy_name} token to synchronization batch"
+                ))
             })?;
         }
         let rejected_suffix = drafts.len().saturating_sub(verified.accepted);
@@ -813,26 +837,21 @@ pub(super) fn run_mtp_completion(
         }
         if rejected_suffix > recurrent_snapshots as usize {
             timings.fallback_replays = timings.fallback_replays.saturating_add(1);
-            replay_target_prefix(&mut speculative, &committed_tokens, &mut sync_batch)?;
+            replay_target_prefix(
+                speculative,
+                strategy_name,
+                &committed_tokens,
+                &mut sync_batch,
+            )?;
         }
-        speculative.process(&sync_batch).map_err(|error| {
-            PowerError::InferenceFailed(format!(
-                "MTP accepted-prefix synchronization failed: {error}"
-            ))
-        })?;
+        speculative.process(&sync_batch)?;
         timings.accepted_prefix_sync_ns = timings
             .accepted_prefix_sync_ns
             .saturating_add(elapsed_ns(accepted_prefix_sync_started));
 
         let state_management_started = std::time::Instant::now();
         if draft_pending {
-            speculative
-                .accept(verified.accepted as u16)
-                .map_err(|error| {
-                    PowerError::InferenceFailed(format!(
-                        "Failed to commit MTP acceptance state: {error}"
-                    ))
-                })?;
+            speculative.accept(verified.accepted as u16)?;
         }
 
         let keep_position = committed_tokens
@@ -841,16 +860,16 @@ pub(super) fn run_mtp_completion(
             .and_then(|position| position.checked_add(verified.accepted))
             .and_then(|position| u32::try_from(position).ok())
             .ok_or_else(|| {
-                PowerError::InferenceFailed(
-                    "MTP commit position exceeds llama.cpp limits".to_string(),
-                )
+                PowerError::InferenceFailed(format!(
+                    "{strategy_name} commit position exceeds llama.cpp limits"
+                ))
             })?;
         speculative
             .target_context_mut()
             .kv_cache_seq_rm(0, Some(keep_position), None)
             .map_err(|error| {
                 PowerError::InferenceFailed(format!(
-                    "Failed to rewind rejected MTP target state: {error}"
+                    "Failed to rewind rejected {strategy_name} target state: {error}"
                 ))
             })?;
         speculative
@@ -858,7 +877,7 @@ pub(super) fn run_mtp_completion(
             .kv_cache_seq_rm(0, Some(keep_position), None)
             .map_err(|error| {
                 PowerError::InferenceFailed(format!(
-                    "Failed to rewind rejected MTP draft state: {error}"
+                    "Failed to rewind rejected {strategy_name} draft state: {error}"
                 ))
             })?;
 
@@ -891,7 +910,15 @@ pub(super) fn run_mtp_completion(
                 timings.streaming_ns = timings
                     .streaming_ns
                     .saturating_add(elapsed_ns(streaming_started));
-                log_metrics(metrics, timings, generated_count, decode_started);
+                log_metrics(
+                    model_name,
+                    strategy_name,
+                    telemetry,
+                    metrics,
+                    timings,
+                    generated_count,
+                    decode_started,
+                );
                 return Ok(());
             }
             emitted_this_round += generated_count.saturating_sub(count_before);
@@ -902,11 +929,21 @@ pub(super) fn run_mtp_completion(
 
         metrics.record_round(drafts.len(), verified.accepted, emitted_this_round);
         anchor = *verified.emitted.last().ok_or_else(|| {
-            PowerError::InferenceFailed("MTP verification emitted no continuation".to_string())
+            PowerError::InferenceFailed(format!(
+                "{strategy_name} verification emitted no continuation"
+            ))
         })?;
     }
 
-    log_metrics(metrics, timings, generated_count, decode_started);
+    log_metrics(
+        model_name,
+        strategy_name,
+        telemetry,
+        metrics,
+        timings,
+        generated_count,
+        decode_started,
+    );
     send_completion_result(
         tx,
         Ok(CompletionResponseChunk {

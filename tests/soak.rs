@@ -167,6 +167,7 @@ mod picolm_soak {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            external_draft: None,
             projector_path: None,
             messages: vec![],
             family: Some("qwen2".to_string()),

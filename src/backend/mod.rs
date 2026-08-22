@@ -35,6 +35,35 @@ use types::{
     EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse,
 };
 
+/// Public proof that a content-addressed speculative artifact was verified and loaded.
+///
+/// Absolute paths and mutable source locators are deliberately excluded. The two
+/// digests bind a draft artifact to its exact target model.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LoadedSpeculativeArtifact {
+    pub backend: String,
+    pub model: String,
+    pub strategy: String,
+    pub artifact_size: u64,
+    pub artifact_sha256: String,
+    pub target_sha256: String,
+}
+
+/// Cumulative, completed-request speculative decoding counters.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpeculativeMetricsSnapshot {
+    pub backend: String,
+    pub model: String,
+    pub strategy: String,
+    pub requests: u64,
+    pub rounds: u64,
+    pub target_passes: u64,
+    pub drafted_tokens: u64,
+    pub accepted_tokens: u64,
+    pub emitted_tokens: u64,
+    pub decode_duration_ns: u64,
+}
+
 /// Reject an explicit speculative strategy for a backend that only implements
 /// ordinary autoregressive decoding. `auto` safely resolves to `off`.
 pub(crate) fn ensure_non_speculative_mode(configured: &str, backend: &str) -> Result<()> {
@@ -72,6 +101,16 @@ pub trait Backend: Send + Sync {
     /// Return cumulative prompt-cache telemetry when the backend implements it.
     fn prompt_cache_metrics(&self) -> Option<PromptCacheMetricsSnapshot> {
         None
+    }
+
+    /// Return non-secret identities for verified speculative artifacts currently loaded.
+    async fn loaded_speculative_artifacts(&self) -> Vec<LoadedSpeculativeArtifact> {
+        Vec::new()
+    }
+
+    /// Return cumulative speculative counters for completed requests.
+    fn speculative_metrics(&self) -> Vec<SpeculativeMetricsSnapshot> {
+        Vec::new()
     }
 
     /// Load a model into memory, ready for inference.
@@ -344,6 +383,39 @@ impl BackendRegistry {
                     .map(|snapshot| (backend.name(), snapshot))
             })
             .collect()
+    }
+
+    /// Snapshot verified speculative artifacts from every backend.
+    pub async fn loaded_speculative_artifacts(&self) -> Vec<LoadedSpeculativeArtifact> {
+        let mut artifacts = Vec::new();
+        for backend in &self.backends {
+            artifacts.extend(backend.loaded_speculative_artifacts().await);
+        }
+        artifacts.sort_by(|left, right| {
+            (&left.backend, &left.model, &left.strategy).cmp(&(
+                &right.backend,
+                &right.model,
+                &right.strategy,
+            ))
+        });
+        artifacts
+    }
+
+    /// Snapshot cumulative speculative counters from every backend.
+    pub fn speculative_metrics(&self) -> Vec<SpeculativeMetricsSnapshot> {
+        let mut snapshots = self
+            .backends
+            .iter()
+            .flat_map(|backend| backend.speculative_metrics())
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| {
+            (&left.backend, &left.model, &left.strategy).cmp(&(
+                &right.backend,
+                &right.model,
+                &right.strategy,
+            ))
+        });
+        snapshots
     }
 }
 

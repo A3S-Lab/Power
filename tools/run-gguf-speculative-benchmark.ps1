@@ -62,6 +62,9 @@ param(
     [ValidateRange(100, 60000)]
     [int]$IdleGpuSampleIntervalMilliseconds = 500,
 
+    [ValidateRange(50, 2000)]
+    [int]$RuntimeGpuSampleIntervalMilliseconds = 100,
+
     [ValidateScript({ $_ -ge 0 })]
     [int[]]$NvidiaGpuIndices = @(),
 
@@ -88,6 +91,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'lib/gguf-speculative-benchmark.ps1')
+
 $powerRoot = Split-Path -Parent $PSScriptRoot
 $server = Join-Path $powerRoot "$TargetDirectory\release\a3s-power.exe"
 $benchmark = Join-Path $powerRoot "$TargetDirectory\release\a3s-power-speculative-bench.exe"
@@ -103,6 +108,8 @@ $stderr = Join-Path $benchmarkRootPath "$Label.stderr.log"
 $report = Join-Path $benchmarkRootPath "$Label.json"
 $environmentReport = Join-Path $benchmarkRootPath "$Label.environment.json"
 $preflightReport = Join-Path $benchmarkRootPath "$Label.preflight.json"
+$benchmarkStdout = Join-Path $benchmarkRootPath "$Label.client.stdout.log"
+$benchmarkStderr = Join-Path $benchmarkRootPath "$Label.client.stderr.log"
 $encodedModel = [Uri]::EscapeDataString($Model)
 $normalizedModelHash = $ModelHash.ToLowerInvariant()
 $effectiveHardwareLabel = if ([string]::IsNullOrWhiteSpace($HardwareLabel)) {
@@ -128,7 +135,8 @@ if ($NvidiaGpuIndices.Count -eq 0 -and
     ($LockGpuClockMHz -gt 0 -or
      $MaximumIdleGpuUtilizationPercent -lt 100 -or
      $PSBoundParameters.ContainsKey('IdleGpuSampleCount') -or
-     $PSBoundParameters.ContainsKey('IdleGpuSampleIntervalMilliseconds'))) {
+     $PSBoundParameters.ContainsKey('IdleGpuSampleIntervalMilliseconds') -or
+     $PSBoundParameters.ContainsKey('RuntimeGpuSampleIntervalMilliseconds'))) {
     throw 'NvidiaGpuIndices is required when an NVIDIA clock lock or idle-utilization gate is requested'
 }
 if ($MaxTokens -gt $NumCtx -or $NumBatch -gt $NumCtx) {
@@ -474,9 +482,15 @@ try {
             [string]$MinimumSampleTokensPerSecond
         )
     }
-    $rawLines = @(& $benchmark @benchmarkArguments)
-    $benchmarkExitCode = $LASTEXITCODE
-    $raw = $rawLines -join [Environment]::NewLine
+    $benchmarkRun = Invoke-MonitoredNativeProcess `
+        $benchmark `
+        $benchmarkArguments `
+        $benchmarkStdout `
+        $benchmarkStderr `
+        $NvidiaGpuIndices `
+        $RuntimeGpuSampleIntervalMilliseconds
+    $benchmarkExitCode = $benchmarkRun.exit_code
+    $raw = $benchmarkRun.stdout.TrimEnd()
     if ([string]::IsNullOrWhiteSpace($raw)) {
         throw "Benchmark exited with code $benchmarkExitCode without a JSON report"
     }
@@ -570,8 +584,19 @@ try {
             } else {
                 $null
             }
+            runtime_telemetry = $benchmarkRun.telemetry
             nvidia_smi = $gpuSnapshot
             process_snapshot = $gpuProcessSnapshot
+        }
+        benchmark_client_logs = [ordered]@{
+            stdout = [ordered]@{
+                path = [System.IO.Path]::GetFullPath($benchmarkStdout)
+                sha256 = (Get-FileHash -LiteralPath $benchmarkStdout -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            stderr = [ordered]@{
+                path = [System.IO.Path]::GetFullPath($benchmarkStderr)
+                sha256 = (Get-FileHash -LiteralPath $benchmarkStderr -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
         }
         report = [ordered]@{
             path = [System.IO.Path]::GetFullPath($report)

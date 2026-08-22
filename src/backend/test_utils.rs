@@ -38,6 +38,7 @@ pub struct MockBackend {
     /// When true, the final chunk carries the generated token and metadata.
     terminal_payload: bool,
     effective_prompt: Option<EffectivePromptDigest>,
+    loaded_speculative_artifacts: Vec<crate::backend::LoadedSpeculativeArtifact>,
     last_chat_request: Arc<Mutex<Option<ChatRequest>>>,
     last_completion_request: Arc<Mutex<Option<CompletionRequest>>>,
     /// Counter for file-backed load calls (for test verification).
@@ -69,6 +70,7 @@ impl MockBackend {
             emit_tool_calls: false,
             terminal_payload: false,
             effective_prompt: None,
+            loaded_speculative_artifacts: Vec::new(),
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
             load_count: Arc::new(AtomicU32::new(0)),
@@ -96,6 +98,7 @@ impl MockBackend {
             emit_tool_calls: false,
             terminal_payload: false,
             effective_prompt: None,
+            loaded_speculative_artifacts: Vec::new(),
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
             load_count: Arc::new(AtomicU32::new(0)),
@@ -123,6 +126,7 @@ impl MockBackend {
             emit_tool_calls: false,
             terminal_payload: false,
             effective_prompt: None,
+            loaded_speculative_artifacts: Vec::new(),
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
             load_count: Arc::new(AtomicU32::new(0)),
@@ -150,6 +154,7 @@ impl MockBackend {
             emit_tool_calls: false,
             terminal_payload: false,
             effective_prompt: None,
+            loaded_speculative_artifacts: Vec::new(),
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
             load_count: Arc::new(AtomicU32::new(0)),
@@ -177,6 +182,7 @@ impl MockBackend {
             emit_tool_calls: false,
             terminal_payload: false,
             effective_prompt: None,
+            loaded_speculative_artifacts: Vec::new(),
             last_chat_request: Arc::new(Mutex::new(None)),
             last_completion_request: Arc::new(Mutex::new(None)),
             load_count: Arc::new(AtomicU32::new(0)),
@@ -196,6 +202,15 @@ impl MockBackend {
     /// Add an effective prompt digest claim to this mock backend.
     pub fn with_effective_prompt(mut self, digest: EffectivePromptDigest) -> Self {
         self.effective_prompt = Some(digest);
+        self
+    }
+
+    /// Add a verified speculative artifact to proof-interface tests.
+    pub fn with_loaded_speculative_artifact(
+        mut self,
+        artifact: crate::backend::LoadedSpeculativeArtifact,
+    ) -> Self {
+        self.loaded_speculative_artifacts.push(artifact);
         self
     }
 
@@ -276,6 +291,10 @@ impl Backend for MockBackend {
 
     fn prompt_cache_support(&self) -> PromptCacheSupport {
         self.prompt_cache_support
+    }
+
+    async fn loaded_speculative_artifacts(&self) -> Vec<crate::backend::LoadedSpeculativeArtifact> {
+        self.loaded_speculative_artifacts.clone()
     }
 
     async fn load(&self, _manifest: &ModelManifest) -> Result<()> {
@@ -552,6 +571,7 @@ pub fn sample_manifest(name: &str) -> ModelManifest {
         modelfile_content: None,
         license: None,
         adapter_path: None,
+        external_draft: None,
         projector_path: None,
         messages: vec![],
         family: None,

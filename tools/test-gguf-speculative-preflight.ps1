@@ -33,6 +33,8 @@ function Assert-True {
 
 $powerRoot = Split-Path -Parent $PSScriptRoot
 $runner = Join-Path $PSScriptRoot 'run-gguf-speculative-benchmark.ps1'
+$runtimeHelper = Join-Path $PSScriptRoot 'lib/gguf-speculative-benchmark.ps1'
+. $runtimeHelper
 $testId = [Guid]::NewGuid().ToString('N')
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) "a3s-power-preflight-test-$testId"
 $targetName = "target-preflight-contract-test-$testId"
@@ -61,6 +63,25 @@ try {
     )
     [System.IO.File]::WriteAllText($config, "model {}`r`n")
     [System.IO.File]::WriteAllText($prompt, "preflight contract`r`n")
+
+    Assert-Equal `
+        (ConvertTo-WindowsCommandLineArgument 'path with spaces\') `
+        '"path with spaces\\"' `
+        'Windows native argument quoting'
+    $helperStdout = Join-Path $outputRoot 'native-helper.stdout.log'
+    $helperStderr = Join-Path $outputRoot 'native-helper.stderr.log'
+    $helperRun = Invoke-MonitoredNativeProcess `
+        'where.exe' `
+        @('powershell.exe') `
+        $helperStdout `
+        $helperStderr `
+        @() `
+        100
+    Assert-Equal ([int]$helperRun.exit_code) 0 'Monitored native process exit code'
+    Assert-True `
+        (-not [string]::IsNullOrWhiteSpace($helperRun.stdout)) `
+        'Monitored native process must capture standard output'
+    Assert-Equal $helperRun.stderr '' 'Monitored native process standard error'
 
     Set-Item -LiteralPath 'Function:\global:nvidia-smi.exe' -Value {
         $flatArguments = @($args | ForEach-Object { $_ })

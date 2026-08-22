@@ -693,6 +693,7 @@ pub mod hf {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            external_draft: None,
             projector_path: None,
             messages: vec![],
             family: None,

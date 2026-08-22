@@ -2,9 +2,9 @@
 use super::llamacpp_context_mtp_fr_vocab;
 use super::metrics::FrCoverageMetrics;
 use super::{
-    ensure_mtp_fr_available, llamacpp_context_output_limits, metadata_entry_enables_mtp,
-    mtp_speculative_params, use_backend_greedy, use_greedy_fast_path, LlamaContextSettings,
-    LlamaSamplingSettings, MtpCompletionSettings,
+    ensure_mtp_fr_available, external_target_context_params, llamacpp_context_output_limits,
+    metadata_entry_enables_mtp, mtp_speculative_params, use_backend_greedy, use_greedy_fast_path,
+    LlamaContextSettings, LlamaSamplingSettings, MtpCompletionSettings,
 };
 use llama_cpp_2::context::params::LlamaContextType;
 
@@ -202,6 +202,26 @@ fn reduced_vocabulary_requires_the_explicit_patched_feature() {
     assert!(ensure_mtp_fr_available(None, Some("future_mtp")).is_ok());
     let error = ensure_mtp_fr_available(Some(8192), Some("qwen35")).unwrap_err();
     assert!(error.to_string().contains("llamacpp-mtp-fr"));
+}
+
+#[test]
+fn external_target_context_reserves_every_rejected_draft_state() {
+    let params = external_target_context_params(
+        LlamaContextSettings {
+            ctx_size: 512,
+            num_batch: Some(6),
+            num_thread: Some(10),
+            num_thread_batch: Some(10),
+            flash_attention: true,
+            mtp_fr_vocab_size: None,
+        },
+        8,
+        6,
+    );
+
+    assert_eq!(params.n_batch(), 10);
+    assert_eq!(params.n_rs_seq(), 6);
+    assert_eq!(llamacpp_context_output_limits(&params), (9, 9));
 }
 
 #[cfg(feature = "llamacpp-mtp-fr")]

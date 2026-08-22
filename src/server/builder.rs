@@ -135,6 +135,7 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            external_draft: None,
             projector_path: None,
             messages: Vec::new(),
             family: Some("olmoe".to_string()),

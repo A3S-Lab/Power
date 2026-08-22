@@ -1,6 +1,80 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Instant;
 
+use crate::backend::SpeculativeMetricsSnapshot;
+use crate::server::lock::mutex_lock;
 use crate::speculative::SpeculativeMetrics;
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct TelemetryKey {
+    model: String,
+    strategy: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TelemetryTotals {
+    requests: u64,
+    rounds: u64,
+    target_passes: u64,
+    drafted_tokens: u64,
+    accepted_tokens: u64,
+    emitted_tokens: u64,
+    decode_duration_ns: u64,
+}
+
+/// Process-lifetime counters for completed llama.cpp speculative requests.
+#[derive(Debug, Default)]
+pub(crate) struct SpeculativeTelemetry {
+    totals: Mutex<HashMap<TelemetryKey, TelemetryTotals>>,
+}
+
+impl SpeculativeTelemetry {
+    fn record(
+        &self,
+        model: &str,
+        strategy: &str,
+        metrics: SpeculativeMetrics,
+        emitted_tokens: usize,
+        decode_duration_ns: u64,
+    ) {
+        let key = TelemetryKey {
+            model: model.to_string(),
+            strategy: strategy.to_string(),
+        };
+        let mut totals = mutex_lock(&self.totals);
+        let entry = totals.entry(key).or_default();
+        entry.requests = entry.requests.saturating_add(1);
+        entry.rounds = entry.rounds.saturating_add(metrics.rounds);
+        entry.target_passes = entry.target_passes.saturating_add(metrics.target_passes);
+        entry.drafted_tokens = entry.drafted_tokens.saturating_add(metrics.drafted_tokens);
+        entry.accepted_tokens = entry
+            .accepted_tokens
+            .saturating_add(metrics.accepted_tokens);
+        entry.emitted_tokens = entry
+            .emitted_tokens
+            .saturating_add(u64::try_from(emitted_tokens).unwrap_or(u64::MAX));
+        entry.decode_duration_ns = entry.decode_duration_ns.saturating_add(decode_duration_ns);
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<SpeculativeMetricsSnapshot> {
+        mutex_lock(&self.totals)
+            .iter()
+            .map(|(key, totals)| SpeculativeMetricsSnapshot {
+                backend: "llama.cpp".to_string(),
+                model: key.model.clone(),
+                strategy: key.strategy.clone(),
+                requests: totals.requests,
+                rounds: totals.rounds,
+                target_passes: totals.target_passes,
+                drafted_tokens: totals.drafted_tokens,
+                accepted_tokens: totals.accepted_tokens,
+                emitted_tokens: totals.emitted_tokens,
+                decode_duration_ns: totals.decode_duration_ns,
+            })
+            .collect()
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct FrCoverageMetrics {
@@ -105,12 +179,22 @@ pub(super) fn elapsed_ns(started: Instant) -> u64 {
 }
 
 pub(super) fn log_metrics(
+    model: &str,
+    strategy: &str,
+    telemetry: &SpeculativeTelemetry,
     metrics: SpeculativeMetrics,
     timings: MtpPhaseTimings,
     emitted_tokens: usize,
     decode_started: Instant,
 ) {
     let elapsed_duration_ns = elapsed_ns(decode_started);
+    telemetry.record(
+        model,
+        strategy,
+        metrics,
+        emitted_tokens,
+        elapsed_duration_ns,
+    );
     let elapsed = elapsed_duration_ns as f64 / 1_000_000_000.0;
     let tokens_per_second = if elapsed > 0.0 {
         emitted_tokens as f64 / elapsed
@@ -118,7 +202,8 @@ pub(super) fn log_metrics(
         0.0
     };
     tracing::info!(
-        strategy = "mtp",
+        model,
+        strategy,
         rounds = metrics.rounds,
         drafted_tokens = metrics.drafted_tokens,
         accepted_tokens = metrics.accepted_tokens,
@@ -153,4 +238,49 @@ pub(super) fn log_metrics(
         fr_corrections_outside_token_id_prefix = timings.fr.corrections_outside_token_id_prefix,
         "llama.cpp speculative completion finished"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn telemetry_aggregates_by_model_and_strategy() {
+        let telemetry = SpeculativeTelemetry::default();
+        telemetry.record(
+            "target",
+            "dspark",
+            SpeculativeMetrics {
+                rounds: 2,
+                target_passes: 2,
+                drafted_tokens: 8,
+                accepted_tokens: 7,
+                emitted_tokens: 9,
+            },
+            10,
+            1_000,
+        );
+        telemetry.record(
+            "target",
+            "dspark",
+            SpeculativeMetrics {
+                rounds: 1,
+                target_passes: 1,
+                drafted_tokens: 4,
+                accepted_tokens: 4,
+                emitted_tokens: 5,
+            },
+            5,
+            2_000,
+        );
+
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].requests, 2);
+        assert_eq!(snapshot[0].rounds, 3);
+        assert_eq!(snapshot[0].drafted_tokens, 12);
+        assert_eq!(snapshot[0].accepted_tokens, 11);
+        assert_eq!(snapshot[0].emitted_tokens, 15);
+        assert_eq!(snapshot[0].decode_duration_ns, 3_000);
+    }
 }

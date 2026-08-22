@@ -77,6 +77,7 @@ fn manifest_with_blob(dir: &std::path::Path, name: &str, data: &[u8]) -> ModelMa
         modelfile_content: None,
         license: None,
         adapter_path: None,
+        external_draft: None,
         projector_path: None,
         messages: vec![],
         family: Some("llama".to_string()),

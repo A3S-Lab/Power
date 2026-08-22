@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub use super::external_draft::{ExternalDraftArtifact, ExternalDraftKind};
+
 /// Describes a locally stored model and its metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelManifest {
@@ -50,6 +52,10 @@ pub struct ModelManifest {
     /// LoRA/QLoRA adapter path (from Modelfile ADAPTER directive)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter_path: Option<String>,
+
+    /// Optional content-addressed external speculative-draft model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_draft: Option<ExternalDraftArtifact>,
 
     /// Multimodal projector path (for vision models like llava)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,6 +147,7 @@ impl ModelManifest {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            external_draft: None,
             projector_path: None,
             messages: Vec::new(),
             family: None,
@@ -197,6 +204,7 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            external_draft: None,
             projector_path: None,
             messages: vec![],
             family: None,
@@ -269,6 +277,16 @@ mod tests {
         manifest.template_override = Some("{{ .System }}".to_string());
         manifest.license = Some("MIT".to_string());
         manifest.adapter_path = Some("/tmp/adapter.bin".to_string());
+        manifest.external_draft = Some(ExternalDraftArtifact {
+            kind: ExternalDraftKind::Dspark,
+            path: PathBuf::from("/tmp/dspark.gguf"),
+            size: 1_104_594_816,
+            sha256: "1".repeat(64),
+            target_sha256: "2".repeat(64),
+            source: Some("https://example.invalid/dspark".to_string()),
+            revision: Some("immutable-revision".to_string()),
+            license: Some("Apache-2.0".to_string()),
+        });
         manifest.projector_path = Some("/tmp/projector.bin".to_string());
         manifest.family = Some("llama".to_string());
         manifest.families = Some(vec!["llama".to_string(), "clip".to_string()]);
@@ -298,6 +316,9 @@ mod tests {
             deserialized.adapter_path.as_deref(),
             Some("/tmp/adapter.bin")
         );
+        let external_draft = deserialized.external_draft.as_ref().unwrap();
+        assert_eq!(external_draft.kind, ExternalDraftKind::Dspark);
+        assert_eq!(external_draft.size, 1_104_594_816);
         assert_eq!(
             deserialized.projector_path.as_deref(),
             Some("/tmp/projector.bin")
@@ -332,6 +353,7 @@ mod tests {
         assert!(!json.contains("template_override"));
         assert!(!json.contains("license"));
         assert!(!json.contains("adapter_path"));
+        assert!(!json.contains("external_draft"));
         assert!(!json.contains("projector_path"));
     }
 

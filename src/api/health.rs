@@ -22,6 +22,9 @@ pub struct TeeStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpeculativeStatus {
     pub mode: String,
+    /// Verified external draft identities currently resident in a backend.
+    #[serde(default)]
+    pub loaded_artifacts: Vec<crate::backend::LoadedSpeculativeArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft_max: Option<u32>,
     #[serde(default = "crate::config::default_spec_mtp_recurrent_snapshots")]
@@ -121,6 +124,7 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>();
+    let loaded_speculative_artifacts = state.backends.loaded_speculative_artifacts().await;
     let resp = HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -128,6 +132,7 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
         loaded_models: state.loaded_model_count(),
         speculative: SpeculativeStatus {
             mode: state.config.spec_mode.clone(),
+            loaded_artifacts: loaded_speculative_artifacts,
             draft_max: state.config.spec_draft_max,
             mtp_recurrent_snapshots: state.config.spec_mtp_recurrent_snapshots,
             mtp_recurrent_chain: state.config.spec_mtp_recurrent_chain,
@@ -266,6 +271,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_health_reports_verified_speculative_artifact_without_path() {
+        let proof = crate::backend::LoadedSpeculativeArtifact {
+            backend: "mock".to_string(),
+            model: "target".to_string(),
+            strategy: "dspark".to_string(),
+            artifact_size: 1_104_594_816,
+            artifact_sha256: "1".repeat(64),
+            target_sha256: "2".repeat(64),
+        };
+        let mut backends = BackendRegistry::new();
+        backends.register(Arc::new(
+            MockBackend::success().with_loaded_speculative_artifact(proof.clone()),
+        ));
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(backends),
+            Arc::new(PowerConfig::default()),
+        );
+
+        let response = handler(State(state)).await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health.speculative.loaded_artifacts, [proof]);
+        let json = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!json.contains("path"));
+    }
+
+    #[tokio::test]
     async fn test_health_reports_effective_privacy_metric_suppression() {
         let config = Arc::new(PowerConfig {
             redact_logs: true,
@@ -344,6 +379,7 @@ mod tests {
             loaded_models: 3,
             speculative: SpeculativeStatus {
                 mode: "mtp".to_string(),
+                loaded_artifacts: Vec::new(),
                 draft_max: Some(3),
                 mtp_recurrent_snapshots: 7,
                 mtp_recurrent_chain: true,
@@ -379,6 +415,7 @@ mod tests {
             loaded_models: 1,
             speculative: SpeculativeStatus {
                 mode: "off".to_string(),
+                loaded_artifacts: Vec::new(),
                 draft_max: None,
                 mtp_recurrent_snapshots: 7,
                 mtp_recurrent_chain: false,
