@@ -175,6 +175,28 @@ Include every `cpu_tensors` and `gpu_tensors` override with repeated
 `--cpu-tensor` and `--gpu-tensor` flags. The digest command and the server ACL
 must describe exactly the same values.
 
+For the generic release calibration path, materialize the deterministic
+SafeTensors collection before configuring the server. Run the same command on
+every capture host, or distribute a read-only copy of the exact resulting file:
+
+```bash
+cargo run --locked --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- \
+  materialize-release-fixture-weights \
+  --directory release-fixture-weights \
+  --width 4096 \
+  --output release-fixture-weights.json
+
+fixture_weights_sha256="$(jq -r .weightsSha256 release-fixture-weights.json)"
+test "${#fixture_weights_sha256}" -eq 64
+```
+
+The output directory and receipt are create-new. The receipt binds the same
+canonical SafeTensors collection identity used by `WeightStore`, startup model
+pins, `/v1/attestation`, and accelerator declarations. A caller-owned model
+uses its reviewed weight collection digest instead.
+
 Configure Power with absolute paths to the preserved bytes:
 
 ```acl
@@ -200,7 +222,7 @@ expected_measurement "sev-snp" {
 }
 
 model_hash "your-model" {
-  digest = "sha256:<same-weights-sha256-used-by-the-release-capture>"
+  digest = "sha256:<fixture_weights_sha256-or-reviewed-model-weights-sha256>"
 }
 ```
 
@@ -228,9 +250,47 @@ curl --fail --show-error --silent --get \
   "$power_url/v1/attestation" > report.json
 ```
 
-On the same confidential host, run `release-run` with the same common
-weights/graph and independent reference artifacts. The platform policy field is
-the exact canonical GPU execution digest that the CPU TEE report also binds:
+On the same confidential host, the generic calibration path creates the local
+CUDA source and an active device-residency declaration together. The platform
+policy field is the exact canonical GPU execution digest that the CPU TEE
+report also binds:
+
+```bash
+set -euo pipefail
+set -o noclobber
+power_commit="$(git rev-parse HEAD)"
+
+cargo run --locked --release --no-default-features \
+  --features embedded-cuda \
+  --bin a3s-power-tensor-batch-bench -- \
+  release-confidential-fixture \
+  --fixture-weights "$PWD/release-fixture-weights" \
+  --output confidential-source-cuda.json \
+  --accelerator-declaration-output accelerator.json \
+  --tee-policy-sha256 "$gpu_execution_sha256" \
+  --host-fixed-bytes <positive-predeclared-host-fixed-bound> \
+  --host-scratch-bytes <positive-predeclared-host-scratch-bound> \
+  --device-fixed-bytes <positive-predeclared-cuda-fixed-bound> \
+  --device-scratch-bytes <positive-predeclared-cuda-scratch-bound> \
+  --device cuda:0 \
+  --power-commit "$power_commit" \
+  --filesystem-class <exact-filesystem-class> \
+  --device-class "<exact confidential GPU, driver, firmware, and guest build>" \
+  --cpu-model "<exact confidential host CPU model>" \
+  --ram-bytes <guest-physical-memory-bytes> \
+  --items 8 \
+  --width 4096 \
+  --warmup-rounds 2 \
+  --measured-rounds 9 > confidential-source-receipt.json
+```
+
+The pair writer validates both artifacts, refuses aliases or existing targets,
+and removes any newly created half-pair after a normal write failure. Its
+receipt contains only digests. The capture remains local CUDA evidence until
+strict proof-backed promotion.
+
+For a caller-owned reviewed graph, use `release-run` with the same common
+weights/graph and independent reference artifacts instead:
 
 ```bash
 set -euo pipefail
@@ -275,10 +335,12 @@ bundle; strict v1 rejects reused platform evidence.
 
 ### 4. Create the accelerator declaration
 
-The integrating model crate creates a declaration from the active Power
-residency hierarchy. The server execution digest and declaration digest are
-independent identities: the former binds the real `GpuConfig`; the latter also
-binds weights, groups, kernels, fallback, device, and optional mesh.
+`release-confidential-fixture` already creates `accelerator.json` from a real
+CUDA-resident fixture plan. For a caller-owned graph, the integrating model
+crate creates the equivalent declaration from its active Power residency
+hierarchy. The server execution digest and declaration digest are independent
+identities: the former binds the real `GpuConfig`; the latter also binds
+weights, groups, kernels, fallback, device, and optional mesh.
 
 ```rust
 use a3s_power::api::prompt_policy::canonical_gpu_execution_digest;
@@ -431,6 +493,7 @@ Preserve at least these files for review:
 | `metal.json` | Named Metal complete-contract evidence |
 | `confidential-source-cuda.json` | Distinct local CUDA source used only for promotion |
 | `accelerator.json` | Weights, real GPU execution policy, residency, kernel/fallback, device/mesh |
+| `release-fixture-weights.json`, `confidential-source-receipt.json` | Persistent fixture and source/declaration digest receipts when using calibration mode |
 | `gpu-evidence.json`, `gpu-verdict.json`, `nonce.hex` | Exact raw NVIDIA freshness and verdict bytes |
 | `report.json` | Raw CPU TEE report and canonical model/runtime/GPU claims |
 | `confidential-gpu.json` | Proof-backed promoted capture |

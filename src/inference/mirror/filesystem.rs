@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::{PowerError, Result};
 use crate::inference::filesystem::sync_directory;
+use crate::weight_collection::portable_relative_path;
 
 use super::{check_cancelled, WeightMirrorPlannedFile};
 
@@ -107,13 +108,9 @@ pub(super) fn inspect_destination(
                     "partial weight mirror file escaped its destination".to_string(),
                 )
             })?;
-            let relative = relative.to_str().ok_or_else(|| {
-                PowerError::InvalidRequest(
-                    "partial weight mirror file names must be valid UTF-8".to_string(),
-                )
-            })?;
-            if !selected.contains(relative) {
-                conflicts.push(relative.to_string());
+            let relative = portable_relative_path(relative)?;
+            if !selected.contains(relative.as_str()) {
+                conflicts.push(relative);
             }
         }
     }

@@ -7,6 +7,9 @@ use sha2::{Digest, Sha256};
 use crate::dirs;
 use crate::error::{PowerError, Result};
 use crate::model::manifest::ModelManifest;
+use crate::weight_collection::{
+    canonicalize_collection_root, discover_safetensors, hash_safetensors,
+};
 
 #[derive(Serialize)]
 struct DirectoryManifestDigest<'a> {
@@ -115,6 +118,21 @@ pub fn compute_sha256_path(path: &std::path::Path) -> Result<String> {
         "Path is neither a regular file nor a directory: {}",
         path.display()
     ))))
+}
+
+/// Compute the canonical digest used by the embedded SafeTensors weight store.
+///
+/// Unlike a generic directory digest, this identity covers only recursively
+/// discovered `.safetensors` files and binds each stable relative name, length,
+/// and complete byte sequence. Attestation and accelerator declarations must
+/// use this same identity or a real report can never bind the executed weights.
+pub fn compute_sha256_safetensors_collection(path: &std::path::Path) -> Result<String> {
+    let root = canonicalize_collection_root(path)?;
+    let files = discover_safetensors(&[root], usize::MAX)?;
+    Ok(hash_safetensors(&files, u64::MAX, |file| {
+        std::fs::File::open(file).map_err(Into::into)
+    })?
+    .sha256)
 }
 
 /// Compute SHA-256 over a canonical manifest of all files in a directory.

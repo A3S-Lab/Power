@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 use std::{fs::File, io::Read};
 
 use a3s_power::error::{PowerError, Result};
@@ -7,18 +8,18 @@ use a3s_power::inference::{
     run_tensor_batch_benchmark, DevicePreference, EmbeddedRuntime, InferenceLimits,
     StorageBenchmarkSystem, TensorBatchBenchmarkConfig, TensorInput, WeightStore,
 };
-use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 const MAX_INPUT_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
-const FIXTURE_PREFIX: &str = "a3s-power-tensor-batch-fixture-";
 
 #[path = "tensor_batch_bench/allocator.rs"]
 mod allocator;
 #[path = "tensor_batch_bench/arguments.rs"]
 mod arguments;
+#[path = "tensor_batch_bench/fixture_weights.rs"]
+mod fixture_weights;
 #[path = "tensor_batch_bench/output.rs"]
 mod output;
 #[path = "tensor_batch_bench/release_bundle.rs"]
@@ -32,7 +33,8 @@ mod release_run;
 
 use allocator::ProcessAllocationCounter;
 use arguments::Arguments;
-use output::{write_json_output, write_release_bundle_outputs};
+use fixture_weights::FixtureWeightDirectory;
+use output::{write_confidential_fixture_outputs, write_json_output, write_release_bundle_outputs};
 
 const USAGE: &str = r#"A3S Power model-neutral tensor batch benchmark
 
@@ -79,8 +81,15 @@ Run the built-in generic Add graph fixture:
     --ram-bytes <bytes> \
     [--items <count>] \
     [--width <elements>] \
+    [--fixture-weights <persistent-weight-directory>] \
     [--warmup-rounds <count>] \
     [--measured-rounds <count>]
+
+Materialize deterministic create-new fixture weights for cross-host evidence:
+  a3s-power-tensor-batch-bench materialize-release-fixture-weights \
+    --directory <new-weight-directory> \
+    [--width <elements>] \
+    [--output <new-receipt.json>]
 
 Capture the complete model-neutral runtime contract with the same fixture:
   a3s-power-tensor-batch-bench release-fixture \
@@ -97,8 +106,20 @@ Capture the complete model-neutral runtime contract with the same fixture:
     --device-scratch-bytes <bytes> \
     [--items <count>] \
     [--width <elements>] \
+    [--fixture-weights <persistent-weight-directory>] \
     [--warmup-rounds <count>] \
     [--measured-rounds <count>]
+
+Capture a local CUDA source plus a confidential accelerator declaration:
+  a3s-power-tensor-batch-bench release-confidential-fixture \
+    --device cuda:<ordinal> \
+    --fixture-weights <persistent-weight-directory> \
+    --output <new-local-cuda-capture.json> \
+    --accelerator-declaration-output <new-declaration.json> \
+    <all remaining release-fixture arguments above>
+
+The source capture remains local until a3s-power-verify validates a real
+SEV-SNP and NVIDIA NRAS report and promotes it into confidential-GPU evidence.
 
 Build a pinned production v1 release-evidence bundle from four captures:
   a3s-power-tensor-batch-bench build-release-bundle \
@@ -164,7 +185,47 @@ fn run() -> Result<()> {
     values.remove(0);
     let mut arguments = Arguments::new(values);
     let output_path = arguments.optional_path("--output")?;
+    if command == "materialize-release-fixture-weights" {
+        let directory = arguments.required_path("--directory")?;
+        let width = arguments.optional_number("--width")?.unwrap_or(4_096_usize);
+        arguments.finish()?;
+        let pending = fixture_weights::materialize(&directory, width)?;
+        let receipt = serde_json::to_value(pending.receipt())?;
+        write_json_output(&receipt, output_path.as_deref())?;
+        pending.persist();
+        return Ok(());
+    }
     let output = match command.as_str() {
+        "release-confidential-fixture" => {
+            let capture_path = output_path.as_deref().ok_or_else(|| {
+                PowerError::InvalidRequest(
+                    "release-confidential-fixture requires --output for the new local CUDA capture"
+                        .to_string(),
+                )
+            })?;
+            let declaration_path = arguments.required_path("--accelerator-declaration-output")?;
+            let common = parse_common(&mut arguments)?;
+            let (capture, declaration) =
+                release_fixture::run_confidential_source(&mut arguments, &common)?;
+            arguments.finish()?;
+            write_confidential_fixture_outputs(
+                &capture,
+                &declaration,
+                capture_path,
+                &declaration_path,
+            )?;
+            write_json_output(
+                &serde_json::json!({
+                    "schema": "a3s.power.confidential-release-source-receipt.v1",
+                    "captureSha256": capture.sha256,
+                    "acceleratorDeclarationSha256": declaration.declaration_sha256,
+                    "weightsSha256": declaration.weights_sha256,
+                    "executionPolicySha256": declaration.execution_policy_sha256,
+                }),
+                None,
+            )?;
+            return Ok(());
+        }
         "build-release-bundle" => {
             let bundle_path = output_path.as_deref().ok_or_else(|| {
                 PowerError::InvalidRequest(
@@ -270,12 +331,13 @@ fn build_reviewed_graph(
         "tensor input document",
     )?;
     let inputs = serde_json::from_slice::<InputDocument>(&input_source)?.items;
-    let store = std::sync::Arc::new(WeightStore::open(weights, &limits)?);
+    let store = Arc::new(WeightStore::open(weights, &limits)?);
     let plan = GraphPlan::parse(&plan_source, &identity, &store, &limits)?;
     let runtime = EmbeddedRuntime::new(common.device, limits)?;
-    let graph = GraphExecutor::new(plan, store, runtime.clone())?;
+    let graph = GraphExecutor::new(plan, store.clone(), runtime.clone())?;
     Ok(BenchmarkWorkload {
-        _fixture_directory: None,
+        fixture_directory: None,
+        weights: store,
         graph,
         runtime,
         inputs,
@@ -291,7 +353,8 @@ fn run_fixture(
 }
 
 struct BenchmarkWorkload {
-    _fixture_directory: Option<FixtureDirectory>,
+    fixture_directory: Option<FixtureWeightDirectory>,
+    weights: Arc<WeightStore>,
     graph: GraphExecutor,
     runtime: EmbeddedRuntime,
     inputs: Vec<TensorInput>,
@@ -307,22 +370,10 @@ fn build_fixture(arguments: &mut Arguments, common: &CommonOptions) -> Result<Be
     }
     let limits = InferenceLimits::default();
     limits.checked_elements(&[item_count, width], "fixture batch")?;
-    let fixture = FixtureDirectory::create()?;
-    let bias = vec![0.25_f32; width]
-        .into_iter()
-        .flat_map(f32::to_le_bytes)
-        .collect::<Vec<_>>();
-    let view = TensorView::new(Dtype::F32, vec![width], &bias).map_err(|error| {
-        PowerError::InvalidFormat(format!("failed to build fixture tensor: {error}"))
-    })?;
-    serialize_to_file(
-        vec![("bias", view)],
-        None,
-        &fixture.path.join("fixture.safetensors"),
-    )
-    .map_err(|error| {
-        PowerError::InvalidFormat(format!("failed to serialize fixture weights: {error}"))
-    })?;
+    let fixture = match arguments.optional_path("--fixture-weights")? {
+        Some(path) => FixtureWeightDirectory::open(&path)?,
+        None => FixtureWeightDirectory::temporary(width)?,
+    };
     let source_sha256 = fixture_source_sha256();
     let plan_source = fixture_plan(width, &source_sha256);
     let identity = GraphIdentity::new(
@@ -332,10 +383,11 @@ fn build_fixture(arguments: &mut Arguments, common: &CommonOptions) -> Result<Be
         source_sha256,
         1,
     );
-    let store = std::sync::Arc::new(WeightStore::open(&fixture.path, &limits)?);
+    let store = Arc::new(WeightStore::open(fixture.path(), &limits)?);
+    fixture_weights::validate(&store, width)?;
     let plan = GraphPlan::parse(&plan_source, &identity, &store, &limits)?;
     let runtime = EmbeddedRuntime::new(common.device, limits.clone())?;
-    let graph = GraphExecutor::new(plan, store, runtime.clone())?;
+    let graph = GraphExecutor::new(plan, store.clone(), runtime.clone())?;
     let inputs = (0..item_count)
         .map(|item| {
             let values = (0..width)
@@ -345,7 +397,8 @@ fn build_fixture(arguments: &mut Arguments, common: &CommonOptions) -> Result<Be
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(BenchmarkWorkload {
-        _fixture_directory: Some(fixture),
+        fixture_directory: Some(fixture),
+        weights: store,
         graph,
         runtime,
         inputs,
@@ -473,40 +526,6 @@ fn read_bounded_regular(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8
         )));
     }
     Ok(bytes)
-}
-
-struct FixtureDirectory {
-    path: PathBuf,
-}
-
-impl FixtureDirectory {
-    fn create() -> Result<Self> {
-        let unique = format!(
-            "{FIXTURE_PREFIX}{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| PowerError::InferenceFailed(error.to_string()))?
-                .as_nanos()
-        );
-        let path = std::env::temp_dir().join(unique);
-        std::fs::create_dir(&path)?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for FixtureDirectory {
-    fn drop(&mut self) {
-        let expected_parent = std::env::temp_dir();
-        let safe_name = self
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(FIXTURE_PREFIX));
-        if self.path.parent() == Some(expected_parent.as_path()) && safe_name {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
 }
 
 #[cfg(test)]

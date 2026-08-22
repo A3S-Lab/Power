@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::error::{PowerError, Result};
+use crate::model::manifest::{ModelFormat, ModelManifest};
 use crate::model::registry::ModelRegistry;
 use crate::model::storage;
 use crate::tee::key_provider::KeyProvider;
@@ -21,6 +22,25 @@ pub use super::model_signature::verify_model_signature_hash;
 pub fn verify_model_integrity(model_path: &Path, expected_hash: &str) -> Result<bool> {
     let actual = storage::compute_sha256_path(model_path)?;
     Ok(actual == expected_hash)
+}
+
+/// Compute the runtime identity for one registered local model.
+///
+/// SafeTensors directories use the same canonical collection digest as
+/// `WeightStore`; other formats retain their file or full-directory identity.
+pub fn compute_manifest_integrity_sha256(manifest: &ModelManifest) -> Result<String> {
+    if manifest.format == ModelFormat::SafeTensors && manifest.path.is_dir() {
+        storage::compute_sha256_safetensors_collection(&manifest.path)
+    } else {
+        storage::compute_sha256_path(&manifest.path)
+    }
+}
+
+pub fn verify_model_manifest_integrity(
+    manifest: &ModelManifest,
+    expected_hash: &str,
+) -> Result<bool> {
+    Ok(compute_manifest_integrity_sha256(manifest)? == expected_hash)
 }
 
 /// Verify all registered models against the expected hashes from config.
@@ -46,7 +66,7 @@ pub fn verify_all_models(
                 actual: "<not found in registry>".to_string(),
             })?;
 
-        let actual = storage::compute_sha256_path(&manifest.path)?;
+        let actual = compute_manifest_integrity_sha256(&manifest)?;
         if actual != *expected {
             return Err(PowerError::IntegrityCheckFailed {
                 model: name.clone(),
@@ -98,7 +118,7 @@ pub async fn verify_all_models_with_key_provider(
             })?;
             crate::tee::encrypted_model::compute_plaintext_sha256(&manifest.path, &key)?
         } else {
-            storage::compute_sha256_path(&manifest.path)?
+            compute_manifest_integrity_sha256(&manifest)?
         };
 
         if actual != *expected {
@@ -245,6 +265,67 @@ mod tests {
 
         let count = verify_all_models(&registry, &hashes).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[cfg(feature = "embedded-inference")]
+    #[test]
+    fn safetensors_startup_pin_uses_embedded_weight_collection_identity() {
+        use crate::inference::{InferenceLimits, WeightStore};
+        use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
+
+        let directory = tempfile::tempdir().unwrap();
+        let weights = directory.path().join("weights");
+        std::fs::create_dir(&weights).unwrap();
+        let values = [1.0_f32, 2.0_f32]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let view = TensorView::new(Dtype::F32, vec![2], &values).unwrap();
+        serialize_to_file(
+            vec![("weight", view)],
+            None,
+            &weights.join("model.safetensors"),
+        )
+        .unwrap();
+        std::fs::write(weights.join("ignored.json"), b"not executed").unwrap();
+
+        let canonical = WeightStore::open(&weights, &InferenceLimits::default())
+            .unwrap()
+            .sha256()
+            .to_string();
+        let manifest = ModelManifest {
+            name: "test-model".to_string(),
+            format: ModelFormat::SafeTensors,
+            size: 0,
+            sha256: canonical.clone(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: weights,
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            projector_path: None,
+            messages: Vec::new(),
+            family: None,
+            families: None,
+        };
+        assert_eq!(
+            compute_manifest_integrity_sha256(&manifest).unwrap(),
+            canonical
+        );
+        let registry = ModelRegistry::new();
+        registry.register_transient(manifest).unwrap();
+        assert_eq!(
+            verify_all_models(
+                &registry,
+                &HashMap::from([("test-model".to_string(), canonical)])
+            )
+            .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]

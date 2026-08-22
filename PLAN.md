@@ -31,6 +31,10 @@ deployment boundary, not a restriction to LLMs or to a particular model family.
 - A model-neutral release-evidence gate and complete-contract collector;
   a production tag is admitted only when its evidence-only child authenticates
   exact-revision CPU, CUDA, Metal, and confidential-GPU captures
+- One canonical SafeTensors collection identity now joins startup integrity,
+  model-bound attestation, embedded execution, persistent cross-host fixtures,
+  and confidential accelerator declarations; mismatched directory hashing can
+  no longer make a real promotion impossible
 - Strict SEV-SNP verification now binds policy fields to the exact signed raw
   report. Intel TDX fails closed until a DCAP Quote/QVL path is implemented.
 
@@ -236,7 +240,10 @@ claim that Power is ready to tag v1.0.0.
 
 The Rust release API now requires an opaque exact-report proof for confidential
 promotion, and the checked-in external capture runbook carries that API through
-raw vendor-evidence preservation and create-new CLI output. A production release
+raw vendor-evidence preservation and create-new CLI output. The generic runner
+also materializes persistent fixture weights and creates the local CUDA
+source/declaration pair atomically; caller-owned graphs retain their model-owned
+declaration path. A production release
 exists only when its signed evidence child proves that all of these gates pass:
 
 1. one immutable revision supplies CPU, CUDA, Metal, and confidential-GPU

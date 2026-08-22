@@ -168,12 +168,12 @@ pub async fn ensure_loaded_with_keep_alive(
         let ok = if let Some(ref actual_hash) = encrypted_plaintext_hash {
             actual_hash == expected_hash
         } else {
-            crate::tee::model_seal::verify_model_integrity(&load_manifest.path, expected_hash)
+            crate::tee::model_seal::verify_model_manifest_integrity(&load_manifest, expected_hash)
                 .map_err(|e| {
-                    crate::error::PowerError::Config(format!(
-                        "Integrity check failed for model '{model_name}': {e}"
-                    ))
-                })?
+                crate::error::PowerError::Config(format!(
+                    "Integrity check failed for model '{model_name}': {e}"
+                ))
+            })?
         };
         if !ok {
             return Err(crate::error::PowerError::Config(format!(

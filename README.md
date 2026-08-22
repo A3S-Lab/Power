@@ -290,7 +290,12 @@ TDX-backed. See the
 `a3s-power-tensor-batch-bench release-run` applies the same collector to any
 caller-owned reviewed graph, typed tensors, opaque profile identities, and
 independent reference output. `release-fixture` is only a reproducible Add-graph
-calibration path. Neither the collector nor the evidence schema contains a
+calibration path. Its persistent cross-host weights are created with
+`materialize-release-fixture-weights`; `release-confidential-fixture` then
+writes a local CUDA source plus active residency declaration as a validated
+create-new pair. SafeTensors startup pins, attestation, embedded execution, and
+accelerator declarations share one canonical collection digest. Neither the
+collector nor the evidence schema contains a
 tokenizer, container format, generation mode, model family, or architecture
 dispatch key. Qwen is one possible workload; language, vision, embedding,
 audio, scientific, and custom graphs use the same contract. See

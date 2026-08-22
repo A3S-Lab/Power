@@ -28,3 +28,5 @@ pub mod speculative;
 pub mod tee;
 #[cfg(feature = "server")]
 pub mod verify;
+#[cfg(any(feature = "server", feature = "embedded-inference"))]
+mod weight_collection;

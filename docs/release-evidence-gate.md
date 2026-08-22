@@ -204,10 +204,20 @@ The isolated `a3s-power-tensor-batch-bench` process now has two complete
 contract paths:
 
 - `release-fixture` creates a temporary generic Add graph for runtime and
-  hardware calibration;
+  hardware calibration, or reuses a validated persistent fixture collection;
 - `release-run` accepts caller-owned verified weights, a reviewed graph, at
   least two compatible F32 inputs, opaque profile/fallback implementation
-  digests, and one independently produced typed reference output.
+  digests, and one independently produced typed reference output; and
+- `release-confidential-fixture` creates a distinct local CUDA source and an
+  active device-residency declaration as one no-overwrite pair. It does not
+  mint the confidential security class.
+
+`materialize-release-fixture-weights` creates the deterministic persistent
+SafeTensors calibration collection and a digest receipt. CPU, CUDA, Metal, the
+confidential source, and the model-bound server report must bind the same
+collection digest. SafeTensors server startup, attestation, `WeightStore`, and
+accelerator declarations share one canonical relative-name/length/content
+digest; a generic directory-manifest digest cannot substitute for it.
 
 Both paths first record alternating scalar/batch evidence, then drive the real
 resident graph, execution-batch lifecycle, bounded admission queue, session
@@ -225,8 +235,8 @@ Complete commands and input formats are in the
 [Tensor Batch Cost Benchmark Protocol](tensor-batch-benchmark.md).
 The external [Metal and Confidential-GPU Release Capture](external-release-capture.md)
 guide carries the same contract onto named hardware, preserves raw vendor
-evidence, and invokes strict proof-backed promotion without adding a
-model-specific release path.
+evidence, creates the confidential source/declaration pair, and invokes strict
+proof-backed promotion without adding a model-specific release path.
 
 After all four captures exist, `build-release-bundle` derives their common
 revision and platform-specific bindings instead of asking a release operator to
@@ -263,6 +273,9 @@ were generated from clean revision
 contract, and their platform-specific profile bindings form one verified
 two-platform partial bundle. The raw JSON, policy bytes, artifact hashes,
 negative CPU batching result, and exact reproduction commands are checked in.
+They are historical evidence for that revision, not evidence for a later
+source parent; any digest-semantics or capture-runner change requires all
+platform captures to be regenerated from the new frozen source.
 
 Metal and confidential-GPU results cannot be inferred from this Windows RTX
 4090 host. Every production tag must instead carry exact-parent captures from

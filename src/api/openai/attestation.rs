@@ -213,8 +213,9 @@ async fn runtime_model_digest(
         ));
     }
     if manifest.path.is_dir() {
+        let canonical_weights = manifest.format == ModelFormat::SafeTensors;
         let actual =
-            crate::model::storage::compute_sha256_directory(&manifest.path).map_err(|e| {
+            crate::tee::model_seal::compute_manifest_integrity_sha256(manifest).map_err(|e| {
                 error_json(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("failed to hash current model directory for '{model_name}': {e}"),
@@ -225,7 +226,11 @@ async fn runtime_model_digest(
         return Ok((
             ModelDigestClaim {
                 name: model_name.to_string(),
-                kind: ModelDigestKind::DirectoryManifestSha256,
+                kind: if canonical_weights {
+                    ModelDigestKind::PlaintextWeightsSha256
+                } else {
+                    ModelDigestKind::DirectoryManifestSha256
+                },
                 digest: digest.clone(),
                 plaintext_digest: None,
                 ciphertext_digest: None,
@@ -556,6 +561,30 @@ mod tests {
     use crate::tee::gpu::StaticGpuEvidenceProvider;
     use axum::extract::State;
     use std::{collections::HashMap, path::Path, sync::Arc};
+
+    #[cfg(feature = "embedded-inference")]
+    fn write_safetensors_collection(path: &Path) -> String {
+        use crate::inference::{InferenceLimits, WeightStore};
+        use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
+
+        std::fs::create_dir(path).unwrap();
+        let values = [0.25_f32, 0.5_f32]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let view = TensorView::new(Dtype::F32, vec![2], &values).unwrap();
+        serialize_to_file(
+            vec![("bias", view)],
+            None,
+            &path.join("fixture.safetensors"),
+        )
+        .unwrap();
+        std::fs::write(path.join("ignored-config.json"), b"not executed weights").unwrap();
+        WeightStore::open(path, &InferenceLimits::default())
+            .unwrap()
+            .sha256()
+            .to_string()
+    }
 
     fn signing_keypair() -> (ed25519_dalek::SigningKey, String) {
         use ed25519_dalek::SigningKey;
@@ -1166,6 +1195,51 @@ mod tests {
         let model = claims.model.as_ref().unwrap();
         assert_eq!(model.kind, ModelDigestKind::DirectoryManifestSha256);
         assert_eq!(hex::encode(&model.digest), hash);
+        assert_eq!(
+            report.report_data,
+            build_claims_report_data(claims).unwrap()
+        );
+    }
+
+    #[cfg(feature = "embedded-inference")]
+    #[tokio::test]
+    async fn safetensors_attestation_binds_canonical_executed_weight_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_dir = dir.path().join("safetensors-model");
+        let canonical_weights = write_safetensors_collection(&model_dir);
+        assert_eq!(
+            storage::compute_sha256_safetensors_collection(&model_dir).unwrap(),
+            canonical_weights
+        );
+        assert_ne!(
+            storage::compute_sha256_directory(&model_dir).unwrap(),
+            canonical_weights
+        );
+
+        let mut manifest = local_manifest("test-model", &model_dir, &canonical_weights);
+        manifest.format = ModelFormat::SafeTensors;
+        let state = test_state_with_manifest(
+            manifest,
+            PowerConfig {
+                tee_mode: true,
+                model_hashes: HashMap::from([(
+                    "test-model".to_string(),
+                    canonical_weights.clone(),
+                )]),
+                ..Default::default()
+            },
+        );
+
+        let resp = handler(State(state), with_model("test-model"))
+            .await
+            .into_response();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let report = response_report(resp).await;
+        let claims = report.claims.as_ref().unwrap();
+        let model = claims.model.as_ref().unwrap();
+        assert_eq!(model.kind, ModelDigestKind::PlaintextWeightsSha256);
+        assert_eq!(hex::encode(&model.digest), canonical_weights);
         assert_eq!(
             report.report_data,
             build_claims_report_data(claims).unwrap()

@@ -155,6 +155,9 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
 - [x] Add the external Metal/confidential-GPU capture runbook that collects vendor
       evidence, invokes strict proof-backed promotion, and preserves the raw
       report plus trust-root material for the same immutable release revision.
+- [x] Unify SafeTensors startup, attestation, embedded-runtime, and accelerator
+      declaration digests; add deterministic persistent fixture weights and an
+      atomic local-CUDA-source/declaration capture command for cross-host proof.
 - [x] Assemble typed four-platform captures with a machine-enforced CLI that
       derives the strict policy, verifies the exact version/revision, writes a
       create-new bundle and digest pin, and attaches both to non-`0.x` releases.

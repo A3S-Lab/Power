@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added deterministic persistent release-fixture weights and a
+  `release-confidential-fixture` command. The latter pins the fixture on the
+  selected CUDA device and writes the distinct local source capture plus its
+  confidential accelerator declaration as a validated create-new pair with
+  rollback on ordinary failure.
 - Added a model-neutral `build-release-bundle` command and
   `ReleaseEvidenceBundle::build_strict_v1` API. They derive the strict policy
   from typed CPU, CUDA, Metal, and proof-promoted confidential-GPU captures,
@@ -70,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact-report proof in one process; inputs are bounded and replayed, all
   weights/device/execution identities are pinned, and synchronized
   same-directory output refuses to replace an existing artifact.
+- Unified SafeTensors collection identity across `WeightStore`, model startup
+  integrity, `/v1/attestation`, release capture, and accelerator declarations.
+  The digest binds portable relative names, lengths, and complete bytes, and
+  hashing now rejects files that change between metadata inspection and read.
 - Split accelerator execution-policy identity from the accelerator declaration
   digest in declaration schemas v3/v4. Model integrations now bind the
   canonical server GPU execution/offload digest explicitly while declaration

@@ -75,9 +75,28 @@ recomputes the report digest.
 ## Reproduce the generic fixture
 
 The built-in fixture is a model-neutral broadcast Add graph with eight inputs
-of shape `[1, 4096]`. It creates temporary verified SafeTensors weights, runs the
-same public graph executor and report builder used by caller-owned graphs, and
-removes the scoped temporary directory after the run.
+of shape `[1, 4096]`. By default it creates temporary verified SafeTensors
+weights, runs the same public graph executor and report builder used by
+caller-owned graphs, and removes the scoped temporary directory after the run.
+For cross-host release evidence, materialize the deterministic collection once
+per host and pass it with `--fixture-weights`; every host must report the same
+`weightsSha256`.
+
+```powershell
+$fixtureWeights = Join-Path $PWD "release-fixture-weights"
+cargo run --release --no-default-features `
+  --features embedded-inference `
+  --bin a3s-power-tensor-batch-bench -- `
+  materialize-release-fixture-weights `
+  --directory $fixtureWeights `
+  --width 4096 `
+  --output release-fixture-weights.json
+```
+
+The directory and receipt use create-new semantics. If receipt creation fails,
+the newly created directory is removed. The directory contains exactly one F32
+`bias` tensor of the requested width; a mismatched or augmented collection is
+rejected when reused.
 
 Build from the Power crate directory and bind the capture to the checked-out
 revision:
@@ -207,6 +226,12 @@ cargo run --release --no-default-features `
   --measured-rounds 9
 ```
 
+Add `--fixture-weights $fixtureWeights` to CPU, CUDA, and Metal release runs
+when their captures will enter one bundle. The canonical collection identity
+hashes portable relative SafeTensors names, lengths, and complete bytes in
+lexical order. Server startup pins, `/v1/attestation`, the embedded weight
+store, benchmark capture, and accelerator declarations use that same digest.
+
 Memory values are predeclared bounds, not observed values copied back into the
 command. A capture fails if its measured additional peak exceeds
 fixed-plus-scratch or if its final retained increase exceeds fixed. CUDA and
@@ -266,6 +291,41 @@ profiles and TEE policies are device-specific.
 
 `--output` writes UTF-8 JSON with create-new semantics and refuses to overwrite
 an existing capture. Omit it to keep stdout output for pipelines.
+
+On a confidential CUDA host, the generic fixture can create the distinct local
+source capture and its real device-residency declaration together:
+
+```bash
+cargo run --locked --release --no-default-features \
+  --features embedded-cuda \
+  --bin a3s-power-tensor-batch-bench -- \
+  release-confidential-fixture \
+  --fixture-weights /verified/release-fixture-weights \
+  --output confidential-source-cuda.json \
+  --accelerator-declaration-output accelerator.json \
+  --device cuda:0 \
+  --power-commit "$(git rev-parse HEAD)" \
+  --filesystem-class ext4 \
+  --device-class "exact confidential GPU, driver, firmware, and guest build" \
+  --cpu-model "exact confidential host CPU model" \
+  --ram-bytes <guest-physical-memory-bytes> \
+  --tee-policy-sha256 <canonical-gpu-execution-sha256> \
+  --host-fixed-bytes <positive-predeclared-host-fixed-bound> \
+  --host-scratch-bytes <positive-predeclared-host-scratch-bound> \
+  --device-fixed-bytes <positive-predeclared-cuda-fixed-bound> \
+  --device-scratch-bytes <positive-predeclared-cuda-scratch-bound> \
+  --items 8 \
+  --width 4096 \
+  --warmup-rounds 2 \
+  --measured-rounds 9 > confidential-source-receipt.json
+```
+
+Both files are validated and committed as a create-new pair; a normal failure
+removes any new half-pair. The capture is still local CUDA evidence. Only the
+independent verifier can promote it after validating a real nonce-bound CPU TEE
+report and NVIDIA evidence. The caller-owned `release-run` path still requires
+the integrating model crate to produce its own declaration from the active
+residency hierarchy.
 
 For a production Metal capture, run `release-run` on named Apple hardware with
 `--features embedded-metal --device metal:0`, positive predeclared device fixed

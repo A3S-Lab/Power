@@ -3,7 +3,9 @@ use std::io::Write;
 use std::path::Path;
 
 use a3s_power::error::{PowerError, Result};
-use a3s_power::inference::ReleaseEvidenceBundle;
+use a3s_power::inference::{
+    AcceleratorResidencyDeclaration, ReleaseCapture, ReleaseEvidenceBundle,
+};
 
 use super::MAX_INPUT_DOCUMENT_BYTES;
 
@@ -89,6 +91,83 @@ pub(super) fn write_release_bundle_outputs(
         drop(pin_file);
         let _ = std::fs::remove_file(&pin_path);
         let _ = std::fs::remove_file(&bundle_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(super) fn write_confidential_fixture_outputs(
+    capture: &ReleaseCapture,
+    declaration: &AcceleratorResidencyDeclaration,
+    capture_path: &Path,
+    declaration_path: &Path,
+) -> Result<()> {
+    capture.verify()?;
+    declaration.verify()?;
+    let capture_bytes = bounded_json(capture, "release source capture")?;
+    let declaration_bytes = bounded_json(declaration, "accelerator residency declaration")?;
+    write_create_new_pair(
+        capture_path,
+        "release source capture",
+        &capture_bytes,
+        declaration_path,
+        "accelerator residency declaration",
+        &declaration_bytes,
+    )
+}
+
+fn bounded_json<T: serde::Serialize>(value: &T, label: &str) -> Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    let length = u64::try_from(bytes.len()).map_err(|_| {
+        PowerError::InvalidRequest(format!(
+            "{label} size cannot be represented by the verifier"
+        ))
+    })?;
+    if length > MAX_INPUT_DOCUMENT_BYTES {
+        return Err(PowerError::InvalidRequest(format!(
+            "{label} contains {} bytes, exceeding the {MAX_INPUT_DOCUMENT_BYTES}-byte verifier limit",
+            bytes.len()
+        )));
+    }
+    Ok(bytes)
+}
+
+fn write_create_new_pair(
+    first_path: &Path,
+    first_label: &str,
+    first_bytes: &[u8],
+    second_path: &Path,
+    second_label: &str,
+    second_bytes: &[u8],
+) -> Result<()> {
+    let first_path = resolve_new_output_target(first_path)?;
+    let second_path = resolve_new_output_target(second_path)?;
+    if same_output_target(&first_path, &second_path) {
+        return Err(PowerError::InvalidRequest(format!(
+            "{first_label} and {second_label} must use different output paths"
+        )));
+    }
+
+    let mut first_file = create_new(&first_path, first_label)?;
+    if let Err(error) = write_and_sync(&mut first_file, first_bytes, &first_path, first_label) {
+        drop(first_file);
+        let _ = std::fs::remove_file(&first_path);
+        return Err(error);
+    }
+    drop(first_file);
+
+    let mut second_file = match create_new(&second_path, second_label) {
+        Ok(file) => file,
+        Err(error) => {
+            let _ = std::fs::remove_file(&first_path);
+            return Err(error);
+        }
+    };
+    if let Err(error) = write_and_sync(&mut second_file, second_bytes, &second_path, second_label) {
+        drop(second_file);
+        let _ = std::fs::remove_file(&second_path);
+        let _ = std::fs::remove_file(&first_path);
         return Err(error);
     }
     Ok(())
@@ -200,6 +279,57 @@ mod tests {
         let direct = directory.path().join("same-output");
         let aliased = directory.path().join(".").join("same-output");
         let error = write_release_bundle_outputs(&partial_bundle(), &direct, &aliased).unwrap_err();
+        assert!(error.to_string().contains("different output paths"));
+        assert!(!direct.exists());
+    }
+
+    #[test]
+    fn create_new_pair_is_atomic_for_success_and_occupied_second_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("capture.json");
+        let second = directory.path().join("declaration.json");
+        write_create_new_pair(
+            &first,
+            "capture",
+            b"capture\n",
+            &second,
+            "declaration",
+            b"declaration\n",
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&first).unwrap(), b"capture\n");
+        assert_eq!(std::fs::read(&second).unwrap(), b"declaration\n");
+
+        let rollback_first = directory.path().join("rollback.json");
+        let occupied_second = directory.path().join("occupied.json");
+        std::fs::write(&occupied_second, b"caller-owned").unwrap();
+        assert!(write_create_new_pair(
+            &rollback_first,
+            "capture",
+            b"capture\n",
+            &occupied_second,
+            "declaration",
+            b"declaration\n",
+        )
+        .is_err());
+        assert!(!rollback_first.exists());
+        assert_eq!(std::fs::read(&occupied_second).unwrap(), b"caller-owned");
+    }
+
+    #[test]
+    fn create_new_pair_rejects_aliased_targets_without_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let direct = directory.path().join("same-output");
+        let aliased = directory.path().join(".").join("same-output");
+        let error = write_create_new_pair(
+            &direct,
+            "capture",
+            b"capture\n",
+            &aliased,
+            "declaration",
+            b"declaration\n",
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("different output paths"));
         assert!(!direct.exists());
     }

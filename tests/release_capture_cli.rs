@@ -4,8 +4,8 @@ use std::path::Path;
 use std::process::Command;
 
 use a3s_power::inference::{
-    ReleaseCapture, ReleaseEvidenceBundle, ReleaseEvidencePolicy, ReleasePlatform,
-    ReleaseRevisionBinding,
+    InferenceLimits, ReleaseCapture, ReleaseEvidenceBundle, ReleaseEvidencePolicy, ReleasePlatform,
+    ReleaseRevisionBinding, WeightStore,
 };
 use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
 
@@ -307,4 +307,153 @@ fn caller_owned_reviewed_graph_uses_the_same_release_contract() {
         .to_ascii_lowercase();
     assert!(!serialized.contains("vision.encoder"));
     assert!(!serialized.contains("embedding"));
+}
+
+#[test]
+fn fixture_weights_are_create_new_reusable_and_digest_bound() {
+    let directory = tempfile::tempdir().unwrap();
+    let weights = directory.path().join("release-weights");
+    let receipt = directory.path().join("weights-receipt.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_a3s-power-tensor-batch-bench"))
+        .arg("materialize-release-fixture-weights")
+        .arg("--directory")
+        .arg(&weights)
+        .arg("--width")
+        .arg("64")
+        .arg("--output")
+        .arg(&receipt)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "weight materialization failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+    assert_eq!(receipt["schema"], "a3s.power.release-fixture-weights.v1");
+    let store = WeightStore::open(&weights, &InferenceLimits::default()).unwrap();
+    assert_eq!(receipt["weightsSha256"], store.sha256());
+
+    let capture_path = directory.path().join("persistent-capture.json");
+    let capture = Command::new(env!("CARGO_BIN_EXE_a3s-power-tensor-batch-bench"))
+        .args([
+            "release-fixture",
+            "--device",
+            "cpu",
+            "--power-commit",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--filesystem-class",
+            "test-memory",
+            "--device-class",
+            "test-cpu",
+            "--cpu-model",
+            "test-cpu",
+            "--ram-bytes",
+            "1073741824",
+            "--tee-policy-sha256",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "--host-fixed-bytes",
+            "16777216",
+            "--host-scratch-bytes",
+            "67108864",
+            "--device-fixed-bytes",
+            "0",
+            "--device-scratch-bytes",
+            "0",
+            "--items",
+            "2",
+            "--width",
+            "64",
+            "--warmup-rounds",
+            "1",
+            "--measured-rounds",
+            "1",
+        ])
+        .arg("--fixture-weights")
+        .arg(&weights)
+        .arg("--output")
+        .arg(&capture_path)
+        .output()
+        .unwrap();
+    assert!(
+        capture.status.success(),
+        "persistent fixture capture failed: {}",
+        String::from_utf8_lossy(&capture.stderr)
+    );
+    let capture: ReleaseCapture =
+        serde_json::from_slice(&std::fs::read(capture_path).unwrap()).unwrap();
+    assert_eq!(capture.shape_binding.weights_sha256, store.sha256());
+    assert_eq!(capture.tensor_batch.binding.weights_sha256, store.sha256());
+
+    let rollback_weights = directory.path().join("rollback-weights");
+    let occupied_receipt = directory.path().join("occupied.json");
+    std::fs::write(&occupied_receipt, b"caller-owned").unwrap();
+    let rollback = Command::new(env!("CARGO_BIN_EXE_a3s-power-tensor-batch-bench"))
+        .arg("materialize-release-fixture-weights")
+        .arg("--directory")
+        .arg(&rollback_weights)
+        .arg("--width")
+        .arg("64")
+        .arg("--output")
+        .arg(&occupied_receipt)
+        .output()
+        .unwrap();
+    assert!(!rollback.status.success());
+    assert!(!rollback_weights.exists());
+    assert_eq!(std::fs::read(occupied_receipt).unwrap(), b"caller-owned");
+}
+
+#[test]
+fn confidential_fixture_rejects_cpu_without_partial_outputs() {
+    let directory = tempfile::tempdir().unwrap();
+    let capture = directory.path().join("local-cuda.json");
+    let declaration = directory.path().join("accelerator.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_a3s-power-tensor-batch-bench"))
+        .args([
+            "release-confidential-fixture",
+            "--device",
+            "cpu",
+            "--power-commit",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--filesystem-class",
+            "test-memory",
+            "--device-class",
+            "test-cpu",
+            "--cpu-model",
+            "test-cpu",
+            "--ram-bytes",
+            "1073741824",
+            "--tee-policy-sha256",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "--host-fixed-bytes",
+            "16777216",
+            "--host-scratch-bytes",
+            "67108864",
+            "--device-fixed-bytes",
+            "0",
+            "--device-scratch-bytes",
+            "0",
+            "--items",
+            "2",
+            "--width",
+            "64",
+            "--warmup-rounds",
+            "1",
+            "--measured-rounds",
+            "1",
+        ])
+        .arg("--fixture-weights")
+        .arg(directory.path().join("unused-weights"))
+        .arg("--output")
+        .arg(&capture)
+        .arg("--accelerator-declaration-output")
+        .arg(&declaration)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("explicitly selected CUDA device"));
+    assert!(!capture.exists());
+    assert!(!declaration.exists());
 }
