@@ -14,6 +14,21 @@ const MAX_LABEL_BYTES: usize = 512;
 const MAX_MEMORY_SAMPLES: u64 = 100_000_000;
 const MAX_SAMPLE_INTERVAL_NANOS: u64 = 1_000_000_000;
 const MAX_RELEASE_CAPTURES: usize = 4;
+const NON_PHYSICAL_METAL_MARKERS: [&str; 13] = [
+    "virtual",
+    "emulat",
+    "translated",
+    "fallback",
+    "software renderer",
+    "llvmpipe",
+    "swiftshader",
+    "vmware",
+    "qemu",
+    "virtualbox",
+    "unknown",
+    "unspecified",
+    "placeholder",
+];
 const STRICT_V1_PLATFORMS: [ReleasePlatform; 4] = [
     ReleasePlatform::Cpu,
     ReleasePlatform::Cuda,
@@ -285,12 +300,21 @@ pub(super) fn verify_strict_v1_release(
     expected_power_commit: &str,
 ) -> Result<()> {
     verify_pinned_bundle(bundle, expected_sha256)?;
-    validate_strict_v1_policy(&bundle.policy)?;
+    validate_strict_v1_bundle_constraints(bundle)?;
     validate_release_identity(
         &bundle.policy.revision,
         expected_power_version,
         expected_power_commit,
-    )?;
+    )
+}
+
+pub(super) fn validate_strict_v1_bundle_constraints(bundle: &ReleaseEvidenceBundle) -> Result<()> {
+    validate_strict_v1_policy(&bundle.policy)?;
+    for capture in &bundle.captures {
+        if capture_platform(capture)? == ReleasePlatform::Metal {
+            validate_strict_v1_metal_environment(capture)?;
+        }
+    }
 
     let binding = bundle
         .captures
@@ -305,6 +329,41 @@ pub(super) fn verify_strict_v1_release(
             )
         })?;
     validate_strict_v1_confidential_tee(binding.tee_type)
+}
+
+fn validate_strict_v1_metal_environment(capture: &ReleaseCapture) -> Result<()> {
+    let system = &capture.tensor_batch.system;
+    let os = system.os.to_ascii_lowercase();
+    let architecture = system.architecture.to_ascii_lowercase();
+    let cpu_model = system.cpu_model.to_ascii_lowercase();
+    let device_class = system.device_class.to_ascii_lowercase();
+
+    if !(os.contains("macos") || os.contains("mac os") || os.contains("darwin")) {
+        return Err(PowerError::PolicyViolation(
+            "strict v1 Metal evidence requires a named macOS host".to_string(),
+        ));
+    }
+    if !matches!(architecture.as_str(), "aarch64" | "arm64" | "arm64e") {
+        return Err(PowerError::PolicyViolation(
+            "strict v1 Metal evidence requires native Apple Silicon architecture".to_string(),
+        ));
+    }
+    if !cpu_model.contains("apple") || !device_class.contains("apple") {
+        return Err(PowerError::PolicyViolation(
+            "strict v1 Metal evidence requires named Apple CPU and GPU identities".to_string(),
+        ));
+    }
+
+    if NON_PHYSICAL_METAL_MARKERS
+        .iter()
+        .any(|marker| cpu_model.contains(marker) || device_class.contains(marker))
+    {
+        return Err(PowerError::PolicyViolation(
+            "strict v1 Metal evidence rejects virtual, emulated, translated, fallback, or unnamed hardware"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_release_identity(
@@ -452,5 +511,21 @@ mod tests {
         assert!(revision_error
             .to_string()
             .contains("version and source revision"));
+    }
+
+    #[test]
+    fn strict_metal_environment_rejects_non_native_identity_markers() {
+        for marker in [
+            "Apple Paravirtual device",
+            "Apple M1 (Virtual)",
+            "Apple GPU software renderer",
+            "Apple translated Metal device",
+            "Apple unknown GPU",
+        ] {
+            let normalized = marker.to_ascii_lowercase();
+            assert!(NON_PHYSICAL_METAL_MARKERS
+                .iter()
+                .any(|candidate| normalized.contains(candidate)));
+        }
     }
 }

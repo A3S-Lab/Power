@@ -1,7 +1,7 @@
 use super::{
     AcceleratorResidencyDeclaration, HardwareEvidenceBinding, ReleaseCapture,
     ReleaseCaptureSecurity, ReleaseEvidenceBundle, ReleasePlatform, RuntimeDeviceIdentity,
-    RuntimeDeviceKind, ShapeProfileBinding,
+    RuntimeDeviceKind, ShapeProfileBinding, StorageBenchmarkSystem,
 };
 use crate::api::prompt_policy::canonical_gpu_execution_digest;
 use crate::config::GpuConfig;
@@ -169,11 +169,11 @@ fn local_cuda_capture(
 fn retarget_accelerator_capture(
     mut source: ReleaseCapture,
     runtime_device: RuntimeDeviceIdentity,
-    device_class: &str,
+    system: StorageBenchmarkSystem,
     topology_sha256: &str,
 ) -> ReleaseCapture {
     source.verify().unwrap();
-    source.tensor_batch.system.device_class = device_class.to_string();
+    source.tensor_batch.system = system;
     source.tensor_batch.binding = HardwareEvidenceBinding::new(
         source.tensor_batch.binding.power_version.clone(),
         source.tensor_batch.binding.power_commit.clone(),
@@ -236,13 +236,15 @@ fn opaque_confidential_proof_enables_a_strict_v1_bundle() {
         published.shape_binding.runtime_device,
         execution_policy_sha256,
     );
+    let mut confidential_system = published.tensor_batch.system.clone();
+    confidential_system.device_class = "NVIDIA H100 80 GB".to_string();
     let confidential_source = retarget_accelerator_capture(
         published.clone(),
         RuntimeDeviceIdentity {
             kind: RuntimeDeviceKind::Cuda,
             ordinal: Some(0),
         },
-        "test-confidential-cuda",
+        confidential_system,
         &"a".repeat(64),
     );
     let local = local_cuda_capture(&declaration, confidential_source);
@@ -292,13 +294,22 @@ fn opaque_confidential_proof_enables_a_strict_v1_bundle() {
     .unwrap_err();
     assert!(relabel_error.to_string().contains("proof-backed promotion"));
 
+    let metal_system = StorageBenchmarkSystem {
+        os: "macOS 15.6".to_string(),
+        architecture: "arm64".to_string(),
+        cpu_model: "Apple M2 Pro".to_string(),
+        logical_cpus: 10,
+        ram_bytes: 16 * 1024 * 1024 * 1024,
+        filesystem_class: "apfs".to_string(),
+        device_class: "Apple M2 Pro integrated GPU".to_string(),
+    };
     let metal = retarget_accelerator_capture(
         published.clone(),
         RuntimeDeviceIdentity {
             kind: RuntimeDeviceKind::Metal,
             ordinal: Some(0),
         },
-        "test-metal",
+        metal_system.clone(),
         &"b".repeat(64),
     );
     let cpu: ReleaseCapture = serde_json::from_str(include_str!(
@@ -307,6 +318,29 @@ fn opaque_confidential_proof_enables_a_strict_v1_bundle() {
     .unwrap();
     let expected_version = cpu.tensor_batch.binding.power_version.clone();
     let expected_commit = cpu.tensor_batch.binding.power_commit.clone();
+    let mut virtual_metal_system = metal_system;
+    virtual_metal_system.cpu_model = "Apple M1 (Virtual)".to_string();
+    virtual_metal_system.device_class = "Apple Paravirtual device".to_string();
+    let virtual_metal = retarget_accelerator_capture(
+        published.clone(),
+        RuntimeDeviceIdentity {
+            kind: RuntimeDeviceKind::Metal,
+            ordinal: Some(0),
+        },
+        virtual_metal_system,
+        &"c".repeat(64),
+    );
+    let virtual_error = ReleaseEvidenceBundle::build_strict_v1(vec![
+        promoted.clone(),
+        virtual_metal,
+        published.clone(),
+        cpu.clone(),
+    ])
+    .unwrap_err();
+    assert!(virtual_error
+        .to_string()
+        .contains("rejects virtual, emulated, translated"));
+
     let bundle =
         ReleaseEvidenceBundle::build_strict_v1(vec![promoted, metal, published, cpu]).unwrap();
     bundle

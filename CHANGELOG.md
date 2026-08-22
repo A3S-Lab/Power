@@ -117,6 +117,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Made `ReleaseEvidenceBundle::build_strict_v1` enforce the production
+  confidential-TEE and Metal-host constraints immediately. Strict verification
+  now requires native Apple Silicon/macOS identities and rejects virtual,
+  emulated, translated, fallback, software-rendered, or unnamed Metal devices,
+  so a hosted `Apple Paravirtual device` capture cannot enter a v1 bundle.
 - Pinned the `cross` installer to one reviewed Git revision with its lockfile,
   made the tag workflow's package cache restore-only, reduced its default
   repository permission to read-only, and confined release creation rights to

@@ -44,6 +44,13 @@ CPU-fallback, or translated device is not Metal release evidence. Prepare at
 least two compatible F32 inputs plus a typed output for the first input from an
 independent reviewed implementation.
 
+The strict bundle constructor checks for native Apple Silicon/macOS identities
+and rejects known virtual, emulated, translated, fallback, software-rendered,
+or unnamed Metal markers. Do not edit the labels to bypass that check: the raw
+`system_profiler` record below is independently reviewed and authenticated by
+the release trust root. GitHub-hosted `Apple Paravirtual device` output may be
+kept as preflight evidence only.
+
 The predeclared device bounds must be positive and must not be copied from the
 observed result:
 

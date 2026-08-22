@@ -19,6 +19,13 @@ and reviewed graph identity. Platform-specific executable, device, topology,
 shape-profile, memory, and TEE-policy bindings remain distinct. One tensor
 benchmark cannot be reused for two platform classes.
 
+Strict construction rejects Metal records that do not name native Apple
+Silicon/macOS execution or that contain virtual, emulated, translated,
+fallback, software-renderer, or unnamed-device markers. This is a fail-closed
+consistency check, not Apple hardware attestation; the signed raw host inventory
+remains mandatory. In particular, `Apple Paravirtual device` is useful CI
+preflight evidence but is not v1 production Metal evidence.
+
 The release contract is model-, format-, and backend-neutral. A model
 integration may use GGUF, SafeTensors, llama.cpp, a native Rust backend, or
 another reviewed implementation, but it must present the same bounded and

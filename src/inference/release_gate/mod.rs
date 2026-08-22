@@ -67,5 +67,7 @@ pub(super) fn build_strict_v1_bundle(
         .map(ReleaseCapture::platform_binding)
         .collect::<Result<Vec<_>>>()?;
     let policy = ReleaseEvidencePolicy::strict_v1(revision, required_platforms)?;
-    build_bundle(policy, captures)
+    let bundle = build_bundle(policy, captures)?;
+    validation::validate_strict_v1_bundle_constraints(&bundle)?;
+    Ok(bundle)
 }

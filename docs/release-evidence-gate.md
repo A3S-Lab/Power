@@ -27,6 +27,14 @@ and one tensor benchmark digest cannot be reused for two platform classes. This
 prevents an ordinary CUDA measurement from being relabeled as confidential-GPU
 performance.
 
+The strict constructor and verifier also apply the v1 platform floor, not only
+the four-entry shape. Metal evidence must identify a native Apple Silicon macOS
+host and an Apple GPU. Known virtual, emulated, translated, fallback,
+software-rendered, and unnamed identity markers fail closed. This filter makes
+obviously invalid hosted captures machine-rejectable; it is not remote Apple
+attestation. Reviewers must still authenticate the raw `system_profiler` record
+and the bundle through the external release trust root.
+
 Shape-profile declarations are platform-specific by construction: each one
 commits to a typed device, topology, and host/device memory reservations. TEE
 policies may also differ between local and confidential execution. Policy schema

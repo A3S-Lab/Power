@@ -284,7 +284,10 @@ SHA-256 pin plus exact crate version and source commit, and builds release
 binaries from that parent. This avoids self-referential commit identity and
 blocks every non-`0.x` tag when evidence is missing, mixed with source changes,
 not reachable from `main`, carried by a lightweight or unverified tag, or
-TDX-backed. See the
+TDX-backed. Strict construction also rejects Metal captures that do not name a
+native Apple Silicon/macOS host or that disclose virtual, emulated, translated,
+fallback, software-rendered, or unnamed hardware; hosted paravirtual Metal is
+preflight evidence, not production evidence. See the
 [v1 Production Support Matrix](docs/v1-support-matrix.md).
 
 `a3s-power-tensor-batch-bench release-run` applies the same collector to any
