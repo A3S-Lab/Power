@@ -53,6 +53,18 @@ jobs:
             printf 'rustc=%s\n' "$(rustc --version)"
             printf 'cargo=%s\n' "$(cargo --version)"
             printf 'xcode=%s\n' "$(xcodebuild -version | tr '\n' ';')"
+            printf '%s\n' 'metal_device_begin'
+            swift -e '
+              import Metal
+              guard let device = MTLCreateSystemDefaultDevice() else {
+                fatalError("no default Metal device")
+              }
+              print("name=\(device.name)")
+              print("registry_id=\(device.registryID)")
+              print("has_unified_memory=\(device.hasUnifiedMemory)")
+              print("recommended_max_working_set_size=\(device.recommendedMaxWorkingSetSize)")
+            '
+            printf '%s\n' 'metal_device_end'
             printf '%s\n' 'display_devices_begin'
             system_profiler SPDisplaysDataType
             printf '%s\n' 'display_devices_end'
@@ -68,10 +80,14 @@ jobs:
           RAM_BYTES="$(sysctl -n hw.memsize)"
           CPU_MODEL="$(sysctl -n machdep.cpu.brand_string)"
           MAC_MODEL="$(sysctl -n hw.model)"
-          GPU_MODEL="$(system_profiler SPDisplaysDataType | awk -F': ' '/Chipset Model:/{print $2; exit}')"
-          if [ -z "${GPU_MODEL}" ]; then
-            GPU_MODEL='Metal device 0; see environment manifest'
-          fi
+          GPU_MODEL="$(swift -e '
+            import Metal
+            guard let device = MTLCreateSystemDefaultDevice() else {
+              fatalError("no default Metal device")
+            }
+            print(device.name)
+          ' | tr -d '\r\n')"
+          test -n "${GPU_MODEL}"
           DEVICE_CLASS="${MAC_MODEL}; ${GPU_MODEL}; macOS $(sw_vers -productVersion); ${ImageOS:-unknown}-${ImageVersion:-unknown}"
 
           cargo run --locked --release --no-default-features \
@@ -122,6 +138,7 @@ jobs:
           assert capture["tensorBatch"]["measuredRounds"] == 9
           assert len(capture["tensorBatch"]["samples"]) == 18
           assert capture["tensorBatch"]["exactOutputParity"] is True
+          assert "Metal device 0; see" not in capture["tensorBatch"]["system"]["deviceClass"]
           PY
 
           shasum -a 256 \
@@ -154,7 +171,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          destination="evidence/external-capture/metal-${SOURCE_COMMIT:0:8}"
+          destination="evidence/external-capture/metal-${SOURCE_COMMIT:0:8}-${GITHUB_RUN_ID}"
+          test ! -e "${destination}"
           mkdir -p "${destination}"
           cp source/metal.json "${destination}/metal.json"
           cp source/metal-environment.txt "${destination}/metal-environment.txt"
@@ -164,5 +182,5 @@ jobs:
           git -C evidence config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git -C evidence add -- external-capture
           git -C evidence diff --cached --check
-          git -C evidence commit -m "test(release): preserve ec90acc Metal capture"
+          git -C evidence commit -m "test(release): preserve ec90acc Metal capture ${GITHUB_RUN_ID}"
           git -C evidence push origin "HEAD:${EVIDENCE_BRANCH}"
