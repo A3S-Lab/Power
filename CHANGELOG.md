@@ -108,6 +108,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pinned the `cross` installer to one reviewed Git revision with its lockfile,
+  made the tag workflow's package cache restore-only, reduced its default
+  repository permission to read-only, and confined release creation rights to
+  the job that needs them. Release metadata now describes Power as a
+  model-neutral runtime, and documentation calls the external hardware
+  procedure a runbook rather than implying an unshipped hosted workflow.
+- Corrected the encrypted-model supply-chain guide: `picolm` already consumes
+  the bounded GGUF range interface, but the current non-seekable AES-GCM
+  container still requires one full locked plaintext allocation.
 - Upgraded GitHub-hosted workflows to the Node 24 generations of checkout and
   artifact actions. Package verification now restores Cargo home without target
   caching or a post-job scan of Cargo's transient `target/package` tree.

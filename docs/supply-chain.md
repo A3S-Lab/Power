@@ -142,6 +142,14 @@ cargo tree | wc -l
 cargo tree --no-default-features --features llamacpp | wc -l
 ```
 
+## Release build tooling
+
+Linux cross-compilation installs `cross` from the exact Git revision recorded
+as `CROSS_GIT_REV` in both CI and the release workflow, and Cargo consumes the
+upstream lockfile. `tools/test-release-workflow-contract.sh` rejects revision
+drift, an unlocked installer, release-wide write permission, or model-specific
+Homebrew metadata before the cross-build matrix starts.
+
 ## How to Audit the Inference Path
 
 ```bash
@@ -174,11 +182,11 @@ itself provides the following guarantees:
 4. **Drop zeroization**: The full plaintext buffer is zeroized when the model
    is unloaded (via `Zeroizing<Vec<u8>>` drop)
 
-**Limitations**: The full plaintext is still decrypted into RAM at load time
-(AES-GCM is not seekable), and no current inference backend consumes this source
-directly. The security benefit over `MemoryDecryptedModel` applies only after a
-backend is wired to process one chunk at a time and drop it immediately, so the
-active plaintext footprint is `chunk_size` rather than `model_size`.
+**Limitations**: The full plaintext is still decrypted into locked RAM at load
+time because the current AES-GCM container is not seekable. `picolm` consumes
+the source through bounded GGUF range access, which avoids another full
+plaintext copy and bounds transient chunk materialization; it does not reduce
+the total locked plaintext allocation from `model_size` to `chunk_size`.
 
 ---
 

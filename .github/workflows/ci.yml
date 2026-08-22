@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Keep cross-build tooling reproducible across source and release workflows.
+  CROSS_GIT_REV: "8c1a8aa4b661711f4b7b6ac07c2e8929ce2f7d27"
 
 jobs:
   fmt:
@@ -92,6 +94,8 @@ jobs:
       - run: tools/check-embedded-deps.sh
       - name: Test release evidence commit layout
         run: tools/test-release-evidence-commit.sh
+      - name: Test release workflow contract
+        run: tools/test-release-workflow-contract.sh
 
   windows-embedded:
     name: Check (windows-embedded-inference)
@@ -199,7 +203,9 @@ jobs:
           key: cross-${{ matrix.target }}
       - name: Install cross
         if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: >-
+          cargo install cross --git https://github.com/cross-rs/cross
+          --rev "${CROSS_GIT_REV}" --locked
       - name: Build
         run: |
           BUILD_CMD="cargo"

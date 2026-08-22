@@ -11,13 +11,15 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: a3s-power
   BUILD_FEATURES: "--features hf,hw-verify,embedded-inference"
   LINUX_CPU_FEATURES: "--no-default-features --features server,llamacpp,mistralrs,embedded-inference,tls,vsock,hf,hw-verify,picolm"
+  # This exact revision is shared with CI and is guarded by a source test.
+  CROSS_GIT_REV: "8c1a8aa4b661711f4b7b6ac07c2e8929ce2f7d27"
 
 jobs:
   # ───────────────────────────────────────────────
@@ -54,6 +56,10 @@ jobs:
           fi
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # cargo package removes its transient verification tree. Restore the
+          # cache, but skip the post-job target scan that would race that removal.
+          save-if: false
 
       - name: Format check
         run: cargo fmt -- --check
@@ -69,6 +75,9 @@ jobs:
 
       - name: Release evidence commit layout test
         run: bash tools/test-release-evidence-commit.sh
+
+      - name: Release workflow contract test
+        run: bash tools/test-release-workflow-contract.sh
 
       - name: Package verification
         run: cargo package --locked
@@ -193,7 +202,9 @@ jobs:
 
       - name: Install cross
         if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: >-
+          cargo install cross --git https://github.com/cross-rs/cross
+          --rev "${CROSS_GIT_REV}" --locked
 
       - name: Build release binary
         run: |
@@ -241,6 +252,8 @@ jobs:
     name: GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v7
@@ -382,7 +395,7 @@ jobs:
           }
           base = f'https://github.com/A3S-Lab/Power/releases/download/{tag}/a3s-power-{tag}'
           formula = f'''class A3sPower < Formula
-            desc \"Privacy-preserving LLM inference for TEE environments\"
+            desc \"Model-neutral verifiable inference for confidential systems\"
             homepage \"https://github.com/A3S-Lab/Power\"
             version \"{ver}\"
             license \"MIT\"

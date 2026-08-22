@@ -269,9 +269,9 @@ Metal and confidential-GPU results cannot be inferred from this Windows RTX
 appropriate named hardware in its authenticated four-platform bundle. The Rust
 API implements proof-backed confidential promotion, and a raw attestation
 report or caller-provided label is insufficient. The checked-in
-[external capture workflow](external-release-capture.md) now defines the exact
+[external capture runbook](external-release-capture.md) now defines the exact
 Metal runner, nonce-bound NVIDIA evidence collection, configured raw-evidence
 binding, model-owned accelerator declaration, strict verifier pins, create-new
-promotion, and artifact inventory. Workflow implementation and historical
+promotion, and artifact inventory. Runbook implementation and historical
 results do not replace those tag-specific hardware proofs; failure to build and
 authenticate them from one immutable source parent blocks publication.

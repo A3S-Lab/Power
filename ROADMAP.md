@@ -128,7 +128,7 @@ The model-neutral, fail-closed evidence schema, platform-specific profile/TEE
 bindings, strict four-platform policy, and isolated complete-contract collector
 are implemented. Clean-revision Windows CPU/CUDA captures now replay the full
 contract and form one verified two-platform partial bundle. A checked-in
-external workflow now covers named Metal collection and nonce-bound,
+external capture runbook now covers named Metal collection and nonce-bound,
 proof-backed confidential-GPU promotion while preserving raw vendor evidence.
 The strict bundle builder now derives the four platform bindings and writes the
 bundle and digest pin as one no-overwrite operation. The release workflow uses a
@@ -152,7 +152,7 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
       local CUDA capture to confidential-GPU evidence; the proof borrows the
       exact authenticated report, and a raw report or caller label cannot mint
       the production security class.
-- [x] Add the external Metal/confidential-GPU capture workflow that collects vendor
+- [x] Add the external Metal/confidential-GPU capture runbook that collects vendor
       evidence, invokes strict proof-backed promotion, and preserves the raw
       report plus trust-root material for the same immutable release revision.
 - [x] Assemble typed four-platform captures with a machine-enforced CLI that

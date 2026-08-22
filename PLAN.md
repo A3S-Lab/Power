@@ -235,13 +235,13 @@ are implemented and covered by the repository test profiles. They are not a
 claim that Power is ready to tag v1.0.0.
 
 The Rust release API now requires an opaque exact-report proof for confidential
-promotion, and the checked-in external workflow carries that API through raw
-vendor-evidence preservation and create-new CLI output. A production release
+promotion, and the checked-in external capture runbook carries that API through
+raw vendor-evidence preservation and create-new CLI output. A production release
 exists only when its signed evidence child proves that all of these gates pass:
 
 1. one immutable revision supplies CPU, CUDA, Metal, and confidential-GPU
    complete-contract captures;
-2. the checked-in external capture workflow is executed on named hardware and
+2. the checked-in external capture runbook is executed on named hardware and
    its raw vendor evidence, report, declaration, environment, artifact hashes,
    promoted capture, and release trust-root material are preserved;
 3. Intel TDX either gains a reviewed DCAP Quote/QVL path or remains explicitly

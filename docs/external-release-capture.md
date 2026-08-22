@@ -459,7 +459,7 @@ Before building the four-platform bundle:
    [v1 Production Support Matrix](v1-support-matrix.md); and
 7. authenticate the final bundle digest through the release trust root.
 
-The workflow and verifier control path are implemented and covered by
+The capture runbook and verifier control path are implemented and covered by
 deterministic tests. Those tests do not substitute for hardware capture. Every
 production tag must authenticate Metal and confidential-GPU captures from
 supported named hardware and from the same immutable source parent as its CPU
