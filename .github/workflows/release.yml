@@ -73,6 +73,9 @@ jobs:
       - name: Confidential release promotion tests
         run: cargo test --locked --no-default-features --features server,embedded-inference,hw-verify --bin a3s-power-verify
 
+      - name: Release capture and handoff tests
+        run: cargo test --locked --no-default-features --features embedded-inference --test release_capture_cli --test release_handoff_cli
+
       - name: Release evidence commit layout test
         run: bash tools/test-release-evidence-commit.sh
 

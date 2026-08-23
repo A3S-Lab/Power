@@ -150,6 +150,26 @@ SEV-SNP/NVIDIA 证明提升的机密 GPU 证据仍然是硬要求；预检不会
 
 仓库中的流程会先在真实 Metal 设备上运行完整契约，再用同一个新鲜 nonce 绑定保留原字节的 NVIDIA evidence、远程 NRAS verdict、CPU TEE 报告、规范化 GPU 与推理执行策略、可选辅助制品集合，以及模型自有加速器声明。`a3s-power-verify --promote-capture` 在同一进程内消费严格验证证明，并以禁止覆盖的方式创建机密捕获。
 
+把每台主机的完整原始制品放进独立的只读目录，清单必须位于该目录之外。传输前生成精确文件清单，评审主机收到文件后再完整回放：
+
+```bash
+cargo run --locked --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- \
+  build-release-handoff --root ./metal-handoff --platform metal \
+  --power-version "$power_version" --power-commit "$power_commit" \
+  --output ./metal-handoff.manifest.json
+
+cargo run --locked --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- \
+  verify-release-handoff --root ./metal-handoff --platform metal \
+  --manifest ./metal-handoff.manifest.json \
+  --power-version "$power_version" --power-commit "$power_commit"
+```
+
+文件被修改、缺失、增加，路径不安全，出现符号链接或 Windows reparse point，或者平台与源码版本被重标记，校验都会失败。无绝对路径的清单仍须由发布信任根认证，不能替代单项捕获验证和四平台 bundle。
+
 精确命令、ACL、设备 pin、失败条件与制品清单见[外部 Metal 与机密 GPU 发布捕获](https://github.com/A3S-Lab/Power/blob/main/docs/external-release-capture.md)。每个生产标签都必须携带同一源码父提交的 Metal 与机密 GPU 证明；硬件证据缺失或验证失败都会阻止发布。
 
 ## 生产阻断条件

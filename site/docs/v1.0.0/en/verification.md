@@ -198,6 +198,31 @@ auxiliary-artifact set, and a model-owned accelerator declaration.
 `a3s-power-verify --promote-capture` consumes the strict proof in-process and
 creates a new confidential capture without replacing an existing file.
 
+Stage each host's complete raw artifact set under one dedicated read-only
+directory and keep its manifest outside that directory. Build the exact
+portable inventory before transfer, then replay it on the review host:
+
+```bash
+cargo run --locked --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- \
+  build-release-handoff --root ./metal-handoff --platform metal \
+  --power-version "$power_version" --power-commit "$power_commit" \
+  --output ./metal-handoff.manifest.json
+
+cargo run --locked --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- \
+  verify-release-handoff --root ./metal-handoff --platform metal \
+  --manifest ./metal-handoff.manifest.json \
+  --power-version "$power_version" --power-commit "$power_commit"
+```
+
+Verification rejects changed, missing, extra, unsafe, symlinked/reparse, or
+relabeled files. The path-free manifest still needs release-root
+authentication and never replaces capture verification or the four-platform
+bundle.
+
 Read [External Metal and Confidential-GPU Release Capture](https://github.com/A3S-Lab/Power/blob/main/docs/external-release-capture.md)
 for the exact commands, ACL, device pins, failure conditions, and artifact
 inventory. Every production tag must carry same-parent Metal and

@@ -10,8 +10,7 @@ use a3s_power::inference::{
 use super::MAX_INPUT_DOCUMENT_BYTES;
 
 pub(super) fn write_json_output(output: &serde_json::Value, path: Option<&Path>) -> Result<()> {
-    let mut encoded = serde_json::to_vec_pretty(output)?;
-    encoded.push(b'\n');
+    let encoded = encode_json_output(output)?;
     let Some(path) = path else {
         std::io::stdout().write_all(&encoded)?;
         return Ok(());
@@ -32,6 +31,12 @@ pub(super) fn write_json_output(output: &serde_json::Value, path: Option<&Path>)
         return Err(error.into());
     }
     Ok(())
+}
+
+pub(super) fn encode_json_output(output: &serde_json::Value) -> Result<Vec<u8>> {
+    let mut encoded = serde_json::to_vec_pretty(output)?;
+    encoded.push(b'\n');
+    Ok(encoded)
 }
 
 pub(super) fn write_release_bundle_outputs(

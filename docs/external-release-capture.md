@@ -565,6 +565,68 @@ successful strict bundle replay. Push that child to `main` before the signed
 annotated tag; release CI repeats the preflight against `origin/main`, requires
 GitHub-verified tag status, then builds and publishes from the source parent.
 
+## Stage and verify cross-host handoffs
+
+Place each host's complete artifact set in its own dedicated directory. Review
+the inventory table below, make the staged copies read-only, and keep the
+manifest outside that root so the manifest cannot silently inventory itself.
+Then bind the exact file set before transfer:
+
+```bash
+set -euo pipefail
+power_version="$(cargo metadata --locked --no-deps --format-version 1 \
+  | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
+power_commit="$(git rev-parse HEAD)"
+handoff_root="$PWD/metal-handoff"
+handoff_manifest="$PWD/metal-handoff.manifest.json"
+
+test -d "$handoff_root"
+test ! -e "$handoff_manifest"
+chmod -R a-w "$handoff_root"
+
+cargo run --locked --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- \
+  build-release-handoff \
+  --root "$handoff_root" \
+  --platform metal \
+  --power-version "$power_version" \
+  --power-commit "$power_commit" \
+  --output "$handoff_manifest" \
+  > metal-handoff.receipt.json
+```
+
+Transfer the staged directory, manifest, and externally authenticated receipt
+as separate objects. On the review host, keep the received directory read-only
+and replay the complete inventory:
+
+```bash
+cargo run --locked --release --no-default-features \
+  --features embedded-inference \
+  --bin a3s-power-tensor-batch-bench -- \
+  verify-release-handoff \
+  --manifest "$handoff_manifest" \
+  --root "$handoff_root" \
+  --platform metal \
+  --power-version "$power_version" \
+  --power-commit "$power_commit"
+```
+
+Use `cpu`, `cuda`, or `confidential-gpu` for the other handoffs. The builder
+streams at most 1,024 regular files, 64 GiB per file and 128 GiB in aggregate,
+uses sorted UTF-8 relative paths with `/` separators, and records no absolute
+path. It rejects non-portable names, traversal, special files, symbolic links,
+Windows reparse points, and an in-root manifest. The verifier rescans the root
+and rejects changed, missing, or additional files as well as platform, version,
+or source-revision drift.
+
+This manifest detects transfer mutation and inventory drift. It does not prove
+that the staged directory contains every semantically required artifact, who
+created it, whether a capture is valid, or whether all four platforms qualify.
+Review the table, authenticate the manifest digest through the release trust
+root, run `verify-release-capture` for each capture, and still pass the strict
+bundle and candidate gates.
+
 ## Artifact inventory
 
 Preserve at least these files for review:
@@ -603,7 +665,8 @@ Before building the four-platform bundle:
 4. confirm the confidential source is not reused as the ordinary CUDA capture;
 5. reproduce the confidential capture's launch-measurement and raw-report pins
    from `report.json` with the command above;
-6. recompute the artifact manifest from read-only copies;
+6. rebuild or verify the exact handoff manifest from read-only copies with the
+   commands above;
 7. run the pinned `verify-release-bundle` command above, then the final
    `verify-release-candidate.sh` preflight documented in the
    [v1 Production Support Matrix](v1-support-matrix.md); and

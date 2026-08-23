@@ -147,6 +147,8 @@ jobs:
       - run: cargo test --locked --no-default-features --features embedded-inference --lib inference::weights
       - run: cargo test --locked --no-default-features --features embedded-inference --lib inference::storage_benchmark
       - run: cargo test --locked --no-default-features --features embedded-inference --lib positional_demand_and_prefetch_serialize_one_materialization
+      - name: Test release handoff contract
+        run: cargo test --locked --no-default-features --features embedded-inference --test release_handoff_cli
 
   macos-embedded:
     name: Check (macos-embedded-inference)
@@ -161,6 +163,8 @@ jobs:
       - run: cargo test --locked --no-default-features --features embedded-inference --lib inference::weights
       - run: cargo test --locked --no-default-features --features embedded-inference --lib inference::storage_benchmark
       - run: cargo test --locked --no-default-features --features embedded-inference --lib positional_demand_and_prefetch_serialize_one_materialization
+      - name: Test release handoff contract
+        run: cargo test --locked --no-default-features --features embedded-inference --test release_handoff_cli
 
   test:
     name: Test (${{ matrix.label }})
@@ -179,6 +183,8 @@ jobs:
             native_deps: true
           - label: embedded-inference
             args: "--no-default-features --features embedded-inference --lib"
+          - label: release-capture-cli
+            args: "--no-default-features --features embedded-inference --test release_capture_cli --test release_handoff_cli"
           - label: release-promotion
             args: "--no-default-features --features server,embedded-inference,hw-verify --bin a3s-power-verify"
           - label: artifact-provisioning

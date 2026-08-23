@@ -176,6 +176,10 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
 - [x] Expose a bounded single-capture verifier that rejects digest corruption,
       platform relabeling, and revision drift before cross-host bundle assembly
       without overclaiming strict four-platform release eligibility.
+- [x] Bind every staged cross-host artifact into an exact portable file
+      inventory with bounded streaming hashes. Reject missing, added, mutated,
+      traversing, symlinked/reparse, or relabeled handoffs while keeping
+      authorship and four-platform eligibility as separate gates.
 - [x] Require non-`0.x` tags to point to a single-parent evidence commit whose
       complete diff adds only the bundle and pin; build and publish artifacts
       from its frozen source parent. The child must be reachable from `main` and

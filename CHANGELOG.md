@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added a bounded cross-host release-handoff manifest builder and verifier. It
+  binds the exact regular-file inventory under one dedicated staging root to
+  portable relative paths, lengths, SHA-256 digests, platform, version, and
+  source revision. Verification rejects mutation, omission, additions,
+  traversal, non-portable names, symlinks/reparse points, and relabeling while
+  explicitly retaining the external-authentication and strict-bundle
+  requirements. Linux, macOS, and Windows release CI exercise the contract.
 - Added a centralized pre-tag production-candidate verifier. It requires a
   clean evidence-child checkout, locked non-`0.x` package identity, a dated
   matching changelog entry with no pending Unreleased content, exact

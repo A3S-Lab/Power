@@ -175,6 +175,12 @@ runs the same preflight before any `v1.x` or later tag can publish artifacts.
 The checked-in digest is a mutation-detection pin. Release authorship still
 requires the repository's signed tag/release trust root and preserved raw
 hardware evidence described in the external capture guide.
+Each private per-host artifact set is staged under a dedicated read-only root
+and bound with `build-release-handoff`; `verify-release-handoff` requires the
+same exact portable file inventory after transfer. The handoff manifest carries
+no absolute paths and is not checked into the canonical evidence-only child.
+It detects file-set drift but does not replace external authentication,
+individual capture verification, or the strict bundle decision.
 For non-`0.x` tags, the release workflow also publishes the verified bundle and
 pin beside the platform archives instead of leaving production evidence only
 inside the source tree.

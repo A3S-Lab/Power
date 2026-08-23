@@ -181,7 +181,7 @@ fn read_capture(path: &Path, label: &str) -> Result<ReleaseCapture> {
     Ok(capture)
 }
 
-fn parse_platform(value: &str) -> Result<ReleasePlatform> {
+pub(super) fn parse_platform(value: &str) -> Result<ReleasePlatform> {
     match value {
         "cpu" => Ok(ReleasePlatform::Cpu),
         "cuda" => Ok(ReleasePlatform::Cuda),

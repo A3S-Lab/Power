@@ -261,6 +261,16 @@ The emitted receipt marks its scope as one capture and states that the strict v1
 bundle is still required. It therefore catches corruption, relabeling, and
 revision drift early without claiming cross-platform production eligibility.
 
+Raw host records and private capture inputs travel separately from the public
+canonical capture. `build-release-handoff` recursively binds every regular
+file in a dedicated read-only staging root to a sorted portable path, byte
+length, SHA-256 digest, platform, version, and source revision. Its manifest is
+stored outside the root. `verify-release-handoff` rescans the complete file set
+and rejects mutation, omission, additions, traversal, symlinks/reparse points,
+non-portable names, and relabeling. This is a transfer-integrity gate only:
+external authentication, semantic inventory review, individual capture replay,
+and the strict four-platform bundle remain mandatory.
+
 After all four captures exist, `build-release-bundle` derives their common
 revision and platform-specific bindings instead of asking a release operator to
 copy digest fields. It requires each capture under its typed CPU, CUDA, Metal,

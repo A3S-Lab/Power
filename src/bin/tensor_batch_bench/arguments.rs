@@ -55,6 +55,10 @@ impl Arguments {
     }
 
     pub(super) fn finish(self) -> Result<()> {
+        self.ensure_empty()
+    }
+
+    pub(super) fn ensure_empty(&self) -> Result<()> {
         if self.values.is_empty() {
             Ok(())
         } else {

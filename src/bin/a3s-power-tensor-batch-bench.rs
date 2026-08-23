@@ -28,6 +28,8 @@ mod release_bundle;
 mod release_contract;
 #[path = "tensor_batch_bench/release_fixture.rs"]
 mod release_fixture;
+#[path = "tensor_batch_bench/release_handoff.rs"]
+mod release_handoff;
 #[path = "tensor_batch_bench/release_run.rs"]
 mod release_run;
 
@@ -146,6 +148,22 @@ Verify a pinned production v1 release-evidence bundle:
     --power-version <exact-crate-version> \
     --power-commit <exact-lowercase-git-revision>
 
+Build an exact, path-free inventory for one staged cross-host handoff:
+  a3s-power-tensor-batch-bench build-release-handoff \
+    --root <staged-artifact-directory> \
+    --platform <cpu|cuda|metal|confidential-gpu> \
+    --power-version <exact-crate-version> \
+    --power-commit <exact-lowercase-git-revision> \
+    --output <new-manifest-outside-root.json>
+
+Verify every file and the exact directory inventory after transfer:
+  a3s-power-tensor-batch-bench verify-release-handoff \
+    --manifest <manifest-outside-root.json> \
+    --root <staged-artifact-directory> \
+    --platform <cpu|cuda|metal|confidential-gpu> \
+    --power-version <exact-crate-version> \
+    --power-commit <exact-lowercase-git-revision>
+
 The JSON report is written to stdout. It contains named hardware and digests,
 but no model path, graph path, tensor values, tensor names, or model-family
 label. Allocation counters cover successful host heap allocations in this
@@ -247,8 +265,22 @@ fn run() -> Result<()> {
             write_json_output(&receipt, None)?;
             return Ok(());
         }
+        "build-release-handoff" => {
+            let manifest_path = output_path.as_deref().ok_or_else(|| {
+                PowerError::InvalidRequest(
+                    "build-release-handoff requires --output outside the staged artifact root"
+                        .to_string(),
+                )
+            })?;
+            let built = release_handoff::build(&mut arguments, manifest_path)?;
+            arguments.finish()?;
+            write_json_output(&built.manifest, Some(manifest_path))?;
+            write_json_output(&built.receipt, None)?;
+            return Ok(());
+        }
         "verify-release-capture" => release_bundle::verify_capture(&mut arguments)?,
         "verify-release-bundle" => release_bundle::verify(&mut arguments)?,
+        "verify-release-handoff" => release_handoff::verify(&mut arguments)?,
         "run" => {
             let common = parse_common(&mut arguments)?;
             serde_json::to_value(run_reviewed_graph(&mut arguments, &common)?)?

@@ -415,7 +415,14 @@ writes a local CUDA source plus active residency declaration as a validated
 create-new pair. `verify-release-capture` independently bounded-reads a received
 capture, recomputes its canonical digest, and checks its exact platform,
 version, and source revision before bundle assembly; its receipt explicitly
-states that the strict four-platform bundle is still required. SafeTensors
+states that the strict four-platform bundle is still required.
+`build-release-handoff` recursively hashes every regular file in one dedicated
+staging directory into a path-free, exact-inventory manifest stored outside
+that directory. `verify-release-handoff` rejects mutation, omission, extra
+files, unsafe portable paths, symlinks/reparse points, and platform or revision
+relabeling after cross-host transfer. The manifest still requires external
+authentication and never substitutes for capture verification or the strict
+four-platform bundle. SafeTensors
 startup pins, attestation, embedded execution, and
 accelerator declarations share one canonical collection digest. Neither the
 collector nor the evidence schema contains a
