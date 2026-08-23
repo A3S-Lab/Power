@@ -45,10 +45,11 @@ verification requires the independent caller to pin this digest whenever it is
 declared; the confidential-GPU profile requires it unconditionally. An
 explicit speculative mode is required when the accepted policy must name one
 decoder rather than the honest backend-selected `auto` contract.
-Proof promotion preserves the accepted inference-execution digest and any
+Proof promotion preserves the accepted 48-byte launch measurement, SHA-256
+identity of the exact raw signed report, inference-execution digest, and any
 accepted auxiliary-artifacts digest as explicit confidential-capture fields.
 Final bundle replay validates them directly in addition to the aggregate claims
-digest; changing or omitting either required identity invalidates the capture.
+digest; changing or omitting any required identity invalidates the capture.
 
 ## Confidential-computing boundary
 

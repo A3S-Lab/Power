@@ -118,9 +118,10 @@ verification returns an opaque proof bound to the exact report; only
 `ReleaseCapture::promote_confidential_gpu` can use that proof to promote a valid
 local CUDA capture. A raw report, deserialized label, or caller-authored boolean
 cannot mint confidential release evidence. Promotion preserves the accepted
-inference-execution digest and optional auxiliary-artifacts digest as explicit
-capture fields; final bundle replay validates both. The resulting bundle still
-needs an authenticated release trust root.
+48-byte launch measurement, SHA-256 identity of the exact raw signed report,
+inference-execution digest, and optional auxiliary-artifacts digest as explicit
+capture fields; final bundle replay validates all of them. The resulting bundle
+still needs an authenticated release trust root.
 
 Validate each transferred capture before assembly:
 

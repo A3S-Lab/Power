@@ -147,6 +147,15 @@ pub(super) fn validate_security(security: &ReleaseCaptureSecurity) -> Result<()>
         if !matches!(binding.tee_type, TeeType::SevSnp | TeeType::Tdx) {
             return invalid("verified confidential-GPU binding requires a hardware TEE");
         }
+        validate_lower_hex(
+            &binding.launch_measurement,
+            96,
+            "confidential GPU launch measurement",
+        )?;
+        validate_sha256(
+            &binding.attestation_report_sha256,
+            "confidential GPU raw attestation report",
+        )?;
         validate_sha256(
             &binding.verified_claims_sha256,
             "verified confidential GPU claims",
@@ -444,13 +453,17 @@ fn validate_capture_against_policy(
 }
 
 pub(super) fn validate_sha256(value: &str, label: &str) -> Result<()> {
-    if value.len() != 64
+    validate_lower_hex(value, 64, label)
+}
+
+fn validate_lower_hex(value: &str, expected_characters: usize, label: &str) -> Result<()> {
+    if value.len() != expected_characters
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return invalid(format!(
-            "{label} must contain 64 lowercase hexadecimal characters"
+            "{label} must contain {expected_characters} lowercase hexadecimal characters"
         ));
     }
     Ok(())
@@ -489,6 +502,44 @@ pub(super) fn invalid<T>(message: impl Into<String>) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn confidential_security() -> ReleaseCaptureSecurity {
+        serde_json::from_value(serde_json::json!({
+            "kind": "confidential-gpu",
+            "binding": {
+                "teeType": "sev-snp",
+                "launchMeasurement": "5".repeat(96),
+                "attestationReportSha256": "6".repeat(64),
+                "verifiedClaimsSha256": "7".repeat(64),
+                "acceleratorDeclarationSha256": "8".repeat(64),
+                "weightsSha256": "9".repeat(64),
+                "executionPolicySha256": "a".repeat(64),
+                "inferenceExecutionPolicySha256": "b".repeat(64),
+                "runtimeDevice": { "kind": "cuda", "ordinal": 0 },
+                "deviceMeshSha256": null
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn confidential_security_requires_exact_attestation_identity_lengths() {
+        let mut invalid_measurement = confidential_security();
+        let ReleaseCaptureSecurity::ConfidentialGpu { binding } = &mut invalid_measurement else {
+            unreachable!();
+        };
+        binding.launch_measurement.pop();
+        let error = validate_security(&invalid_measurement).unwrap_err();
+        assert!(error.to_string().contains("96 lowercase hexadecimal"));
+
+        let mut invalid_report = confidential_security();
+        let ReleaseCaptureSecurity::ConfidentialGpu { binding } = &mut invalid_report else {
+            unreachable!();
+        };
+        binding.attestation_report_sha256.pop();
+        let error = validate_security(&invalid_report).unwrap_err();
+        assert!(error.to_string().contains("64 lowercase hexadecimal"));
+    }
 
     #[test]
     fn strict_v1_confidential_gpu_supports_only_sev_snp() {

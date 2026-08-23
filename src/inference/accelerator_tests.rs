@@ -569,6 +569,34 @@ fn confidential_binding_rejects_wrong_policy_model_and_simulation() {
         .unwrap();
     let weights = hex::decode(hierarchy.store().sha256()).unwrap();
 
+    let mut missing_measurement = confidential_report(
+        &declaration,
+        hex::decode(&declaration.execution_policy_sha256).unwrap(),
+        weights.clone(),
+    );
+    missing_measurement.measurement.clear();
+    let missing_measurement_error = ConfidentialGpuBinding::from_attestation_report_for_test(
+        &missing_measurement,
+        &declaration,
+    )
+    .unwrap_err();
+    assert!(missing_measurement_error
+        .to_string()
+        .contains("48-byte measurement"));
+
+    let mut missing_raw_report = confidential_report(
+        &declaration,
+        hex::decode(&declaration.execution_policy_sha256).unwrap(),
+        weights.clone(),
+    );
+    missing_raw_report.raw_report = None;
+    let missing_raw_report_error =
+        ConfidentialGpuBinding::from_attestation_report_for_test(&missing_raw_report, &declaration)
+            .unwrap_err();
+    assert!(missing_raw_report_error
+        .to_string()
+        .contains("raw hardware attestation evidence"));
+
     let wrong_policy = confidential_report(&declaration, vec![0x99; 32], weights.clone());
     assert!(
         ConfidentialGpuBinding::from_attestation_report_for_test(&wrong_policy, &declaration)

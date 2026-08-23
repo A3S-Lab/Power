@@ -444,12 +444,35 @@ live `--url` input, missing evidence pins, a non-local or non-CUDA source,
 mismatched weights/device/policy, malformed declarations, and builds without
 `embedded-inference` or `hw-verify`. `confidential-gpu.json` is synchronized and
 committed with same-directory create-new semantics; an existing path is never
-replaced. Promotion writes the verified CPU TEE type, inference-execution
-digest, and optional auxiliary-artifacts digest into the digest-bound
-confidential release binding. Final capture and bundle replay validate those
-explicit fields as well as the aggregate claims digest. The v1 bundle verifier
-accepts `sev-snp` only; TDX cannot enter the v1 release class through a custom
-verifier.
+replaced. Promotion writes the verified CPU TEE type, lowercase 96-character
+launch measurement, SHA-256 identity of the exact `raw_report` bytes,
+inference-execution digest, and optional auxiliary-artifacts digest into the
+digest-bound confidential release binding. Final capture and bundle replay
+validate those explicit fields as well as the aggregate claims digest. The v1
+bundle verifier accepts `sev-snp` only; TDX cannot enter the v1 release class
+through a custom verifier.
+
+Reviewers can reproduce the report-to-capture identity check without trusting
+the promotion process:
+
+```bash
+python3 - <<'PY'
+import hashlib
+import json
+
+with open("report.json", "r", encoding="utf-8") as source:
+    report = json.load(source)
+with open("confidential-gpu.json", "r", encoding="utf-8") as source:
+    capture = json.load(source)
+
+binding = capture["security"]["binding"]
+assert binding["launchMeasurement"] == report["measurement"]
+assert binding["attestationReportSha256"] == hashlib.sha256(
+    bytes.fromhex(report["raw_report"])
+).hexdigest()
+print("confidential report identity: verified")
+PY
+```
 
 ## Build and verify the strict bundle
 
@@ -552,8 +575,8 @@ Preserve at least these files for review:
 | `accelerator.json` | Weights, real GPU execution policy, residency, kernel/fallback, device/mesh |
 | `release-fixture-weights.json`, `confidential-source-receipt.json` | Persistent fixture and source/declaration digest receipts when using calibration mode |
 | `gpu-evidence.json`, `gpu-verdict.json`, `nonce.hex` | Exact raw NVIDIA freshness and verdict bytes |
-| `report.json` | Raw CPU TEE report and canonical model/runtime/GPU claims |
-| `confidential-gpu.json` | Proof-backed promoted capture |
+| `report.json` | Raw CPU TEE report and canonical model/runtime/GPU claims; its `measurement` and decoded `raw_report` bytes must reproduce the promoted pins |
+| `confidential-gpu.json` | Proof-backed promoted capture with explicit launch-measurement and raw-report identity |
 | `release-evidence.json` | Canonical four-platform strict v1 bundle |
 | `release-evidence.sha256` | Single lowercase bundle digest carried by the signed evidence tag |
 | OS, CPU/GPU, driver, firmware, `nvattest`, Rust, and Cargo records | Named execution environment |
@@ -574,10 +597,12 @@ Before building the four-platform bundle:
 3. confirm platform-specific executable, topology, profile, memory, and policy
    bindings remain distinct and honest;
 4. confirm the confidential source is not reused as the ordinary CUDA capture;
-5. recompute the artifact manifest from read-only copies; and
-6. run the pinned `verify-release-bundle` command documented in the
+5. reproduce the confidential capture's launch-measurement and raw-report pins
+   from `report.json` with the command above;
+6. recompute the artifact manifest from read-only copies;
+7. run the pinned `verify-release-bundle` command documented in the
    [v1 Production Support Matrix](v1-support-matrix.md); and
-7. authenticate the final bundle digest through the release trust root.
+8. authenticate the final bundle digest through the release trust root.
 
 The capture runbook and verifier control path are implemented and covered by
 deterministic tests. Those tests do not substitute for hardware capture. Every

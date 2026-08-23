@@ -162,6 +162,8 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
 - [x] Preserve the verifier-pinned inference-execution policy and optional
       auxiliary-artifact set as explicit confidential release fields, and
       reject missing, malformed, or mutated digests during bundle replay.
+- [x] Preserve the accepted 48-byte CPU TEE launch measurement and SHA-256 of
+      the exact raw signed report as explicit confidential release fields.
 - [x] Add the external Metal/confidential-GPU capture runbook that collects vendor
       evidence, invokes strict proof-backed promotion, and preserves the raw
       report plus trust-root material for the same immutable release revision.

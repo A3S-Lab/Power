@@ -293,11 +293,13 @@ pub struct ReleaseContractEvidence {
     pub exact_fallback: ExactFallbackEvidence,
 }
 
-/// Digest-only projection of an already verified confidential-GPU binding.
+/// Evidence-identity projection of an already verified confidential-GPU binding.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfidentialReleaseBinding {
     pub(super) tee_type: TeeType,
+    pub(super) launch_measurement: String,
+    pub(super) attestation_report_sha256: String,
     pub(super) verified_claims_sha256: String,
     pub(super) accelerator_declaration_sha256: String,
     pub(super) weights_sha256: String,
@@ -314,6 +316,8 @@ impl ConfidentialReleaseBinding {
     fn from_verified(binding: &ConfidentialGpuBinding) -> Self {
         Self {
             tee_type: binding.tee_type(),
+            launch_measurement: binding.launch_measurement().to_string(),
+            attestation_report_sha256: binding.attestation_report_sha256().to_string(),
             verified_claims_sha256: binding.claims_sha256().to_string(),
             accelerator_declaration_sha256: binding.declaration_sha256().to_string(),
             weights_sha256: binding.weights_sha256().to_string(),
@@ -329,6 +333,14 @@ impl ConfidentialReleaseBinding {
 
     pub fn tee_type(&self) -> TeeType {
         self.tee_type
+    }
+
+    pub fn launch_measurement(&self) -> &str {
+        &self.launch_measurement
+    }
+
+    pub fn attestation_report_sha256(&self) -> &str {
+        &self.attestation_report_sha256
     }
 
     pub fn verified_claims_sha256(&self) -> &str {
@@ -369,6 +381,8 @@ impl std::fmt::Debug for ConfidentialReleaseBinding {
         formatter
             .debug_struct("ConfidentialReleaseBinding")
             .field("tee_type", &self.tee_type)
+            .field("launch_measurement", &"hex")
+            .field("attestation_report", &"sha256")
             .field("verified_claims", &"sha256")
             .field("accelerator_declaration", &"sha256")
             .field("weights", &"sha256")
@@ -396,16 +410,18 @@ impl std::fmt::Debug for ConfidentialReleaseBinding {
 )]
 pub enum ReleaseCaptureSecurity {
     Local,
-    ConfidentialGpu { binding: ConfidentialReleaseBinding },
+    ConfidentialGpu {
+        binding: Box<ConfidentialReleaseBinding>,
+    },
 }
 
 impl ReleaseCaptureSecurity {
-    /// Projects only digest-bound fields from a binding that Power created
+    /// Projects only evidence identities from a binding that Power created
     /// after strict attestation-claim validation.
     #[cfg(feature = "server")]
     fn from_verified_confidential_gpu(binding: &ConfidentialGpuBinding) -> Result<Self> {
         let security = Self::ConfidentialGpu {
-            binding: ConfidentialReleaseBinding::from_verified(binding),
+            binding: Box::new(ConfidentialReleaseBinding::from_verified(binding)),
         };
         super::validation::validate_security(&security)?;
         Ok(security)

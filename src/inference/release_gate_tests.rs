@@ -348,6 +348,8 @@ fn policy_and_security_mismatches_fail_closed() {
         "kind": "confidential-gpu",
         "binding": {
             "teeType": "sev-snp",
+            "launchMeasurement": "5".repeat(96),
+            "attestationReportSha256": digest('6'),
             "verifiedClaimsSha256": digest('7'),
             "acceleratorDeclarationSha256": digest('8'),
             "weightsSha256": fixture.shape.weights_sha256.clone(),
@@ -370,6 +372,8 @@ fn policy_and_security_mismatches_fail_closed() {
         "kind": "confidential-gpu",
         "binding": {
             "teeType": "simulated",
+            "launchMeasurement": "5".repeat(96),
+            "attestationReportSha256": digest('6'),
             "verifiedClaimsSha256": digest('7'),
             "acceleratorDeclarationSha256": digest('8'),
             "weightsSha256": fixture.shape.weights_sha256.clone(),

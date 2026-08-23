@@ -15,6 +15,7 @@ use crate::verify::{
     verify_confidential_gpu_attestation, ExpectedGpuDevices, ExpectedGpuEvidence, HardwareVerifier,
     VerifyOptions,
 };
+use sha2::{Digest, Sha256};
 
 const NONCE: [u8; 32] = [0x11; 32];
 const EVIDENCE_DIGEST: [u8; 32] = [0x33; 32];
@@ -255,6 +256,11 @@ fn opaque_confidential_proof_enables_a_strict_v1_bundle() {
     );
     let local = local_cuda_capture(&declaration, confidential_source);
     let report = report_for(&declaration);
+    let expected_launch_measurement = hex::encode(&report.measurement);
+    let expected_attestation_report_sha256 = format!(
+        "{:x}",
+        Sha256::digest(report.raw_report.as_deref().unwrap())
+    );
     let verifier = AcceptFixtureSignature;
     let options = verify_options(&report, &declaration, &verifier);
     let (_, proof) = verify_confidential_gpu_attestation(&report, &options).unwrap();
@@ -290,6 +296,11 @@ fn opaque_confidential_proof_enables_a_strict_v1_bundle() {
     assert_eq!(binding.weights_sha256(), declaration.weights_sha256);
     assert_eq!(binding.runtime_device(), declaration.runtime_device);
     assert_eq!(binding.tee_type(), TeeType::SevSnp);
+    assert_eq!(binding.launch_measurement(), expected_launch_measurement);
+    assert_eq!(
+        binding.attestation_report_sha256(),
+        expected_attestation_report_sha256
+    );
     let expected_inference = hex::encode(INFERENCE_EXECUTION_DIGEST);
     let expected_auxiliary = hex::encode(AUXILIARY_ARTIFACTS_DIGEST);
     assert_eq!(
@@ -310,11 +321,24 @@ fn opaque_confidential_proof_enables_a_strict_v1_bundle() {
         promoted_json["security"]["binding"]["auxiliaryArtifactsSha256"].as_str(),
         Some(expected_auxiliary.as_str())
     );
-    let mut tampered = promoted_json;
-    tampered["security"]["binding"]["inferenceExecutionPolicySha256"] =
-        serde_json::Value::String(hex::encode([0x88; 32]));
-    let tampered: ReleaseCapture = serde_json::from_value(tampered).unwrap();
-    assert!(tampered.verify().is_err());
+    assert_eq!(
+        promoted_json["security"]["binding"]["launchMeasurement"].as_str(),
+        Some(expected_launch_measurement.as_str())
+    );
+    assert_eq!(
+        promoted_json["security"]["binding"]["attestationReportSha256"].as_str(),
+        Some(expected_attestation_report_sha256.as_str())
+    );
+    for (field, replacement) in [
+        ("launchMeasurement", hex::encode([0x88; 48])),
+        ("attestationReportSha256", hex::encode([0x99; 32])),
+        ("inferenceExecutionPolicySha256", hex::encode([0xaa; 32])),
+    ] {
+        let mut tampered = promoted_json.clone();
+        tampered["security"]["binding"][field] = serde_json::Value::String(replacement);
+        let tampered: ReleaseCapture = serde_json::from_value(tampered).unwrap();
+        assert!(tampered.verify().is_err());
+    }
 
     let relabel_error = ReleaseCapture::build(
         promoted.security.clone(),

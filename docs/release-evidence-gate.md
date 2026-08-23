@@ -54,13 +54,14 @@ report. `ReleaseCapture::promote_confidential_gpu` consumes that proof plus the
 matching accelerator declaration, verifies the source is a valid local CUDA
 capture, projects the verified claims, and rebuilds the capture under the
 confidential-GPU class. The projection retains the aggregate claims digest and
-also exposes the verifier-pinned inference-execution digest plus any
+also exposes the accepted 48-byte launch measurement, SHA-256 identity of the
+exact raw signed report, verifier-pinned inference-execution digest, and any
 auxiliary-artifacts digest. Capture and bundle replay validate those fields, so
-the accepted runtime policy and external proposer, adapter, or projector set
-remain directly reviewable after promotion. `ReleaseCapture::build` accepts
-only local captures, so a caller-supplied label cannot invoke the trusted mint
-path. Deserialized bundles remain evidence inputs and still require the
-external signed trust-root check described below.
+the accepted CPU TEE evidence, runtime policy, and external proposer, adapter,
+or projector set remain directly reviewable after promotion.
+`ReleaseCapture::build` accepts only local captures, so a caller-supplied label
+cannot invoke the trusted mint path. Deserialized bundles remain evidence
+inputs and still require the external signed trust-root check described below.
 
 Projects that are not preparing a v1 production release may construct an
 explicit narrower policy, for example a CPU-only development policy. Such a
@@ -162,8 +163,8 @@ The policy and captures jointly bind:
 - host and device memory reservations;
 - the resolved typed device and named hardware environment;
 - the TEE policy; and
-- verified confidential-GPU claims, CPU TEE type, and accelerator declaration
-  when required.
+- verified confidential-GPU claims, CPU TEE type, launch measurement, raw-report
+  identity, and accelerator declaration when required.
 
 The outer bundle, each capture, the tensor report, and the shape binding use
 domain-separated canonical digests. Deserialization denies unknown fields.
@@ -276,9 +277,10 @@ are likewise outside the gate.
 Optimizations such as Flash Attention, fused kernels, speculative decoding, MTP,
 reduced projections, tensor sharing, or device-resident chains must be included
 in the reviewed graph, canonical inference-execution policy, and auxiliary
-artifact identities as applicable. Proof promotion preserves the accepted
-inference and auxiliary digests explicitly; none of these optimizations receives
-a model-specific verification branch.
+artifact identities as applicable. Proof promotion preserves the accepted CPU
+TEE measurement, raw-report identity, inference digest, and auxiliary digest
+explicitly; none of these optimizations receives a model-specific verification
+branch.
 
 ## Current evidence status
 

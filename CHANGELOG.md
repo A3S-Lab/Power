@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Preserved the verifier-accepted 48-byte launch measurement and the SHA-256
+  identity of the exact raw signed CPU TEE report as explicit fields in every
+  proof-promoted confidential GPU capture. Final capture and bundle replay now
+  reject missing, malformed, or mutated report identities instead of retaining
+  only an aggregate canonical-claims digest.
 - Preserved the verifier-accepted inference-execution digest and optional
   auxiliary-artifacts digest as explicit fields in proof-promoted confidential
   GPU captures. Final release-bundle replay now validates those pins directly,

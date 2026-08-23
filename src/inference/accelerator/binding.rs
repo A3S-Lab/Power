@@ -18,11 +18,13 @@ use crate::verify::VerifiedConfidentialGpuAttestation;
 use super::types::AcceleratorSecurityRequirement;
 use super::types::{validate_sha256, AcceleratorResidencyDeclaration};
 
-/// Digest-only binding from a strictly verified GPU-confidential attestation to
-/// one accelerator declaration.
+/// Digest-and-measurement binding from a strictly verified GPU-confidential
+/// attestation to one accelerator declaration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ConfidentialGpuBinding {
     tee_type: TeeType,
+    launch_measurement: String,
+    attestation_report_sha256: String,
     claims_sha256: String,
     declaration_sha256: String,
     weights_sha256: String,
@@ -65,6 +67,22 @@ impl ConfidentialGpuBinding {
             ));
         }
         let claims = require_verified_hardware_claims(report)?;
+        let launch_measurement = encode_launch_measurement(&report.measurement)?;
+        let raw_report = report
+            .raw_report
+            .as_deref()
+            .filter(|raw_report| !raw_report.is_empty())
+            .ok_or_else(|| {
+                PowerError::PolicyViolation(
+                    "confidential GPU binding requires the exact raw attestation report"
+                        .to_string(),
+                )
+            })?;
+        let attestation_report_sha256 = format!("{:x}", Sha256::digest(raw_report));
+        validate_sha256(
+            &attestation_report_sha256,
+            "confidential GPU raw attestation report",
+        )?;
 
         let expected_weights = hex::decode(&declaration.weights_sha256).map_err(|_| {
             PowerError::InvalidFormat(
@@ -156,6 +174,8 @@ impl ConfidentialGpuBinding {
         validate_sha256(&claims_sha256, "confidential GPU claims")?;
         Ok(Self {
             tee_type: claims.tee_type,
+            launch_measurement,
+            attestation_report_sha256,
             claims_sha256,
             declaration_sha256: declaration.declaration_sha256.clone(),
             weights_sha256: declaration.weights_sha256.clone(),
@@ -172,6 +192,14 @@ impl ConfidentialGpuBinding {
 
     pub fn tee_type(&self) -> TeeType {
         self.tee_type
+    }
+
+    pub fn launch_measurement(&self) -> &str {
+        &self.launch_measurement
+    }
+
+    pub fn attestation_report_sha256(&self) -> &str {
+        &self.attestation_report_sha256
     }
 
     pub fn claims_sha256(&self) -> &str {
@@ -228,6 +256,11 @@ impl ConfidentialGpuBinding {
             ));
         }
         validate_sha256(&self.claims_sha256, "confidential GPU claims")?;
+        validate_launch_measurement(&self.launch_measurement)?;
+        validate_sha256(
+            &self.attestation_report_sha256,
+            "confidential GPU raw attestation report",
+        )?;
         validate_sha256(
             &self.inference_execution_policy_sha256,
             "confidential GPU inference execution policy",
@@ -247,6 +280,8 @@ impl std::fmt::Debug for ConfidentialGpuBinding {
         formatter
             .debug_struct("ConfidentialGpuBinding")
             .field("tee_type", &self.tee_type)
+            .field("launch_measurement", &"hex")
+            .field("attestation_report", &"sha256")
             .field("claims_sha256", &self.claims_sha256)
             .field("declaration_sha256", &self.declaration_sha256)
             .field("inference_execution_policy", &"sha256")
@@ -258,6 +293,32 @@ impl std::fmt::Debug for ConfidentialGpuBinding {
             .field("device_mesh_sha256", &self.device_mesh_sha256)
             .finish_non_exhaustive()
     }
+}
+
+#[cfg(any(feature = "server", test))]
+fn encode_launch_measurement(measurement: &[u8]) -> Result<String> {
+    if measurement.len() != 48 {
+        return Err(PowerError::PolicyViolation(
+            "confidential GPU launch measurement must be exactly 48 bytes".to_string(),
+        ));
+    }
+    let measurement = hex::encode(measurement);
+    validate_launch_measurement(&measurement)?;
+    Ok(measurement)
+}
+
+fn validate_launch_measurement(measurement: &str) -> Result<()> {
+    if measurement.len() != 96
+        || measurement
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
+    {
+        return Err(PowerError::InvalidFormat(
+            "confidential GPU launch measurement must contain 96 lowercase hexadecimal characters"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(any(feature = "server", test))]
