@@ -160,8 +160,15 @@ That adaptive run moved from 67/58 to 69/56 lenient/strict scores and contained
 five lenient gains, three lenient losses, one strict gain, and three strict
 losses. Exact complete-output parity was 55/100; all 57 tasks untruncated in
 both modes retained the same extracted answer. The controller removes the
-known replay tax, but it still remains opt-in because the paired losses fail a
-no-regression gate.
+known replay tax.
+
+A clean five-task follow-up then selected every observed answer loss and one
+positive control. It retained 5/5 paired answers with zero losses across three
+512-token repetitions, then retained 5/5 untruncated answer parity when the
+budget was raised to 1,024 tokens. Complete output parity remained 0/5. The
+controller therefore remains opt-in because target-authoritative acceptance
+does not promise byte-identical serial and batched CUDA trajectories; the
+focused answer result does not replace a representative quality matrix.
 
 See the [Optimization playbook](./optimization) for the complete execution
 path, [Performance evidence](./performance) for the measurement interpretation, and

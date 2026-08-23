@@ -172,6 +172,20 @@ It verifies a 164.756 token/s peak median, 160.881 minimum, zero replay, and a
 still rejects it because the matrix contains three paired lenient losses and
 only 55/100 complete-output parity.
 
+The loss-focused follow-up independently binds the hash-locked five-task
+selection, 512- and 1,024-token request identities, benchmark-tool hashes,
+host controls, raw report hashes, and compact task vectors:
+
+```bash
+python3 tools/dspark_quality_followup_evidence.py verify \
+  --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/followup-evidence.json \
+  --json
+```
+
+It verifies zero paired answer losses and 5/5 untruncated answer parity at
+1,024 tokens. Exact output parity remains 0/5, so the production-default gate
+stays closed even though the selected-answer diagnostic passes.
+
 ## Production release trust chain
 
 For v1 and later, hardware captures bind a frozen source commit. Its direct

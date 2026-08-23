@@ -181,7 +181,7 @@ runner 在 `finally` 中恢复 GPU 时钟，并把失败报告也保留下来，
 
 ## 8. 复现原生 DSpark 门槛
 
-外部 DSpark 使用保持不变的 22,884,408,288 字节 Q6_K 目标和固定摘要的 1.10 GB DSpark Q4 制品。先运行三个无需模型与 GPU 的校验器：
+外部 DSpark 使用保持不变的 22,884,408,288 字节 Q6_K 目标和固定摘要的 1.10 GB DSpark Q4 制品。先运行四个无需模型与 GPU 的校验器：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -194,11 +194,19 @@ py -3.13 .\tools\qwen38_quality_evidence.py verify `
 py -3.13 .\tools\dspark_adaptive_evidence.py verify `
   --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\adaptive\evidence.json `
   --json
+
+py -3.13 .\tools\dspark_quality_followup_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality\followup-evidence.json `
+  --json
 ```
 
 第一个验证 context-512 峰值：目标对照 32.249 token/s，DSpark K10/S6 中位数 169.324、最低 167.102 token/s，三次输出和回执完全一致。第二个验证 context-1024 的 600 请求质量采集：22.618 对 32.678 token/s、1.445 倍提升，以及分数、回放与全部配对任务向量。加入 `--require-production-default` 应当失败，因为完整输出一致率只有 54/100；该 K10/S6 矩阵是诊断证据，不是无损默认值。
 
 第三个校验器绑定当前干净的按请求自适应采集：峰值中位数 164.756 token/s、最低 160.881，峰值输出与回执摘要一致，回放为零；100 题负载为 22.872 对 31.052 token/s，提升 1.358 倍，并重新计算全部配对任务向量。候选有 5 个宽松收益和 3 个损失，完整输出一致 55/100，因此加入 `--require-production-default` 同样必须失败。
+
+第四个校验器绑定干净提交 `7bdeb960f5a38ea7515c67a12636a29198fd95f6` 上的损失样本复测：512 token 交叉运行 3 轮，另做 1 轮 1,024-token 配对。每轮都是 5/5 答案一致、0 收益、0 损失；1,024-token 配对中 5 题全部正常结束且答案 5/5 一致。512-token 吞吐为 30.521 对 24.967 token/s。完整输出一致仍为 0/5，因此加入 `--require-production-default` 应当失败。
+
+复跑时使用哈希锁定的 `dspark/quality/divergence-v1.selection.json` 与 `run-qwen38-quality-matrix.ps1`。性能复测参数为 `-MaxTokensOverride 512 -NumCtx 1024 -Repetitions 3`；无截断质量检查参数为 `-MaxTokensOverride 1024 -NumCtx 2048 -Repetitions 1`。完整主机控制与可复制命令见[复测协议](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/README.md#adaptive-truncation-follow-up)。
 
 证据包中的性能命令会记录 2745 MHz GPU 时钟锁定请求、高优先级 CUDA stream、High 进程优先级、`0x55555` 亲和性、干净工作树、GPU 空闲门槛与至少 23,000 MiB 可用显存。这些是本机采集条件，不是其他 CPU 或 GPU 拓扑的默认配置。
 

@@ -74,6 +74,7 @@ topology and semantics.
 | Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; **54/100 exact-output parity** versus target-only | **32.678 token/s** (1.445x paired control) | - |
 | **Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (controlled peak)** | Identical output and receipt hashes across all 3 samples | **63.535 token/s median** | **164.756 token/s median; 160.881 minimum** |
 | Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (100 tasks, 1x) | 69/100 lenient; 56/100 strict; **55/100 exact-output parity** versus 67/100 and 58/100 target-only | **31.052 token/s** (1.358x paired control) | - |
+| Adaptive DSpark loss-focused follow-up (5 selected tasks) | **5/5 answer parity and 0 losses** at 512 tokens × 3; **5/5 untruncated parity** at 1,024 tokens | **30.521 vs 24.967 token/s** at 512 tokens (1.222x) | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K6/S6, B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **46.923 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K7/S6, B11, high-priority CUDA** | Fixed peak prompt retained the control digest | - | **172.835 token/s** on a contended desktop |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Fixed peak prompt has exact greedy parity | - | 147.0207 token/s |
@@ -121,8 +122,16 @@ and recorded zero fallback replay and zero rollback-guard activation. The
 candidate moved from 67/58 to 69/56 lenient/strict answers, with five lenient
 gains, three lenient losses, one strict gain, three strict losses, 89/100
 answer parity, and 55/100 complete-output parity. All 57 tasks untruncated in
-both modes retained the same extracted answer. This is a faster opt-in profile,
-not a lossless default and not a 175 token/s service floor.
+both modes retained the same extracted answer. A clean loss-focused follow-up
+then selected every observed lenient or strict loss plus one positive control.
+Across three alternating 512-token repetitions it retained 5/5 paired answers
+with zero gains and zero losses while reaching 30.521 versus 24.967 token/s.
+At a 1,024-token override, all five tasks ended normally and retained 5/5
+paired-answer parity; both modes scored 4/5. This localizes the earlier losses
+to cutoff-sensitive trajectories, but complete outputs still differed 0/5.
+The profile is therefore faster and answer-noninferior on the selected
+follow-up, not a lossless default, a general-intelligence proof, or a 175
+token/s service floor.
 
 DFlash and DSpark are alternative external-draft contracts, not an additive
 mode. DSpark Q4 is implemented and measured; a genuine DFlash GGUF has not yet
@@ -190,6 +199,7 @@ steady-decode or DFlash/DSpark claim.
 - [Step-by-step reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md)
 - [Native DSpark Q4 peak and 600-request quality captures](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/README.md)
 - [Adaptive DSpark path-free peak and paired-quality evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/adaptive/evidence.json)
+- [Adaptive DSpark truncation follow-up and offline evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/README.md#adaptive-truncation-follow-up)
 - [UD-Q8_K_XL heterogeneous-placement boundary](docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 ## Start in three steps

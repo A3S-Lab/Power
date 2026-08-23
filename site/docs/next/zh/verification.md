@@ -135,6 +135,16 @@ python3 tools/dspark_adaptive_evidence.py verify \
 
 它验证峰值中位数 164.756 token/s、最低 160.881、零回放，以及质量负载 1.358 倍的请求全程加速。由于矩阵包含 3 个配对宽松损失，且完整输出一致率仅为 55/100，生产默认校验仍会拒绝该配置。
 
+损失样本复测证据独立固定了哈希锁定的 5 题集合、512/1,024-token 请求身份、基准工具哈希、主机控制、原始报告摘要和紧凑任务向量：
+
+```bash
+python3 tools/dspark_quality_followup_evidence.py verify \
+  --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/followup-evidence.json \
+  --json
+```
+
+它验证配对答案 0 损失，并在 1,024 token 下实现 5/5 未截断答案一致。完整输出一致仍为 0/5，所以损失样本诊断通过后，逐字输出生产门槛仍保持关闭。
+
 ## 生产发布信任链
 
 从 v1 开始，硬件捕获绑定一个冻结的源码提交。它的直接子提交只能新增

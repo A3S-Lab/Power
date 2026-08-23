@@ -1,0 +1,891 @@
+{
+  "schema": "a3s.power.dspark-quality-followup-evidence.v1",
+  "source": {
+    "power_commit": "7bdeb960f5a38ea7515c67a12636a29198fd95f6",
+    "dirty_worktree": false,
+    "server_sha256": "92e532aca885d4babdd1bf15bd94ece07e013082a87007543514749b96d0f373",
+    "benchmark_tools": {
+      "runner_sha256": "ceca65bc8da1aff5550c446213af1174602af30fd7120db619db6368e722060a",
+      "evaluator_sha256": "9244feb9f00c04e6b17783361172d1a00bf09beca37df10f5a172d570a233644",
+      "reporter_sha256": "5f676d00dfa16b25e1613de502d34ce379afadff28c05c583c714b964034006b"
+    },
+    "raw": {
+      "tokens_512": {
+        "environment_sha256": "2451b69134894890e5ff6d6c212d4dd2d7fc63d2f2b81fa7bb71fbf50150a380",
+        "aggregate_sha256": "c715dc540dff3db1da13fd2a63553f74cd49ff8922bd6f4e9e6c35bba37af8da",
+        "reports": [
+          {
+            "file": "r01-o1-q6-off.json",
+            "sha256": "22cf6853d47cd5215042dae091753c63a2d5205c4157f668bc89985a6e44e14e"
+          },
+          {
+            "file": "r01-o2-q6-dspark.json",
+            "sha256": "bc540d98bcf0a4b8822909deaa8972250beda8cd9b33758a4a1fe3c9fe39b839"
+          },
+          {
+            "file": "r02-o1-q6-dspark.json",
+            "sha256": "6cafeb8f4f62820d39a0ffda5dfdd67662774b55f7b85d07371c5956d68f9e2c"
+          },
+          {
+            "file": "r02-o2-q6-off.json",
+            "sha256": "ad2384ac2a78d89a937d4510b50e1dd8b33cfd6fb808324e12cc5c504fcc3871"
+          },
+          {
+            "file": "r03-o1-q6-off.json",
+            "sha256": "37081fe270d3b816db15c47790f5261e9acf1ef0941638d89cbb11337e646351"
+          },
+          {
+            "file": "r03-o2-q6-dspark.json",
+            "sha256": "0d6d3f5ee567b0af181b35f3cae18cb822055e7724a145398dc8097ec3cfd2c7"
+          }
+        ]
+      },
+      "tokens_1024": {
+        "environment_sha256": "678b8d9c1f5154936665ad1a098913c5f2f7ba3dfa991862ed6c9e3586a548b8",
+        "aggregate_sha256": "f17824d7271f6b42fc36344bddfb9962eb6daa2a0536b72281fca68822ce466a",
+        "reports": [
+          {
+            "file": "r01-o1-q6-off.json",
+            "sha256": "95e7f820d50e8c5046392f0101d9839723a3e3cae37dafab329d7b8ecac7bd3c"
+          },
+          {
+            "file": "r01-o2-q6-dspark.json",
+            "sha256": "ff81d50d56e8535219dbf9004a114ee477e6c276e4be5b9c5a205372ab317b39"
+          }
+        ]
+      }
+    }
+  },
+  "artifacts": {
+    "target": {
+      "bytes": 22884408288,
+      "sha256": "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+      "file_hash_verified": true
+    },
+    "draft": {
+      "kind": "dspark",
+      "bytes": 1104594816,
+      "sha256": "12003c7f2642e2e87e979729e16947a913e2213d82136cb5024a36ec4871fef2",
+      "target_sha256": "562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727",
+      "file_hash_verified": true
+    }
+  },
+  "inputs": {
+    "task_source_sha256": "5798257e18b81188749196d34359278dfadf7986776eb2bd66d629cbfc33813c",
+    "tasks_file_sha256": "2fd18d52a2e011692c6ffac2547da41ec8b6594e2d35a8aa40fa8648df96b40a",
+    "tasks_sha256": "881a115e276b2c2a80fcae009682b6098c045a0a7180b956189a93dd1fbb5a69",
+    "task_selection_sha256": "f7e6ad9a3018c8de4341e427b6812f30ecde5840f46ac16401ab0a21b4316df3",
+    "task_manifest_sha256": "e254af009fbee304bb574515aece7630cfb6ea91fd0fece6c0d9b9f02de44a9d",
+    "config_sha256": "a8fb13a27d5b30d77bf7d3047b90c4fcae601e6d08b6d2b05dbc46b733eeecb9",
+    "task_ids": [
+      "mmlu:8400",
+      "mmlu:11207",
+      "ceval:teacher_qualification:1",
+      "ceval:college_physics:2",
+      "ceval:high_school_history:0"
+    ]
+  },
+  "hardware": {
+    "gpu": [
+      "NVIDIA GeForce RTX 4090, 610.74, 24564, 8.9, P0, 450.00"
+    ],
+    "cpu": {
+      "Name": "Intel(R) Xeon(R) w5-2445",
+      "NumberOfCores": 10,
+      "NumberOfLogicalProcessors": 20
+    },
+    "os": {
+      "Caption": "Microsoft Windows 11 专业版",
+      "Version": "10.0.22631",
+      "BuildNumber": "22631",
+      "TotalVisibleMemorySize": 133859076
+    }
+  },
+  "captures": {
+    "tokens_512": {
+      "request": {
+        "max_tokens_override": 512,
+        "num_ctx": 1024,
+        "num_batch": 12,
+        "repetitions": 3,
+        "seed": 42,
+        "quality_only": false
+      },
+      "modes": {
+        "q6-off": {
+          "accuracy": {
+            "mean": 0.8,
+            "median": 0.8,
+            "minimum": 0.8,
+            "maximum": 0.8
+          },
+          "strict_accuracy": {
+            "mean": 0.8,
+            "median": 0.8,
+            "minimum": 0.8,
+            "maximum": 0.8
+          },
+          "truncated": {
+            "mean": 1.0,
+            "median": 1.0,
+            "minimum": 1.0,
+            "maximum": 1.0
+          },
+          "aggregate_completion_tokens_per_second": {
+            "mean": 24.96735192815211,
+            "median": 25.177339978251982,
+            "minimum": 24.36816867216033,
+            "maximum": 25.356547134044014
+          },
+          "prediction_stable_tasks": 5,
+          "content_stable_tasks": 5
+        },
+        "q6-dspark": {
+          "accuracy": {
+            "mean": 0.8,
+            "median": 0.8,
+            "minimum": 0.8,
+            "maximum": 0.8
+          },
+          "strict_accuracy": {
+            "mean": 0.8,
+            "median": 0.8,
+            "minimum": 0.8,
+            "maximum": 0.8
+          },
+          "truncated": {
+            "mean": 1.0,
+            "median": 1.0,
+            "minimum": 1.0,
+            "maximum": 1.0
+          },
+          "aggregate_completion_tokens_per_second": {
+            "mean": 30.520561870014912,
+            "median": 32.21453231613416,
+            "minimum": 26.874393997011968,
+            "maximum": 32.47275929689861
+          },
+          "prediction_stable_tasks": 5,
+          "content_stable_tasks": 5,
+          "speculative_runtime": {
+            "strategy": "dspark",
+            "overall": {
+              "weighted_acceptance_rate": {
+                "mean": 0.5444887118193891,
+                "median": 0.5444887118193891,
+                "minimum": 0.5444887118193891,
+                "maximum": 0.5444887118193891
+              },
+              "verified_tokens_per_target_pass": {
+                "mean": 2.7035490605427976,
+                "median": 2.7035490605427976,
+                "minimum": 2.7035490605427976,
+                "maximum": 2.7035490605427976
+              },
+              "fallback_replays": {
+                "mean": 0,
+                "median": 0,
+                "minimum": 0,
+                "maximum": 0
+              },
+              "rollback_guard_requests": {
+                "mean": 0,
+                "median": 0,
+                "minimum": 0,
+                "maximum": 0
+              },
+              "rollback_guard_activations": {
+                "mean": 0,
+                "median": 0,
+                "minimum": 0,
+                "maximum": 0
+              },
+              "aggregate_reported_tokens_per_second": {
+                "mean": 41.92957101902161,
+                "median": 44.519668685773475,
+                "minimum": 35.94140391505499,
+                "maximum": 45.32764045623637
+              }
+            }
+          }
+        }
+      },
+      "paired_runs": [
+        {
+          "task_count": 5,
+          "base_correct": 4,
+          "candidate_correct": 4,
+          "gains": 0,
+          "losses": 0,
+          "exact_mcnemar_p": 1.0,
+          "strict_base_correct": 4,
+          "strict_candidate_correct": 4,
+          "strict_gains": 0,
+          "strict_losses": 0,
+          "strict_exact_mcnemar_p": 1.0,
+          "prediction_parity": 5,
+          "content_sha256_parity": 0,
+          "both_untruncated": 4,
+          "both_untruncated_prediction_parity": 4
+        },
+        {
+          "task_count": 5,
+          "base_correct": 4,
+          "candidate_correct": 4,
+          "gains": 0,
+          "losses": 0,
+          "exact_mcnemar_p": 1.0,
+          "strict_base_correct": 4,
+          "strict_candidate_correct": 4,
+          "strict_gains": 0,
+          "strict_losses": 0,
+          "strict_exact_mcnemar_p": 1.0,
+          "prediction_parity": 5,
+          "content_sha256_parity": 0,
+          "both_untruncated": 4,
+          "both_untruncated_prediction_parity": 4
+        },
+        {
+          "task_count": 5,
+          "base_correct": 4,
+          "candidate_correct": 4,
+          "gains": 0,
+          "losses": 0,
+          "exact_mcnemar_p": 1.0,
+          "strict_base_correct": 4,
+          "strict_candidate_correct": 4,
+          "strict_gains": 0,
+          "strict_losses": 0,
+          "strict_exact_mcnemar_p": 1.0,
+          "prediction_parity": 5,
+          "content_sha256_parity": 0,
+          "both_untruncated": 4,
+          "both_untruncated_prediction_parity": 4
+        }
+      ],
+      "task_pairs": [
+        {
+          "id": "mmlu:8400",
+          "expected": "B",
+          "base": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 512,
+            "completion_tokens": 203,
+            "content_sha256": "4df7a2e0416025f88ae84d75876710147fd8a6951914d90d6172dbfb9756bf3e"
+          },
+          "candidate": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 512,
+            "completion_tokens": 272,
+            "content_sha256": "d0df9346efd053a322b44dd87487e60972c5360eb5649ae8f91f3f8fdd4ee6b5"
+          }
+        },
+        {
+          "id": "mmlu:11207",
+          "expected": "C",
+          "base": {
+            "prediction": "A",
+            "strict_prediction": null,
+            "correct": false,
+            "strict_correct": false,
+            "truncated": true,
+            "finish_reason": "length",
+            "max_tokens": 512,
+            "completion_tokens": 512,
+            "content_sha256": "54425b874f1923e501816dde52cc362c55713a4485c98c27f8ed2bd5db360360"
+          },
+          "candidate": {
+            "prediction": "A",
+            "strict_prediction": null,
+            "correct": false,
+            "strict_correct": false,
+            "truncated": true,
+            "finish_reason": "length",
+            "max_tokens": 512,
+            "completion_tokens": 512,
+            "content_sha256": "a4b29867659de9a04d63e3a168eadfba83ce29043ba251fae2f10f999bccd457"
+          }
+        },
+        {
+          "id": "ceval:teacher_qualification:1",
+          "expected": "B",
+          "base": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 512,
+            "completion_tokens": 228,
+            "content_sha256": "368e0900db596722ae05ddc0b87edce7f42d1273d0d1a6911f4c393667edd802"
+          },
+          "candidate": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 512,
+            "completion_tokens": 265,
+            "content_sha256": "fb0d63f21289e69fb3ac814ee7c05e7c3e655482faf8a86f37c5a573ed0574f9"
+          }
+        },
+        {
+          "id": "ceval:college_physics:2",
+          "expected": "C",
+          "base": {
+            "prediction": "C",
+            "strict_prediction": "C",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 512,
+            "completion_tokens": 185,
+            "content_sha256": "ff1fba67a00312939fbffd768816dec20bdeb0d095dd8ac5171d3c1c1aba227c"
+          },
+          "candidate": {
+            "prediction": "C",
+            "strict_prediction": "C",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 512,
+            "completion_tokens": 341,
+            "content_sha256": "4b4e258fdbde6382dbd032cc6e434c27c1c1b89447f30ded6228ca9564241297"
+          }
+        },
+        {
+          "id": "ceval:high_school_history:0",
+          "expected": "B",
+          "base": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 512,
+            "completion_tokens": 267,
+            "content_sha256": "7dd79581d939428f22389723dcefc0d1c5c54d5c630052f40d86ff85bcb9a5e6"
+          },
+          "candidate": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 512,
+            "completion_tokens": 239,
+            "content_sha256": "afe29854bedc01887ecace4aa68ba4d1d27a9737a58f8207385cb1f57ad9d432"
+          }
+        }
+      ],
+      "host_controls": {
+        "active_power_scheme": "电源方案 GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (高性能)",
+        "process_priority": "High",
+        "process_affinity": {
+          "requested_mask": "0x55555",
+          "logical_processor_count": 20
+        },
+        "cuda_high_priority": true,
+        "gpu_clock": {
+          "gpu_index": 0,
+          "requested_mhz": 2745,
+          "lock_applied": true
+        },
+        "gpu_admission": {
+          "gpu_index": 0,
+          "maximum_idle_utilization_percent": 15,
+          "minimum_idle_memory_free_mib": 23000,
+          "consecutive_sample_count": 3,
+          "sample_interval_milliseconds": 500,
+          "wait_seconds": 300
+        },
+        "admission_windows": [
+          {
+            "run": "r01-o1-q6-off",
+            "elapsed_milliseconds": 1544,
+            "observed_sample_count": 3,
+            "accepted_samples": [
+              {
+                "gpu_index": 0,
+                "utilization_percent": 6,
+                "memory_free_mib": 23235
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 6,
+                "memory_free_mib": 23235
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 6,
+                "memory_free_mib": 23235
+              }
+            ]
+          },
+          {
+            "run": "r01-o2-q6-dspark",
+            "elapsed_milliseconds": 1790,
+            "observed_sample_count": 3,
+            "accepted_samples": [
+              {
+                "gpu_index": 0,
+                "utilization_percent": 3,
+                "memory_free_mib": 23437
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 5,
+                "memory_free_mib": 23424
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 5,
+                "memory_free_mib": 23377
+              }
+            ]
+          },
+          {
+            "run": "r02-o1-q6-dspark",
+            "elapsed_milliseconds": 1475,
+            "observed_sample_count": 3,
+            "accepted_samples": [
+              {
+                "gpu_index": 0,
+                "utilization_percent": 4,
+                "memory_free_mib": 23413
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 4,
+                "memory_free_mib": 23413
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 4,
+                "memory_free_mib": 23413
+              }
+            ]
+          },
+          {
+            "run": "r02-o2-q6-off",
+            "elapsed_milliseconds": 1485,
+            "observed_sample_count": 3,
+            "accepted_samples": [
+              {
+                "gpu_index": 0,
+                "utilization_percent": 3,
+                "memory_free_mib": 23499
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 4,
+                "memory_free_mib": 23499
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 4,
+                "memory_free_mib": 23499
+              }
+            ]
+          },
+          {
+            "run": "r03-o1-q6-off",
+            "elapsed_milliseconds": 1483,
+            "observed_sample_count": 3,
+            "accepted_samples": [
+              {
+                "gpu_index": 0,
+                "utilization_percent": 4,
+                "memory_free_mib": 23305
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 4,
+                "memory_free_mib": 23305
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 3,
+                "memory_free_mib": 23305
+              }
+            ]
+          },
+          {
+            "run": "r03-o2-q6-dspark",
+            "elapsed_milliseconds": 1452,
+            "observed_sample_count": 3,
+            "accepted_samples": [
+              {
+                "gpu_index": 0,
+                "utilization_percent": 6,
+                "memory_free_mib": 23213
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 8,
+                "memory_free_mib": 23213
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 7,
+                "memory_free_mib": 23213
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "tokens_1024": {
+      "request": {
+        "max_tokens_override": 1024,
+        "num_ctx": 2048,
+        "num_batch": 12,
+        "repetitions": 1,
+        "seed": 42,
+        "quality_only": true
+      },
+      "modes": {
+        "q6-off": {
+          "accuracy": {
+            "mean": 0.8,
+            "median": 0.8,
+            "minimum": 0.8,
+            "maximum": 0.8
+          },
+          "strict_accuracy": {
+            "mean": 0.8,
+            "median": 0.8,
+            "minimum": 0.8,
+            "maximum": 0.8
+          },
+          "truncated": {
+            "mean": 0.0,
+            "median": 0.0,
+            "minimum": 0.0,
+            "maximum": 0.0
+          },
+          "aggregate_completion_tokens_per_second": {
+            "mean": 25.089060390762047,
+            "median": 25.089060390762047,
+            "minimum": 25.089060390762047,
+            "maximum": 25.089060390762047
+          },
+          "prediction_stable_tasks": 5,
+          "content_stable_tasks": 5
+        },
+        "q6-dspark": {
+          "accuracy": {
+            "mean": 0.8,
+            "median": 0.8,
+            "minimum": 0.8,
+            "maximum": 0.8
+          },
+          "strict_accuracy": {
+            "mean": 0.8,
+            "median": 0.8,
+            "minimum": 0.8,
+            "maximum": 0.8
+          },
+          "truncated": {
+            "mean": 0.0,
+            "median": 0.0,
+            "minimum": 0.0,
+            "maximum": 0.0
+          },
+          "aggregate_completion_tokens_per_second": {
+            "mean": 22.30411188536747,
+            "median": 22.30411188536747,
+            "minimum": 22.30411188536747,
+            "maximum": 22.30411188536747
+          },
+          "prediction_stable_tasks": 5,
+          "content_stable_tasks": 5,
+          "speculative_runtime": {
+            "strategy": "dspark",
+            "overall": {
+              "weighted_acceptance_rate": {
+                "mean": 0.5444887118193891,
+                "median": 0.5444887118193891,
+                "minimum": 0.5444887118193891,
+                "maximum": 0.5444887118193891
+              },
+              "verified_tokens_per_target_pass": {
+                "mean": 2.7035490605427976,
+                "median": 2.7035490605427976,
+                "minimum": 2.7035490605427976,
+                "maximum": 2.7035490605427976
+              },
+              "fallback_replays": {
+                "mean": 0,
+                "median": 0,
+                "minimum": 0,
+                "maximum": 0
+              },
+              "rollback_guard_requests": {
+                "mean": 0,
+                "median": 0,
+                "minimum": 0,
+                "maximum": 0
+              },
+              "rollback_guard_activations": {
+                "mean": 0,
+                "median": 0,
+                "minimum": 0,
+                "maximum": 0
+              },
+              "aggregate_reported_tokens_per_second": {
+                "mean": 27.288248707981328,
+                "median": 27.288248707981328,
+                "minimum": 27.288248707981328,
+                "maximum": 27.288248707981328
+              }
+            }
+          }
+        }
+      },
+      "paired_runs": [
+        {
+          "task_count": 5,
+          "base_correct": 4,
+          "candidate_correct": 4,
+          "gains": 0,
+          "losses": 0,
+          "exact_mcnemar_p": 1.0,
+          "strict_base_correct": 4,
+          "strict_candidate_correct": 4,
+          "strict_gains": 0,
+          "strict_losses": 0,
+          "strict_exact_mcnemar_p": 1.0,
+          "prediction_parity": 5,
+          "content_sha256_parity": 0,
+          "both_untruncated": 5,
+          "both_untruncated_prediction_parity": 5
+        }
+      ],
+      "task_pairs": [
+        {
+          "id": "mmlu:8400",
+          "expected": "B",
+          "base": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 1024,
+            "completion_tokens": 203,
+            "content_sha256": "4df7a2e0416025f88ae84d75876710147fd8a6951914d90d6172dbfb9756bf3e"
+          },
+          "candidate": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 1024,
+            "completion_tokens": 272,
+            "content_sha256": "d0df9346efd053a322b44dd87487e60972c5360eb5649ae8f91f3f8fdd4ee6b5"
+          }
+        },
+        {
+          "id": "mmlu:11207",
+          "expected": "C",
+          "base": {
+            "prediction": "A",
+            "strict_prediction": "A",
+            "correct": false,
+            "strict_correct": false,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 1024,
+            "completion_tokens": 551,
+            "content_sha256": "08ee5ff53ef177701ead515595d54daabe79769a94c0a8dfbac4c25b993c5fa1"
+          },
+          "candidate": {
+            "prediction": "A",
+            "strict_prediction": "A",
+            "correct": false,
+            "strict_correct": false,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 1024,
+            "completion_tokens": 693,
+            "content_sha256": "cf6ee91daad69d39996c52c1a2d9f4b1763bf141c1a79bfdea6784115593d506"
+          }
+        },
+        {
+          "id": "ceval:teacher_qualification:1",
+          "expected": "B",
+          "base": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 1024,
+            "completion_tokens": 228,
+            "content_sha256": "368e0900db596722ae05ddc0b87edce7f42d1273d0d1a6911f4c393667edd802"
+          },
+          "candidate": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 1024,
+            "completion_tokens": 265,
+            "content_sha256": "fb0d63f21289e69fb3ac814ee7c05e7c3e655482faf8a86f37c5a573ed0574f9"
+          }
+        },
+        {
+          "id": "ceval:college_physics:2",
+          "expected": "C",
+          "base": {
+            "prediction": "C",
+            "strict_prediction": "C",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 1024,
+            "completion_tokens": 185,
+            "content_sha256": "ff1fba67a00312939fbffd768816dec20bdeb0d095dd8ac5171d3c1c1aba227c"
+          },
+          "candidate": {
+            "prediction": "C",
+            "strict_prediction": "C",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 1024,
+            "completion_tokens": 341,
+            "content_sha256": "4b4e258fdbde6382dbd032cc6e434c27c1c1b89447f30ded6228ca9564241297"
+          }
+        },
+        {
+          "id": "ceval:high_school_history:0",
+          "expected": "B",
+          "base": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 1024,
+            "completion_tokens": 267,
+            "content_sha256": "7dd79581d939428f22389723dcefc0d1c5c54d5c630052f40d86ff85bcb9a5e6"
+          },
+          "candidate": {
+            "prediction": "B",
+            "strict_prediction": "B",
+            "correct": true,
+            "strict_correct": true,
+            "truncated": false,
+            "finish_reason": "stop",
+            "max_tokens": 1024,
+            "completion_tokens": 239,
+            "content_sha256": "afe29854bedc01887ecace4aa68ba4d1d27a9737a58f8207385cb1f57ad9d432"
+          }
+        }
+      ],
+      "host_controls": {
+        "active_power_scheme": "电源方案 GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (高性能)",
+        "process_priority": "High",
+        "process_affinity": {
+          "requested_mask": "0x55555",
+          "logical_processor_count": 20
+        },
+        "cuda_high_priority": true,
+        "gpu_clock": {
+          "gpu_index": 0,
+          "requested_mhz": 2745,
+          "lock_applied": true
+        },
+        "gpu_admission": {
+          "gpu_index": 0,
+          "maximum_idle_utilization_percent": 15,
+          "minimum_idle_memory_free_mib": 23000,
+          "consecutive_sample_count": 3,
+          "sample_interval_milliseconds": 500,
+          "wait_seconds": 300
+        },
+        "admission_windows": [
+          {
+            "run": "r01-o1-q6-off",
+            "elapsed_milliseconds": 1607,
+            "observed_sample_count": 3,
+            "accepted_samples": [
+              {
+                "gpu_index": 0,
+                "utilization_percent": 6,
+                "memory_free_mib": 23295
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 6,
+                "memory_free_mib": 23295
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 6,
+                "memory_free_mib": 23295
+              }
+            ]
+          },
+          {
+            "run": "r01-o2-q6-dspark",
+            "elapsed_milliseconds": 1601,
+            "observed_sample_count": 3,
+            "accepted_samples": [
+              {
+                "gpu_index": 0,
+                "utilization_percent": 7,
+                "memory_free_mib": 23266
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 7,
+                "memory_free_mib": 23266
+              },
+              {
+                "gpu_index": 0,
+                "utilization_percent": 8,
+                "memory_free_mib": 23266
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "claim": {
+    "classification": "diagnostic-answer-parity-output-divergence",
+    "selected_answer_non_regression": true,
+    "tokens_512_workload_speedup": 1.2224188595507897,
+    "tokens_1024_quality_only": true,
+    "production_default_eligible": false
+  }
+}

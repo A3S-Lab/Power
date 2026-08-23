@@ -29,6 +29,7 @@ against the same input identities.
 | Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; 54/100 exact-output parity | **32.678 token/s** | - |
 | **Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (controlled peak)** | Identical output and receipt hashes in all 3 samples | **63.535 token/s median** | **164.756 token/s median; 160.881 minimum** |
 | Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (100 tasks, 1x) | 69/100 lenient; 56/100 strict; 55/100 exact-output parity versus the 67/100 and 58/100 control | **31.052 token/s** | - |
+| Adaptive DSpark loss-focused follow-up (5 selected tasks) | **5/5 answer parity, 0 losses** at 512 tokens × 3; **5/5 untruncated parity** at 1,024 tokens | **30.521 vs 24.967 token/s** at 512 tokens | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K6/S6/B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **46.923 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K7/S6/B11, high-priority CUDA** | Fixed peak prompt retained the same output digest | - | **172.835 token/s** on a shared WDDM desktop |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact greedy parity on the fixed peak prompt | - | 147.0207 token/s |
@@ -86,8 +87,17 @@ tokens per target pass, 24 target-only requests, and zero replay or guard
 activation. Scores moved from 67/58 to 69/56 lenient/strict, with five lenient
 gains and three losses, one strict gain and three losses, 89/100 extracted-
 answer parity, and 55/100 complete-output parity. All 57 tasks untruncated in
-both modes retained the same extracted answer. This establishes a controlled
-160-plus opt-in peak, not a 175 token/s floor or a lossless default.
+both modes retained the same extracted answer.
+
+A clean follow-up selected every observed lenient or strict loss plus one
+positive control. Three alternating 512-token repetitions produced 5/5 paired
+answers, zero gains, zero losses, and 30.521 versus 24.967 token/s. Raising the
+budget to 1,024 tokens let all five tasks finish; target-only and DSpark both
+scored 4/5 and retained 5/5 untruncated answer parity. The apparent 256-token
+losses were therefore cutoff-sensitive diagnostics, not reproduced answer
+regressions. Complete outputs still differed 0/5, so this establishes a
+controlled 160-plus opt-in peak and selected-answer non-regression—not a 175
+token/s floor, a general-intelligence result, or an exact-output default.
 
 DFlash is not part of this number. It uses a different artifact contract and
 cannot be layered onto DSpark. No genuine DFlash GGUF has completed the
@@ -146,8 +156,11 @@ and 59/100 strict versus its target-only control at 67/100 and 58/100. Its
 54/100 complete-output parity still blocks a lossless-default claim. The newer
 adaptive run moved lenient score up by two and strict score down by two, with
 three paired lenient losses. All 57 tasks untruncated in both adaptive modes
-retained the same extracted answer, but that does not clear a no-regression
-gate. Fixed-task scores are not a measure of general intelligence.
+retained the same extracted answer. The focused 512/1,024-token follow-up
+reproduced none of those answer losses and reached 5/5 untruncated parity at
+1,024 tokens, but only on the selected five-task diagnostic. Fixed-task scores
+are not a measure of general intelligence, and 0/5 complete-output parity keeps
+the exact-output production gate closed.
 
 In the current pure-Q6_K K6/S6/B8 pair, all 12 final answers matched, both modes
 scored 9/12 lenient and strict, eight complete content digests matched, and

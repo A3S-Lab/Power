@@ -185,7 +185,7 @@ The external-DSpark package is a separate paired experiment. It keeps the same
 22,884,408,288-byte Q6_K target and binds the 1,104,594,816-byte DSpark Q4
 artifact with SHA-256
 `12003c7f2642e2e87e979729e16947a913e2213d82136cb5024a36ec4871fef2`.
-Run the three model-free verifiers first:
+Run the four model-free verifiers first:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -197,6 +197,10 @@ py -3.13 .\tools\qwen38_quality_evidence.py verify `
 
 py -3.13 .\tools\dspark_adaptive_evidence.py verify `
   --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\adaptive\evidence.json `
+  --json
+
+py -3.13 .\tools\dspark_quality_followup_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality\followup-evidence.json `
   --json
 ```
 
@@ -219,6 +223,22 @@ output and receipt hashes, zero replay, the 22.872 versus 31.052 token/s
 quality-workload rates, 1.358x speedup, and all 100 paired task vectors. The
 candidate recorded five lenient gains and three losses and only 55/100
 complete-output parity, so `--require-production-default` must fail here too.
+
+The fourth verifier binds the clean loss-focused follow-up at commit
+`7bdeb960f5a38ea7515c67a12636a29198fd95f6`. It checks three alternating
+512-token repetitions and one 1,024-token pair. Every repetition retained 5/5
+paired answers with zero gains and zero losses; the 1,024-token pair completed
+all five tasks with 5/5 answer parity. The 512-token workload reached 30.521
+versus 24.967 token/s. Complete output parity remained 0/5, so adding
+`--require-production-default` is expected to fail.
+
+Reproduce those two matrices with the hash-locked
+`dspark/quality/divergence-v1.selection.json` file and
+`run-qwen38-quality-matrix.ps1`: use `-MaxTokensOverride 512 -NumCtx 1024
+-Repetitions 3` for the performance follow-up, then `-MaxTokensOverride 1024
+-NumCtx 2048 -Repetitions 1` for the no-truncation quality check. The exact
+host controls and complete command are in the
+[follow-up protocol](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/README.md#adaptive-truncation-follow-up).
 
 The exact performance commands in the package attest the requested 2745 MHz
 GPU clock lock, high-priority CUDA streams, High process priority, `0x55555`

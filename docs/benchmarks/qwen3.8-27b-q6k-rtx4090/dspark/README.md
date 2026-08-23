@@ -83,10 +83,29 @@ target-only requests and 2,934 target-only tokens, with zero fallback replay
 and zero rollback-guard activation.
 
 The lenient score rose by two while strict score fell by two. Neither delta is
-statistically persuasive, and the three paired losses prevent a no-regression
-claim. The adaptive profile is therefore opt-in; target-only remains the
-strict production default until wide and serial CUDA shapes have an exact
-output contract.
+statistically persuasive. A hash-locked follow-up selected every observed
+lenient or strict loss plus one positive control, then raised the generation
+budget without modifying the reviewed task cache:
+
+| Loss-focused follow-up | Answer result | Truncation | Request-wide result |
+| --- | --- | ---: | ---: |
+| 512 tokens, 5 tasks, 3 alternating repetitions | 5/5 target/DSpark parity in every repetition; 0 gains; 0 losses | 1 task per mode | 24.967 vs **30.521 token/s**; **1.222x** |
+| 1,024 tokens, 5 tasks, 1 pair | **5/5 untruncated target/DSpark parity**; both modes 4/5 | 0 tasks | quality-only capture |
+
+The original three lenient losses were therefore truncation-sensitive, not a
+reproduced DSpark answer regression. One task that appeared correct for the
+target at 256 tokens continued to a different, wrong explicit answer at the
+larger budget in both modes, demonstrating why a cutoff-position answer is not
+a sound quality oracle. This is focused diagnostic evidence, not a new general
+accuracy estimate.
+
+Complete outputs still differed on all five selected tasks. Batched
+target-verification and serial target-only CUDA shapes can follow different
+deterministic floating-point trajectories while every committed speculative
+token remains target-authoritative. The adaptive profile therefore remains
+opt-in; target-only remains the strict production default until the desired
+contract is defined and passed. See the
+[follow-up evidence and exact commands](quality/README.md#adaptive-truncation-follow-up).
 
 Verify the path-free package without the model or an NVIDIA GPU:
 
@@ -100,6 +119,9 @@ Adding `--require-production-default` is expected to fail with exact-output
 parity `55/100`. The checked-in [adaptive evidence](adaptive/evidence.json)
 pins the clean commit, binaries, input and artifact digests, peak samples,
 host controls, raw-capture hashes, runtime telemetry, and all 100 task pairs.
+The separate [follow-up evidence](quality/followup-evidence.json) pins the
+clean loss-focused 512- and 1,024-token captures and verifies their selected
+answer non-regression while keeping exact-output admission closed.
 
 ## Representative 100-task diagnostic
 
