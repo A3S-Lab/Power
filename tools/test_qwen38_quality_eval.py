@@ -247,6 +247,50 @@ class SummaryTests(unittest.TestCase):
 
 
 class RuntimeLogTests(unittest.TestCase):
+    def test_llamacpp_log_parser_excludes_warmup_and_aggregates_decode(self) -> None:
+        def timing(tokens: int, milliseconds: float) -> str:
+            return (
+                "0.10 I slot print_timing: id 0 |        eval time = "
+                f"{milliseconds:.2f} ms / {tokens:5d} tokens"
+            )
+
+        def acceptance(accepted: int, drafted: int, mean: float) -> str:
+            return (
+                "0.10 I slot print_timing: id 0 | draft acceptance = "
+                f"{accepted / drafted:.5f} ( {accepted:4d} accepted / "
+                f"{drafted:5d} generated), mean len = {mean:5.2f}"
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.log"
+            path.write_text(
+                "\n".join(
+                    [
+                        timing(8, 100.0),
+                        acceptance(4, 8, 3.0),
+                        timing(12, 120.0),
+                        acceptance(8, 12, 5.0),
+                        timing(20, 100.0),
+                        acceptance(18, 20, 7.0),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            metrics = quality.parse_speculative_log(path, 2, "dflash2")
+
+        assert metrics is not None
+        overall = metrics["overall"]
+        self.assertEqual(metrics["source"], "llama-server-timing-log")
+        self.assertEqual(metrics["strategy"], "dflash2")
+        self.assertEqual(overall["drafted_tokens"], 32)
+        self.assertEqual(overall["accepted_tokens"], 26)
+        self.assertAlmostEqual(overall["weighted_acceptance_rate"], 26 / 32)
+        self.assertAlmostEqual(overall["verified_tokens_per_target_pass"], 6.0)
+        self.assertAlmostEqual(
+            overall["aggregate_reported_tokens_per_second"],
+            1000 * 32 / 220,
+        )
+
     def test_mtp_log_parser_excludes_warmup_record(self) -> None:
         def line(emitted: int, accepted: int) -> str:
             return (

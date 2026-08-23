@@ -20,6 +20,7 @@ use llama_cpp_2::speculative::{
 };
 use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
 
+use super::external_draft::dflash2_backend_unavailable;
 use super::{backend_ref, send_completion_result};
 use crate::backend::types::CompletionResponseChunk;
 use crate::error::{PowerError, Result};
@@ -102,10 +103,14 @@ pub(super) fn llamacpp_speculative_capabilities(
     }
     #[cfg(feature = "llamacpp-external-draft")]
     if let Some(kind) = external_draft {
-        capabilities = capabilities.with(match kind {
-            ExternalDraftKind::Dflash => SpeculativeStrategy::Dflash,
-            ExternalDraftKind::Dspark => SpeculativeStrategy::Dspark,
-        });
+        let supported = match kind {
+            ExternalDraftKind::Dflash => Some(SpeculativeStrategy::Dflash),
+            ExternalDraftKind::Dflash2 => None,
+            ExternalDraftKind::Dspark => Some(SpeculativeStrategy::Dspark),
+        };
+        if let Some(strategy) = supported {
+            capabilities = capabilities.with(strategy);
+        }
     }
     #[cfg(not(feature = "llamacpp-external-draft"))]
     let _ = external_draft;
@@ -389,15 +394,19 @@ pub(super) fn run_external_draft_completion(
         .map_err(|error| {
             PowerError::InferenceFailed(format!("Failed to create external-draft context: {error}"))
         })?;
-    let strategy = match draft_kind {
-        ExternalDraftKind::Dflash => SpeculativeStrategy::Dflash,
-        ExternalDraftKind::Dspark => SpeculativeStrategy::Dspark,
+    let (strategy, native_kind) = match draft_kind {
+        ExternalDraftKind::Dflash => (
+            SpeculativeStrategy::Dflash,
+            ExternalDraftSpeculativeKind::Dflash,
+        ),
+        ExternalDraftKind::Dflash2 => return Err(dflash2_backend_unavailable()),
+        ExternalDraftKind::Dspark => (
+            SpeculativeStrategy::Dspark,
+            ExternalDraftSpeculativeKind::Dspark,
+        ),
     };
     let params = ExternalDraftSpeculativeParams {
-        kind: match draft_kind {
-            ExternalDraftKind::Dflash => ExternalDraftSpeculativeKind::Dflash,
-            ExternalDraftKind::Dspark => ExternalDraftSpeculativeKind::Dspark,
-        },
+        kind: native_kind,
         n_max: settings.draft_max as i32,
         n_min: settings.draft_min as i32,
         p_min: settings.draft_p_min,

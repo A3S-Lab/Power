@@ -66,6 +66,8 @@ pub enum SpeculativeStrategy {
     Mtp,
     /// Dynamic tree drafting with a compatible model adapter.
     Dflash,
+    /// DFlash2 block diffusion with dynamic convolution and path selection.
+    Dflash2,
     /// DSpark parallel drafting with a compatible model adapter.
     Dspark,
 }
@@ -81,6 +83,7 @@ impl SpeculativeStrategy {
             "draft-model" | "draft_model" | "draft" => Some(Self::DraftModel),
             "mtp" | "multi-token-prediction" | "multi_token_prediction" => Some(Self::Mtp),
             "dflash" => Some(Self::Dflash),
+            "dflash2" | "dflash-2" | "dflash_2" => Some(Self::Dflash2),
             "dspark" => Some(Self::Dspark),
             _ => None,
         }
@@ -96,6 +99,7 @@ impl SpeculativeStrategy {
             Self::DraftModel => "draft-model",
             Self::Mtp => "mtp",
             Self::Dflash => "dflash",
+            Self::Dflash2 => "dflash2",
             Self::Dspark => "dspark",
         }
     }
@@ -106,7 +110,12 @@ impl SpeculativeStrategy {
             Self::Off => Some(SpecMode::Off),
             Self::PromptLookup => Some(SpecMode::PromptLookup),
             Self::NgramContext => Some(SpecMode::NgramContext),
-            Self::Auto | Self::DraftModel | Self::Mtp | Self::Dflash | Self::Dspark => None,
+            Self::Auto
+            | Self::DraftModel
+            | Self::Mtp
+            | Self::Dflash
+            | Self::Dflash2
+            | Self::Dspark => None,
         }
     }
 }
@@ -594,6 +603,10 @@ mod tests {
         assert_eq!(
             SpeculativeStrategy::parse("DSpark"),
             Some(SpeculativeStrategy::Dspark)
+        );
+        assert_eq!(
+            SpeculativeStrategy::parse("DFlash2"),
+            Some(SpeculativeStrategy::Dflash2)
         );
         assert_eq!(
             SpeculativeStrategy::parse("draft_model"),

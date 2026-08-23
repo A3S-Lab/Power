@@ -19,7 +19,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PowerHome,
 
-    [ValidateSet('off', 'prompt-lookup', 'ngram-context', 'draft-model', 'mtp', 'dflash', 'dspark')]
+    [ValidateSet('off', 'prompt-lookup', 'ngram-context', 'draft-model', 'mtp', 'dflash', 'dflash2', 'dspark')]
     [string]$Mode = 'mtp',
 
     [ValidateRange(1, 100)]

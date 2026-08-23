@@ -356,7 +356,7 @@ pub struct PowerConfig {
     /// Model-neutral speculative-decoding strategy.
     ///
     /// Backends negotiate support for `prompt-lookup`, `ngram-context`, `mtp`,
-    /// `draft-model`, `dflash`, and `dspark`. An explicit unsupported strategy
+    /// `draft-model`, `dflash`, `dflash2`, and `dspark`. An explicit unsupported strategy
     /// fails at model/request setup instead of silently falling back. Default:
     /// `auto`, which resolves to prompt lookup in picolm and native MTP in
     /// llama.cpp when compatible tensors are present.

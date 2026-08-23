@@ -135,7 +135,7 @@ impl PowerConfig {
 
         if !is_valid_spec_mode(&self.spec_mode) {
             return Err(PowerError::Config(format!(
-                "unsupported spec_mode '{}'; expected one of: auto, off, prompt-lookup, ngram-context, draft-model, mtp, dflash, dspark",
+                "unsupported spec_mode '{}'; expected one of: auto, off, prompt-lookup, ngram-context, draft-model, mtp, dflash, dflash2, dspark",
                 self.spec_mode
             )));
         }

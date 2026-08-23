@@ -427,6 +427,17 @@ fn test_validate_accepts_model_neutral_dspark_strategy() {
 }
 
 #[test]
+fn test_validate_accepts_typed_dflash2_strategy() {
+    let config = PowerConfig {
+        spec_mode: "dflash2".to_string(),
+        spec_draft_max: Some(7),
+        ..Default::default()
+    };
+
+    config.validate().unwrap();
+}
+
+#[test]
 fn test_validate_rejects_invalid_speculative_draft_bounds() {
     let zero = PowerConfig {
         spec_draft_max: Some(0),

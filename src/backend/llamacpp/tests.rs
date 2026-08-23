@@ -158,6 +158,12 @@ fn test_external_draft_selection_is_typed_and_fail_closed() {
     assert!(selected_external_draft(&manifest, "off").unwrap().is_none());
     let error = selected_external_draft(&manifest, "dflash").unwrap_err();
     assert!(error.to_string().contains("found 'dspark'"));
+
+    manifest.external_draft.as_mut().unwrap().kind = ExternalDraftKind::Dflash2;
+    let explicit = selected_external_draft(&manifest, "dflash2").unwrap_err();
+    assert!(explicit.to_string().contains("pinned llama.cpp binding"));
+    let automatic = selected_external_draft(&manifest, "auto").unwrap_err();
+    assert!(automatic.to_string().contains("reviewed binding update"));
 }
 
 #[cfg(all(feature = "llamacpp", not(feature = "llamacpp-external-draft")))]

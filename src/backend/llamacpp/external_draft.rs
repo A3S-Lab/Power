@@ -9,6 +9,14 @@ use crate::model::external_draft::{
 use crate::model::manifest::ModelManifest;
 use crate::speculative::SpeculativeStrategy;
 
+pub(super) fn dflash2_backend_unavailable() -> PowerError {
+    PowerError::Config(
+        "spec_mode 'dflash2' is not executable by Power's pinned llama.cpp binding; \
+         use the exact-revision standalone benchmark runner until a reviewed binding update lands"
+            .to_string(),
+    )
+}
+
 /// Whether the configured runtime may execute an embedded MTP draft head.
 ///
 /// llama.cpp skips MTP tensors at model-load time unless `load_mtp` is set.
@@ -29,13 +37,14 @@ pub(super) fn selected_external_draft(
     manifest: &ModelManifest,
     spec_mode: &str,
 ) -> Result<Option<ExternalDraftArtifact>> {
-    #[cfg(not(feature = "llamacpp-external-draft"))]
-    let _ = manifest;
-
     let requested = SpeculativeStrategy::parse(spec_mode)
         .ok_or_else(|| PowerError::Config(format!("unsupported spec_mode '{spec_mode}'")))?;
+    if matches!(requested, SpeculativeStrategy::Dflash2) {
+        return Err(dflash2_backend_unavailable());
+    }
     let expected_kind = match requested {
         SpeculativeStrategy::Dflash => Some(ExternalDraftKind::Dflash),
+        SpeculativeStrategy::Dflash2 => Some(ExternalDraftKind::Dflash2),
         SpeculativeStrategy::Dspark => Some(ExternalDraftKind::Dspark),
         _ => None,
     };
@@ -66,6 +75,13 @@ pub(super) fn selected_external_draft(
         }
     }
     if matches!(requested, SpeculativeStrategy::Auto) {
+        if manifest
+            .external_draft
+            .as_ref()
+            .is_some_and(|artifact| artifact.kind == ExternalDraftKind::Dflash2)
+        {
+            return Err(dflash2_backend_unavailable());
+        }
         #[cfg(feature = "llamacpp-external-draft")]
         return Ok(manifest.external_draft.clone());
 
@@ -78,6 +94,7 @@ pub(super) fn selected_external_draft(
 pub(super) fn external_draft_strategy(kind: ExternalDraftKind) -> SpeculativeStrategy {
     match kind {
         ExternalDraftKind::Dflash => SpeculativeStrategy::Dflash,
+        ExternalDraftKind::Dflash2 => SpeculativeStrategy::Dflash2,
         ExternalDraftKind::Dspark => SpeculativeStrategy::Dspark,
     }
 }

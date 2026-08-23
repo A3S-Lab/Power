@@ -1,3 +1,12 @@
+function Get-ExternalDraftServerMode([string]$Mode) {
+    switch ($Mode) {
+        'dflash' { return 'dflash' }
+        'dflash2' { return 'dflash' }
+        'dspark' { return 'dspark' }
+        default { throw "Unsupported external-draft benchmark mode: $Mode" }
+    }
+}
+
 function Assert-Leaf([string]$Path, [string]$Label) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "$Label does not exist: $Path"
@@ -6,6 +15,89 @@ function Assert-Leaf([string]$Path, [string]$Label) {
 
 function Get-NormalizedSha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Get-LlamaRuntimeFileIdentity([string]$BinDirectory) {
+    return @(
+        Get-ChildItem -LiteralPath $BinDirectory -File |
+            Where-Object {
+                $_.Name -eq 'llama-server.exe' -or $_.Extension -eq '.dll'
+            } |
+            Sort-Object Name |
+            ForEach-Object {
+                [ordered]@{
+                    file = $_.Name
+                    size = [int64]$_.Length
+                    sha256 = Get-NormalizedSha256 $_.FullName
+                }
+            }
+    )
+}
+
+function Wait-NvidiaGpuIdleAdmission {
+    $startedAt = [DateTimeOffset]::UtcNow
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $accepted = [System.Collections.Generic.List[object]]::new()
+    $observedSamples = 0
+    $lastSample = $null
+
+    while ($stopwatch.Elapsed.TotalSeconds -lt $IdleGpuWaitSeconds) {
+        $lines = @(& nvidia-smi.exe `
+            "--id=$NvidiaGpuIndex" `
+            '--query-gpu=index,utilization.gpu,memory.free' `
+            '--format=csv,noheader,nounits')
+        if ($LASTEXITCODE -ne 0 -or $lines.Count -ne 1) {
+            throw "Failed to sample NVIDIA GPU $NvidiaGpuIndex for idle admission"
+        }
+        $fields = @($lines[0].Split(',') | ForEach-Object { $_.Trim() })
+        if ($fields.Count -ne 3) {
+            throw "NVIDIA GPU $NvidiaGpuIndex returned malformed idle telemetry"
+        }
+
+        $reportedIndex = 0
+        $utilization = 0
+        $memoryFree = 0
+        if (-not [int]::TryParse($fields[0], [ref]$reportedIndex) -or
+            -not [int]::TryParse($fields[1], [ref]$utilization) -or
+            -not [int]::TryParse($fields[2], [ref]$memoryFree)) {
+            throw "NVIDIA GPU $NvidiaGpuIndex returned non-numeric idle telemetry"
+        }
+        if ($reportedIndex -ne $NvidiaGpuIndex) {
+            throw "NVIDIA GPU index mismatch: requested $NvidiaGpuIndex, got $reportedIndex"
+        }
+
+        $observedSamples++
+        $lastSample = [pscustomobject][ordered]@{
+            observed_at = [DateTimeOffset]::UtcNow.ToString('o')
+            gpu_index = $reportedIndex
+            utilization_percent = $utilization
+            memory_free_mib = $memoryFree
+        }
+        if ($utilization -le $MaximumIdleGpuUtilizationPercent -and
+            $memoryFree -ge $MinimumIdleGpuMemoryFreeMiB) {
+            $accepted.Add($lastSample)
+        } else {
+            $accepted.Clear()
+        }
+        if ($accepted.Count -eq $IdleGpuSampleCount) {
+            $stopwatch.Stop()
+            return [ordered]@{
+                started_at = $startedAt.ToString('o')
+                completed_at = [DateTimeOffset]::UtcNow.ToString('o')
+                elapsed_milliseconds = [int64]$stopwatch.ElapsedMilliseconds
+                observed_sample_count = $observedSamples
+                accepted_samples = $accepted.ToArray()
+            }
+        }
+        Start-Sleep -Milliseconds $IdleGpuSampleIntervalMilliseconds
+    }
+
+    $last = if ($lastSample) {
+        "$($lastSample.utilization_percent)% utilization, $($lastSample.memory_free_mib) MiB free"
+    } else {
+        'no valid sample'
+    }
+    throw "NVIDIA GPU $NvidiaGpuIndex did not satisfy the idle gate within $IdleGpuWaitSeconds seconds; last sample: $last"
 }
 
 function Get-TextSha256([string]$Value) {
@@ -146,12 +238,13 @@ function New-ServerArguments([bool]$UseDraft) {
         '--no-warmup',
         '--offline',
         '--log-colors', 'off',
-        '-lv', '3'
+        '-lv', [string]$ServerVerbosity
     )
     if ($UseDraft) {
+        $serverDraftMode = Get-ExternalDraftServerMode $DraftMode
         $arguments += @(
             '-md', $draftPath,
-            '--spec-type', "draft-$DraftMode",
+            '--spec-type', "draft-$serverDraftMode",
             '--spec-draft-n-max', [string]$DraftMax,
             '-ngld', $DraftGpuLayers,
             '-td', [string]$Threads,
@@ -177,6 +270,31 @@ function Stop-Server([AllowNull()][System.Diagnostics.Process]$Process) {
     throw "Port $Port remained in use after llama-server shutdown"
 }
 
+function New-SkippedModeResult([string]$Name, [string]$Reason) {
+    return [ordered]@{
+        name = $Name
+        status = 'skipped'
+        error = $Reason
+        started_at = $null
+        completed_at = $null
+        admission = $null
+        process = $null
+        memory = $null
+        samples = @()
+        summary = [ordered]@{
+            median_tokens_per_second = $null
+            minimum_tokens_per_second = $null
+            maximum_tokens_per_second = $null
+            draft_tokens = 0
+            accepted_draft_tokens = 0
+            acceptance_rate = $null
+            verification_steps = 0
+            mean_accepted_length = $null
+        }
+        logs = $null
+    }
+}
+
 function Invoke-Mode([string]$Name, [bool]$UseDraft, [hashtable]$RequestBody) {
     $stdoutPath = Join-Path $outputDirectory "$Name.stdout.log"
     $stderrPath = Join-Path $outputDirectory "$Name.stderr.log"
@@ -189,8 +307,12 @@ function Invoke-Mode([string]$Name, [bool]$UseDraft, [hashtable]$RequestBody) {
     $metricsBefore = ''
     $metricsAfter = ''
     $failure = $null
+    $admission = $null
+    $effectivePriority = $null
+    $effectiveAffinity = $null
 
     try {
+        $admission = Wait-NvidiaGpuIdleAdmission
         $arguments = New-ServerArguments $UseDraft
         $argumentLine = Join-WindowsCommandLineArguments $arguments
         $process = Start-Process `
@@ -200,6 +322,19 @@ function Invoke-Mode([string]$Name, [bool]$UseDraft, [hashtable]$RequestBody) {
             -RedirectStandardError $stderrPath `
             -WindowStyle Hidden `
             -PassThru
+        $process.PriorityClass = $ProcessPriority
+        $effectivePriority = [string]$process.PriorityClass
+        if ($ProcessorAffinityMask -gt 0) {
+            $process.ProcessorAffinity = [IntPtr]::new([int64]$ProcessorAffinityMask)
+            $effectiveAffinityValue = [uint64]$process.ProcessorAffinity.ToInt64()
+            if ($effectiveAffinityValue -ne $ProcessorAffinityMask) {
+                throw ('Requested processor affinity 0x{0:x} became 0x{1:x}' -f `
+                    $ProcessorAffinityMask, $effectiveAffinityValue)
+            }
+            $effectiveAffinity = '0x{0:x}' -f $effectiveAffinityValue
+        } else {
+            $effectiveAffinity = '0x{0:x}' -f [uint64]$process.ProcessorAffinity.ToInt64()
+        }
 
         $client = [System.Net.Http.HttpClient]::new()
         $client.Timeout = [TimeSpan]::FromSeconds(900)
@@ -287,6 +422,17 @@ function Invoke-Mode([string]$Name, [bool]$UseDraft, [hashtable]$RequestBody) {
         error = $failure
         started_at = $startedAt.ToString('o')
         completed_at = [DateTimeOffset]::UtcNow.ToString('o')
+        admission = $admission
+        process = [ordered]@{
+            requested_priority = $ProcessPriority
+            effective_priority = $effectivePriority
+            requested_affinity = if ($ProcessorAffinityMask -gt 0) {
+                '0x{0:x}' -f $ProcessorAffinityMask
+            } else {
+                $null
+            }
+            effective_affinity = $effectiveAffinity
+        }
         memory = [ordered]@{
             idle_used_mib = $idleUsedMiB
             peak_used_mib = $peakUsedMiB
@@ -320,11 +466,4 @@ function Invoke-Mode([string]$Name, [bool]$UseDraft, [hashtable]$RequestBody) {
             stderr = [ordered]@{ file = [System.IO.Path]::GetFileName($stderrPath); sha256 = $stderrHash }
         }
     }
-}
-
-if ($MaxTokens -ge $ContextSize) {
-    throw 'ContextSize must exceed MaxTokens'
-}
-if ($BatchSize -lt ($DraftMax + 1)) {
-    throw 'BatchSize must hold the target anchor and every draft token'
 }

@@ -126,6 +126,8 @@ pub(super) async fn load(backend: &LlamaCppBackend, manifest: &ModelManifest) ->
             .supports(crate::speculative::SpeculativeStrategy::Mtp),
         dflash = speculative_capabilities
             .supports(crate::speculative::SpeculativeStrategy::Dflash),
+        dflash2 = speculative_capabilities
+            .supports(crate::speculative::SpeculativeStrategy::Dflash2),
         dspark = speculative_capabilities
             .supports(crate::speculative::SpeculativeStrategy::Dspark),
         external_draft_sha256 = external_draft

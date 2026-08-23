@@ -141,6 +141,7 @@ pub(super) async fn complete(
         speculative_strategy,
         crate::speculative::SpeculativeStrategy::Mtp
             | crate::speculative::SpeculativeStrategy::Dflash
+            | crate::speculative::SpeculativeStrategy::Dflash2
             | crate::speculative::SpeculativeStrategy::Dspark
     ) && !model_backed_request_compatible
     {
@@ -153,6 +154,7 @@ pub(super) async fn complete(
         speculative_strategy,
         crate::speculative::SpeculativeStrategy::Mtp
             | crate::speculative::SpeculativeStrategy::Dflash
+            | crate::speculative::SpeculativeStrategy::Dflash2
             | crate::speculative::SpeculativeStrategy::Dspark
     ) {
         let default_draft_max = if matches!(
@@ -508,6 +510,7 @@ pub(super) async fn complete(
                 return;
             }
             crate::speculative::SpeculativeStrategy::Dflash
+            | crate::speculative::SpeculativeStrategy::Dflash2
             | crate::speculative::SpeculativeStrategy::Dspark => {
                 let Some((draft_model, identity)) = external_draft.as_ref() else {
                     send_completion_result(

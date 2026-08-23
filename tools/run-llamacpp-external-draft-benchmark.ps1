@@ -20,9 +20,8 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$LlamaCppCommit,
 
-    [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
-    [string]$LlamaCppRsCommit,
+    [string]$LlamaCppRsCommit = '',
 
     [Parameter(Mandatory = $true)]
     [string]$PromptFile,
@@ -30,7 +29,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Output,
 
-    [ValidateSet('dflash', 'dspark')]
+    [ValidateSet('dflash', 'dflash2', 'dspark')]
     [string]$DraftMode = 'dspark',
 
     [ValidateRange(1, 20)]
@@ -69,12 +68,52 @@ param(
     [ValidateRange(50, 2000)]
     [int]$GpuSampleIntervalMilliseconds = 100,
 
+    [ValidateRange(0, 7)]
+    [int]$ServerVerbosity = 3,
+
+    [ValidateSet('Normal', 'AboveNormal', 'High')]
+    [string]$ProcessPriority = 'High',
+
+    [UInt64]$ProcessorAffinityMask = 0,
+
+    [ValidateRange(0, 10000)]
+    [int]$LockGpuClockMHz = 0,
+
+    [switch]$CudaGraphOptimization,
+
+    [ValidateSet(0, 1, 2, 4, 8, 16, 32)]
+    [int]$CudaDeviceMaxConnections = 0,
+
+    [ValidateRange(0, 100)]
+    [int]$MaximumIdleGpuUtilizationPercent = 100,
+
+    [ValidateRange(0, 262144)]
+    [int]$MinimumIdleGpuMemoryFreeMiB = 0,
+
+    [ValidateRange(1, 120)]
+    [int]$IdleGpuSampleCount = 3,
+
+    [ValidateRange(100, 60000)]
+    [int]$IdleGpuSampleIntervalMilliseconds = 500,
+
+    [ValidateRange(1, 300)]
+    [int]$IdleGpuWaitSeconds = 60,
+
+    [switch]$RequireHighPerformancePowerPlan,
+
     [switch]$RequireCleanTree
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.Net.Http
+
+if ($MaxTokens -ge $ContextSize) {
+    throw 'ContextSize must exceed MaxTokens'
+}
+if ($BatchSize -le ($DraftMax + 1)) {
+    throw 'BatchSize must exceed the target anchor plus every draft token'
+}
 
 $powerRoot = Split-Path -Parent $PSScriptRoot
 $binDirectory = [System.IO.Path]::GetFullPath($LlamaBinDirectory)
@@ -148,22 +187,61 @@ $requestBody = @{
 
 $gpuIdentity = @(& nvidia-smi.exe `
     "--id=$NvidiaGpuIndex" `
-    '--query-gpu=name,uuid,driver_version,memory.total' `
+    '--query-gpu=name,uuid,driver_version,memory.total,pstate,clocks.max.graphics' `
     '--format=csv,noheader,nounits')
 $activePowerScheme = (& powercfg.exe /getactivescheme) -join [Environment]::NewLine
-$baseline = Invoke-Mode 'target-only' $false $requestBody
-Start-Sleep -Seconds 2
-$candidate = Invoke-Mode "draft-$DraftMode" $true $requestBody
+if ($RequireHighPerformancePowerPlan -and
+    $activePowerScheme -notmatch '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c') {
+    throw 'The Windows High performance power plan is required for this capture'
+}
+$runtimeFiles = Get-LlamaRuntimeFileIdentity $binDirectory
+if (@($runtimeFiles).Count -lt 2) {
+    throw 'llama.cpp runtime identity must include llama-server.exe and its DLLs'
+}
 
-$baselineHashes = @($baseline.samples | ForEach-Object { $_.output_sha256 } | Sort-Object -Unique)
-$candidateHashes = @($candidate.samples | ForEach-Object { $_.output_sha256 } | Sort-Object -Unique)
-$parity = $baselineHashes.Count -eq 1 -and
-    $candidateHashes.Count -eq 1 -and
-    $baselineHashes[0] -eq $candidateHashes[0]
-$baselineRate = $baseline.summary.median_tokens_per_second
-$candidateRate = $candidate.summary.median_tokens_per_second
+$gpuClockLocked = $false
+$savedCudaGraphOptimization = Get-Item Env:GGML_CUDA_GRAPH_OPT -ErrorAction SilentlyContinue
+$savedCudaDeviceMaxConnections = Get-Item Env:CUDA_DEVICE_MAX_CONNECTIONS -ErrorAction SilentlyContinue
+try {
+    if ($CudaGraphOptimization) {
+        $env:GGML_CUDA_GRAPH_OPT = '1'
+    } else {
+        Remove-Item Env:GGML_CUDA_GRAPH_OPT -ErrorAction SilentlyContinue
+    }
+    if ($CudaDeviceMaxConnections -gt 0) {
+        $env:CUDA_DEVICE_MAX_CONNECTIONS = [string]$CudaDeviceMaxConnections
+    } else {
+        Remove-Item Env:CUDA_DEVICE_MAX_CONNECTIONS -ErrorAction SilentlyContinue
+    }
+    if ($LockGpuClockMHz -gt 0) {
+        & nvidia-smi.exe `
+            "--id=$NvidiaGpuIndex" `
+            --lock-gpu-clocks="$LockGpuClockMHz,$LockGpuClockMHz" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to lock NVIDIA GPU $NvidiaGpuIndex at $LockGpuClockMHz MHz"
+        }
+        $gpuClockLocked = $true
+    }
 
-$report = [ordered]@{
+    $baseline = Invoke-Mode 'target-only' $false $requestBody
+    if ($baseline.status -eq 'passed') {
+        Start-Sleep -Seconds 2
+        $candidate = Invoke-Mode "draft-$DraftMode" $true $requestBody
+    } else {
+        $candidate = New-SkippedModeResult `
+            "draft-$DraftMode" `
+            'Baseline failed, so the paired candidate was not started'
+    }
+
+    $baselineHashes = @($baseline.samples | ForEach-Object { $_.output_sha256 } | Sort-Object -Unique)
+    $candidateHashes = @($candidate.samples | ForEach-Object { $_.output_sha256 } | Sort-Object -Unique)
+    $parity = $baselineHashes.Count -eq 1 -and
+        $candidateHashes.Count -eq 1 -and
+        $baselineHashes[0] -eq $candidateHashes[0]
+    $baselineRate = $baseline.summary.median_tokens_per_second
+    $candidateRate = $candidate.summary.median_tokens_per_second
+
+    $report = [ordered]@{
     schema = 'a3s.power.llamacpp-external-draft-benchmark.v1'
     created_at = [DateTimeOffset]::UtcNow.ToString('o')
     identity = [ordered]@{
@@ -171,8 +249,14 @@ $report = [ordered]@{
         dirty_worktree = $gitStatus.Count -gt 0
         git_status = $gitStatus
         llama_cpp_commit = $LlamaCppCommit.ToLowerInvariant()
-        llama_cpp_rs_commit = $LlamaCppRsCommit.ToLowerInvariant()
+        llama_cpp_rs_commit = if ($LlamaCppRsCommit) {
+            $LlamaCppRsCommit.ToLowerInvariant()
+        } else {
+            $null
+        }
+        backend_source = if ($LlamaCppRsCommit) { 'llama-cpp-rs' } else { 'llama.cpp' }
         llama_server_sha256 = Get-NormalizedSha256 $serverPath
+        llama_runtime_files = $runtimeFiles
         target = [ordered]@{
             file = [System.IO.Path]::GetFileName($targetPath)
             size = (Get-Item -LiteralPath $targetPath).Length
@@ -183,6 +267,7 @@ $report = [ordered]@{
             size = (Get-Item -LiteralPath $draftPath).Length
             sha256 = $actualDraftHash
             mode = $DraftMode
+            backend_mode = Get-ExternalDraftServerMode $DraftMode
         }
         prompt = [ordered]@{
             file = [System.IO.Path]::GetFileName($promptPath)
@@ -205,6 +290,7 @@ $report = [ordered]@{
         parallel_slots = 1
         seed = 42
         greedy = $true
+        server_verbosity = $ServerVerbosity
     }
     environment = [ordered]@{
         gpu = $gpuIdentity
@@ -212,6 +298,36 @@ $report = [ordered]@{
         cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name).Trim()
         os = [System.Environment]::OSVersion.VersionString
         active_power_scheme = $activePowerScheme.Trim()
+        process_priority = $ProcessPriority
+        process_affinity = [ordered]@{
+            requested_mask = if ($ProcessorAffinityMask -gt 0) {
+                '0x{0:x}' -f $ProcessorAffinityMask
+            } else {
+                $null
+            }
+            logical_processor_count = [Environment]::ProcessorCount
+        }
+        gpu_controls = [ordered]@{
+            requested_clock_lock_mhz = if ($LockGpuClockMHz -gt 0) {
+                $LockGpuClockMHz
+            } else {
+                $null
+            }
+            clock_lock_applied = $gpuClockLocked
+            maximum_idle_utilization_percent = $MaximumIdleGpuUtilizationPercent
+            minimum_idle_memory_free_mib = $MinimumIdleGpuMemoryFreeMiB
+            consecutive_idle_sample_count = $IdleGpuSampleCount
+            idle_sample_interval_milliseconds = $IdleGpuSampleIntervalMilliseconds
+            idle_wait_seconds = $IdleGpuWaitSeconds
+        }
+        cuda_runtime = [ordered]@{
+            graph_optimization = [bool]$CudaGraphOptimization
+            device_max_connections = if ($CudaDeviceMaxConnections -gt 0) {
+                $CudaDeviceMaxConnections
+            } else {
+                $null
+            }
+        }
     }
     baseline = $baseline
     candidate = $candidate
@@ -229,12 +345,31 @@ $report = [ordered]@{
             $null
         }
     }
-}
+    }
 
-$json = $report | ConvertTo-Json -Depth 12
-[System.IO.File]::WriteAllText($outputPath, $json + [Environment]::NewLine, $utf8NoBom)
-$json
+    $json = $report | ConvertTo-Json -Depth 12
+    [System.IO.File]::WriteAllText($outputPath, $json + [Environment]::NewLine, $utf8NoBom)
+    $json
 
-if ($baseline.status -ne 'passed' -or $candidate.status -ne 'passed' -or -not $parity) {
-    exit 1
+    if ($baseline.status -ne 'passed' -or $candidate.status -ne 'passed' -or -not $parity) {
+        exit 1
+    }
+} finally {
+    if ($gpuClockLocked) {
+        & nvidia-smi.exe `
+            "--id=$NvidiaGpuIndex" --reset-gpu-clocks | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Failed to reset NVIDIA GPU $NvidiaGpuIndex graphics clock"
+        }
+    }
+    if ($savedCudaGraphOptimization) {
+        $env:GGML_CUDA_GRAPH_OPT = $savedCudaGraphOptimization.Value
+    } else {
+        Remove-Item Env:GGML_CUDA_GRAPH_OPT -ErrorAction SilentlyContinue
+    }
+    if ($savedCudaDeviceMaxConnections) {
+        $env:CUDA_DEVICE_MAX_CONNECTIONS = $savedCudaDeviceMaxConnections.Value
+    } else {
+        Remove-Item Env:CUDA_DEVICE_MAX_CONNECTIONS -ErrorAction SilentlyContinue
+    }
 }

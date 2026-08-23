@@ -390,7 +390,105 @@ def report_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def parse_speculative_log(path: Path, task_count: int) -> dict[str, Any] | None:
+def parse_llamacpp_speculative_log(
+    text: str, task_count: int, strategy: str
+) -> dict[str, Any]:
+    """Parse the stable per-request timing summary emitted by llama-server."""
+    acceptance_rows: list[dict[str, float]] = []
+    timing_rows: list[dict[str, float]] = []
+    for line in text.splitlines():
+        acceptance = re.search(
+            r"draft acceptance\s*=\s*([0-9.]+)\s*\(\s*"
+            r"([0-9]+) accepted\s*/\s*([0-9]+) generated\),\s*"
+            r"mean len\s*=\s*([0-9.]+)",
+            line,
+        )
+        if acceptance is not None:
+            acceptance_rows.append(
+                {
+                    "accepted_tokens": float(acceptance.group(2)),
+                    "drafted_tokens": float(acceptance.group(3)),
+                    "mean_accepted_length": float(acceptance.group(4)),
+                }
+            )
+        timing = re.search(
+            r"\|\s+eval time\s*=\s*([0-9.]+) ms\s*/\s*"
+            r"([0-9]+) tokens",
+            line,
+        )
+        if timing is not None:
+            milliseconds = float(timing.group(1))
+            tokens = float(timing.group(2))
+            timing_rows.append(
+                {
+                    "milliseconds": milliseconds,
+                    "tokens": tokens,
+                    "tokens_per_second": (
+                        1000.0 * tokens / milliseconds if milliseconds else 0.0
+                    ),
+                }
+            )
+
+    if len(acceptance_rows) < task_count:
+        raise ValueError(
+            "expected at least "
+            f"{task_count} llama.cpp draft-acceptance records, "
+            f"got {len(acceptance_rows)}"
+        )
+    if len(timing_rows) < task_count:
+        raise ValueError(
+            f"expected at least {task_count} llama.cpp eval-time records, "
+            f"got {len(timing_rows)}"
+        )
+    acceptance_rows = acceptance_rows[-task_count:]
+    timing_rows = timing_rows[-task_count:]
+
+    def summarize(
+        acceptance: list[dict[str, float]], timings: list[dict[str, float]]
+    ) -> dict[str, Any]:
+        drafted = sum(row["drafted_tokens"] for row in acceptance)
+        accepted = sum(row["accepted_tokens"] for row in acceptance)
+        milliseconds = sum(row["milliseconds"] for row in timings)
+        tokens = sum(row["tokens"] for row in timings)
+        return {
+            "requests": len(acceptance),
+            "drafted_tokens": int(drafted),
+            "accepted_tokens": int(accepted),
+            "weighted_acceptance_rate": accepted / drafted if drafted else 0.0,
+            # llama.cpp reports this request-level value rounded to two decimals.
+            # Preserve that precision and avoid pretending an inferred round count
+            # is exact.
+            "verified_tokens_per_target_pass": statistics.mean(
+                row["mean_accepted_length"] for row in acceptance
+            ),
+            "fallback_replays": 0,
+            "median_reported_tokens_per_second": statistics.median(
+                row["tokens_per_second"] for row in timings
+            ),
+            "aggregate_reported_tokens_per_second": (
+                1000.0 * tokens / milliseconds if milliseconds else 0.0
+            ),
+        }
+
+    result: dict[str, Any] = {
+        "source": "llama-server-timing-log",
+        "strategy": strategy,
+        "overall": summarize(acceptance_rows, timing_rows),
+    }
+    if task_count == 100:
+        result["by_benchmark"] = {
+            "mmlu": summarize(acceptance_rows[:50], timing_rows[:50]),
+            "gsm8k": summarize(acceptance_rows[50:70], timing_rows[50:70]),
+            "ceval": summarize(acceptance_rows[70:], timing_rows[70:]),
+        }
+    return result
+
+
+def parse_speculative_log(
+    path: Path,
+    task_count: int,
+    expected_strategy: str | None = None,
+) -> dict[str, Any] | None:
     if not path.exists():
         return None
     fields = (
@@ -450,7 +548,13 @@ def parse_speculative_log(path: Path, task_count: int) -> dict[str, Any] | None:
         )
         records.append(record)
     if not records:
-        return None
+        if expected_strategy is None:
+            return None
+        return parse_llamacpp_speculative_log(
+            path.read_text(encoding="utf-8", errors="replace"),
+            task_count,
+            expected_strategy,
+        )
     if len(records) < task_count:
         raise ValueError(
             f"expected at least {task_count} speculative records, got {len(records)}"
@@ -460,6 +564,11 @@ def parse_speculative_log(path: Path, task_count: int) -> dict[str, Any] | None:
     if len(strategies) != 1:
         raise ValueError(
             f"speculative completion records mix strategies: {sorted(strategies)}"
+        )
+    if expected_strategy is not None and strategies != {expected_strategy}:
+        raise ValueError(
+            "speculative completion strategy differs from the expected strategy: "
+            f"expected {expected_strategy}, got {sorted(strategies)}"
         )
 
     def summarize(selected: list[dict[str, Any]]) -> dict[str, Any]:
@@ -660,6 +769,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
         "server_sha256": args.server_sha256,
         "power_commit": args.power_commit,
         "request_sha256": sha256_text(canonical_json(request_settings)),
+        "expected_speculative_strategy": args.speculative_strategy,
     }
     if args.output.exists():
         report = json.loads(args.output.read_text(encoding="utf-8"))
@@ -756,7 +866,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
     report["completed_at"] = utc_now()
     report["summary"] = report_summary(report["results"])
     report["speculative_runtime"] = parse_speculative_log(
-        args.server_log, len(tasks)
+        args.server_log, len(tasks), args.speculative_strategy
     )
     atomic_write(args.output, report)
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
@@ -789,6 +899,9 @@ def report_metadata(report: dict[str, Any]) -> dict[str, Any]:
         "has_speculative_runtime": report.get("speculative_runtime") is not None,
         "speculative_strategy": (report.get("speculative_runtime") or {}).get(
             "strategy"
+        ),
+        "expected_speculative_strategy": report.get(
+            "expected_speculative_strategy"
         ),
     }
 
@@ -888,6 +1001,10 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--task-selection", type=Path)
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--server-log", type=Path, required=True)
+    run.add_argument(
+        "--speculative-strategy",
+        choices=("dflash", "dflash2", "dspark", "mtp"),
+    )
     run.add_argument("--seed", type=int, default=42)
     run.add_argument("--num-ctx", type=int, default=4096)
     run.add_argument("--num-batch", type=int, default=14)
