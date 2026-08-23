@@ -586,6 +586,28 @@ def completion_body(
     }
 
 
+def resolve_max_tokens(
+    task_max_tokens: int,
+    *,
+    cap: int | None,
+    override: int | None,
+) -> int:
+    """Resolve a task's generation budget without changing the task digest."""
+    if cap is not None and override is not None:
+        raise ValueError("max-token cap and override are mutually exclusive")
+    if task_max_tokens < 1:
+        raise ValueError("task max_tokens must be positive")
+    if cap is not None:
+        if cap < 1:
+            raise ValueError("max-token cap must be positive")
+        return min(task_max_tokens, cap)
+    if override is not None:
+        if override < 1:
+            raise ValueError("max-token override must be positive")
+        return override
+    return task_max_tokens
+
+
 def run_evaluation(args: argparse.Namespace) -> None:
     tasks, task_source_digest = load_tasks(args.tasks, args.manifest)
     selection_digest = None
@@ -593,6 +615,11 @@ def run_evaluation(args: argparse.Namespace) -> None:
     if args.task_selection is not None:
         tasks, tasks_digest = select_tasks(tasks, args.task_selection)
         selection_digest = sha256_file(args.task_selection)
+    resolve_max_tokens(
+        1,
+        cap=args.max_tokens_cap,
+        override=args.max_tokens_override,
+    )
     health = request_json("GET", f"{args.url}/health", timeout_seconds=30)
     request_settings = {
         "temperature": 0.0,
@@ -602,6 +629,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
         "seed": args.seed,
         "warmup_requests": args.warmup_requests,
         "max_tokens_cap": args.max_tokens_cap,
+        "max_tokens_override": args.max_tokens_override,
         "template": "manual-qwen-chatml-v1",
     }
     for _ in range(args.warmup_requests):
@@ -653,9 +681,11 @@ def run_evaluation(args: argparse.Namespace) -> None:
         if task["id"] in completed_ids:
             continue
         started = time.perf_counter()
-        max_tokens = int(task["max_tokens"])
-        if args.max_tokens_cap is not None:
-            max_tokens = min(max_tokens, args.max_tokens_cap)
+        max_tokens = resolve_max_tokens(
+            int(task["max_tokens"]),
+            cap=args.max_tokens_cap,
+            override=args.max_tokens_override,
+        )
         try:
             response = request_json(
                 "POST",
@@ -750,6 +780,7 @@ def report_metadata(report: dict[str, Any]) -> dict[str, Any]:
         "num_ctx": request.get("num_ctx"),
         "num_batch": request.get("num_batch"),
         "max_tokens_cap": request.get("max_tokens_cap"),
+        "max_tokens_override": request.get("max_tokens_override"),
         "warmup_requests": request.get("warmup_requests"),
         "result_count": len(report.get("results") or []),
         "completed_at": report.get("completed_at"),
@@ -765,6 +796,19 @@ def report_metadata(report: dict[str, Any]) -> dict[str, Any]:
 def inspect_report_command(args: argparse.Namespace) -> None:
     report = json.loads(args.report.read_text(encoding="utf-8"))
     print(json.dumps(report_metadata(report), ensure_ascii=True, sort_keys=True))
+
+
+def inspect_selection_command(args: argparse.Namespace) -> None:
+    tasks, task_source_digest = load_tasks(args.tasks, args.manifest)
+    selected, tasks_digest = select_tasks(tasks, args.task_selection)
+    metadata = {
+        "schema": "a3s.power.quality-eval.selection-inspection.v1",
+        "task_count": len(selected),
+        "tasks_sha256": tasks_digest,
+        "task_source_sha256": task_source_digest,
+        "task_selection_sha256": sha256_file(args.task_selection),
+    }
+    print(json.dumps(metadata, ensure_ascii=True, sort_keys=True))
 
 
 def aggregate_command(args: argparse.Namespace) -> None:
@@ -847,7 +891,9 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--seed", type=int, default=42)
     run.add_argument("--num-ctx", type=int, default=4096)
     run.add_argument("--num-batch", type=int, default=14)
-    run.add_argument("--max-tokens-cap", type=int)
+    max_tokens = run.add_mutually_exclusive_group()
+    max_tokens.add_argument("--max-tokens-cap", type=int)
+    max_tokens.add_argument("--max-tokens-override", type=int)
     run.add_argument("--warmup-requests", type=int, default=1)
     run.add_argument("--timeout-seconds", type=int, default=900)
     run.add_argument("--include-content", action="store_true")
@@ -857,6 +903,14 @@ def parser() -> argparse.ArgumentParser:
         help="emit safe control-plane metadata for one report",
     )
     inspect_report.add_argument("--report", type=Path, required=True)
+
+    inspect_selection = commands.add_parser(
+        "inspect-selection",
+        help="validate a task selection and emit its safe identity metadata",
+    )
+    inspect_selection.add_argument("--tasks", type=Path, required=True)
+    inspect_selection.add_argument("--manifest", type=Path, required=True)
+    inspect_selection.add_argument("--task-selection", type=Path, required=True)
 
     aggregate = commands.add_parser("aggregate", help="aggregate complete reports")
     aggregate.add_argument("--reports", nargs="+", required=True)
@@ -887,6 +941,8 @@ def main() -> None:
         run_evaluation(args)
     elif args.command == "inspect-report":
         inspect_report_command(args)
+    elif args.command == "inspect-selection":
+        inspect_selection_command(args)
     elif args.command == "aggregate":
         aggregate_command(args)
     elif args.command == "aggregate-sweep":

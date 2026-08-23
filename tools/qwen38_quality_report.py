@@ -218,7 +218,7 @@ def aggregate_reports(
             if item.get("speculative_runtime") is not None
         ]
         if runtime_reports:
-            modes[mode]["speculative_runtime"] = {
+            runtime_summary = {
                 "strategy": one_speculative_strategy(runtime_reports),
                 "overall": {
                     field: describe(
@@ -233,7 +233,9 @@ def aggregate_reports(
                         "aggregate_reported_tokens_per_second",
                     )
                 },
-                "by_benchmark": {
+            }
+            if all("by_benchmark" in report for report in runtime_reports):
+                runtime_summary["by_benchmark"] = {
                     benchmark: {
                         field: describe(
                             report["by_benchmark"][benchmark].get(field, 0)
@@ -249,8 +251,8 @@ def aggregate_reports(
                         )
                     }
                     for benchmark in ("mmlu", "gsm8k", "ceval")
-                },
-            }
+                }
+            modes[mode]["speculative_runtime"] = runtime_summary
 
     pairs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for repetition, modes_for_run in sorted(by_repetition.items()):

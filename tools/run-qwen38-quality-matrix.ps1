@@ -21,6 +21,9 @@ param(
     [ValidateRange(0, 4096)]
     [int]$MaxTokensCap = 0,
 
+    [ValidateRange(0, 4096)]
+    [int]$MaxTokensOverride = 0,
+
     [ValidateRange(1, 65535)]
     [int]$Port = 11436,
 
@@ -73,6 +76,8 @@ param(
 
     [string]$PreparedTaskCache,
 
+    [string]$TaskSelection,
+
     [bool]$VerifyModelFiles = $true,
 
     [switch]$RequireCleanTree,
@@ -86,9 +91,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+if ($MaxTokensCap -gt 0 -and $MaxTokensOverride -gt 0) {
+    throw 'MaxTokensCap and MaxTokensOverride are mutually exclusive'
+}
+
 $powerRoot = Split-Path -Parent $PSScriptRoot
 $server = Join-Path $powerRoot "$TargetDirectory\release\a3s-power.exe"
 $evaluator = Join-Path $PSScriptRoot 'qwen38_quality_eval.py'
+$reporter = Join-Path $PSScriptRoot 'qwen38_quality_report.py'
 $qwenBenchmarkRoot = Join-Path $powerRoot 'docs\benchmarks\qwen3.8-27b-q6k-rtx4090'
 $benchmarkRoot = Join-Path $qwenBenchmarkRoot 'quality'
 $manifest = Join-Path $benchmarkRoot 'tasks-v1.manifest.json'
@@ -107,6 +117,11 @@ $output = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
     [System.IO.Path]::GetFullPath((Join-Path $powerRoot $OutputRoot))
 }
 $tasks = Join-Path $output 'tasks-v1.json'
+$taskSelectionPath = if ([string]::IsNullOrWhiteSpace($TaskSelection)) {
+    $null
+} else {
+    [System.IO.Path]::GetFullPath($TaskSelection)
+}
 $environmentPath = Join-Path $output 'environment.json'
 $aggregateJson = Join-Path $output 'quality-matrix.json'
 $aggregateMarkdown = Join-Path $output 'quality-matrix.md'
@@ -352,6 +367,9 @@ function Invoke-ModeRun {
                 [int]$existing.num_batch -eq $NumBatch -and
                 (($MaxTokensCap -eq 0 -and $null -eq $existing.max_tokens_cap) -or
                     [int]$existing.max_tokens_cap -eq $MaxTokensCap) -and
+                (($MaxTokensOverride -eq 0 -and
+                        $null -eq $existing.max_tokens_override) -or
+                    [int]$existing.max_tokens_override -eq $MaxTokensOverride) -and
                 [int]$existing.warmup_requests -eq 1
             $isComplete =
                 [int]$existing.result_count -eq $expectedTaskCount -and
@@ -453,6 +471,12 @@ function Invoke-ModeRun {
         if ($MaxTokensCap -gt 0) {
             $arguments += @('--max-tokens-cap', [string]$MaxTokensCap)
         }
+        if ($MaxTokensOverride -gt 0) {
+            $arguments += @('--max-tokens-override', [string]$MaxTokensOverride)
+        }
+        if ($taskSelectionPath) {
+            $arguments += @('--task-selection', $taskSelectionPath)
+        }
         if ($IncludeContent) {
             $arguments += '--include-content'
         }
@@ -471,7 +495,11 @@ function Invoke-ModeRun {
     }
 }
 
-foreach ($requiredPath in @($server, $evaluator, $manifest, $config)) {
+$requiredPaths = @($server, $evaluator, $reporter, $manifest, $config)
+if ($taskSelectionPath) {
+    $requiredPaths += $taskSelectionPath
+}
+foreach ($requiredPath in $requiredPaths) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Required quality benchmark input does not exist: $requiredPath"
     }
@@ -591,6 +619,14 @@ $environment = [ordered]@{
         path = [System.IO.Path]::GetFullPath($server)
         sha256 = $serverHash
     }
+    benchmark_tools = [ordered]@{
+        runner_sha256 = (Get-FileHash -LiteralPath $PSCommandPath `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        evaluator_sha256 = (Get-FileHash -LiteralPath $evaluator `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        reporter_sha256 = (Get-FileHash -LiteralPath $reporter `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
     q6_model = $q6Identity
     tbq4_model = $tbq4Identity
     gpu = $gpu
@@ -630,6 +666,20 @@ $environment = [ordered]@{
     num_ctx = $NumCtx
     num_batch = $NumBatch
     max_tokens_cap = if ($MaxTokensCap -gt 0) { $MaxTokensCap } else { $null }
+    max_tokens_override = if ($MaxTokensOverride -gt 0) {
+        $MaxTokensOverride
+    } else {
+        $null
+    }
+    task_selection = if ($taskSelectionPath) {
+        [ordered]@{
+            path = $taskSelectionPath
+            sha256 = (Get-FileHash -LiteralPath $taskSelectionPath `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    } else {
+        $null
+    }
     repetitions = $Repetitions
     profile = $Profile
     compatible_report_commit_reuse = [bool]$ReuseCompatibleReportsAcrossCommits
@@ -657,6 +707,12 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
                     -not [bool]$previous.dirty_worktree -and
                     -not [bool]$environment.dirty_worktree)) -and
             $previous.server.sha256 -eq $environment.server.sha256 -and
+            $previous.benchmark_tools.runner_sha256 -eq
+                $environment.benchmark_tools.runner_sha256 -and
+            $previous.benchmark_tools.evaluator_sha256 -eq
+                $environment.benchmark_tools.evaluator_sha256 -and
+            $previous.benchmark_tools.reporter_sha256 -eq
+                $environment.benchmark_tools.reporter_sha256 -and
             $previous.q6_model.sha256 -eq $environment.q6_model.sha256 -and
             $previous.q6_model.external_draft.sha256 -eq
                 $environment.q6_model.external_draft.sha256 -and
@@ -689,6 +745,12 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
                     $null -eq $environment.max_tokens_cap) -or
                 [int]$previous.max_tokens_cap -eq
                     [int]$environment.max_tokens_cap) -and
+            (($null -eq $previous.max_tokens_override -and
+                    $null -eq $environment.max_tokens_override) -or
+                [int]$previous.max_tokens_override -eq
+                    [int]$environment.max_tokens_override) -and
+            $previous.task_selection.sha256 -eq
+                $environment.task_selection.sha256 -and
             [int]$previous.repetitions -eq $environment.repetitions -and
             $previous.profile -eq $environment.profile -and
             (@($previous.modes.label) -join ',') -eq
@@ -729,6 +791,26 @@ if ($taskDigest -ne $taskManifest.expected_tasks_sha256) {
 $expectedTaskCount = @($taskPayload.tasks).Count
 if ($expectedTaskCount -le 0) {
     throw 'Prepared task cache contains no tasks'
+}
+if ($taskSelectionPath) {
+    $selectionJson = @(& $PythonLauncher @pythonPrefix $evaluator `
+        'inspect-selection' `
+        '--tasks' $tasks `
+        '--manifest' $manifest `
+        '--task-selection' $taskSelectionPath) -join [Environment]::NewLine
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python task-selection inspection exited with code $LASTEXITCODE"
+    }
+    $selectionMetadata = $selectionJson | ConvertFrom-Json
+    if ($selectionMetadata.schema -ne
+        'a3s.power.quality-eval.selection-inspection.v1') {
+        throw 'Python task-selection inspection returned an unsupported schema'
+    }
+    $taskDigest = [string]$selectionMetadata.tasks_sha256
+    $expectedTaskCount = [int]$selectionMetadata.task_count
+    if ($expectedTaskCount -le 0) {
+        throw 'Task selection contains no tasks'
+    }
 }
 
 $environmentNames = @(

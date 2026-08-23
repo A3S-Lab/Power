@@ -150,6 +150,20 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(args.num_batch, 14)
         self.assertEqual(args.num_ctx, 4096)
 
+    def test_max_tokens_override_can_raise_the_reviewed_task_limit(self) -> None:
+        self.assertEqual(
+            quality.resolve_max_tokens(256, cap=None, override=512),
+            512,
+        )
+        self.assertEqual(
+            quality.resolve_max_tokens(384, cap=128, override=None),
+            128,
+        )
+
+    def test_max_tokens_cap_and_override_are_mutually_exclusive(self) -> None:
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            quality.resolve_max_tokens(256, cap=128, override=512)
+
     def test_atomic_write_retries_a_transient_windows_reader_lock(self) -> None:
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -360,6 +374,7 @@ class AggregateTests(unittest.TestCase):
                 "num_ctx": 4096,
                 "num_batch": 14,
                 "max_tokens_cap": 256,
+                "max_tokens_override": None,
                 "warmup_requests": 1,
             },
             "results": rows,
@@ -375,6 +390,7 @@ class AggregateTests(unittest.TestCase):
         self.assertFalse(metadata["has_speculative_runtime"])
         self.assertIsNone(metadata["speculative_strategy"])
         self.assertEqual(metadata["max_tokens_cap"], 256)
+        self.assertIsNone(metadata["max_tokens_override"])
         self.assertNotIn("content", metadata)
 
     def test_arbitrary_sweep_modes_are_aggregated(self) -> None:
@@ -462,6 +478,36 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(paired["task_count"], 2)
         self.assertEqual(paired["content_sha256_parity"], 2)
         self.assertIn("Untouched Q6_K + DSpark Q4", quality.render_markdown(aggregate))
+
+    def test_selected_task_runtime_without_benchmark_partitions_is_aggregated(
+        self,
+    ) -> None:
+        rows = [result_row("a", "A", "A", strict_prediction="A")]
+        reports = []
+        for order, mode in enumerate(("q6-off", "q6-dspark"), 1):
+            reports.append(
+                {
+                    "mode_label": mode,
+                    "repetition": 1,
+                    "order_index": order,
+                    "model_sha256": "same-q6-model",
+                    "tasks_sha256": "selected-tasks",
+                    "server_sha256": "server",
+                    "results": rows,
+                    "summary": quality.report_summary(rows),
+                    "speculative_runtime": (
+                        {"strategy": "dspark", "overall": {}}
+                        if mode == "q6-dspark"
+                        else None
+                    ),
+                }
+            )
+
+        aggregate = quality.aggregate_reports(reports)
+        runtime = aggregate["modes"]["q6-dspark"]["speculative_runtime"]
+
+        self.assertEqual(runtime["strategy"], "dspark")
+        self.assertNotIn("by_benchmark", runtime)
 
     def test_mixed_speculative_strategies_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "mix speculative strategies"):

@@ -1,0 +1,12 @@
+{
+  "schema": "a3s.power.quality-eval.selection.v1",
+  "description": "Five-task diagnostic subset covering all observed target-to-DSpark quality losses plus one positive control in the adaptive 100-task capture; this is not a representative accuracy sample.",
+  "task_ids": [
+    "mmlu:8400",
+    "mmlu:11207",
+    "ceval:teacher_qualification:1",
+    "ceval:college_physics:2",
+    "ceval:high_school_history:0"
+  ],
+  "expected_tasks_sha256": "881a115e276b2c2a80fcae009682b6098c045a0a7180b956189a93dd1fbb5a69"
+}
