@@ -207,6 +207,99 @@ async fn test_register_model_success() {
 
 #[tokio::test]
 #[serial]
+async fn test_register_model_captures_adapter_and_projector_identities() {
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("A3S_POWER_HOME", dir.path());
+    let model_file = dir.path().join("target.gguf");
+    let adapter_file = dir.path().join("adapter.gguf");
+    let projector_file = dir.path().join("projector.gguf");
+    write_minimal_target_gguf(&model_file);
+    std::fs::write(&adapter_file, b"adapter weights").unwrap();
+    std::fs::write(&projector_file, b"projector weights").unwrap();
+
+    let state = test_state_with_mock(MockBackend::success());
+    let app = router::build(state.clone());
+    let body = serde_json::json!({
+        "name": "vision-adapter-model",
+        "path": model_file.to_str().unwrap(),
+        "adapter": { "path": adapter_file.to_str().unwrap() },
+        "projector": { "path": projector_file.to_str().unwrap() }
+    });
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/models")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let manifest = state.registry.get("vision-adapter-model").unwrap();
+    assert!(manifest.adapter_path.is_none());
+    assert!(manifest.projector_path.is_none());
+    let adapter = manifest.adapter_artifact.as_ref().unwrap();
+    let projector = manifest.projector_artifact.as_ref().unwrap();
+    assert_eq!(adapter.path, adapter_file);
+    assert_eq!(projector.path, projector_file);
+    assert_eq!(adapter.size, b"adapter weights".len() as u64);
+    assert_eq!(projector.size, b"projector weights".len() as u64);
+    assert_eq!(adapter.sha256.len(), 64);
+    assert_eq!(projector.sha256.len(), 64);
+    assert!(
+        crate::api::prompt_policy::canonical_auxiliary_artifacts_digest(&manifest)
+            .unwrap()
+            .is_some()
+    );
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_register_model_rejects_client_supplied_auxiliary_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("A3S_POWER_HOME", dir.path());
+    let model_file = dir.path().join("target.gguf");
+    let projector_file = dir.path().join("projector.gguf");
+    write_minimal_target_gguf(&model_file);
+    std::fs::write(&projector_file, b"projector weights").unwrap();
+
+    let state = test_state_with_mock(MockBackend::success());
+    let app = router::build(state.clone());
+    let body = serde_json::json!({
+        "name": "forged-projector-identity",
+        "path": model_file.to_str().unwrap(),
+        "projector": {
+            "path": projector_file.to_str().unwrap(),
+            "sha256": "client-supplied-digest"
+        }
+    });
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/models")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["code"], "unsupported_request_fields");
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("sha256"));
+    assert!(!state.registry.exists("forged-projector-identity"));
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+#[serial]
 async fn test_register_model_captures_external_dspark_identity() {
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("A3S_POWER_HOME", dir.path());
@@ -346,6 +439,45 @@ async fn test_register_model_rejects_external_draft_for_non_gguf_target() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["error"]["code"], "external_draft_requires_gguf");
     assert!(!state.registry.exists("non-gguf-target"));
+
+    std::env::remove_var("A3S_POWER_HOME");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_register_model_rejects_auxiliary_artifact_for_non_gguf_target() {
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("A3S_POWER_HOME", dir.path());
+
+    let model_file = dir.path().join("target.safetensors");
+    let projector_file = dir.path().join("projector.gguf");
+    std::fs::write(&model_file, b"target weights").unwrap();
+    std::fs::write(&projector_file, b"projector weights").unwrap();
+
+    let state = test_state_with_mock(MockBackend::success());
+    let app = router::build(state.clone());
+    let body = serde_json::json!({
+        "name": "non-gguf-vision-target",
+        "path": model_file.to_str().unwrap(),
+        "format": "safetensors",
+        "projector": {
+            "path": projector_file.to_str().unwrap()
+        }
+    });
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/models")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["code"], "auxiliary_artifact_requires_gguf");
+    assert!(!state.registry.exists("non-gguf-vision-target"));
 
     std::env::remove_var("A3S_POWER_HOME");
 }

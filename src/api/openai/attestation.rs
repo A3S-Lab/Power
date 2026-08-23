@@ -386,6 +386,16 @@ async fn resolve_model_claims(
         }
     }
 
+    manifest
+        .verify_auxiliary_artifacts_for_verified_target(&hex::encode(&actual), false)
+        .map_err(|error| {
+            error_json(
+                StatusCode::CONFLICT,
+                format!("model '{model_name}' auxiliary artifact verification failed: {error}"),
+                "auxiliary_artifact_mismatch",
+            )
+        })?;
+
     let runtime = crate::api::prompt_policy::runtime_policy_claim_with_gpu_config(
         &manifest,
         Some(&state.config.gpu),
@@ -677,8 +687,10 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            adapter_artifact: None,
             external_draft: None,
             projector_path: None,
+            projector_artifact: None,
             messages: Vec::new(),
             family: None,
             families: None,
@@ -1064,6 +1076,81 @@ mod tests {
             report.report_data,
             build_claims_report_data(claims).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn test_attestation_with_model_binds_auxiliary_artifact_identities() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+        let projector_path = dir.path().join("projector.gguf");
+        std::fs::write(&model_path, b"model-v1").unwrap();
+        std::fs::write(&projector_path, b"projector-v1").unwrap();
+        let hash = storage::compute_sha256(b"model-v1");
+        let mut manifest = local_manifest("test-model", &model_path, &hash);
+        manifest.projector_artifact =
+            Some(crate::model::artifact::AuxiliaryModelArtifact::capture(projector_path).unwrap());
+        let expected = crate::api::prompt_policy::canonical_auxiliary_artifacts_digest(&manifest)
+            .unwrap()
+            .unwrap();
+        let state = test_state_with_manifest(
+            manifest,
+            PowerConfig {
+                tee_mode: true,
+                ..Default::default()
+            },
+        );
+
+        let response = handler(State(state), with_model("test-model"))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let report = response_report(response).await;
+        let execution = report
+            .claims
+            .as_ref()
+            .unwrap()
+            .runtime
+            .as_ref()
+            .unwrap()
+            .execution
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            execution.auxiliary_artifacts_sha256.as_ref(),
+            Some(&expected)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_attestation_with_model_rejects_replaced_auxiliary_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+        let projector_path = dir.path().join("projector.gguf");
+        std::fs::write(&model_path, b"model-v1").unwrap();
+        std::fs::write(&projector_path, b"projector-v1").unwrap();
+        let hash = storage::compute_sha256(b"model-v1");
+        let mut manifest = local_manifest("test-model", &model_path, &hash);
+        manifest.projector_artifact = Some(
+            crate::model::artifact::AuxiliaryModelArtifact::capture(projector_path.clone())
+                .unwrap(),
+        );
+        let state = test_state_with_manifest(
+            manifest,
+            PowerConfig {
+                tee_mode: true,
+                ..Default::default()
+            },
+        );
+        std::fs::write(projector_path, b"projector-v2").unwrap();
+
+        let response = handler(State(state), with_model("test-model"))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let json = response_json(response).await;
+        assert_eq!(json["error"]["code"], "auxiliary_artifact_mismatch");
     }
 
     #[tokio::test]

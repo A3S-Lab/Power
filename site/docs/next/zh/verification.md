@@ -60,8 +60,19 @@ a3s-power-verify \
   --model your-model \
   --nonce <fresh-client-nonce-hex> \
   --model-hash <64-character-artifact-sha256> \
+  --auxiliary-artifacts-digest <portable-auxiliary-set-sha256> \
   --expected-measurement <96-character-launch-measurement-hex>
 ```
+
+模型使用外部 draft、LoRA adapter 或多模态 projector 时，先从已审查的部署 manifest
+计算与本机路径无关的期望值：
+
+```bash
+a3s-power-verify --print-auxiliary-artifacts-digest model-manifest.json
+```
+
+证明中声明辅助制品时，严格验证要求调用方固定该摘要。摘要覆盖制品角色、解码
+契约、字节长度、制品哈希以及外部 draft 的目标绑定，不包含本机路径。
 
 由验证器，而不是服务运营方，选择可接受的启动度量、制品哈希、运行策略、GPU 证据与回执字段。
 
@@ -162,6 +173,7 @@ python3 tools/dspark_quality_followup_evidence.py verify \
 
 - 严格验证器未包含硬件验证能力；
 - 缺少或错误的启动度量与制品 pin；
+- 运行时声明 draft、adapter 或 projector 时，缺少或不匹配的辅助制品 pin；
 - 保存的证据缺少原始报告字节；
 - 厂商证书获取、解析或签名验证失败；
 - nonce 过期，或模型、策略、输入、输出、设备摘要不匹配；

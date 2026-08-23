@@ -66,7 +66,13 @@ copy-cost, and evidence contracts do not branch on Qwen or any model family;
 language, vision, OCR, embedding, and multimodal crates retain their own
 topology and semantics.
 
-| Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
+The active performance and quality gate tests only the unchanged Q6_K target
+artifact. A Q4 file appears below only when an external speculative decoder
+needs an auxiliary proposer; it is never scored or reported as the target
+model. Mixed-quantization and Q8 captures remain historical research outside
+the current acceptance decision.
+
+| Qwen3.8-27B Q6_K target mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
 | Untouched Q6_K, paired DFlash2 calibration control | 9/12 lenient and strict in every repetition | 29.702 token/s mean | 35.380 token/s |
@@ -82,11 +88,6 @@ topology and semantics.
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Fixed peak prompt has exact greedy parity | - | 147.0207 token/s |
 | Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x calibration; 11 truncated) | **47.032 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x calibration; 11 truncated) | 37.290 token/s | **176.6109 token/s** |
-| TBQ4 mixed, autoregressive | 70/100 lenient; 64/100 strict (100 tasks, 3x) | 38.724 token/s | - |
-| **TBQ4 mixed + full-vocabulary fixed MTP, K7/S7** | **76/100 lenient; 66/100 strict** (100 tasks, 3x) | **83.228 token/s** | **175.2089 token/s** |
-| TBQ4 mixed + full-vocabulary guarded MTP, K7/S6 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | 54.060 token/s | **177.7165 token/s** |
-| TBQ4 mixed + MTP + prefix FR (historical) | 72/100 lenient; 60/100 strict (100 tasks, 3x) | 27.951 token/s | 184.3665 token/s |
-| UD-Q8_K_XL, heterogeneous MTP K4/S4 | Cross-mode output hashes differ; matrix not run | - | 9.7577 token/s |
 
 The native external-DSpark acceptance capture used one clean CUDA commit and
 the same batch-12, context-512, 256-token greedy request for both rows. DSpark
@@ -181,20 +182,10 @@ prefix-FR8192 reached 37.290 token/s with 24.82% acceptance. Eleven tasks per
 mode hit the 128-token cap, so this calibration diagnoses workload sensitivity;
 the repeated 100-task matrix remains the primary quality evidence.
 
-The earlier mixed-artifact K7/S7 profile sustained a 175.2089 token/s median
-and completed all 900 requests in its repeated quality matrix with 51.33%
-proposal acceptance and no replay. That separate 19,187,686,464-byte artifact
-uses Q4_0 main FFN tensors, a Q6_K MTP block, and a Q4_K draft head. Both
-boundaries depend on full CUDA offload, stable batched target/draft graphs,
-host controls, and exact target verification. Flash Attention is profile-
-specific: retained for long contexts and disabled only where the
-measured hybrid short-batch kernel mix is faster without it.
-
 The quality values are task-accuracy proxies, not general intelligence or IQ
-measurements. On the fixed current matrix, K7/S7 moved from 70 to 76 lenient and
-64 to 66 strict answers versus TBQ4 autoregressive mode, so no regression was
-observed in that sample. The paired comparison did not reach conventional
-statistical significance and is not evidence that MTP improves intelligence.
+measurements. Exact target verification and a fixed-task score do not by
+themselves prove unchanged prose, general-intelligence equivalence, or a
+universal production default.
 
 The lossless prefix-cache path was measured separately with the unchanged
 Q6_K model, target-only decoding, and Flash Attention enabled. Five fresh
@@ -203,7 +194,7 @@ cold/warm pairs reduced median backend prefill from 786.1375 ms to 33.4102 ms
 reusing 9,740 prompt tokens. This is repeated-context latency evidence, not a
 steady-decode or external-draft claim.
 
-- [Current Q6_K/TBQ4/MTP benchmark, raw samples, and limitations](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
+- [Current Q6_K benchmark, raw samples, and limitations](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
 - [Q6_K prefix-cache cold/warm capture and exact reproduction](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/prompt-cache/README.md)
 - [Untouched-Q6_K 176.61 token/s boundary and dynamic-quantization analysis](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/PURE-Q6.md)
 - [Repeated quality matrix and reproducible environment](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
@@ -212,7 +203,6 @@ steady-decode or external-draft claim.
 - [Q6_K-only DFlash2 peak, quality boundary, and path-free evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2/README.md)
 - [Adaptive DSpark path-free peak and paired-quality evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/adaptive/evidence.json)
 - [Adaptive DSpark truncation follow-up and offline evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/README.md#adaptive-truncation-follow-up)
-- [UD-Q8_K_XL heterogeneous-placement boundary](docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 ## Start in three steps
 
@@ -537,6 +527,7 @@ before inference. Strict mode rejects simulated attestation.
 | `POST` | `/v1/completions` | Text completion and SSE streaming |
 | `POST` | `/v1/embeddings` | Embedding inference |
 | `GET` | `/v1/models` | Registered models |
+| `POST` | `/v1/models` | Register local weights and optional auxiliary artifacts |
 | `POST` | `/v1/models/pull` | Resumable ModelScope or Hugging Face pull |
 | `GET` | `/v1/attestation` | Nonce- and model-bound TEE evidence |
 | `GET` | `/metrics` | Prometheus metrics |
@@ -551,6 +542,12 @@ curl http://127.0.0.1:11434/v1/chat/completions \
     "stream": true
   }'
 ```
+
+For GGUF models, registration accepts optional typed `adapter`, `projector`,
+or `external_draft` objects. Callers provide artifact locations; Power reads
+the files and records their exact byte lengths and SHA-256 identities instead
+of trusting client-supplied hashes. Strict TEE startup rejects older path-only
+adapter or projector manifests.
 
 Chat and completion responses include an `attestation_receipt` and its SHA-256
 digest. Streaming responses emit the receipt before `[DONE]`.
@@ -588,8 +585,21 @@ a3s-power-verify \
   --url http://127.0.0.1:11434 \
   --nonce <client-nonce-hex> \
   --model-hash <artifact-sha256-hex> \
+  --auxiliary-artifacts-digest <portable-auxiliary-set-sha256> \
   --expected-measurement <launch-measurement-hex>
 ```
+
+When the model uses a draft, LoRA adapter, or multimodal projector, derive the
+path-independent pin from the reviewed deployment manifest before verification:
+
+```bash
+a3s-power-verify --print-auxiliary-artifacts-digest model-manifest.json
+```
+
+Strict verification requires that pin whenever the attested runtime declares
+auxiliary artifacts. The digest commits to roles, decoder contracts, sizes,
+artifact hashes, and external-draft target binding; host-local paths are not
+part of the identity.
 
 The verifier selects acceptable launch measurements, artifact hashes, runtime
 policy, GPU evidence, and receipt fields. The server does not get to weaken

@@ -59,6 +59,11 @@ Landed in the current working tree:
 - Model registration now rejects unsupported `format` values and unknown
   top-level registration or pull request fields instead of silently defaulting
   local artifacts to GGUF or dropping caller-supplied model policy.
+- Model registration now accepts typed LoRA adapter and multimodal projector
+  locations, measures their size and SHA-256 itself, and rejects caller-supplied
+  integrity fields. Strict TEE startup rejects legacy path-only auxiliary
+  references, backend load re-verifies bytes, and signature policy requires a
+  signature for each content-addressed auxiliary artifact.
 - SafeTensors and vision model loading now reject explicit invalid
   `default_parameters.isq` values instead of silently falling back to Q8_0.
 - Added typed encrypted model digest semantics. Explicit `model_hashes` pins
@@ -93,6 +98,11 @@ Landed in the current working tree:
   applied chat templates and canonical GPU execution/offload parameters into
   `AttestationClaimsV2`; unapplied manifest system prompts, pre-seeded
   messages, and default generation parameters are intentionally not claimed.
+- Extended execution policy claims with a portable auxiliary-artifacts digest
+  covering speculative drafts, LoRA adapters, and multimodal projectors. The
+  attestation endpoint re-verifies their current bytes, request receipts carry
+  the same claim, and strict verification requires a caller-owned expected
+  digest whenever the server declares auxiliary artifacts.
 - Added verifier and CLI checks for runtime policy digests via
   `VerificationPolicy::require_runtime_policy()` and
   `a3s-power-verify --require-runtime-policy`.

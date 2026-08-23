@@ -8,7 +8,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::model::manifest::{
-    ExternalDraftArtifact, ExternalDraftKind, ModelFormat, ModelManifest,
+    AuxiliaryModelArtifact, ExternalDraftArtifact, ExternalDraftKind, ModelFormat, ModelManifest,
 };
 use crate::server::state::AppState;
 
@@ -25,10 +25,43 @@ pub struct RegisterModelRequest {
     /// Optional content-addressed DFlash or DSpark GGUF draft artifact.
     #[serde(default)]
     pub external_draft: Option<RegisterExternalDraftRequest>,
+    /// Optional LoRA/QLoRA adapter captured by Power as a content-addressed artifact.
+    #[serde(default)]
+    pub adapter: Option<RegisterAuxiliaryArtifactRequest>,
+    /// Optional multimodal projector captured by Power as a content-addressed artifact.
+    #[serde(default)]
+    pub projector: Option<RegisterAuxiliaryArtifactRequest>,
     /// Unknown registration fields are preserved so handlers can reject
     /// unsupported model policy instead of silently dropping it.
     #[serde(default, flatten)]
     pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+/// Client-supplied location for an auxiliary inference artifact.
+///
+/// Power measures size and SHA-256; callers cannot inject integrity metadata.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RegisterAuxiliaryArtifactRequest {
+    pub path: String,
+    #[serde(default, flatten)]
+    pub unsupported: BTreeMap<String, serde_json::Value>,
+}
+
+impl RegisterAuxiliaryArtifactRequest {
+    fn unsupported_fields_message(&self, field: &str) -> Option<String> {
+        if self.unsupported.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "unsupported {field} field(s): {}; the only supported field is path",
+                self.unsupported
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        }
+    }
 }
 
 /// Client-supplied external-draft location and provenance.
@@ -68,7 +101,7 @@ impl RegisterModelRequest {
             None
         } else {
             Some(format!(
-                "unsupported model registration field(s): {}; supported fields are name, path, format, and external_draft",
+                "unsupported model registration field(s): {}; supported fields are name, path, format, external_draft, adapter, and projector",
                 self.unsupported.keys().cloned().collect::<Vec<_>>().join(", ")
             ))
         }
@@ -218,6 +251,20 @@ pub async fn register_handler(
             message,
         );
     }
+    for (field, artifact) in [
+        ("adapter", req.adapter.as_ref()),
+        ("projector", req.projector.as_ref()),
+    ] {
+        if let Some(message) =
+            artifact.and_then(|artifact| artifact.unsupported_fields_message(field))
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "unsupported_request_fields",
+                message,
+            );
+        }
+    }
 
     let format = match parse_model_format(req.format.as_deref()) {
         Ok(format) => format,
@@ -232,11 +279,19 @@ pub async fn register_handler(
             "external_draft is supported only for GGUF target models".to_string(),
         );
     }
+    if (req.adapter.is_some() || req.projector.is_some()) && format != ModelFormat::Gguf {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "auxiliary_artifact_requires_gguf",
+            "adapter and projector artifacts are supported only for GGUF target models".to_string(),
+        );
+    }
 
     let path = PathBuf::from(&req.path);
     let inspection_path = path.clone();
     let inspection_format = format.clone();
-    let require_valid_gguf = req.external_draft.is_some();
+    let require_valid_gguf =
+        req.external_draft.is_some() || req.adapter.is_some() || req.projector.is_some();
     let (size, sha256) = match tokio::task::spawn_blocking(move || {
         inspect_target(&inspection_path, &inspection_format, require_valid_gguf)
     })
@@ -287,6 +342,44 @@ pub async fn register_handler(
         None
     };
 
+    let adapter_request = req.adapter;
+    let projector_request = req.projector;
+    let (adapter_artifact, projector_artifact) = match tokio::task::spawn_blocking(move || {
+        let adapter = adapter_request
+            .map(|artifact| AuxiliaryModelArtifact::capture(PathBuf::from(artifact.path)))
+            .transpose()
+            .map_err(|error| {
+                crate::error::PowerError::Config(format!("Failed to capture LoRA adapter: {error}"))
+            })?;
+        let projector = projector_request
+            .map(|artifact| AuxiliaryModelArtifact::capture(PathBuf::from(artifact.path)))
+            .transpose()
+            .map_err(|error| {
+                crate::error::PowerError::Config(format!(
+                    "Failed to capture multimodal projector: {error}"
+                ))
+            })?;
+        Ok::<_, crate::error::PowerError>((adapter, projector))
+    })
+    .await
+    {
+        Ok(Ok(artifacts)) => artifacts,
+        Ok(Err(error)) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_auxiliary_artifact",
+                error.to_string(),
+            );
+        }
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "auxiliary_artifact_inspection_failed",
+                format!("auxiliary artifact inspection task failed: {error}"),
+            );
+        }
+    };
+
     let manifest = ModelManifest {
         name: req.name.clone(),
         format,
@@ -301,8 +394,10 @@ pub async fn register_handler(
         modelfile_content: None,
         license: None,
         adapter_path: None,
+        adapter_artifact,
         external_draft,
         projector_path: None,
+        projector_artifact,
         messages: vec![],
         family: None,
         families: None,

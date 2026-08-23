@@ -619,6 +619,12 @@ fn validate_strict_tee_config(
         }
     }
 
+    for manifest in registry.list()? {
+        if manifest.format != ModelFormat::Remote {
+            manifest.validate_auxiliary_artifact_bindings(true)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -916,8 +922,10 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            adapter_artifact: None,
             external_draft: None,
             projector_path: None,
+            projector_artifact: None,
             messages: Vec::new(),
             family: None,
             families: None,
@@ -1297,6 +1305,46 @@ mod tests {
             model_signing_key: Some(
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
             ),
+            expected_measurements: measurement_pins(),
+            ..Default::default()
+        };
+
+        validate_strict_tee_config(&config, &registry, TeeType::SevSnp).unwrap();
+    }
+
+    #[test]
+    fn test_validate_strict_tee_config_rejects_path_only_auxiliary_artifact() {
+        let registry = ModelRegistry::new();
+        let mut manifest = local_manifest("vision-model");
+        manifest.projector_path = Some("legacy-mmproj.gguf".to_string());
+        registry.register_transient(manifest).unwrap();
+        let config = PowerConfig {
+            model_signing_key: Some("01".repeat(32)),
+            expected_measurements: measurement_pins(),
+            ..Default::default()
+        };
+
+        let error = validate_strict_tee_config(&config, &registry, TeeType::SevSnp).unwrap_err();
+
+        assert!(error.to_string().contains("multimodal projector"));
+        assert!(error.to_string().contains("content-addressed"));
+    }
+
+    #[test]
+    fn test_validate_strict_tee_config_accepts_bound_auxiliary_artifact() {
+        let registry = ModelRegistry::new();
+        let directory = tempfile::tempdir().unwrap();
+        let projector_path = directory.path().join("mmproj.gguf");
+        let mut manifest = local_manifest("vision-model");
+        manifest.projector_path = Some(projector_path.display().to_string());
+        manifest.projector_artifact = Some(crate::model::artifact::AuxiliaryModelArtifact {
+            path: projector_path,
+            size: 42,
+            sha256: "ab".repeat(32),
+        });
+        registry.register_transient(manifest).unwrap();
+        let config = PowerConfig {
+            model_signing_key: Some("01".repeat(32)),
             expected_measurements: measurement_pins(),
             ..Default::default()
         };

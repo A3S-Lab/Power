@@ -197,6 +197,7 @@ the total locked plaintext allocation from `model_size` to `chunk_size`.
 | Host reads model weights from RAM | TEE hardware encryption (SEV-SNP / TDX) |
 | Host reads inference prompts/responses | Log redaction + TEE memory encryption |
 | Tampered model file | SHA-256 integrity check at startup |
+| Replaced draft, LoRA adapter, or multimodal projector | Power-measured size/SHA-256 identity, strict startup and load-time verification, per-artifact signatures when signing policy is enabled, and caller-pinned attestation/receipt digest |
 | Replay attack on attestation | Nonce binding in `report_data` |
 | Supply-chain attack via inference dep | `tee-minimal` minimizes dep surface |
 | Plaintext model on disk | File-backed `.dec` mode zero-overwrites on unload; `picolm` can load encrypted GGUF plaintext from locked RAM or `LayerStreamingDecryptedModel`; unsupported backends fail closed when direct RAM/chunk loading is requested |

@@ -1,3 +1,4 @@
+pub mod artifact;
 pub mod external_draft;
 pub mod gguf;
 pub mod manifest;

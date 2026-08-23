@@ -39,11 +39,25 @@ pub(super) async fn load(backend: &LlamaCppBackend, manifest: &ModelManifest) ->
     let target_size = manifest.size;
     let target_sha256 = manifest.sha256.clone();
     let model_name = manifest.name.clone();
+    let adapter_path = manifest
+        .resolved_adapter_path()?
+        .map(|path| path.to_path_buf());
+    let projector_path = manifest
+        .resolved_projector_path()?
+        .map(|path| path.to_path_buf());
+    let adapter_artifact = manifest.adapter_artifact.clone();
+    let projector_artifact = manifest.projector_artifact.clone();
 
     // Load the model in a blocking task since it is CPU-intensive. The raw
     // parameter value contains pointers and is built inside the task rather
     // than crossing the async scheduler boundary.
     let (model, external_draft) = tokio::task::spawn_blocking(move || {
+        if let Some(artifact) = &adapter_artifact {
+            artifact.verify("LoRA adapter")?;
+        }
+        if let Some(artifact) = &projector_artifact {
+            artifact.verify("Multimodal projector")?;
+        }
         let verified_external = external_artifact
             .as_ref()
             .map(|artifact| artifact.verify_for_target_file(&path, target_size, &target_sha256))
@@ -137,8 +151,7 @@ pub(super) async fn load(backend: &LlamaCppBackend, manifest: &ModelManifest) ->
     );
 
     // Load LoRA adapter if specified in manifest
-    let lora_adapter = if let Some(ref adapter_path) = manifest.adapter_path {
-        let adapter_path_buf = std::path::PathBuf::from(adapter_path);
+    let lora_adapter = if let Some(ref adapter_path_buf) = adapter_path {
         if adapter_path_buf.exists() {
             let model_ref = model_arc.clone();
             let path = adapter_path_buf.clone();
@@ -158,14 +171,14 @@ pub(super) async fn load(backend: &LlamaCppBackend, manifest: &ModelManifest) ->
 
             tracing::info!(
                 model = %manifest.name,
-                adapter = %adapter_path,
+                adapter = %adapter_path_buf.display(),
                 "LoRA adapter loaded"
             );
             Some(Arc::new(Mutex::new(adapter)))
         } else {
             tracing::warn!(
                 model = %manifest.name,
-                adapter = %adapter_path,
+                adapter = %adapter_path_buf.display(),
                 "LoRA adapter file not found, skipping"
             );
             None
@@ -176,8 +189,16 @@ pub(super) async fn load(backend: &LlamaCppBackend, manifest: &ModelManifest) ->
 
     // Initialize multimodal context if projector_path is set.
     // MtmdContext::init_from_file is blocking (loads the projector weights).
-    let mtmd_ctx = if let Some(ref proj_path) = manifest.projector_path {
-        let proj_path_str = proj_path.clone();
+    let mtmd_ctx = if let Some(ref proj_path) = projector_path {
+        let proj_path_str = proj_path
+            .to_str()
+            .ok_or_else(|| {
+                PowerError::Config(format!(
+                    "Multimodal projector path is not valid UTF-8: {}",
+                    proj_path.display()
+                ))
+            })?
+            .to_string();
         let model_ref = model_arc.clone();
         let model_name_for_log = manifest.name.clone();
         match tokio::task::spawn_blocking(move || {
@@ -197,21 +218,27 @@ pub(super) async fn load(backend: &LlamaCppBackend, manifest: &ModelManifest) ->
             Ok(Ok(ctx)) => {
                 tracing::info!(
                     model = %model_name_for_log,
-                    projector = %proj_path,
+                    projector = %proj_path.display(),
                     "Multimodal projector loaded"
                 );
                 Some(Arc::new(Mutex::new(ctx)))
             }
             Ok(Err(e)) => {
+                if backend.config.strict_attestation() {
+                    return Err(e);
+                }
                 tracing::warn!(
                     model = %manifest.name,
-                    projector = %proj_path,
+                    projector = %proj_path.display(),
                     error = %e,
                     "Failed to load multimodal projector, vision inference disabled"
                 );
                 None
             }
             Err(e) => {
+                if backend.config.strict_attestation() {
+                    return Err(e);
+                }
                 tracing::warn!(error = %e, "MTMD init task panicked");
                 None
             }
@@ -234,7 +261,7 @@ pub(super) async fn load(backend: &LlamaCppBackend, manifest: &ModelManifest) ->
             external_draft,
             session_cache: backend.new_session_cache(),
             lora_adapter,
-            projector_path: manifest.projector_path.clone(),
+            projector_path: projector_path.map(|path| path.display().to_string()),
             mtmd_ctx,
         },
     );

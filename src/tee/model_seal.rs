@@ -74,6 +74,7 @@ pub fn verify_all_models(
                 actual,
             });
         }
+        manifest.verify_auxiliary_artifacts_for_verified_target(&actual, false)?;
         verified += 1;
         tracing::info!(model = %name, "Model integrity verified");
     }
@@ -128,6 +129,7 @@ pub async fn verify_all_models_with_key_provider(
                 actual,
             });
         }
+        manifest.verify_auxiliary_artifacts_for_verified_target(&actual, false)?;
         verified += 1;
         tracing::info!(model = %name, "Model integrity verified");
     }
@@ -176,7 +178,33 @@ pub fn verify_model_signature_bytes(
 pub fn verify_all_signatures(registry: &ModelRegistry, public_key_hex: &str) -> Result<usize> {
     let mut verified = 0;
     for manifest in registry.list()? {
-        verify_model_signature(&manifest.path, public_key_hex)?;
+        let model_hash = storage::compute_sha256_file(&manifest.path)?;
+        verify_model_signature_hash(&manifest.name, &model_hash, &manifest.path, public_key_hex)?;
+        manifest.verify_auxiliary_artifacts_for_verified_target(&model_hash, false)?;
+        if let Some(adapter) = &manifest.adapter_artifact {
+            verify_model_signature_hash(
+                "LoRA adapter",
+                &adapter.sha256,
+                &adapter.path,
+                public_key_hex,
+            )?;
+        }
+        if let Some(projector) = &manifest.projector_artifact {
+            verify_model_signature_hash(
+                "multimodal projector",
+                &projector.sha256,
+                &projector.path,
+                public_key_hex,
+            )?;
+        }
+        if let Some(draft) = &manifest.external_draft {
+            verify_model_signature_hash(
+                "external speculative draft",
+                &draft.sha256,
+                &draft.path,
+                public_key_hex,
+            )?;
+        }
         verified += 1;
     }
     Ok(verified)
@@ -211,8 +239,10 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            adapter_artifact: None,
             external_draft: None,
             projector_path: None,
+            projector_artifact: None,
             messages: vec![],
             family: None,
             families: None,
@@ -268,6 +298,30 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    #[test]
+    #[serial_test::serial]
+    fn test_verify_all_models_rejects_replaced_auxiliary_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = make_manifest(dir.path(), "vision-model", b"model-data");
+        let projector_path = dir.path().join("projector.gguf");
+        std::fs::write(&projector_path, b"projector-a").unwrap();
+        manifest.projector_artifact = Some(
+            crate::model::artifact::AuxiliaryModelArtifact::capture(projector_path.clone())
+                .unwrap(),
+        );
+        manifest.projector_path = Some(projector_path.display().to_string());
+        let expected_hash = manifest.sha256.clone();
+        let registry = ModelRegistry::new();
+        registry.register(manifest).unwrap();
+        let hashes = HashMap::from([("vision-model".to_string(), expected_hash)]);
+
+        verify_all_models(&registry, &hashes).unwrap();
+        std::fs::write(projector_path, b"projector-b").unwrap();
+
+        let error = verify_all_models(&registry, &hashes).unwrap_err();
+        assert!(error.to_string().contains("SHA-256 mismatch"));
+    }
+
     #[cfg(feature = "embedded-inference")]
     #[test]
     fn safetensors_startup_pin_uses_embedded_weight_collection_identity() {
@@ -308,8 +362,10 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            adapter_artifact: None,
             external_draft: None,
             projector_path: None,
+            projector_artifact: None,
             messages: Vec::new(),
             family: None,
             families: None,
@@ -354,8 +410,10 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            adapter_artifact: None,
             external_draft: None,
             projector_path: None,
+            projector_artifact: None,
             messages: vec![],
             family: None,
             families: None,
@@ -440,6 +498,33 @@ mod tests {
 
         let result = verify_model_signature(&model_path, &public_key_hex);
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_verify_all_signatures_requires_auxiliary_artifact_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = make_manifest(dir.path(), "vision-model", b"model-data");
+        let projector_path = dir.path().join("projector.gguf");
+        std::fs::write(&projector_path, b"projector-data").unwrap();
+        manifest.projector_artifact = Some(
+            crate::model::artifact::AuxiliaryModelArtifact::capture(projector_path.clone())
+                .unwrap(),
+        );
+        let model_path = manifest.path.clone();
+        let registry = ModelRegistry::new();
+        registry.register(manifest).unwrap();
+        let (signing_key, public_key_hex) = generate_test_keypair();
+        sign_model_file_for_test(&model_path, &signing_key);
+
+        let missing = verify_all_signatures(&registry, &public_key_hex).unwrap_err();
+        assert!(missing.to_string().contains("signature file not found"));
+
+        sign_model_file_for_test(&projector_path, &signing_key);
+        assert_eq!(
+            verify_all_signatures(&registry, &public_key_hex).unwrap(),
+            1
+        );
     }
 
     #[test]

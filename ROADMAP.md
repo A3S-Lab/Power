@@ -37,6 +37,9 @@ kernels.
 - [x] Digest-pinned seekable AES-256-GCM weight collections with bounded
       authentication, positional decryption, cancellation, and unchanged
       `WeightHierarchy` residency semantics.
+- [x] Content-address every local auxiliary inference artifact and bind its
+      portable identity through strict startup, backend load, signatures,
+      attestation, receipts, and caller-owned verifier policy.
 
 ### P1 — Canonical tensor batch layout
 

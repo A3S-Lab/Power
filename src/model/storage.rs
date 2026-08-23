@@ -383,11 +383,17 @@ pub fn prune_unused_blobs(manifests: &[ModelManifest]) -> Result<(usize, u64)> {
         if let Some(ref adapter) = m.adapter_path {
             referenced.insert(PathBuf::from(adapter));
         }
+        if let Some(ref adapter) = m.adapter_artifact {
+            referenced.insert(adapter.path.clone());
+        }
         if let Some(ref draft) = m.external_draft {
             referenced.insert(draft.path.clone());
         }
         if let Some(ref projector) = m.projector_path {
             referenced.insert(PathBuf::from(projector));
+        }
+        if let Some(ref projector) = m.projector_artifact {
+            referenced.insert(projector.path.clone());
         }
     }
 

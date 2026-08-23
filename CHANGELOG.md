@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Bound every local inference artifact, not only the primary weights. Model
+  registration now captures Power-measured size and SHA-256 identities for
+  LoRA adapters and multimodal projectors; strict TEE startup rejects legacy
+  path-only references, model loading re-verifies bytes, signature policy
+  requires an adjacent signature for each auxiliary artifact, and attestation
+  plus receipts carry one portable auxiliary-artifacts digest. The strict
+  verifier requires a caller-owned digest pin whenever that claim is present.
 - Exposed explicit `prompt_cache_key` prefix reuse for llama.cpp text chat and
   completions. Keys are validated and SHA-256 scoped by authentication,
   endpoint, and model; unsupported backends fail closed. Resident KV contexts

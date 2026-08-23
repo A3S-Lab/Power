@@ -88,20 +88,16 @@ DSpark model-backed adapters. The legacy ACL key remains
 `spec_mtp_adaptive`. DFlash2 can join that scheduler only after its backend
 exposes equivalent transactional state.
 
-## TBQ4 and FR solve different problems
+## Q6_K acceptance and FR
 
-TBQ4 is an artifact-construction choice. It reduces selected tensor bandwidth;
-it is not a generic runtime switch. The current mixed artifact keeps the MTP
-block at Q6_K, uses Q4_0 for main FFN tensors, and uses Q4_K for the separate
-draft head.
+The current acceptance target keeps every main-model weight in the original
+Q6_K artifact. It does not use a mixed-quantization target.
 
 FR reduces only the rows projected by the MTP draft head. That can raise a peak
-on a narrow vocabulary distribution, but its acceptance is language- and
-domain-sensitive. The historical prefix-FR matrix reached a high steady rate
-while becoming slower than autoregressive TBQ4 on the representative workload.
-The mixed-artifact release profile therefore retains all 248,320 draft-head
-rows. The current pure-Q6_K peak deliberately enables an 8,192-token-ID prefix,
-but keeps full-vocabulary MTP as its balanced workload profile.
+on a narrow vocabulary distribution without rewriting Q6_K weights, but its
+acceptance is language- and domain-sensitive. The pure-Q6_K peak deliberately
+enables an 8,192-token-ID prefix; the balanced workload profile keeps the full
+draft vocabulary.
 
 ## Current measured profiles
 
@@ -135,11 +131,6 @@ to 50.07% but fell to 35.178 token/s because changing verification shapes
 reduced CUDA Graph reuse. Disabling CUDA Graphs also reduced the peak workload
 to 133.876 token/s. K, S, target batch, and graph shape must be tuned as one
 system.
-
-The previous mixed-artifact K7/S7 profile remains the representative quality
-capture: 175.2089 token/s median steady decode, 83.228 token/s request-wide,
-and no observed regression against its TBQ4 autoregressive control. That sample
-does not establish a general intelligence improvement.
 
 The native external-DSpark acceptance capture is a separate context-512,
 batch-12 boundary. The untouched Q6_K target-only control reached 32.249

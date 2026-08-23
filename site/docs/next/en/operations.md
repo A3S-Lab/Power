@@ -57,6 +57,7 @@ documented CUDA benchmark build command remains sufficient. Ordinary
 | `POST` | `/v1/completions` | Text completion and SSE streaming |
 | `POST` | `/v1/embeddings` | Embedding inference |
 | `GET` | `/v1/models` | Registered models |
+| `POST` | `/v1/models` | Register local weights and optional auxiliary artifacts |
 | `POST` | `/v1/models/pull` | Resumable ModelScope or Hugging Face pull |
 | `GET` | `/v1/attestation` | Nonce- and model-bound TEE evidence |
 | `GET` | `/metrics` | Prometheus metrics |
@@ -110,6 +111,12 @@ closed when a previously verified artifact is unavailable.
 
 The hosted model store is content-addressed under `~/.a3s/power` by default.
 Model aliases point to manifests rather than weakening blob identity.
+
+GGUF registration accepts typed `adapter`, `projector`, and `external_draft`
+locations. Power measures size and SHA-256 itself, verifies the exact bytes
+again before load, and binds the portable auxiliary-artifacts identity into
+attestation and request receipts. Strict TEE mode rejects legacy path-only
+adapter and projector references.
 
 ## Production boundaries
 

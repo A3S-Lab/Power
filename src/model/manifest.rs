@@ -1,8 +1,11 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{PowerError, Result};
+
+pub use super::artifact::AuxiliaryModelArtifact;
 pub use super::external_draft::{ExternalDraftArtifact, ExternalDraftKind};
 
 /// Describes a locally stored model and its metadata.
@@ -49,17 +52,31 @@ pub struct ModelManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
 
-    /// LoRA/QLoRA adapter path (from Modelfile ADAPTER directive)
+    /// Legacy path-only LoRA/QLoRA adapter reference.
+    ///
+    /// Strict TEE deployments reject this field unless `adapter_artifact`
+    /// provides a matching content identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter_path: Option<String>,
+
+    /// Content-addressed LoRA/QLoRA adapter used by inference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter_artifact: Option<AuxiliaryModelArtifact>,
 
     /// Optional content-addressed external speculative-draft model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_draft: Option<ExternalDraftArtifact>,
 
-    /// Multimodal projector path (for vision models like llava)
+    /// Legacy path-only multimodal projector reference.
+    ///
+    /// Strict TEE deployments reject this field unless `projector_artifact`
+    /// provides a matching content identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projector_path: Option<String>,
+
+    /// Content-addressed multimodal projector used by inference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projector_artifact: Option<AuxiliaryModelArtifact>,
 
     /// Pre-seeded conversation messages (from Modelfile MESSAGE directive)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -130,6 +147,91 @@ pub struct ModelParameters {
 }
 
 impl ModelManifest {
+    /// Validate path/content-identity pairs for every auxiliary inference artifact.
+    ///
+    /// `require_content_addressed` rejects legacy path-only adapter and projector
+    /// references. External speculative drafts are always content-addressed.
+    pub fn validate_auxiliary_artifact_bindings(
+        &self,
+        require_content_addressed: bool,
+    ) -> Result<()> {
+        validate_auxiliary_artifact_binding(
+            "LoRA adapter",
+            self.adapter_path.as_deref(),
+            self.adapter_artifact.as_ref(),
+            require_content_addressed,
+        )?;
+        validate_auxiliary_artifact_binding(
+            "multimodal projector",
+            self.projector_path.as_deref(),
+            self.projector_artifact.as_ref(),
+            require_content_addressed,
+        )?;
+        if let Some(draft) = &self.external_draft {
+            draft
+                .validate_for_target(&self.sha256)
+                .map_err(PowerError::Config)?;
+        }
+        Ok(())
+    }
+
+    /// Verify every declared content-addressed auxiliary artifact on disk.
+    pub fn verify_auxiliary_artifacts(&self, require_content_addressed: bool) -> Result<()> {
+        self.verify_adapter_and_projector_artifacts(require_content_addressed)?;
+        if let Some(draft) = &self.external_draft {
+            draft.verify_for_target_file(&self.path, self.size, &self.sha256)?;
+        }
+        Ok(())
+    }
+
+    /// Verify auxiliaries after the caller has already re-hashed the target.
+    pub fn verify_auxiliary_artifacts_for_verified_target(
+        &self,
+        verified_target_sha256: &str,
+        require_content_addressed: bool,
+    ) -> Result<()> {
+        self.verify_adapter_and_projector_artifacts(require_content_addressed)?;
+        if let Some(draft) = &self.external_draft {
+            draft.verify_for_verified_target_sha256(verified_target_sha256)?;
+        }
+        Ok(())
+    }
+
+    /// Verify adapter and projector bytes without re-reading an external draft.
+    pub fn verify_adapter_and_projector_artifacts(
+        &self,
+        require_content_addressed: bool,
+    ) -> Result<()> {
+        self.validate_auxiliary_artifact_bindings(require_content_addressed)?;
+        if let Some(adapter) = &self.adapter_artifact {
+            adapter.verify("LoRA adapter")?;
+        }
+        if let Some(projector) = &self.projector_artifact {
+            projector.verify("Multimodal projector")?;
+        }
+        Ok(())
+    }
+
+    /// Resolve the adapter path after checking legacy/content-addressed agreement.
+    pub fn resolved_adapter_path(&self) -> Result<Option<&Path>> {
+        self.validate_auxiliary_artifact_bindings(false)?;
+        Ok(self
+            .adapter_artifact
+            .as_ref()
+            .map(|artifact| artifact.path.as_path())
+            .or_else(|| self.adapter_path.as_deref().map(Path::new)))
+    }
+
+    /// Resolve the projector path after checking legacy/content-addressed agreement.
+    pub fn resolved_projector_path(&self) -> Result<Option<&Path>> {
+        self.validate_auxiliary_artifact_bindings(false)?;
+        Ok(self
+            .projector_artifact
+            .as_ref()
+            .map(|artifact| artifact.path.as_path())
+            .or_else(|| self.projector_path.as_deref().map(Path::new)))
+    }
+
     /// Build a manifest for a remote (proxied) model. The upstream URL lives in
     /// `PowerConfig::proxy_upstreams`; this carries no local weights.
     pub fn remote(name: &str) -> Self {
@@ -147,8 +249,10 @@ impl ModelManifest {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            adapter_artifact: None,
             external_draft: None,
             projector_path: None,
+            projector_artifact: None,
             messages: Vec::new(),
             family: None,
             families: None,
@@ -180,6 +284,38 @@ impl ModelManifest {
     }
 }
 
+fn validate_auxiliary_artifact_binding(
+    label: &str,
+    legacy_path: Option<&str>,
+    artifact: Option<&AuxiliaryModelArtifact>,
+    require_content_addressed: bool,
+) -> Result<()> {
+    if let Some(path) = legacy_path {
+        if path.trim().is_empty() {
+            return Err(PowerError::Config(format!(
+                "{label} path must not be empty"
+            )));
+        }
+    }
+    if let Some(artifact) = artifact {
+        artifact.validate(label)?;
+        if let Some(legacy_path) = legacy_path {
+            if Path::new(legacy_path) != artifact.path {
+                return Err(PowerError::Config(format!(
+                    "{label} has conflicting paths: legacy path {} does not match content-addressed path {}",
+                    Path::new(legacy_path).display(),
+                    artifact.path.display()
+                )));
+            }
+        }
+    } else if require_content_addressed && legacy_path.is_some() {
+        return Err(PowerError::Config(format!(
+            "{label} requires a content-addressed artifact identity in strict TEE mode"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,8 +340,10 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            adapter_artifact: None,
             external_draft: None,
             projector_path: None,
+            projector_artifact: None,
             messages: vec![],
             family: None,
             families: None,
@@ -277,6 +415,11 @@ mod tests {
         manifest.template_override = Some("{{ .System }}".to_string());
         manifest.license = Some("MIT".to_string());
         manifest.adapter_path = Some("/tmp/adapter.bin".to_string());
+        manifest.adapter_artifact = Some(AuxiliaryModelArtifact {
+            path: PathBuf::from("/tmp/adapter.bin"),
+            size: 64,
+            sha256: "a".repeat(64),
+        });
         manifest.external_draft = Some(ExternalDraftArtifact {
             kind: ExternalDraftKind::Dspark,
             path: PathBuf::from("/tmp/dspark.gguf"),
@@ -288,6 +431,11 @@ mod tests {
             license: Some("Apache-2.0".to_string()),
         });
         manifest.projector_path = Some("/tmp/projector.bin".to_string());
+        manifest.projector_artifact = Some(AuxiliaryModelArtifact {
+            path: PathBuf::from("/tmp/projector.bin"),
+            size: 128,
+            sha256: "b".repeat(64),
+        });
         manifest.family = Some("llama".to_string());
         manifest.families = Some(vec!["llama".to_string(), "clip".to_string()]);
         manifest.messages = vec![
@@ -316,6 +464,7 @@ mod tests {
             deserialized.adapter_path.as_deref(),
             Some("/tmp/adapter.bin")
         );
+        assert_eq!(deserialized.adapter_artifact.as_ref().unwrap().size, 64);
         let external_draft = deserialized.external_draft.as_ref().unwrap();
         assert_eq!(external_draft.kind, ExternalDraftKind::Dspark);
         assert_eq!(external_draft.size, 1_104_594_816);
@@ -323,6 +472,7 @@ mod tests {
             deserialized.projector_path.as_deref(),
             Some("/tmp/projector.bin")
         );
+        assert_eq!(deserialized.projector_artifact.as_ref().unwrap().size, 128);
         assert_eq!(deserialized.family.as_deref(), Some("llama"));
         assert_eq!(deserialized.families.as_ref().unwrap().len(), 2);
         assert_eq!(deserialized.messages.len(), 2);
@@ -353,8 +503,62 @@ mod tests {
         assert!(!json.contains("template_override"));
         assert!(!json.contains("license"));
         assert!(!json.contains("adapter_path"));
+        assert!(!json.contains("adapter_artifact"));
         assert!(!json.contains("external_draft"));
         assert!(!json.contains("projector_path"));
+        assert!(!json.contains("projector_artifact"));
+    }
+
+    #[test]
+    fn auxiliary_artifact_binding_rejects_path_only_strict_manifests() {
+        let mut manifest = sample_manifest();
+        manifest.projector_path = Some("/tmp/mmproj.gguf".to_string());
+
+        let error = manifest
+            .validate_auxiliary_artifact_bindings(true)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("multimodal projector"));
+        assert!(error.to_string().contains("content-addressed"));
+    }
+
+    #[test]
+    fn auxiliary_artifact_binding_accepts_matching_content_identity() {
+        let mut manifest = sample_manifest();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mmproj.gguf");
+        manifest.projector_path = Some(path.display().to_string());
+        manifest.projector_artifact = Some(AuxiliaryModelArtifact {
+            path: path.clone(),
+            size: 42,
+            sha256: "a".repeat(64),
+        });
+
+        manifest.validate_auxiliary_artifact_bindings(true).unwrap();
+        assert_eq!(
+            manifest.resolved_projector_path().unwrap(),
+            Some(path.as_path())
+        );
+    }
+
+    #[test]
+    fn auxiliary_artifact_binding_rejects_conflicting_paths() {
+        let mut manifest = sample_manifest();
+        let directory = tempfile::tempdir().unwrap();
+        let legacy_path = directory.path().join("legacy.gguf");
+        let pinned_path = directory.path().join("pinned.gguf");
+        manifest.adapter_path = Some(legacy_path.display().to_string());
+        manifest.adapter_artifact = Some(AuxiliaryModelArtifact {
+            path: pinned_path,
+            size: 42,
+            sha256: "b".repeat(64),
+        });
+
+        let error = manifest
+            .validate_auxiliary_artifact_bindings(false)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("conflicting paths"));
     }
 
     #[test]

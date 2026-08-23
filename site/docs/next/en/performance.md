@@ -21,7 +21,12 @@ against the same input identities.
 
 ## Quality and speed by mode
 
-| Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
+The active gate tests only the unchanged Q6_K target. Q4 files are present only
+as auxiliary speculative proposers; they are not target-model quality results.
+Mixed-quantization and Q8 captures are historical research outside this
+acceptance table.
+
+| Qwen3.8-27B Q6_K target mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
 | Untouched Q6_K, paired DFlash2 calibration control | 9/12 lenient and strict in every repetition | 29.702 token/s mean | 35.380 token/s |
@@ -37,11 +42,6 @@ against the same input identities.
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact greedy parity on the fixed peak prompt | - | 147.0207 token/s |
 | Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x; 11 truncated) | **47.032 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x; 11 truncated) | 37.290 token/s | **176.6109 token/s** |
-| TBQ4 mixed, autoregressive | 70/100 lenient; 64/100 strict (100 tasks, 3x) | 38.724 token/s | - |
-| **TBQ4 mixed + full-vocabulary fixed MTP, K7/S7** | **76/100 lenient; 66/100 strict** (100 tasks, 3x) | **83.228 token/s** | **175.2089 token/s** |
-| TBQ4 mixed + full-vocabulary guarded MTP, K7/S6 | 5/12 lenient; 3/12 strict (12 tasks, 3x) | 54.060 token/s | **177.7165 token/s** |
-| TBQ4 mixed + MTP + prefix FR (historical) | 72/100 lenient; 60/100 strict (100 tasks, 3x) | 27.951 token/s | 184.3665 token/s |
-| UD-Q8_K_XL, heterogeneous MTP K4/S4 | Cross-mode output hashes differ; matrix not run | - | 9.7577 token/s |
 
 `Request-wide` includes prompt processing, generation, HTTP, and request
 overhead. `Steady decode` is a warmed-up, repetitive 1,024-token shape. A dash
@@ -164,11 +164,6 @@ This is one llama.cpp/CUDA integration, **not** a service floor or universal
 default. Power supplies finite-shape, scheduling, exact-fallback, and evidence
 contracts. Other backends and models must select their own shapes and kernels.
 
-The previous mixed-artifact boundary remains separate. Its rollback-complete
-K7/S7 profile reached 175.2089 token/s steady decode and 83.228 token/s on the
-repeated 100-task workload. That 19,187,686,464-byte artifact uses Q4_0 main
-FFN tensors, a Q6_K MTP block, and a Q4_K draft head.
-
 The current acceptance host is Windows 11 with an RTX 4090 and a 10-core,
 20-thread Intel Xeon w5-2445. Its `0x55555` affinity mask is topology-specific,
 not a portable product default.
@@ -201,24 +196,6 @@ This sample is still too small for a general-intelligence claim. Exact target
 verification proves that every committed token remains target-authoritative;
 it does not replace a representative quality evaluation.
 
-For the previous mixed-artifact K7/S7 profile, no regression was observed on
-the fixed repeated sample:
-
-- TBQ4 autoregressive scored 70/100 lenient and 64/100 strict.
-- Full-vocabulary K7/S7 scored 76/100 lenient and 66/100 strict.
-- All 900 requests completed without errors.
-- Every prediction was stable across three repetitions.
-- Proposal acceptance was 51.33%; replay and guard activation were both zero.
-
-These are fixed-task accuracy proxies, not general intelligence or IQ scores.
-The paired differences did not reach conventional statistical significance, so
-the result does not prove that MTP improves general model intelligence.
-
-The archived prefix-FR mode is useful negative evidence. Its steady peak was
-high, but mixed-workload acceptance fell to 25.55%, request-wide throughput fell
-to 27.951 token/s, and C-Eval acceptance was only 14.21%. Full-vocabulary K7/S7
-removes that draft-coverage bottleneck.
-
 ## Reproduce the boundary
 
 The dedicated [Reproduction page](./reproduction) provides copyable commands,
@@ -245,11 +222,9 @@ Use the repository's checked-in guide and raw evidence:
 - [Benchmark record and all mode interpretations](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
 - [Untouched-Q6_K boundary and dynamic-quantization analysis](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/PURE-Q6.md)
 - [Repeated 100-task quality protocol](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
-- [Current compact machine-readable evidence](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/full-vocabulary-s7-current-rtx4090-3x.json)
 - [Native DSpark Q4 reports and exact reproduction](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
 - [Q6_K-only DFlash2 evidence and exact reproduction](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
 - [Adaptive DSpark peak and paired-quality evidence](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/adaptive/evidence.json)
-- [UD-Q8_K_XL heterogeneous-placement boundary](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 Treat a replay on different silicon, driver, display load, clock policy, model
 bytes, or prompt as a new result rather than silently combining it with this

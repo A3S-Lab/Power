@@ -13,7 +13,11 @@ Power 只接受仍然保留执行契约的性能优化。因此，公开的 Qwen
 
 ## 各模式质量与速度
 
-| Qwen3.8-27B 制品与模式 | 固定任务质量代理 | 请求全程吞吐 | 稳态解码中位数 |
+当前验收只测试未改动的 Q6_K 目标模型。表中的 Q4 文件只作为外部推测解码
+proposal，不作为目标模型评分；混合量化和 Q8 记录属于历史研究，不进入当前
+验收表。
+
+| Qwen3.8-27B Q6_K 目标模式 | 固定任务质量代理 | 请求全程吞吐 | 稳态解码中位数 |
 | --- | --- | ---: | ---: |
 | 原始 Q6_K，自回归 | 宽松 67/100；严格 60/100（100 题，重复 3 次） | 30.883 token/s | 35.5793 token/s（较早记录） |
 | 原始 Q6_K，DFlash2 配对校准对照 | 每轮都是宽松 9/12、严格 9/12 | 29.702 token/s（均值） | 35.380 token/s |
@@ -29,11 +33,6 @@ Power 只接受仍然保留执行契约的性能优化。因此，公开的 Qwen
 | 原始 Q6_K，全词表 MTP，K7/S7 | 固定峰值提示词下与 greedy 输出完全一致 | - | 147.0207 token/s |
 | 原始 Q6_K，全词表 MTP，K7/S6 | 宽松 5/12；严格 3/12（1 轮；11 题截断） | **47.032 token/s** | - |
 | **原始 Q6_K + 前缀 FR8192 MTP，K7/S6** | 宽松 4/12；严格 3/12（1 轮；11 题截断） | 37.290 token/s | **176.6109 token/s** |
-| TBQ4 混合制品，自回归 | 宽松 70/100；严格 64/100（100 题，重复 3 次） | 38.724 token/s | - |
-| **TBQ4 混合制品 + 全词表固定 MTP，K7/S7** | **宽松 76/100；严格 66/100**（100 题，重复 3 次） | **83.228 token/s** | **175.2089 token/s** |
-| TBQ4 混合制品 + 全词表防护 MTP，K7/S6 | 宽松 5/12；严格 3/12（12 题，重复 3 次） | 54.060 token/s | **177.7165 token/s** |
-| TBQ4 混合制品 + MTP + 前缀 FR（历史模式） | 宽松 72/100；严格 60/100（100 题，重复 3 次） | 27.951 token/s | 184.3665 token/s |
-| UD-Q8_K_XL，异构 MTP K4/S4 | 跨模式输出哈希不同；未运行完整矩阵 | - | 9.7577 token/s |
 
 “请求全程”包含提示词处理、生成、HTTP 和请求开销；“稳态解码”是预热后的重复 1,024-token 工作形状。短横线表示没有可辩护的同口径记录。
 
@@ -85,8 +84,6 @@ DFlash v1 不包含在上述数字中。它与 DSpark 使用不同的制品契�
 
 这套结论属于一个 llama.cpp/CUDA 集成，**不是服务下限，也不是通用默认值**。Power 提供的是有限形状、调度、精确回退和证据契约；其他后端与模型必须重新选择自己的形状和内核。
 
-此前的混合制品边界仍单独保留：完整回滚的 K7/S7 稳态解码为 175.2089 token/s，重复 100 题负载为 83.228 token/s。该 19,187,686,464 字节制品的主 FFN 使用 Q4_0，MTP block 使用 Q6_K，draft head 使用 Q4_K。
-
 当前验收主机为 Windows 11、RTX 4090 与 10 核 20 线程 Intel Xeon w5-2445。`0x55555` 亲和性掩码与该机器拓扑绑定，不是可移植的产品默认值。
 
 ## 智力水平下降了吗？
@@ -100,18 +97,6 @@ DFlash2 校准中两种模式同样都是 9/12，提取答案 12/12 一致，但
 等价或逐字无损。
 
 这个样本仍不足以判断通用智力。目标模型精确校验能证明每个提交 token 由目标模型裁决，但不能取代代表性质量测试。
-
-此前的混合制品 K7/S7 配置在固定重复样本上没有观察到回归：
-
-- TBQ4 自回归：宽松 70/100，严格 64/100；
-- 全词表 K7/S7：宽松 76/100，严格 66/100；
-- 900 个请求全部完成，零错误；
-- 每个预测在三次重复中完全稳定；
-- proposal 接受率 51.33%，重放与防护触发均为零。
-
-这些是固定任务准确率代理，不是通用智能或 IQ 分数。配对差异没有达到常见统计显著性，因此不能据此证明 MTP 提升了模型的一般智力。
-
-已归档的前缀 FR 模式提供了重要反例：稳态峰值很高，但混合负载接受率降至 25.55%，请求全程吞吐降至 27.951 token/s，C-Eval 接受率仅 14.21%。全词表 K7/S7 消除了该 draft 覆盖瓶颈。
 
 <span id="reproduce-the-boundary"></span>
 
@@ -132,10 +117,8 @@ DFlash2 校准中两种模式同样都是 9/12，提取答案 12/12 一致，但
 - [基准记录与所有模式解读](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
 - [原始 Q6_K 边界与动态量化分析](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/PURE-Q6.md)
 - [100 题重复质量协议](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
-- [当前紧凑机器可读证据](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/full-vocabulary-s7-current-rtx4090-3x.json)
 - [DSpark 峰值、质量证据与精确复现](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
 - [只使用 Q6_K 目标的 DFlash2 证据与精确复现](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
 - [自适应 DSpark 峰值与配对质量证据](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/adaptive/evidence.json)
-- [UD-Q8_K_XL 异构放置边界](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 更换芯片、驱动、显示负载、时钟策略、模型字节或提示词后，应将结果视为一次新实验，不能静默合并进本次验收记录。

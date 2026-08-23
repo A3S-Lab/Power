@@ -85,6 +85,7 @@ fn report_for(declaration: &AcceleratorResidencyDeclaration) -> AttestationRepor
         .with_runtime(
             RuntimePolicyClaim::new().with_execution(ExecutionPolicyClaim {
                 gpu_sha256: hex::decode(&declaration.execution_policy_sha256).unwrap(),
+                auxiliary_artifacts_sha256: None,
             }),
         );
     let report_data = build_claims_report_data(&claims).unwrap();
@@ -137,6 +138,7 @@ fn verify_options<'a>(
         expected_gpu_execution_digest: Some(
             hex::decode(&declaration.execution_policy_sha256).unwrap(),
         ),
+        expected_auxiliary_artifacts_digest: None,
         hardware_verifier: Some(verifier),
     }
 }

@@ -106,6 +106,19 @@ confidence tensors; DFlash2 requires its complete selector and per-layer
 convolution stack. DSpark-only tensors under a DFlash declaration, or DFlash2
 tensors declared as DFlash v1, are errors rather than low-acceptance fallbacks.
 
+The draft identity also joins the canonical auxiliary-artifacts digest used by
+model-bound attestation and request receipts. The digest binds the declared
+decoder contract, draft size and SHA-256, and target SHA-256 without binding a
+host-local path. A strict client prints the expected value from the exported
+manifest and pins it during report verification:
+
+```bash
+a3s-power-verify --print-auxiliary-artifacts-digest model-manifest.json
+a3s-power-verify --file report.json \
+  --auxiliary-artifacts-digest <printed-sha256> \
+  --expected-measurement <launch-measurement-hex>
+```
+
 ## Prefix-cache composition
 
 Prompt-prefix caching reduces repeated prefill; it is not a speculative

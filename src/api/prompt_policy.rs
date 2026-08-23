@@ -24,6 +24,7 @@ pub(crate) fn runtime_policy_claim_with_gpu_config(
     if let Some(gpu) = gpu {
         runtime = runtime.with_execution(ExecutionPolicyClaim {
             gpu_sha256: canonical_gpu_execution_digest(gpu)?,
+            auxiliary_artifacts_sha256: canonical_auxiliary_artifacts_digest(manifest)?,
         });
     }
 
@@ -138,6 +139,100 @@ pub fn canonical_gpu_execution_digest(gpu: &GpuConfig) -> Result<Vec<u8>> {
     Ok(sha256_bytes(&bytes))
 }
 
+/// Return the portable digest of every content-addressed auxiliary inference
+/// artifact declared by a model manifest.
+///
+/// Paths are deliberately excluded because they are host-local locators. The
+/// role, decoder contract, byte length, and SHA-256 identity are bound. Legacy
+/// path-only adapter/projector manifests return `None`; strict TEE startup
+/// rejects those manifests before inference.
+pub fn canonical_auxiliary_artifacts_digest(manifest: &ModelManifest) -> Result<Option<Vec<u8>>> {
+    manifest.validate_auxiliary_artifact_bindings(false)?;
+    if (manifest.adapter_path.is_some() && manifest.adapter_artifact.is_none())
+        || (manifest.projector_path.is_some() && manifest.projector_artifact.is_none())
+    {
+        return Ok(None);
+    }
+
+    let mut records = Vec::new();
+    if let Some(draft) = &manifest.external_draft {
+        draft
+            .validate_for_target(&manifest.sha256)
+            .map_err(PowerError::Config)?;
+        records.push(AuxiliaryArtifactDigestRecord {
+            role: "external-draft",
+            contract: Some(draft.kind.as_str()),
+            size: draft.size,
+            sha256: draft.sha256.as_str(),
+            target_sha256: Some(draft.target_sha256.as_str()),
+        });
+    }
+    if let Some(adapter) = &manifest.adapter_artifact {
+        adapter.validate("LoRA adapter")?;
+        records.push(AuxiliaryArtifactDigestRecord {
+            role: "lora-adapter",
+            contract: None,
+            size: adapter.size,
+            sha256: adapter.sha256.as_str(),
+            target_sha256: None,
+        });
+    }
+    if let Some(projector) = &manifest.projector_artifact {
+        projector.validate("Multimodal projector")?;
+        records.push(AuxiliaryArtifactDigestRecord {
+            role: "multimodal-projector",
+            contract: None,
+            size: projector.size,
+            sha256: projector.sha256.as_str(),
+            target_sha256: None,
+        });
+    }
+    if records.is_empty() {
+        return Ok(None);
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"a3s.power.auxiliary-artifacts.v1\0");
+    hasher.update((records.len() as u64).to_le_bytes());
+    for record in records {
+        update_length_prefixed(&mut hasher, record.role.as_bytes());
+        update_length_prefixed(&mut hasher, record.contract.unwrap_or_default().as_bytes());
+        hasher.update(record.size.to_le_bytes());
+        let sha256 = hex::decode(record.sha256).map_err(|error| {
+            PowerError::Config(format!(
+                "{} sha256 is not valid hexadecimal: {error}",
+                record.role
+            ))
+        })?;
+        update_length_prefixed(&mut hasher, &sha256);
+        let target_sha256 = record
+            .target_sha256
+            .map(hex::decode)
+            .transpose()
+            .map_err(|error| {
+                PowerError::Config(format!(
+                    "{} target sha256 is not valid hexadecimal: {error}",
+                    record.role
+                ))
+            })?;
+        update_length_prefixed(&mut hasher, target_sha256.as_deref().unwrap_or_default());
+    }
+    Ok(Some(hasher.finalize().to_vec()))
+}
+
+struct AuxiliaryArtifactDigestRecord<'a> {
+    role: &'static str,
+    contract: Option<&'static str>,
+    size: u64,
+    sha256: &'a str,
+    target_sha256: Option<&'a str>,
+}
+
+fn update_length_prefixed(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
 fn canonical_f32(value: f32, index: usize) -> Result<serde_json::Value> {
     if !value.is_finite() {
         return Err(PowerError::Config(format!(
@@ -179,8 +274,10 @@ mod tests {
             modelfile_content: None,
             license: None,
             adapter_path: None,
+            adapter_artifact: None,
             external_draft: None,
             projector_path: None,
+            projector_artifact: None,
             messages: Vec::new(),
             family: None,
             families: None,
@@ -309,6 +406,98 @@ mod tests {
         assert_ne!(
             canonical_gpu_execution_digest(&base).unwrap(),
             canonical_gpu_execution_digest(&placed).unwrap()
+        );
+    }
+
+    #[test]
+    fn auxiliary_artifact_digest_is_portable_and_content_sensitive() {
+        let first_directory = tempfile::tempdir().unwrap();
+        let second_directory = tempfile::tempdir().unwrap();
+        let mut first = manifest();
+        let first_path = first_directory.path().join("projector.gguf");
+        first.projector_path = Some(first_path.display().to_string());
+        first.projector_artifact = Some(crate::model::artifact::AuxiliaryModelArtifact {
+            path: first_path,
+            size: 128,
+            sha256: "ab".repeat(32),
+        });
+        let mut relocated = first.clone();
+        let relocated_path = second_directory.path().join("projector.gguf");
+        relocated.projector_path = Some(relocated_path.display().to_string());
+        relocated.projector_artifact.as_mut().unwrap().path = relocated_path;
+        let mut replaced = first.clone();
+        replaced.projector_artifact.as_mut().unwrap().sha256 = "cd".repeat(32);
+
+        let first_digest = canonical_auxiliary_artifacts_digest(&first)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            first_digest,
+            canonical_auxiliary_artifacts_digest(&relocated)
+                .unwrap()
+                .unwrap()
+        );
+        assert_ne!(
+            first_digest,
+            canonical_auxiliary_artifacts_digest(&replaced)
+                .unwrap()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn auxiliary_artifact_digest_binds_external_draft_contract() {
+        let mut dflash = manifest();
+        dflash.sha256 = "11".repeat(32);
+        dflash.external_draft = Some(crate::model::manifest::ExternalDraftArtifact {
+            kind: crate::model::manifest::ExternalDraftKind::Dflash,
+            path: PathBuf::from("draft.gguf"),
+            size: 256,
+            sha256: "22".repeat(32),
+            target_sha256: dflash.sha256.clone(),
+            source: None,
+            revision: None,
+            license: None,
+        });
+        let mut dflash2 = dflash.clone();
+        dflash2.external_draft.as_mut().unwrap().kind =
+            crate::model::manifest::ExternalDraftKind::Dflash2;
+
+        assert_ne!(
+            canonical_auxiliary_artifacts_digest(&dflash).unwrap(),
+            canonical_auxiliary_artifacts_digest(&dflash2).unwrap()
+        );
+    }
+
+    #[test]
+    fn legacy_path_only_auxiliary_artifact_has_no_attestable_digest() {
+        let mut legacy = manifest();
+        legacy.projector_path = Some("projector.gguf".to_string());
+
+        assert!(canonical_auxiliary_artifacts_digest(&legacy)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn runtime_policy_includes_auxiliary_artifact_digest() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut model = manifest();
+        model.adapter_artifact = Some(crate::model::artifact::AuxiliaryModelArtifact {
+            path: directory.path().join("adapter.gguf"),
+            size: 64,
+            sha256: "ef".repeat(32),
+        });
+        let gpu = GpuConfig::default();
+
+        let runtime = runtime_policy_claim_with_gpu_config(&model, Some(&gpu))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            runtime.execution.unwrap().auxiliary_artifacts_sha256,
+            canonical_auxiliary_artifacts_digest(&model).unwrap()
         );
     }
 }

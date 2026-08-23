@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{PowerError, Result};
 
+use super::artifact::{validate_sha256, verify_regular_file_identity};
 use super::gguf::{self, GgufMetadata, GgufValue};
 
 /// Decoder contract implemented by an external GGUF draft artifact.
@@ -153,7 +154,18 @@ impl ExternalDraftArtifact {
                     .to_string(),
             ));
         }
-        verify_regular_file_identity("Target model", target_path, target_size, target_sha256)?;
+        let verified_target_sha256 =
+            verify_regular_file_identity("Target model", target_path, target_size, target_sha256)?;
+        self.verify_for_verified_target_sha256(&verified_target_sha256)
+    }
+
+    /// Verify the draft after the caller has already re-hashed the target.
+    pub(crate) fn verify_for_verified_target_sha256(
+        &self,
+        verified_target_sha256: &str,
+    ) -> Result<VerifiedExternalDraft> {
+        self.validate_for_target(verified_target_sha256)
+            .map_err(PowerError::Config)?;
         let actual_sha256 =
             verify_regular_file_identity("External draft", &self.path, self.size, &self.sha256)?;
         let gguf = gguf::read_metadata(&self.path)?;
@@ -164,47 +176,9 @@ impl ExternalDraftArtifact {
             path: self.path.clone(),
             size: self.size,
             sha256: actual_sha256,
-            target_sha256: target_sha256.to_ascii_lowercase(),
+            target_sha256: verified_target_sha256.to_ascii_lowercase(),
         })
     }
-}
-
-fn verify_regular_file_identity(
-    label: &str,
-    path: &Path,
-    expected_size: u64,
-    expected_sha256: &str,
-) -> Result<String> {
-    let metadata = std::fs::metadata(path).map_err(|error| {
-        PowerError::Config(format!(
-            "Failed to inspect {label} {}: {error}",
-            path.display()
-        ))
-    })?;
-    if !metadata.is_file() {
-        return Err(PowerError::Config(format!(
-            "{label} is not a regular file: {}",
-            path.display()
-        )));
-    }
-    if metadata.len() != expected_size {
-        return Err(PowerError::Config(format!(
-            "{label} size mismatch for {}: expected {}, found {}",
-            path.display(),
-            expected_size,
-            metadata.len()
-        )));
-    }
-    let actual_sha256 = super::storage::compute_sha256_file(path)?;
-    if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
-        return Err(PowerError::Config(format!(
-            "{label} SHA-256 mismatch for {}: expected {}, found {}",
-            path.display(),
-            expected_sha256.to_ascii_lowercase(),
-            actual_sha256
-        )));
-    }
-    Ok(actual_sha256)
 }
 
 /// Immutable external-draft identity after disk and GGUF verification.
@@ -215,15 +189,6 @@ pub struct VerifiedExternalDraft {
     pub size: u64,
     pub sha256: String,
     pub target_sha256: String,
-}
-
-fn validate_sha256(label: &str, value: &str) -> std::result::Result<(), String> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!(
-            "{label} must contain exactly 64 hexadecimal characters"
-        ));
-    }
-    Ok(())
 }
 
 fn validate_gguf_contract(kind: ExternalDraftKind, gguf: &GgufMetadata, path: &Path) -> Result<()> {

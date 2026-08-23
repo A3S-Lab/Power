@@ -72,6 +72,7 @@
 //!     expected_chat_template_digest: None,
 //!     expected_decoding_parameters_digest: None,
 //!     expected_gpu_execution_digest: None,
+//!     expected_auxiliary_artifacts_digest: None,
 //!     hardware_verifier: None,
 //! };
 //!
@@ -144,6 +145,9 @@ pub struct VerifyOptions<'a> {
 
     /// Expected SHA-256 digest of canonical GPU execution parameters.
     pub expected_gpu_execution_digest: Option<Vec<u8>>,
+
+    /// Expected SHA-256 digest of canonical auxiliary inference artifact identities.
+    pub expected_auxiliary_artifacts_digest: Option<Vec<u8>>,
 
     /// Optional hardware signature verifier. When `None`, hardware signature
     /// verification is skipped (offline mode).
@@ -314,6 +318,8 @@ pub struct VerificationPolicy {
     pub require_runtime_policy: bool,
     /// Require a pinned GPU execution/offload digest in the runtime policy.
     pub require_gpu_execution_policy: bool,
+    /// Require verifier pinning whenever the runtime declares auxiliary artifacts.
+    pub require_auxiliary_artifact_policy: bool,
 }
 
 impl VerificationPolicy {
@@ -336,6 +342,7 @@ impl VerificationPolicy {
             require_gpu_device_identity_pins: false,
             require_runtime_policy: false,
             require_gpu_execution_policy: false,
+            require_auxiliary_artifact_policy: false,
         }
     }
 
@@ -360,6 +367,7 @@ impl VerificationPolicy {
             require_gpu_device_identity_pins: false,
             require_runtime_policy: false,
             require_gpu_execution_policy: false,
+            require_auxiliary_artifact_policy: true,
         }
     }
 
@@ -437,6 +445,12 @@ impl VerificationPolicy {
     pub const fn require_gpu_execution_policy(mut self) -> Self {
         self.require_gpu_execution_policy = true;
         self.require_runtime_policy = true;
+        self.require_claims = true;
+        self
+    }
+
+    pub const fn require_auxiliary_artifact_policy(mut self) -> Self {
+        self.require_auxiliary_artifact_policy = true;
         self.require_claims = true;
         self
     }
@@ -657,6 +671,7 @@ pub fn verify_report_with_policy(
     if opts.expected_chat_template_digest.is_some()
         || opts.expected_decoding_parameters_digest.is_some()
         || opts.expected_gpu_execution_digest.is_some()
+        || opts.expected_auxiliary_artifacts_digest.is_some()
     {
         let claims = report.claims.as_ref().ok_or_else(|| {
             PowerError::AttestationVerificationFailed(
@@ -668,6 +683,7 @@ pub fn verify_report_with_policy(
             opts.expected_chat_template_digest.as_deref(),
             opts.expected_decoding_parameters_digest.as_deref(),
             opts.expected_gpu_execution_digest.as_deref(),
+            opts.expected_auxiliary_artifacts_digest.as_deref(),
         )?;
         result.runtime_policy_verified = true;
     }
@@ -859,6 +875,23 @@ fn validate_required_inputs(
         ));
     }
 
+    if policy.require_auxiliary_artifact_policy {
+        let claimed_auxiliary_artifacts = report
+            .claims
+            .as_ref()
+            .and_then(|claims| claims.runtime.as_ref())
+            .and_then(|runtime| runtime.execution.as_ref())
+            .and_then(|execution| execution.auxiliary_artifacts_sha256.as_ref());
+        if claimed_auxiliary_artifacts.is_some()
+            && opts.expected_auxiliary_artifacts_digest.is_none()
+        {
+            return Err(PowerError::AttestationVerificationFailed(
+                "strict verification requires an expected auxiliary-artifacts digest when the runtime declares auxiliary inference artifacts"
+                    .to_string(),
+            ));
+        }
+    }
+
     if policy.require_runtime_policy {
         let claims = report.claims.as_ref().ok_or_else(|| {
             PowerError::AttestationVerificationFailed(
@@ -873,9 +906,10 @@ fn validate_required_inputs(
         if opts.expected_chat_template_digest.is_none()
             && opts.expected_decoding_parameters_digest.is_none()
             && opts.expected_gpu_execution_digest.is_none()
+            && opts.expected_auxiliary_artifacts_digest.is_none()
         {
             return Err(PowerError::AttestationVerificationFailed(
-                "runtime policy verification requires an expected chat template, decoding parameter, or GPU execution digest"
+                "runtime policy verification requires an expected chat template, decoding parameter, GPU execution, or auxiliary-artifacts digest"
                     .to_string(),
             ));
         }
@@ -1655,6 +1689,7 @@ pub fn verify_claims_runtime_policy_binding(
     expected_chat_template_digest: Option<&[u8]>,
     expected_decoding_parameters_digest: Option<&[u8]>,
     expected_gpu_execution_digest: Option<&[u8]>,
+    expected_auxiliary_artifacts_digest: Option<&[u8]>,
 ) -> Result<()> {
     require_optional_sha256_digest_bytes(
         "expected chat template digest",
@@ -1667,6 +1702,10 @@ pub fn verify_claims_runtime_policy_binding(
     require_optional_sha256_digest_bytes(
         "expected GPU execution digest",
         expected_gpu_execution_digest,
+    )?;
+    require_optional_sha256_digest_bytes(
+        "expected auxiliary-artifacts digest",
+        expected_auxiliary_artifacts_digest,
     )?;
     verify_claims_schema(claims)?;
 
@@ -1722,6 +1761,30 @@ pub fn verify_claims_runtime_policy_binding(
             return Err(PowerError::AttestationVerificationFailed(format!(
                 "GPU execution digest mismatch: claims.runtime.execution.gpu_sha256 = {}, expected {}",
                 hex::encode(&execution.gpu_sha256),
+                hex::encode(expected),
+            )));
+        }
+    }
+
+    if let Some(expected) = expected_auxiliary_artifacts_digest {
+        let execution = runtime.execution.as_ref().ok_or_else(|| {
+            PowerError::AttestationVerificationFailed(
+                "v2 runtime policy claim does not include execution policy".to_string(),
+            )
+        })?;
+        let actual = execution
+            .auxiliary_artifacts_sha256
+            .as_ref()
+            .ok_or_else(|| {
+                PowerError::AttestationVerificationFailed(
+                    "v2 execution policy claim does not include an auxiliary-artifacts digest"
+                        .to_string(),
+                )
+            })?;
+        if !constant_time_eq(actual, expected) {
+            return Err(PowerError::AttestationVerificationFailed(format!(
+                "Auxiliary-artifacts digest mismatch: claims.runtime.execution.auxiliary_artifacts_sha256 = {}, expected {}",
+                hex::encode(actual),
                 hex::encode(expected),
             )));
         }
@@ -1983,6 +2046,10 @@ fn verify_runtime_policy_well_formed(
         require_sha256_digest_bytes(
             &format!("{field_prefix}.execution.gpu_sha256"),
             &execution.gpu_sha256,
+        )?;
+        require_optional_sha256_digest_bytes(
+            &format!("{field_prefix}.execution.auxiliary_artifacts_sha256"),
+            execution.auxiliary_artifacts_sha256.as_deref(),
         )?;
         has_policy_digest = true;
     }
@@ -2749,6 +2816,22 @@ mod tests {
     ) -> (AttestationReport, AttestationClaimsV2) {
         let runtime = RuntimePolicyClaim::new().with_execution(ExecutionPolicyClaim {
             gpu_sha256: gpu_execution_digest,
+            auxiliary_artifacts_sha256: None,
+        });
+        let claims = AttestationClaimsV2::new(TeeType::SevSnp).with_runtime(runtime);
+        let report_data = build_claims_report_data(&claims).unwrap();
+        let mut report = make_report(report_data, vec![0x03; 48]);
+        report.tee_type = TeeType::SevSnp;
+        report.claims = Some(claims.clone());
+        (report, claims)
+    }
+
+    fn make_runtime_auxiliary_claims_report(
+        auxiliary_artifacts_digest: Vec<u8>,
+    ) -> (AttestationReport, AttestationClaimsV2) {
+        let runtime = RuntimePolicyClaim::new().with_execution(ExecutionPolicyClaim {
+            gpu_sha256: vec![0x55; 32],
+            auxiliary_artifacts_sha256: Some(auxiliary_artifacts_digest),
         });
         let claims = AttestationClaimsV2::new(TeeType::SevSnp).with_runtime(runtime);
         let report_data = build_claims_report_data(&claims).unwrap();
@@ -3173,6 +3256,7 @@ mod tests {
         let receipt = make_receipt_with_runtime_policy(RuntimePolicyClaim::new().with_execution(
             ExecutionPolicyClaim {
                 gpu_sha256: vec![0x55; 31],
+                auxiliary_artifacts_sha256: None,
             },
         ));
 
@@ -3181,6 +3265,22 @@ mod tests {
         assert!(err
             .to_string()
             .contains("receipt.runtime_policy.execution.gpu_sha256"));
+    }
+
+    #[test]
+    fn test_verify_receipt_well_formed_rejects_short_auxiliary_artifact_digest() {
+        let receipt = make_receipt_with_runtime_policy(RuntimePolicyClaim::new().with_execution(
+            ExecutionPolicyClaim {
+                gpu_sha256: vec![0x55; 32],
+                auxiliary_artifacts_sha256: Some(vec![0x66; 31]),
+            },
+        ));
+
+        let error = verify_receipt_well_formed(&receipt).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("receipt.runtime_policy.execution.auxiliary_artifacts_sha256"));
     }
 
     #[test]
@@ -4183,6 +4283,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -4208,6 +4309,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
         let result = verify_report(&report, &opts).unwrap();
@@ -4235,6 +4337,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
         assert!(verify_report(&report, &opts).is_err());
@@ -4262,10 +4365,46 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: Some(&verifier),
         };
         let result = verify_report(&report, &opts).unwrap();
         assert!(result.hardware_verified);
+    }
+
+    #[test]
+    fn test_strict_verification_requires_pin_for_claimed_auxiliary_artifacts() {
+        struct AlwaysOk;
+        impl HardwareVerifier for AlwaysOk {
+            fn verify_hardware_signature(&self, _report: &AttestationReport) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let (report, _) = make_runtime_auxiliary_claims_report(vec![0x66; 32]);
+        let report = with_sev_snp_raw(report);
+        let verifier = AlwaysOk;
+        let opts = VerifyOptions {
+            nonce: None,
+            expected_model_hash: None,
+            expected_measurement: Some(report.measurement.clone()),
+            expected_gpu_evidence_digest: None,
+            expected_gpu_verdict_digest: None,
+            expected_gpu_evidence: None,
+            expected_gpu_devices: None,
+            expected_chat_template_digest: None,
+            expected_decoding_parameters_digest: None,
+            expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
+            hardware_verifier: Some(&verifier),
+        };
+
+        let error =
+            verify_report_with_policy(&report, &opts, VerificationPolicy::strict()).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("requires an expected auxiliary-artifacts digest"));
     }
 
     #[test]
@@ -4295,6 +4434,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: Some(&verifier),
         };
 
@@ -4327,6 +4467,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: Some(&verifier),
         };
         let err = verify_report(&report, &opts).unwrap_err();
@@ -4347,6 +4488,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -4378,6 +4520,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: Some(&verifier),
         };
 
@@ -4410,6 +4553,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: Some(&verifier),
         };
 
@@ -4442,6 +4586,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: Some(&verifier),
         };
 
@@ -4480,6 +4625,7 @@ mod tests {
         claims.runtime = Some(
             RuntimePolicyClaim::new().with_execution(ExecutionPolicyClaim {
                 gpu_sha256: execution_digest.clone(),
+                auxiliary_artifacts_sha256: None,
             }),
         );
         report.report_data = build_claims_report_data(&claims).unwrap();
@@ -4497,6 +4643,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: Some(execution_digest),
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: Some(&verifier),
         };
 
@@ -4549,6 +4696,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: Some(vec![0x55; 32]),
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -4581,6 +4729,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: Some(vec![0x55; 32]),
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -4614,6 +4763,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: Some(vec![0x55; 32]),
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -4644,6 +4794,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: Some(vec![0x55; 32]),
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -4674,6 +4825,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -4704,6 +4856,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: Some(vec![0x55; 32]),
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -4734,6 +4887,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -4953,6 +5107,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -4998,6 +5153,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -5174,6 +5330,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -5533,6 +5690,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -5560,6 +5718,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -5589,6 +5748,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -5619,6 +5779,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -5643,6 +5804,7 @@ mod tests {
             expected_chat_template_digest: None,
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -5670,6 +5832,7 @@ mod tests {
             Some(&chat_template_digest),
             Some(&decoding_digest),
             None,
+            None,
         )
         .unwrap();
     }
@@ -5678,8 +5841,9 @@ mod tests {
     fn test_verify_claims_runtime_policy_binding_fails_on_mismatch() {
         let (_, claims) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 32]);
 
-        let err = verify_claims_runtime_policy_binding(&claims, Some(&[0x99; 32]), None, None)
-            .unwrap_err();
+        let err =
+            verify_claims_runtime_policy_binding(&claims, Some(&[0x99; 32]), None, None, None)
+                .unwrap_err();
         assert!(err.to_string().contains("Chat template digest mismatch"));
     }
 
@@ -5688,8 +5852,9 @@ mod tests {
         let (_, mut claims) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 32]);
         claims.schema = "a3s.power.attestation.v1".to_string();
 
-        let err = verify_claims_runtime_policy_binding(&claims, Some(&[0x33; 32]), None, None)
-            .unwrap_err();
+        let err =
+            verify_claims_runtime_policy_binding(&claims, Some(&[0x33; 32]), None, None, None)
+                .unwrap_err();
 
         assert!(err.to_string().contains("claims schema mismatch"));
     }
@@ -5698,8 +5863,9 @@ mod tests {
     fn test_verify_claims_runtime_policy_binding_rejects_short_claim_decoding_digest() {
         let (_, claims) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 31]);
 
-        let err = verify_claims_runtime_policy_binding(&claims, None, Some(&[0x44; 32]), None)
-            .unwrap_err();
+        let err =
+            verify_claims_runtime_policy_binding(&claims, None, Some(&[0x44; 32]), None, None)
+                .unwrap_err();
 
         assert!(err.to_string().contains(
             "claims.runtime.decoding.parameters_sha256 must be a 32-byte SHA-256 digest"
@@ -5710,8 +5876,9 @@ mod tests {
     fn test_verify_claims_runtime_policy_binding_rejects_short_expected_chat_template_digest() {
         let (_, claims) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 32]);
 
-        let err = verify_claims_runtime_policy_binding(&claims, Some(&[0x33; 31]), None, None)
-            .unwrap_err();
+        let err =
+            verify_claims_runtime_policy_binding(&claims, Some(&[0x33; 31]), None, None, None)
+                .unwrap_err();
 
         assert!(err
             .to_string()
@@ -5722,8 +5889,9 @@ mod tests {
     fn test_verify_claims_runtime_policy_binding_rejects_short_expected_decoding_digest() {
         let (_, claims) = make_runtime_claims_report(vec![0x33; 32], vec![0x44; 32]);
 
-        let err = verify_claims_runtime_policy_binding(&claims, None, Some(&[0x44; 31]), None)
-            .unwrap_err();
+        let err =
+            verify_claims_runtime_policy_binding(&claims, None, Some(&[0x44; 31]), None, None)
+                .unwrap_err();
 
         assert!(err
             .to_string()
@@ -5735,16 +5903,23 @@ mod tests {
         let gpu_execution_digest = vec![0x55; 32];
         let (_, claims) = make_runtime_execution_claims_report(gpu_execution_digest.clone());
 
-        verify_claims_runtime_policy_binding(&claims, None, None, Some(&gpu_execution_digest))
-            .unwrap();
+        verify_claims_runtime_policy_binding(
+            &claims,
+            None,
+            None,
+            Some(&gpu_execution_digest),
+            None,
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_verify_claims_runtime_policy_binding_fails_on_gpu_execution_mismatch() {
         let (_, claims) = make_runtime_execution_claims_report(vec![0x55; 32]);
 
-        let err = verify_claims_runtime_policy_binding(&claims, None, None, Some(&[0x99; 32]))
-            .unwrap_err();
+        let err =
+            verify_claims_runtime_policy_binding(&claims, None, None, Some(&[0x99; 32]), None)
+                .unwrap_err();
 
         assert!(err.to_string().contains("GPU execution digest mismatch"));
     }
@@ -5753,12 +5928,35 @@ mod tests {
     fn test_verify_claims_runtime_policy_binding_rejects_short_expected_gpu_execution_digest() {
         let (_, claims) = make_runtime_execution_claims_report(vec![0x55; 32]);
 
-        let err = verify_claims_runtime_policy_binding(&claims, None, None, Some(&[0x55; 31]))
-            .unwrap_err();
+        let err =
+            verify_claims_runtime_policy_binding(&claims, None, None, Some(&[0x55; 31]), None)
+                .unwrap_err();
 
         assert!(err
             .to_string()
             .contains("expected GPU execution digest must be a 32-byte SHA-256 digest"));
+    }
+
+    #[test]
+    fn test_verify_claims_runtime_policy_binding_matches_auxiliary_artifacts() {
+        let auxiliary_digest = vec![0x66; 32];
+        let (_, claims) = make_runtime_auxiliary_claims_report(auxiliary_digest.clone());
+
+        verify_claims_runtime_policy_binding(&claims, None, None, None, Some(&auxiliary_digest))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_verify_claims_runtime_policy_binding_rejects_auxiliary_artifact_mismatch() {
+        let (_, claims) = make_runtime_auxiliary_claims_report(vec![0x66; 32]);
+
+        let error =
+            verify_claims_runtime_policy_binding(&claims, None, None, None, Some(&[0x77; 32]))
+                .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Auxiliary-artifacts digest mismatch"));
     }
 
     #[test]
@@ -5775,6 +5973,7 @@ mod tests {
             expected_chat_template_digest: Some(vec![0x33; 32]),
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 
@@ -5802,6 +6001,7 @@ mod tests {
             expected_chat_template_digest: Some(chat_template_digest),
             expected_decoding_parameters_digest: None,
             expected_gpu_execution_digest: None,
+            expected_auxiliary_artifacts_digest: None,
             hardware_verifier: None,
         };
 

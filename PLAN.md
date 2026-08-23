@@ -35,6 +35,10 @@ deployment boundary, not a restriction to LLMs or to a particular model family.
   model-bound attestation, embedded execution, persistent cross-host fixtures,
   and confidential accelerator declarations; mismatched directory hashing can
   no longer make a real promotion impossible
+- Local speculative drafts, LoRA adapters, and multimodal projectors now have
+  content identities independent of host paths. Strict startup, backend load,
+  signature verification, model-bound attestation, request receipts, and the
+  independent verifier all bind the same canonical auxiliary-artifacts digest.
 - Strict SEV-SNP verification now binds policy fields to the exact signed raw
   report. Intel TDX fails closed until a DCAP Quote/QVL path is implemented.
 

@@ -31,6 +31,13 @@ integration may use GGUF, SafeTensors, llama.cpp, a native Rust backend, or
 another reviewed implementation, but it must present the same bounded and
 digest-bound evidence.
 
+For hosted local inference, the artifact boundary includes every byte source
+that can alter the computation. Strict TEE startup therefore rejects path-only
+LoRA adapters and multimodal projectors. External drafts, adapters, and
+projectors must carry measured size/SHA-256 identities, must pass load-time
+verification, and must be covered by the caller-pinned canonical
+auxiliary-artifacts digest in attestation and request receipts.
+
 ## Confidential-computing boundary
 
 | CPU TEE | v1 status | Reason |

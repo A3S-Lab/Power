@@ -153,6 +153,7 @@ fn confidential_report(
         .with_runtime(
             RuntimePolicyClaim::new().with_execution(ExecutionPolicyClaim {
                 gpu_sha256: execution_digest,
+                auxiliary_artifacts_sha256: None,
             }),
         );
     AttestationReport {

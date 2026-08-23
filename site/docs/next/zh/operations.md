@@ -51,6 +51,7 @@ cargo build --locked --release --no-default-features \
 | `POST` | `/v1/completions` | 文本补全与 SSE 流式响应 |
 | `POST` | `/v1/embeddings` | 嵌入推理 |
 | `GET` | `/v1/models` | 已注册模型 |
+| `POST` | `/v1/models` | 注册本地权重和可选辅助制品 |
 | `POST` | `/v1/models/pull` | 可续传 ModelScope 或 Hugging Face 下载 |
 | `GET` | `/v1/attestation` | 绑定 nonce 与模型的 TEE 证据 |
 | `GET` | `/metrics` | Prometheus 指标 |
@@ -84,6 +85,11 @@ Power 按认证身份、端点与模型对 key 做哈希隔离；原始 key 不�
 制品安装器要求提供预期文件名、最大字节数与 SHA-256 摘要。它将数据流式写入私有暂存文件，验证精确字节，再在跨进程锁下原子提交。离线策略找不到已验证制品时会失败关闭。
 
 托管模型仓库默认位于 `~/.a3s/power`，采用内容寻址。模型别名指向 manifest，而不会削弱 blob 身份。
+
+GGUF 注册支持类型明确的 `adapter`、`projector` 和 `external_draft` 路径。
+Power 自行测量文件大小与 SHA-256，在加载前再次校验精确字节，并把可移植的
+辅助制品身份写入证明与请求回执。严格 TEE 模式拒绝仅保存路径的旧版 adapter
+和 projector 引用。
 
 ## 生产边界
 

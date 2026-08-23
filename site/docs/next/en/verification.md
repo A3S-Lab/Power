@@ -66,8 +66,22 @@ a3s-power-verify \
   --model your-model \
   --nonce <fresh-client-nonce-hex> \
   --model-hash <64-character-artifact-sha256> \
+  --auxiliary-artifacts-digest <portable-auxiliary-set-sha256> \
   --expected-measurement <96-character-launch-measurement-hex>
 ```
+
+If the model uses an external draft, LoRA adapter, or multimodal projector,
+derive the path-independent expected value from its reviewed deployment
+manifest:
+
+```bash
+a3s-power-verify --print-auxiliary-artifacts-digest model-manifest.json
+```
+
+Strict verification requires this caller-owned pin whenever the attested
+runtime declares auxiliary artifacts. Roles, decoder contracts, byte lengths,
+artifact hashes, and external-draft target binding are covered; local paths are
+excluded.
 
 The verifier - not the server operator - chooses the accepted launch
 measurement, artifact hash, runtime policy, GPU evidence, and receipt fields.
@@ -219,6 +233,8 @@ confidential-GPU proofs; absent or invalid hardware evidence blocks publication.
 
 - Missing hardware-verification support in a strict verifier build.
 - Missing or malformed launch-measurement and artifact pins.
+- Missing or mismatched auxiliary-artifacts pins when the runtime declares a
+  draft, adapter, or projector.
 - Missing raw report bytes in saved evidence.
 - Vendor certificate retrieval, parsing, or signature failures.
 - Stale nonces or mismatched model, policy, input, output, or device digests.

@@ -32,10 +32,13 @@ use std::process;
 #[cfg(feature = "hw-verify")]
 use std::time::Duration;
 
-use a3s_power::api::prompt_policy::canonical_gpu_execution_digest;
+use a3s_power::api::prompt_policy::{
+    canonical_auxiliary_artifacts_digest, canonical_gpu_execution_digest,
+};
 use a3s_power::api::receipt::{AttestationReceipt, ReceiptRequestType};
 use a3s_power::api::types::{ChatCompletionRequest, CompletionRequest};
 use a3s_power::config::GpuConfig;
+use a3s_power::model::manifest::ModelManifest;
 use a3s_power::tee::attestation::AttestationReport;
 #[cfg(feature = "embedded-inference")]
 use a3s_power::verify::verify_confidential_gpu_attestation;
@@ -69,7 +72,16 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     validate_release_promotion_options(&opts)?;
 
     if opts.print_gpu_execution_digest {
+        if opts.print_auxiliary_artifacts_digest.is_some() {
+            anyhow::bail!(
+                "--print-gpu-execution-digest conflicts with --print-auxiliary-artifacts-digest"
+            );
+        }
         println!("{}", gpu_execution_digest_from_opts(&opts)?);
+        return Ok(());
+    }
+    if let Some(path) = opts.print_auxiliary_artifacts_digest.as_deref() {
+        println!("{}", auxiliary_artifacts_digest_from_manifest(path)?);
         return Ok(());
     }
 
@@ -187,6 +199,10 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         "--gpu-execution-digest",
         opts.gpu_execution_digest.as_deref(),
     )?;
+    let expected_auxiliary_artifacts_digest = decode_optional_hex_arg(
+        "--auxiliary-artifacts-digest",
+        opts.auxiliary_artifacts_digest.as_deref(),
+    )?;
     #[cfg(feature = "embedded-inference")]
     let prepared_release_promotion = if opts.release_promotion_requested() {
         let capture_path = opts
@@ -281,6 +297,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         expected_chat_template_digest,
         expected_decoding_parameters_digest,
         expected_gpu_execution_digest,
+        expected_auxiliary_artifacts_digest,
         hardware_verifier: hardware_verifier.as_deref(),
     };
 
@@ -517,6 +534,10 @@ struct CliOpts {
     decoding_policy_digest: Option<String>,
     /// Expected SHA-256 digest of canonical GPU execution parameters.
     gpu_execution_digest: Option<String>,
+    /// Expected SHA-256 digest of canonical auxiliary artifact identities.
+    auxiliary_artifacts_digest: Option<String>,
+    /// Manifest JSON used to print its canonical auxiliary-artifacts digest.
+    print_auxiliary_artifacts_digest: Option<String>,
     /// Print the canonical GPU execution digest for supplied GPU parameters.
     print_gpu_execution_digest: bool,
     /// GPU layer offload value used by --print-gpu-execution-digest.
@@ -796,6 +817,8 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
         chat_template_digest: None,
         decoding_policy_digest: None,
         gpu_execution_digest: None,
+        auxiliary_artifacts_digest: None,
+        print_auxiliary_artifacts_digest: None,
         print_gpu_execution_digest: false,
         digest_gpu_layers: None,
         digest_main_gpu: 0,
@@ -991,6 +1014,17 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
             "--gpu-execution-digest" => {
                 opts.gpu_execution_digest = Some(next_arg(args, &mut i, "--gpu-execution-digest")?);
             }
+            "--auxiliary-artifacts-digest" => {
+                opts.auxiliary_artifacts_digest =
+                    Some(next_arg(args, &mut i, "--auxiliary-artifacts-digest")?);
+            }
+            "--print-auxiliary-artifacts-digest" => {
+                opts.print_auxiliary_artifacts_digest = Some(next_arg(
+                    args,
+                    &mut i,
+                    "--print-auxiliary-artifacts-digest",
+                )?);
+            }
             "--print-gpu-execution-digest" => {
                 opts.print_gpu_execution_digest = true;
             }
@@ -1092,9 +1126,13 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
         i += 1;
     }
 
-    if !opts.print_gpu_execution_digest && opts.url.is_none() && opts.file.is_none() {
+    if !opts.print_gpu_execution_digest
+        && opts.print_auxiliary_artifacts_digest.is_none()
+        && opts.url.is_none()
+        && opts.file.is_none()
+    {
         return Err(anyhow::anyhow!(
-            "one of --url, --file, or --print-gpu-execution-digest is required. Run with --help for usage."
+            "one of --url, --file, --print-gpu-execution-digest, or --print-auxiliary-artifacts-digest is required. Run with --help for usage."
         ));
     }
 
@@ -1127,6 +1165,9 @@ fn validate_release_promotion_options(opts: &CliOpts) -> anyhow::Result<()> {
     }
     if opts.print_gpu_execution_digest {
         anyhow::bail!("release promotion conflicts with --print-gpu-execution-digest");
+    }
+    if opts.print_auxiliary_artifacts_digest.is_some() {
+        anyhow::bail!("release promotion conflicts with --print-auxiliary-artifacts-digest");
     }
     if opts.allow_offline {
         anyhow::bail!(
@@ -1291,6 +1332,32 @@ fn gpu_execution_digest_from_opts(opts: &CliOpts) -> anyhow::Result<String> {
     Ok(hex::encode(digest))
 }
 
+const MAX_MODEL_MANIFEST_JSON_BYTES: u64 = 1024 * 1024;
+
+fn auxiliary_artifacts_digest_from_manifest(path: &str) -> anyhow::Result<String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| anyhow::anyhow!("failed to inspect model manifest {path}: {error}"))?;
+    if !metadata.is_file() {
+        anyhow::bail!("model manifest is not a regular file: {path}");
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_MODEL_MANIFEST_JSON_BYTES {
+        anyhow::bail!(
+            "model manifest must contain 1..={MAX_MODEL_MANIFEST_JSON_BYTES} bytes, found {}",
+            metadata.len()
+        );
+    }
+    let bytes = std::fs::read(path)
+        .map_err(|error| anyhow::anyhow!("failed to read model manifest {path}: {error}"))?;
+    let manifest: ModelManifest = serde_json::from_slice(&bytes)
+        .map_err(|error| anyhow::anyhow!("failed to parse model manifest JSON: {error}"))?;
+    let digest = canonical_auxiliary_artifacts_digest(&manifest)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "model manifest has no fully content-addressed auxiliary inference artifacts"
+        )
+    })?;
+    Ok(hex::encode(digest))
+}
+
 fn decode_optional_hex_arg(name: &str, value: Option<&str>) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(value) = value else {
         return Ok(None);
@@ -1375,6 +1442,8 @@ OPTIONS:
     --chat-template-digest <HEX>   Expected SHA-256 digest of the chat template string
     --decoding-policy-digest <HEX> Expected SHA-256 digest of default decoding parameters
     --gpu-execution-digest <HEX>   Expected SHA-256 digest of GPU execution/offload parameters
+    --auxiliary-artifacts-digest <HEX> Expected SHA-256 digest of speculative draft, LoRA adapter, and projector identities
+    --print-auxiliary-artifacts-digest <MANIFEST> Print the canonical auxiliary-artifacts digest and exit
     --print-gpu-execution-digest   Print the canonical GPU execution/offload digest and exit
     --gpu-layers <N>               GPU layer offload value for --print-gpu-execution-digest
     --main-gpu <N>                 Main GPU index for --print-gpu-execution-digest (default: 0)
@@ -2529,6 +2598,8 @@ mod tests {
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
             "--gpu-execution-digest".to_string(),
             "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string(),
+            "--auxiliary-artifacts-digest".to_string(),
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
             "--require-runtime-policy".to_string(),
         ];
         let opts = parse_args(&args).unwrap();
@@ -2539,6 +2610,10 @@ mod tests {
         assert_eq!(
             opts.gpu_execution_digest.as_deref(),
             Some("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+        );
+        assert_eq!(
+            opts.auxiliary_artifacts_digest.as_deref(),
+            Some("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
         );
         assert!(opts.require_runtime_policy);
     }
@@ -2597,6 +2672,55 @@ mod tests {
         );
 
         assert_eq!(gpu_execution_digest_from_opts(&opts).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_auxiliary_artifacts_digest_from_manifest_matches_canonicalizer() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifact_path = directory.path().join("projector.gguf");
+        let mut manifest = ModelManifest::remote("vision-model");
+        manifest.projector_artifact = Some(a3s_power::model::artifact::AuxiliaryModelArtifact {
+            path: artifact_path,
+            size: 128,
+            sha256: "ab".repeat(32),
+        });
+        let manifest_path = directory.path().join("manifest.json");
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let expected = hex::encode(
+            canonical_auxiliary_artifacts_digest(&manifest)
+                .unwrap()
+                .unwrap(),
+        );
+
+        assert_eq!(
+            auxiliary_artifacts_digest_from_manifest(&manifest_path.display().to_string()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_parse_args_print_auxiliary_artifacts_digest() {
+        let args = vec![
+            "--print-auxiliary-artifacts-digest".to_string(),
+            "manifest.json".to_string(),
+        ];
+
+        let opts = parse_args(&args).unwrap();
+
+        assert_eq!(
+            opts.print_auxiliary_artifacts_digest.as_deref(),
+            Some("manifest.json")
+        );
+    }
+
+    #[test]
+    fn test_auxiliary_artifacts_digest_pin_rejects_invalid_hex() {
+        let error = decode_optional_hex_arg("--auxiliary-artifacts-digest", Some("not-a-digest"))
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("--auxiliary-artifacts-digest must be a 64-character SHA-256 hex digest"));
     }
 
     #[test]
