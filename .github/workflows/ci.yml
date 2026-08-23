@@ -104,6 +104,7 @@ jobs:
           python3 tools/test_qwen38_quality_evidence.py
           python3 tools/test_dspark_adaptive_evidence.py
           python3 tools/test_dspark_quality_followup_evidence.py
+          python3 tools/test_dflash2_evidence.py
           python3 tools/qwen38_quality_evidence.py verify \
             --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/evidence.json \
             --json
@@ -112,6 +113,9 @@ jobs:
             --json
           python3 tools/dspark_quality_followup_evidence.py verify \
             --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/followup-evidence.json \
+            --json
+          python3 tools/dflash2_evidence.py verify \
+            --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2/evidence.json \
             --json
 
   windows-embedded:

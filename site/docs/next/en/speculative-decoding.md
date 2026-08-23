@@ -38,14 +38,21 @@ emitted target sample and never for an unobserved rejected suffix.
 | llama.cpp without native prediction tensors | `off` |
 | llama.cpp with `*.nextn_predict_layers > 0` | `off`, `mtp` |
 | llama.cpp with a verified external DFlash GGUF | `off`, `dflash` |
+| Power manifest with a verified DFlash2 GGUF | Admission only; execution fails closed pending the binding update |
 | llama.cpp with a verified external DSpark GGUF | `off`, `dspark` |
 
 `draft-model` remains a reserved shared strategy without a production
-llama.cpp adapter. DFlash and DSpark use different external-artifact contracts;
-they are not interchangeable and do not stack. Power parses and hashes both
-GGUF files, binds the draft to the target digest, validates artifact-specific
-metadata and tensors, then compares the complete target/draft vocabularies when
-their contexts bind. An explicit unsupported or mismatched mode fails closed.
+llama.cpp adapter. DFlash v1, DFlash2, and DSpark use different
+external-artifact contracts; they are not interchangeable and do not stack.
+Power parses and hashes both GGUF files, binds the draft to the target digest,
+validates artifact-specific metadata and tensors, then compares the complete
+target/draft vocabularies when their contexts bind. An explicit unsupported or
+mismatched mode fails closed.
+
+DFlash2 has a typed strategy and a strict selector/convolution tensor
+validator. The pinned `llama-cpp-rs` revision does not expose its upstream
+executor, so explicit or automatic DFlash2 selection returns a reviewed-
+binding error instead of being relabeled as DFlash v1.
 
 `auto` selects a verified external artifact when the model manifest contains
 one; otherwise it considers native MTP. Power does not load both draft
@@ -78,7 +85,8 @@ first probe, and closes that path after a partial first round. Healthy partial
 rounds retain their graph shape; sustained low-yield rounds open a one-way
 target-only circuit. The same scheduler is shared by native MTP, DFlash, and
 DSpark model-backed adapters. The legacy ACL key remains
-`spec_mtp_adaptive`.
+`spec_mtp_adaptive`. DFlash2 can join that scheduler only after its backend
+exposes equivalent transactional state.
 
 ## TBQ4 and FR solve different problems
 
@@ -139,8 +147,16 @@ token/s median; DSpark Q4 K10/S6 reached 169.324 token/s median and 167.102
 minimum, a 5.250x decode gain. All three 256-token outputs and execution
 receipts matched the control exactly, proposal acceptance was 90.873%, and
 fallback replay was zero. Peak VRAM was 23,847 MiB, so this profile requires a
-quiet 24 GB device. A genuine DFlash artifact has not yet been benchmarked; a
-DSpark artifact mislabeled as DFlash is rejected and is not a DFlash result.
+quiet 24 GB device. A genuine DFlash v1 artifact has not yet been benchmarked;
+a DSpark artifact mislabeled as DFlash is rejected and is not a DFlash result.
+
+The separate DFlash2 prototype keeps the Q6_K target unchanged and uses a
+1.14 GB Q4 model only as an auxiliary proposer. The three-order 12-task
+calibration retained 9/12 in both modes, 12/12 extracted answers, and 7/12
+complete outputs; mean request-wide throughput increased from 29.702 to
+45.143 token/s. A repetitive prompt reached 108.429 token/s median at 98.230%
+acceptance. This exact upstream llama.cpp capture is useful experimental
+evidence, but it is neither native Power execution nor a 175 token/s floor.
 
 The context-1024 quality diagnostic tells a different, workload-representative
 story. Across 600 successful requests, DSpark K10/S6 delivered 32.678 token/s
@@ -175,4 +191,6 @@ path, [Performance evidence](./performance) for the measurement interpretation, 
 the [canonical speculative-decoding design](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)
 for adapter APIs and acceptance rules, and the
 [DSpark evidence package](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
-for raw paired reports and exact replay commands.
+for raw paired reports and exact replay commands, and the
+[DFlash2 package](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
+for the standalone prototype boundary and fail-closed native status.

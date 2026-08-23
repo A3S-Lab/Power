@@ -69,6 +69,8 @@ topology and semantics.
 | Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
+| Untouched Q6_K, paired DFlash2 calibration control | 9/12 lenient and strict in every repetition | 29.702 token/s mean | 35.380 token/s |
+| **Untouched Q6_K + external DFlash2 Q4 proposer, K7** | 9/12 lenient and strict; **12/12 answer parity, 7/12 complete-output parity** | **45.143 token/s mean** (1.520x paired control) | **108.429 token/s** |
 | Untouched Q6_K, DSpark acceptance control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s |
 | **Untouched Q6_K + external DSpark Q4, K10/S6 (peak prompt)** | Exact paired 256-token output and receipt hashes | **65.825 token/s median** | **169.324 token/s** |
 | Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; **54/100 exact-output parity** versus target-only | **32.678 token/s** (1.445x paired control) | - |
@@ -133,11 +135,20 @@ The profile is therefore faster and answer-noninferior on the selected
 follow-up, not a lossless default, a general-intelligence proof, or a 175
 token/s service floor.
 
-DFlash and DSpark are alternative external-draft contracts, not an additive
-mode. DSpark Q4 is implemented and measured; a genuine DFlash GGUF has not yet
-been accepted on this host. Forcing the DSpark artifact through a DFlash-shaped
-diagnostic produced only 1.031% acceptance and is retained as negative
-compatibility evidence, not as a DFlash benchmark.
+DFlash, DFlash2, and DSpark are alternative external-draft contracts, not an
+additive mode. A genuine DFlash v1 GGUF has not yet been accepted on this host.
+Forcing the DSpark artifact through a DFlash-shaped diagnostic produced only
+1.031% acceptance and remains negative compatibility evidence.
+
+DFlash2 was tested separately with the unchanged Q6_K target and a 1.14 GB Q4
+auxiliary proposer. The three-order 12-task calibration retained 9/12 in both
+modes, 12/12 extracted answers, and 7/12 complete outputs; mean request-wide
+throughput rose from 29.702 to 45.143 token/s. A repetitive-prompt boundary
+reached 108.429 token/s median at 98.230% acceptance, not 175 token/s. This is
+an exact upstream llama.cpp PR 27342 standalone capture. Power validates the
+DFlash2 artifact contract but its pinned `llama-cpp-rs` backend intentionally
+rejects execution until a reviewed binding update lands, so the profile is
+experimental and not a native production result.
 
 The current untouched 22,884,408,288-byte Q6_K artifact sustained a 176.6109
 token/s median across nine 1,024-token samples, with a 173.2630 minimum and
@@ -190,7 +201,7 @@ Q6_K model, target-only decoding, and Flash Attention enabled. Five fresh
 cold/warm pairs reduced median backend prefill from 786.1375 ms to 33.4102 ms
 (23.5299x) and median TTFT from 950.0142 ms to 72.1932 ms (13.1593x), while
 reusing 9,740 prompt tokens. This is repeated-context latency evidence, not a
-steady-decode or DFlash/DSpark claim.
+steady-decode or external-draft claim.
 
 - [Current Q6_K/TBQ4/MTP benchmark, raw samples, and limitations](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md)
 - [Q6_K prefix-cache cold/warm capture and exact reproduction](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/prompt-cache/README.md)
@@ -198,6 +209,7 @@ steady-decode or DFlash/DSpark claim.
 - [Repeated quality matrix and reproducible environment](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [Step-by-step reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md)
 - [Native DSpark Q4 peak and 600-request quality captures](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/README.md)
+- [Q6_K-only DFlash2 peak, quality boundary, and path-free evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2/README.md)
 - [Adaptive DSpark path-free peak and paired-quality evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/adaptive/evidence.json)
 - [Adaptive DSpark truncation follow-up and offline evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/quality/README.md#adaptive-truncation-follow-up)
 - [UD-Q8_K_XL heterogeneous-placement boundary](docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
@@ -402,7 +414,7 @@ Qwen-, GGUF-, or backend-specific release path.
 | `mistralrs` | Default Candle-based GGUF, SafeTensors, vision, and embedding backend | No C++ inference engine |
 | `llamacpp` | Mature GGUF backend with native MTP support | CMake, C++ compiler, and libclang |
 | `llamacpp-cuda` | CUDA execution for llama.cpp | CUDA toolkit |
-| `llamacpp-external-draft` | Verified external DFlash or DSpark draft execution | Reviewed external-draft patch to the pinned llama-cpp-rs source |
+| `llamacpp-external-draft` | Verified external DFlash or DSpark execution; typed, fail-closed DFlash2 admission pending a binding update | Reviewed external-draft patch to the pinned llama-cpp-rs source |
 | `llamacpp-mtp-fr` | Experimental reduced-vocabulary MTP draft projection | Reviewed patch to the pinned llama.cpp source |
 | `picolm` | Pure-Rust layer-streaming GGUF backend for constrained TEE memory | No C/C++ inference engine |
 | `embedded-cuda` / `embedded-metal` | Accelerators for model-owned embedded graphs | Platform toolkit |
@@ -449,13 +461,17 @@ Backends advertise support; an explicitly requested unsupported strategy fails
 closed.
 
 Available strategies are `off`, `prompt-lookup`, `ngram-context`, `draft-model`,
-`mtp`, `dflash`, and `dspark`; `auto` selects a backend-supported default.
+`mtp`, `dflash`, `dflash2`, and `dspark`; `auto` selects a backend-supported
+default.
 
 llama.cpp can now load one verified external DFlash or DSpark GGUF beside its
 target. Registration hashes both files, validates the artifact-specific tensor
 contract, binds the draft to the target digest, and fails closed on a kind or
 identity mismatch. It does not load native MTP and an external drafter at the
-same time.
+same time. DFlash2 registration has its own selector/convolution tensor
+contract, but the current pinned binding does not expose its executor; explicit
+or automatic DFlash2 selection therefore fails closed instead of being
+relabeled as DFlash v1.
 
 ```acl
 spec_mode = "mtp"
@@ -616,6 +632,7 @@ current production boundary and failure policy.
 | [Model-neutral Speculative Decoding](docs/speculative-decoding.md) | Strategies, native MTP, patching, protocol, and acceptance |
 | [Keyed Prompt-Prefix Cache](docs/prompt-prefix-cache.md) | Explicit API contract, tenant isolation, bounded KV lifecycle, metrics, MTP boundary, and paired cold/warm benchmark |
 | [Qwen3.8-27B Q6_K benchmark](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) | Performance gates, artifact identity, quality, and raw evidence |
+| [Q6_K-only DFlash2 experiment](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2/README.md) | Exact upstream prototype, paired quality, offline evidence, and reproduction |
 | [Reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) | CUDA build, pinned inputs, replay, audit, and validation |
 | [Hardware Verifier Operations](docs/hardware-verifier-operations.md) | Production hardware-signature verification |
 | [Supply-chain Audit](docs/supply-chain.md) | Feature profiles, native code, and threat model |

@@ -567,6 +567,26 @@ its separate 19.19 GB artifact identity. The checked-in JSON remains the
 auditable result; new measurements should be added as new captures instead of
 overwriting it.
 
+## Q6_K-only DFlash2 prototype package
+
+This package never substitutes a Q4 target. Both paired modes load the exact
+same 22.88 GB Q6_K target; the Q4 DFlash2 artifact is an auxiliary proposer
+only. Verify the path-free peak and three-order quality evidence without a
+model or GPU:
+
+```powershell
+py -3.13 .\tools\dflash2_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dflash2\evidence.json `
+  --json
+```
+
+`--require-production-default` intentionally fails because complete response
+parity is 7/12 and Power's pinned Rust binding does not expose DFlash2
+execution. The [DFlash2-specific guide](dflash2/README.md) pins upstream
+llama.cpp PR 27342 at `1deefcca`, the target/draft/runtime hashes, CUDA build,
+idle-GPU admission, exact paired commands, 108.429 token/s synthetic boundary,
+and 45.143 versus 29.702 token/s mixed-workload result.
+
 ## Native external-DSpark acceptance package
 
 The Q6_K + external DSpark Q4 result is a separate paired context-512,

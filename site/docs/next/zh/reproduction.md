@@ -179,7 +179,25 @@ runner 在 `finally` 中恢复 GPU 时钟，并把失败报告也保留下来，
 
 只有同时满足以下条件才是有效采集：9 个请求都生成 1,024 token；所有输出 SHA-256 一致；模型身份精确匹配；后端独占；工作树干净；高优先级 stream、亲和性、时钟与电源控制真实生效。是否达到部署门槛由调用方根据该主机的独立 SLO 决定，不能把历史 176.61 直接当成当前共享桌面的失败阈值。
 
-## 8. 复现原生 DSpark 门槛
+## 8. 验证只使用 Q6_K 目标的 DFlash2 原型
+
+两种配对模式都使用同一个 22.88 GB Q6_K 目标。1.14 GB Q4 DFlash2 制品只
+负责 proposal，不是目标模型结果。无需模型或 GPU 即可验证峰值与三轮交叉
+质量证据：
+
+```powershell
+py -3.13 .\tools\dflash2_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dflash2\evidence.json `
+  --json
+```
+
+校验器会重新计算重复提示词下 35.380 对 108.429 token/s、固定 12 题负载下
+29.702 对 45.143 token/s、答案一致 12/12 与完整输出一致 7/12。加入
+`--require-production-default` 必须失败，因为逐字输出门槛未通过，而且 Power
+当前绑定尚不执行 DFlash2。[完整 DFlash2 指南](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
+固定了上游 PR 27342、模型与运行时哈希、CUDA 构建参数、主机控制和配对命令。
+
+## 9. 复现原生 DSpark 门槛
 
 外部 DSpark 使用保持不变的 22,884,408,288 字节 Q6_K 目标和固定摘要的 1.10 GB DSpark Q4 制品。先运行四个无需模型与 GPU 的校验器：
 

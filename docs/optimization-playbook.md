@@ -161,14 +161,18 @@ Available adapter families include:
 - prompt lookup and n-gram context for compatible picolm paths;
 - native MTP when a llama.cpp artifact exposes prediction tensors;
 - verified external DFlash or DSpark GGUF artifacts for llama.cpp; the first
-  native DSpark Q4 acceptance capture is published, while DFlash still awaits
-  a compatible accepted artifact;
+  native DSpark Q4 acceptance capture is published, while DFlash v1 still
+  awaits a compatible accepted artifact;
+- typed DFlash2 admission with a strict selector/convolution tensor contract;
+  execution remains fail-closed in the pinned Rust binding, while an exact
+  upstream standalone prototype has separate benchmark evidence;
 - the shared `draft-model` protocol identity, which still awaits a production
   llama.cpp adapter.
 
-DFlash and DSpark are alternative draft contracts, not layers in one graph.
-Power loads at most one external drafter, validates its declared tensor family,
-and refuses a kind mismatch instead of silently relabeling the proposal path.
+DFlash v1, DFlash2, and DSpark are alternative draft contracts, not layers in
+one graph. Power loads at most one external drafter, validates its declared
+tensor family, and refuses a kind mismatch instead of silently relabeling the
+proposal path.
 
 Every emitted token remains target-authoritative. The transaction checkpoints
 target, draft, sampler, and decoder state; verifies the anchor and proposal
@@ -193,7 +197,15 @@ first probe, closes that path after a partial first round, and moves sustained
 low-yield requests through a one-way target-only circuit. Healthy partial
 rounds retain a captured graph shape instead of continuously resizing K. This
 shared controller applies to native MTP, DFlash, and DSpark adapters even
-though its compatibility ACL key remains `spec_mtp_adaptive`.
+though its compatibility ACL key remains `spec_mtp_adaptive`. DFlash2 can use
+the same policy only after its backend exposes equivalent transactional state.
+
+The current Q6_K-only DFlash2 prototype reached 108.429 token/s median on a
+98.230%-acceptance repetitive prompt and 45.143 token/s mean on the fixed
+12-task workload, versus 29.702 token/s target-only. It retained all 12
+extracted answers but only 7/12 complete output hashes. That result is useful
+proposal-width and memory evidence; it is not a native backend result, a
+lossless default, or a 175 token/s floor.
 
 ### Full vocabulary, FR, and artifact quantization
 

@@ -207,9 +207,9 @@ rollback profiles crossed a VRAM allocation cliff: K7/S7 and K8/S8 fell to
 roughly 48 and 60 token/s. K10/S5 triggered one exact replay and fell to
 101.066 token/s; K10/S6 avoided replay and became the accepted profile.
 
-## DFlash status
+## DFlash-family status
 
-A genuine DFlash artifact has **not** been benchmarked. The only DFlash-named
+A genuine DFlash v1 artifact has **not** been benchmarked. The only DFlash-named
 diagnostic deliberately forced the DSpark artifact through a DFlash command;
 it accepted 10 of 970 proposals (1.031%, mean accepted length 1.04) and ran at
 roughly 17.3 token/s. That is negative compatibility evidence, not a DFlash
@@ -220,9 +220,12 @@ target identity satisfy the DFlash contract.
 Consequently:
 
 - DSpark Q4: implemented and measured natively in Power;
-- DFlash: contract implemented and fail-closed, but no compatible artifact has
-  been accepted on this host;
-- DFlash + DSpark: not an additive execution mode; a future router may select
+- DFlash v1: contract implemented and fail-closed, but no compatible artifact
+  has been accepted on this host;
+- DFlash2: its distinct GGUF contract is validated, and an
+  [exact upstream standalone capture](../dflash2/README.md) exists; native Power
+  execution remains fail-closed until the pinned Rust binding is updated;
+- DFlash-family + DSpark: not an additive execution mode; a future router may select
   one compatible drafter per model/request, but it must not execute both as one
   proposal graph.
 

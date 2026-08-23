@@ -109,6 +109,10 @@ failure.
 - The request-local width controller is shared by native MTP, DFlash, and
   DSpark adapters; `spec_mtp_adaptive` is a compatibility name, not a
   Qwen-specific implementation.
+- DFlash2 has a separate selector/convolution artifact contract. Its upstream
+  prototype reached 108.429 token/s on a high-acceptance prompt and 45.143
+  token/s mean on the fixed 12-task workload, but native execution stays
+  fail-closed until the Rust binding exposes equivalent transactional state.
 
 Acceptance rate alone is not the objective. Measure emitted tokens per target
 pass against draft, target verification, synchronization, sampling, replay,

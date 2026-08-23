@@ -24,6 +24,8 @@ against the same input identities.
 | Qwen3.8-27B artifact and mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
+| Untouched Q6_K, paired DFlash2 calibration control | 9/12 lenient and strict in every repetition | 29.702 token/s mean | 35.380 token/s |
+| **Untouched Q6_K + DFlash2 Q4 proposer, K7** | 9/12 lenient and strict; **12/12 answer parity, 7/12 complete-output parity** | **45.143 token/s mean** | **108.429 token/s** |
 | Untouched Q6_K, paired DSpark control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s |
 | **Untouched Q6_K + external DSpark Q4, K10/S6 (peak prompt)** | Exact paired 256-token output and receipt hashes | **65.825 token/s median** | **169.324 token/s** |
 | Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; 54/100 exact-output parity | **32.678 token/s** | - |
@@ -48,6 +50,27 @@ means there is no defensible apples-to-apples capture for that cell.
 The DSpark rows use a shorter context-512, 256-token acceptance shape rather
 than the 1,024-token MTP peak shape. They are paired with each other, not with
 the historical autoregressive row.
+
+## Q6_K-only DFlash2 boundary
+
+DFlash2 was measured with the target fixed to the same 22,884,408,288-byte
+Q6_K GGUF in both modes. The 1.14 GB Q4 file is an auxiliary proposer only;
+there is no Q4 target result in this capture.
+
+Three alternating repetitions of a fixed 12-task MMLU/GSM8K/C-Eval
+calibration retained 9/12 lenient and strict answers in both modes. All 12
+extracted answers matched, while 7/12 complete response hashes matched. Mean
+request-wide throughput increased from 29.702 to 45.143 token/s (1.520x), but
+the candidate ranged from 33.689 to 54.586 token/s.
+
+The separate repetitive-prompt gate reached 108.429 token/s median versus
+35.380 target-only, with 98.230% proposal acceptance and exact output parity.
+This is a high-coverage synthetic boundary, not a 175 token/s result or a
+general workload claim. It uses exact upstream llama.cpp PR 27342 at
+`1deefcca`; Power's pinned Rust binding validates the DFlash2 artifact but
+fails closed on execution pending a reviewed update. The complete
+[report, offline verifier, and replay commands](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
+are published with the repository.
 
 ## Native external-DSpark boundary
 
@@ -99,9 +122,10 @@ regressions. Complete outputs still differed 0/5, so this establishes a
 controlled 160-plus opt-in peak and selected-answer non-regression—not a 175
 token/s floor, a general-intelligence result, or an exact-output default.
 
-DFlash is not part of this number. It uses a different artifact contract and
-cannot be layered onto DSpark. No genuine DFlash GGUF has completed the
-acceptance gate on this host.
+DFlash v1 is not part of this number. It uses a different artifact contract
+and cannot be layered onto DSpark. No genuine DFlash v1 GGUF has completed the
+acceptance gate on this host; the DFlash2 prototype above is a separate
+contract and standalone capture.
 
 ## The untouched-Q6_K execution-path case study
 
@@ -168,6 +192,11 @@ three tasks per mode reached the 256-token cap. Batched and serial target
 kernels can follow different floating-point trajectories, so exact target
 verification does not promise byte-identical prose.
 
+The DFlash2 calibration reached the same 9/12 score in both modes and retained
+12/12 extracted answers, but only 7/12 complete response hashes. It therefore
+shows no observed score regression on this small sample, not general
+intelligence equivalence or lossless output identity.
+
 This sample is still too small for a general-intelligence claim. Exact target
 verification proves that every committed token remains target-authoritative;
 it does not replace a representative quality evaluation.
@@ -218,6 +247,7 @@ Use the repository's checked-in guide and raw evidence:
 - [Repeated 100-task quality protocol](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [Current compact machine-readable evidence](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/full-vocabulary-s7-current-rtx4090-3x.json)
 - [Native DSpark Q4 reports and exact reproduction](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
+- [Q6_K-only DFlash2 evidence and exact reproduction](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
 - [Adaptive DSpark peak and paired-quality evidence](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/adaptive/evidence.json)
 - [UD-Q8_K_XL heterogeneous-placement boundary](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 

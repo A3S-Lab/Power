@@ -18,6 +18,8 @@ that cell.
 | Artifact and runtime mode | Quality proxy | Request-wide throughput | Median steady decode | Interpretation |
 | --- | --- | ---: | ---: | --- |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) | Current fixed-task baseline; steady column is a separate historical shape |
+| Untouched Q6_K, paired DFlash2 calibration control | 9/12 lenient and strict in every repetition | 29.702 token/s mean | 35.380 token/s | Same Q6_K target, runner, and execution shapes as the DFlash2 candidate |
+| **Untouched Q6_K + external DFlash2 Q4 proposer, K7** | 9/12 lenient and strict; **12/12 answer parity, 7/12 complete-output parity** | **45.143 token/s mean** | **108.429 token/s** | 1.520x mixed-workload speedup; exact upstream standalone prototype, not native Power or production-default eligible |
 | Untouched Q6_K, paired DSpark control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s | Same request shape and clean binary as the external-draft candidate |
 | **Untouched Q6_K + external DSpark Q4, K10/S6 (peak prompt)** | Exact paired 256-token output and receipt hashes | **65.825 token/s median** | **169.324 token/s** | 5.250x decode speedup; 90.873% acceptance; zero replay; all samples above 160 token/s |
 | Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; **54/100 exact-output parity** versus target-only | **32.678 token/s** | -- | 1.445x paired workload speedup; deterministic, but not eligible as a lossless production default |
@@ -40,7 +42,19 @@ that cell.
 The complete protocols and raw evidence are in the
 [untouched-Q6_K report](PURE-Q6.md), the
 [100-task and 12-task quality report](quality/README.md), the sections below,
+[Q6_K-only DFlash2 experiment](dflash2/README.md),
 and the sibling [UD-Q8_K_XL boundary capture](../qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md).
+
+The [DFlash2 capture](dflash2/README.md) fixes the target to the same
+22,884,408,288-byte Q6_K artifact in both modes. Its Q4 file is only a 1.14 GB
+proposal model; no Q4 target result is included. Three alternating repetitions
+of the 12-task calibration retained 9/12 in both modes and all 12 extracted
+answers, while only 7/12 complete response hashes matched. Mean request-wide
+throughput rose from 29.702 to 45.143 token/s, but the candidate ranged from
+33.689 to 54.586 token/s. The separate high-acceptance prompt reached 108.429
+token/s median, so DFlash2 did not demonstrate a stable 175 token/s boundary.
+The capture uses exact upstream llama.cpp PR 27342 because Power's pinned
+binding does not yet expose DFlash2 execution; native selection fails closed.
 
 The native [DSpark Q4 paired capture](dspark/README.md) is deliberately
 separate from the MTP and TBQ4 matrices below. It uses a content-addressed
@@ -76,7 +90,7 @@ Flash Attention was enabled and speculation was disabled. The
 [protocol, exact commands, ACL, and raw report](prompt-cache/README.md) bind
 commit `84e1eec`, the unchanged model digest, health policy, metric deltas, and
 each result receipt. This is prefill/TTFT evidence, not a steady-decode or
-DFlash/DSpark result.
+external-draft result.
 
 ## Q6_K deep-optimization result, 2026-08-22
 

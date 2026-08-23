@@ -42,7 +42,8 @@ text.
 | Cache policy | one entry per model; 900-second idle TTL |
 | Sampling | greedy, seed 0, eight generated tokens |
 
-Flash Attention was enabled. Speculation, MTP, DFlash, and DSpark were disabled
+Flash Attention was enabled. Speculation, MTP, DFlash v1, DFlash2, and DSpark
+were disabled
 so the experiment isolates prefix reuse. The unchanged target model performs
 all suffix evaluation and generation.
 
@@ -99,7 +100,7 @@ py -3 -m unittest tools\test_prompt_cache_benchmark.py
 
 This result applies to a long shared prefix on one request lane. It establishes
 prefill and TTFT reuse, not steady decode token/s, concurrent service
-throughput, DFlash/DSpark support, or a general quality score. Prefix caching
+throughput, external-draft support, or a general quality score. Prefix caching
 does not change model weights or replace target evaluation of the new suffix,
 but this performance capture is not a substitute for the separate quality
 matrix.
