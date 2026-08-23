@@ -14,18 +14,16 @@ algorithms.
 
 DFlash v1, DFlash2, and DSpark are distinct external-draft contracts, not
 interchangeable speed labels and not an additive mode. The llama.cpp backend
-admits one content-addressed DFlash v1 or DSpark GGUF after validating its
-artifact kind, tensor metadata, target binding, tokenizer contract,
-provenance, and digest. DSpark Q4 has a native Power acceptance capture. The
+admits one content-addressed external GGUF after validating its artifact kind,
+tensor metadata, target binding, tokenizer contract, provenance, and digest.
+DSpark Q4 and DFlash2 Q4 both have native Power acceptance captures. The
 DFlash v1 contract is implemented, but no compatible artifact has passed this
 host's acceptance gate.
 
-DFlash2 has a separate selector/convolution tensor validator and a typed
-strategy. Power's pinned `llama-cpp-rs` revision does not contain the upstream
-DFlash2 executor, so explicit or automatic selection fails closed pending a
-reviewed binding update. The current measurements use the exact upstream
-llama.cpp prototype outside the native Power backend and are labeled
-accordingly.
+DFlash2 has a separate typed discriminator and selector/convolution tensor
+validator. Power ports the reviewed executor changes to the pinned llama.cpp
+source and rejects non-positive selector or convolution metadata and every
+DFlash v1/DFlash2 mismatch before native execution.
 
 ## Ownership boundary
 
@@ -66,17 +64,16 @@ Current executable adapters are:
 | llama.cpp without native prediction tensors | `off` |
 | llama.cpp with `*.nextn_predict_layers > 0` | `off`, `mtp` |
 | llama.cpp with a verified external DFlash GGUF | `off`, `dflash` |
-| Power manifest with a verified DFlash2 GGUF | Admission only; `dflash2` execution fails closed pending the binding update |
+| llama.cpp with a verified external DFlash2 GGUF | `off`, `dflash2` |
 | llama.cpp with a verified external DSpark GGUF | `off`, `dspark` |
 
 `draft-model` remains part of the shared protocol without a production
 llama.cpp adapter. DFlash v1, DFlash2, and DSpark require matching external
 artifacts; Power never treats one as another and never substitutes prompt
 lookup or native MTP. `auto` selects an executable verified external artifact
-when one is bound to the manifest, otherwise it considers native MTP. A bound
-DFlash2 artifact currently returns the same reviewed-binding error for `auto`
-as for explicit `dflash2`. Loading multiple draft mechanisms would duplicate
-device memory and state ownership, so that combination is not allowed.
+when one is bound to the manifest, otherwise it considers native MTP. Loading
+multiple draft mechanisms would duplicate device memory and state ownership,
+so that combination is not allowed.
 
 ## External-draft admission
 
@@ -193,9 +190,10 @@ contracts, not by branches in the Power scheduler.
    quality evidence still contains paired losses, so it also remains opt-in.
 6. At least one non-Qwen adapter must pass the same transaction and exactness
    suite before DSpark support is considered cross-architecture complete.
-7. DFlash2 remains a standalone upstream experiment until the pinned Rust
-   binding exposes its graph and passes Power's native transaction, parity,
-   cancellation, and release-evidence gates.
+7. DFlash2 has a typed native binding and a clean Q6_K paired performance
+   capture. Its representative quality matrix still fails complete-output
+   parity, so it remains opt-in while broader transaction, cancellation, and
+   cross-model release evidence accumulates.
 
 The Qwen3.8 performance gate is at least 100 generated tokens per second on the
 acceptance host through Power's streaming API. This is an acceptance floor,
@@ -243,15 +241,19 @@ both modes retained the same answer. The evidence therefore supports a stable
 160-plus opt-in peak and replay-free mixed execution, not a 175 token/s floor
 or a lossless production default.
 
-The separate DFlash2 experiment fixes the target to the unchanged Q6_K digest
-and uses a 1.14 GB Q4 artifact only as an auxiliary proposer. A three-order,
-12-task calibration retained 9/12 in both target-only and DFlash2 modes, with
-12/12 extracted-answer parity and 7/12 complete-output parity. Mean
-request-wide throughput rose from 29.702 to 45.143 token/s (1.520x). A
-repetitive-prompt gate reached 108.429 token/s median at 98.230% acceptance.
-Neither result demonstrates 175 token/s or native Power support. See the
+The native DFlash2 capture fixes the target to the unchanged Q6_K digest and
+uses a 1.14 GB Q4 artifact only as an auxiliary proposer. Across five paired
+256-token samples it reached 144.453 token/s median decode versus 33.075
+target-only (4.367x), and 63.182 versus 25.744 token/s median end-to-end. All
+outputs matched exactly, acceptance was 98.230%, and replay was zero. A
+separate three-order, 12-task calibration retained 9/12 in both modes, with
+12/12 extracted-answer parity and 7/12 complete-output parity; mean
+request-wide throughput rose from 29.702 to 45.143 token/s (1.520x). The native
+peak is not a 175 token/s floor, and the quality result does not qualify as a
+lossless default. See the
 [Q6_K-only DFlash2 report](benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2/README.md)
-for the exact upstream revision, path-free evidence, and reproduction steps.
+for the native reports, exact source/artifact identities, historical quality
+evidence, and reproduction steps.
 
 ## Reproducible Power API benchmark
 
@@ -269,13 +271,15 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\apply-llamacpp-power-patches.ps1
 ```
 
-On non-Windows hosts, apply
-`patches/llama-cpp-rs-dfd12e4-mtp-dynamic-k.patch` to the fetched
-`llama-cpp-rs` checkout, then apply
-`patches/llama-cpp-rs-dfd12e4-external-draft.patch` to that checkout. Apply
-`patches/llama-cpp-rs-dfd12e4-mtp-fr-spec.patch` and
-`patches/llama-cpp-rs-dfd12e4-cuda-high-priority.patch` to its nested
-`llama-cpp-sys-2/llama.cpp` checkout. Then build both executables:
+On non-Windows hosts, apply the three binding-root patches
+`llama-cpp-rs-dfd12e4-mtp-dynamic-k.patch`,
+`llama-cpp-rs-dfd12e4-external-draft.patch`, and
+`llama-cpp-rs-dfd12e4-dflash2-binding.patch` to the fetched `llama-cpp-rs`
+checkout. Apply `llama-cpp-rs-dfd12e4-dflash2.patch`,
+`llama-cpp-rs-dfd12e4-mtp-fr-spec.patch`, and
+`llama-cpp-rs-dfd12e4-cuda-high-priority.patch`, in that order, to its nested
+`llama-cpp-sys-2/llama.cpp` checkout. See [the patch-set contract](../patches/README.md)
+and rebuild both dependency crates before the executables:
 
 ```console
 cargo build --locked --release --no-default-features --features llamacpp-cuda,llamacpp-mtp-fr \

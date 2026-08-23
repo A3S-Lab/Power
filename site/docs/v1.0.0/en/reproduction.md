@@ -179,7 +179,26 @@ Retain these files under `$benchmarkRoot`:
 
 The replay passes only when all nine requests generate 1,024 tokens, the steady median is at least 175 token/s, every output SHA-256 is identical, model identity matches exactly, the backend is exclusive, the worktree is clean, and the requested host controls actually took effect.
 
-## 8. Reproduce the native DSpark gate
+## 8. Verify the Q6_K-only native DFlash2 capture
+
+Both modes use the same 22.88 GB Q6_K target. The 1.14 GB Q4 DFlash2 artifact
+is an auxiliary proposer, never the target. Recompute the native comparison
+without a model or GPU:
+
+```powershell
+a3s-power-speculative-bench compare `
+  .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dflash2\native-target-only.json `
+  .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dflash2\native-dflash2-k7-s6.json
+```
+
+It verifies 33.075 versus 144.453 token/s median decode, a 4.367x speedup,
+and exact output parity. Median end-to-end throughput is 25.744 versus 63.182
+token/s. The [complete DFlash2 guide](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
+pins clean source commit `72a1ecd`, artifact and binary hashes,
+`A3S_POWER_HOME` registration, host controls, quality evidence, and exact
+replay commands.
+
+## 9. Reproduce the native DSpark gate
 
 The external-DSpark package is a separate paired experiment. It keeps the same
 22,884,408,288-byte Q6_K target and binds the 1,104,594,816-byte DSpark Q4

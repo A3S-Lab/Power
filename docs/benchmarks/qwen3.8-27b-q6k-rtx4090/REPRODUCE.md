@@ -620,12 +620,22 @@ its separate 19.19 GB artifact identity. The checked-in JSON remains the
 auditable result; new measurements should be added as new captures instead of
 overwriting it.
 
-## Q6_K-only DFlash2 prototype package
+## Q6_K-only native DFlash2 package
 
 This package never substitutes a Q4 target. Both paired modes load the exact
 same 22.88 GB Q6_K target; the Q4 DFlash2 artifact is an auxiliary proposer
-only. Verify the path-free peak and three-order quality evidence without a
-model or GPU:
+only. Recompute the native five-sample comparison without a model or GPU:
+
+```powershell
+a3s-power-speculative-bench compare `
+  .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dflash2\native-target-only.json `
+  .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dflash2\native-dflash2-k7-s6.json
+```
+
+The comparison verifies 33.075 versus 144.453 token/s median decode, a 4.367x
+speedup, and exact cross-mode output parity. Median end-to-end throughput is
+25.744 versus 63.182 token/s. Verify the separate path-free three-order quality
+package with Python:
 
 ```powershell
 py -3.13 .\tools\dflash2_evidence.py verify `
@@ -634,11 +644,12 @@ py -3.13 .\tools\dflash2_evidence.py verify `
 ```
 
 `--require-production-default` intentionally fails because complete response
-parity is 7/12 and Power's pinned Rust binding does not expose DFlash2
-execution. The [DFlash2-specific guide](dflash2/README.md) pins upstream
-llama.cpp PR 27342 at `1deefcca`, the target/draft/runtime hashes, CUDA build,
-idle-GPU admission, exact paired commands, 108.429 token/s synthetic boundary,
-and 45.143 versus 29.702 token/s mixed-workload result.
+parity in the representative quality matrix is 7/12; native execution is now
+available. The [DFlash2-specific guide](dflash2/README.md) pins clean Power
+commit `72a1ecd`, the typed binding and reviewed llama.cpp port, target/draft
+and binary hashes, the `A3S_POWER_HOME` registration boundary, CUDA build,
+idle-GPU admission, exact paired commands, the native 144.453 token/s decode
+boundary, and the 45.143 versus 29.702 token/s mixed-workload result.
 
 ## Native external-DSpark acceptance package
 

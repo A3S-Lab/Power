@@ -38,14 +38,16 @@ emitted target sample and never for an unobserved rejected suffix.
 | llama.cpp without native prediction tensors | `off` |
 | llama.cpp with `*.nextn_predict_layers > 0` | `off`, `mtp` |
 | llama.cpp with a verified external DFlash GGUF | `off`, `dflash` |
+| llama.cpp with a verified external DFlash2 GGUF | `off`, `dflash2` |
 | llama.cpp with a verified external DSpark GGUF | `off`, `dspark` |
 
 `draft-model` remains a reserved shared strategy without a production
-llama.cpp adapter. DFlash and DSpark use different external-artifact contracts;
-they are not interchangeable and do not stack. Power parses and hashes both
-GGUF files, binds the draft to the target digest, validates artifact-specific
-metadata and tensors, then compares the complete target/draft vocabularies when
-their contexts bind. An explicit unsupported or mismatched mode fails closed.
+llama.cpp adapter. DFlash v1, DFlash2, and DSpark use different external-
+artifact contracts; they are not interchangeable and do not stack. Power
+parses and hashes both GGUF files, binds the draft to the target digest,
+validates artifact-specific metadata and tensors, then compares the complete
+target/draft vocabularies when their contexts bind. An explicit unsupported or
+mismatched mode fails closed.
 
 `auto` selects a verified external artifact when the model manifest contains
 one; otherwise it considers native MTP. Power does not load both draft
@@ -121,6 +123,15 @@ fallback replay was zero. Peak VRAM was 23,847 MiB, so this profile requires a
 quiet 24 GB device. A genuine DFlash artifact has not yet been benchmarked; a
 DSpark artifact mislabeled as DFlash is rejected and is not a DFlash result.
 
+Native DFlash2 is another separate contract. It keeps the Q6_K target unchanged
+and uses a 1.14 GB Q4 artifact only as an auxiliary proposer. Five paired
+256-token samples reached 144.453 token/s median decode versus 33.075
+target-only (4.367x), with 98.230% acceptance, exact outputs, and zero replay.
+Median end-to-end throughput was 63.182 versus 25.744 token/s. The separate
+12-task quality calibration retained every extracted answer but only 7/12
+complete outputs, so DFlash2 remains opt-in and the native peak is not a stable
+175 token/s floor.
+
 The context-1024 quality diagnostic tells a different, workload-representative
 story. Across 600 successful requests, DSpark K10/S6 delivered 32.678 token/s
 request-wide versus 22.618 for target-only (1.445x), with no observed score
@@ -132,4 +143,6 @@ See [Performance evidence](/performance) for the complete interpretation and
 the [canonical speculative-decoding design](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)
 for adapter APIs and acceptance rules, and the
 [DSpark evidence package](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
-for raw paired reports and exact replay commands.
+for raw paired reports and exact replay commands, and the
+[DFlash2 evidence package](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
+for native performance, representative quality, and reproduction.

@@ -38,7 +38,7 @@ emitted target sample and never for an unobserved rejected suffix.
 | llama.cpp without native prediction tensors | `off` |
 | llama.cpp with `*.nextn_predict_layers > 0` | `off`, `mtp` |
 | llama.cpp with a verified external DFlash GGUF | `off`, `dflash` |
-| Power manifest with a verified DFlash2 GGUF | Admission only; execution fails closed pending the binding update |
+| llama.cpp with a verified external DFlash2 GGUF | `off`, `dflash2` |
 | llama.cpp with a verified external DSpark GGUF | `off`, `dspark` |
 
 `draft-model` remains a reserved shared strategy without a production
@@ -50,9 +50,9 @@ target/draft vocabularies when their contexts bind. An explicit unsupported or
 mismatched mode fails closed.
 
 DFlash2 has a typed strategy and a strict selector/convolution tensor
-validator. The pinned `llama-cpp-rs` revision does not expose its upstream
-executor, so explicit or automatic DFlash2 selection returns a reviewed-
-binding error instead of being relabeled as DFlash v1.
+validator. Power ports the reviewed executor changes to its pinned llama.cpp
+source; malformed metadata and DFlash v1/DFlash2 mismatches fail before native
+execution.
 
 `auto` selects a verified external artifact when the model manifest contains
 one; otherwise it considers native MTP. Power does not load both draft
@@ -85,8 +85,8 @@ first probe, and closes that path after a partial first round. Healthy partial
 rounds retain their graph shape; sustained low-yield rounds open a one-way
 target-only circuit. The same scheduler is shared by native MTP, DFlash, and
 DSpark model-backed adapters. The legacy ACL key remains
-`spec_mtp_adaptive`. DFlash2 can join that scheduler only after its backend
-exposes equivalent transactional state.
+`spec_mtp_adaptive`. Native DFlash2 currently uses its fixed external-draft
+shape; an adaptive profile requires separate evidence.
 
 ## Q6_K acceptance and FR
 
@@ -141,13 +141,15 @@ fallback replay was zero. Peak VRAM was 23,847 MiB, so this profile requires a
 quiet 24 GB device. A genuine DFlash v1 artifact has not yet been benchmarked;
 a DSpark artifact mislabeled as DFlash is rejected and is not a DFlash result.
 
-The separate DFlash2 prototype keeps the Q6_K target unchanged and uses a
-1.14 GB Q4 model only as an auxiliary proposer. The three-order 12-task
-calibration retained 9/12 in both modes, 12/12 extracted answers, and 7/12
-complete outputs; mean request-wide throughput increased from 29.702 to
-45.143 token/s. A repetitive prompt reached 108.429 token/s median at 98.230%
-acceptance. This exact upstream llama.cpp capture is useful experimental
-evidence, but it is neither native Power execution nor a 175 token/s floor.
+The native DFlash2 capture keeps the Q6_K target unchanged and uses a 1.14 GB
+Q4 model only as an auxiliary proposer. Five paired 256-token samples reached
+144.453 token/s median decode versus 33.075 target-only (4.367x), and 63.182
+versus 25.744 token/s median end-to-end. Every output matched, acceptance was
+98.230%, and replay was zero. The separate three-order 12-task calibration
+retained 9/12 in both modes, 12/12 extracted answers, and only 7/12 complete
+outputs; mean request-wide throughput increased from 29.702 to 45.143 token/s.
+The native peak is not a 175 token/s floor, and the quality result keeps the
+profile opt-in.
 
 The context-1024 quality diagnostic tells a different, workload-representative
 story. Across 600 successful requests, DSpark K10/S6 delivered 32.678 token/s
@@ -184,4 +186,5 @@ for adapter APIs and acceptance rules, and the
 [DSpark evidence package](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
 for raw paired reports and exact replay commands, and the
 [DFlash2 package](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
-for the standalone prototype boundary and fail-closed native status.
+for native paired reports, the representative quality boundary, and exact
+reproduction.

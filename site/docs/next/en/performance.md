@@ -54,18 +54,24 @@ DFlash2 was measured with the target fixed to the same 22,884,408,288-byte
 Q6_K GGUF in both modes. The 1.14 GB Q4 file is an auxiliary proposer only;
 there is no Q4 target result in this capture.
 
-Three alternating repetitions of a fixed 12-task MMLU/GSM8K/C-Eval
-calibration retained 9/12 lenient and strict answers in both modes. All 12
-extracted answers matched, while 7/12 complete response hashes matched. Mean
-request-wide throughput increased from 29.702 to 45.143 token/s (1.520x), but
-the candidate ranged from 33.689 to 54.586 token/s.
+Native Power produced the following controlled five-sample pair:
 
-The separate repetitive-prompt gate reached 108.429 token/s median versus
-35.380 target-only, with 98.230% proposal acceptance and exact output parity.
-This is a high-coverage synthetic boundary, not a 175 token/s result or a
-general workload claim. It uses exact upstream llama.cpp PR 27342 at
-`1deefcca`; Power's pinned Rust binding validates the DFlash2 artifact but
-fails closed on execution pending a reviewed update. The complete
+| Same Q6_K target | Median decode | Minimum decode | Median end-to-end |
+| --- | ---: | ---: | ---: |
+| Target-only | 33.075 token/s | 32.938 token/s | 25.744 token/s |
+| **DFlash2 K7/S6** | **144.453 token/s** | **141.267 token/s** | **63.182 token/s** |
+
+That is a 4.367x decode and 2.454x end-to-end speedup. All five paired outputs
+matched, proposal acceptance was 98.230%, and replay was zero. The integer-
+sequence prompt is a high-coverage synthetic boundary, not a 175 token/s
+result or a general-workload claim.
+
+The separate three-order 12-task calibration retained 9/12 lenient and strict
+answers in both modes. All 12 extracted answers matched, while only 7/12
+complete response hashes matched. Mean request-wide throughput increased from
+29.702 to 45.143 token/s (1.520x), but the candidate ranged from 33.689 to
+54.586 token/s. DFlash2 is therefore native and useful as an explicit profile,
+not a lossless default. The complete
 [report, offline verifier, and replay commands](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
 are published with the repository.
 
@@ -121,8 +127,8 @@ token/s floor, a general-intelligence result, or an exact-output default.
 
 DFlash v1 is not part of this number. It uses a different artifact contract
 and cannot be layered onto DSpark. No genuine DFlash v1 GGUF has completed the
-acceptance gate on this host; the DFlash2 prototype above is a separate
-contract and standalone capture.
+acceptance gate on this host; the native DFlash2 capture above is a separate
+contract.
 
 ## The untouched-Q6_K execution-path case study
 

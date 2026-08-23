@@ -43,6 +43,22 @@ The DSpark rows use a shorter context-512, 256-token acceptance shape rather
 than the 1,024-token MTP peak shape. They are paired with each other, not with
 the historical autoregressive row.
 
+## Q6_K-only native DFlash2 boundary
+
+Both modes keep the 22,884,408,288-byte Q6_K target unchanged. The 1.14 GB Q4
+DFlash2 artifact only proposes tokens; Q6_K verifies every committed token.
+
+| Same Q6_K target | Median decode | Minimum decode | Median end-to-end |
+| --- | ---: | ---: | ---: |
+| Target-only | 33.075 token/s | 32.938 token/s | 25.744 token/s |
+| **DFlash2 K7/S6** | **144.453 token/s** | **141.267 token/s** | **63.182 token/s** |
+
+That is a 4.367x decode and 2.454x end-to-end speedup. All five paired outputs
+matched, acceptance was 98.230%, and replay was zero. The representative
+12-task quality calibration retained 12/12 extracted answers but only 7/12
+complete outputs. DFlash2 is therefore a native opt-in profile, not a lossless
+default or a stable 175 token/s floor.
+
 ## Native external-DSpark boundary
 
 Power's verified external-draft path keeps the target Q6_K bytes unchanged and
@@ -66,9 +82,9 @@ DSpark request entered exact fallback replay. The observed score did not fall;
 nevertheless K10/S6 fails the lossless production-default gate and remains an
 explicit benchmark profile.
 
-DFlash is not part of this number. It uses a different artifact contract and
-cannot be layered onto DSpark. No genuine DFlash GGUF has completed the
-acceptance gate on this host.
+DFlash v1 is not part of this number. It uses a different artifact contract and
+cannot be layered onto DSpark. No genuine DFlash v1 GGUF has completed the
+acceptance gate on this host; DFlash2 is the separate native capture above.
 
 ## What the pure-Q6_K peak boundary means
 
@@ -112,6 +128,11 @@ The external-DSpark matrix observed no score decrease: 73/100 lenient and
 that were untruncated in both modes retained the same extracted answer. The
 54/100 complete-output parity still blocks a lossless-default claim; fixed-task
 scores are not a measure of general intelligence.
+
+The DFlash2 calibration retained the same 9/12 score and all 12 extracted
+answers in both modes, but only 7/12 complete outputs matched. That small sample
+does not show a score regression; it also does not prove general intelligence
+equivalence or lossless output.
 
 For the previous mixed-artifact K7/S7 profile, no regression was observed on
 the fixed repeated sample:
@@ -157,6 +178,7 @@ Use the repository's checked-in guide and raw evidence:
 - [Repeated 100-task quality protocol](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [Current Q6_K-only machine-readable evidence](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/pure-q6-rtx4090-3x.evidence.json)
 - [Native DSpark Q4 reports and exact reproduction](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
+- [Native DFlash2 reports, quality boundary, and exact reproduction](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
 - [UD-Q8_K_XL heterogeneous-placement boundary](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 Treat a replay on different silicon, driver, display load, clock policy, model

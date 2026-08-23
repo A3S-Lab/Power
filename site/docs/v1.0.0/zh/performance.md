@@ -24,13 +24,28 @@ Power 只接受仍然保留执行契约的性能优化。因此，公开的 Qwen
 
 ## 已归档的辅助 proposal 研究
 
+## 只使用 Q6_K 目标的原生 DFlash2 边界
+
+两种模式都保留同一份 22,884,408,288 字节 Q6_K 目标。1.14 GB Q4 DFlash2
+制品只负责 proposal，每个提交 token 仍由 Q6_K 校验。
+
+| 相同 Q6_K 目标 | 解码中位数 | 解码最低值 | 请求全程中位数 |
+| --- | ---: | ---: | ---: |
+| 目标直解 | 33.075 token/s | 32.938 token/s | 25.744 token/s |
+| **DFlash2 K7/S6** | **144.453 token/s** | **141.267 token/s** | **63.182 token/s** |
+
+解码提升 4.367 倍，请求全程提升 2.454 倍。五次配对输出一致，接受率
+98.230%，回放为零。代表性 12 题质量校准保留 12/12 提取答案，但完整输出只
+一致 7/12。因此 DFlash2 是原生可选配置，不是无损默认值，也没有建立稳定
+175 token/s 下限。
+
 ## 外部 DSpark 的实测边界
 
 峰值采集保持 Q6_K 目标字节不变，另加载 1.10 GB 的 DSpark Q4 proposal 模型。固定 K10/S6 的三次稳态结果为 169.561、167.102 和 169.324 token/s，相对 32.249 token/s 的配对目标对照提升 5.250 倍；proposal 接受率为 90.873%，每次目标前向提交 9.8077 个 token，回放为零。
 
 另一组 600 请求质量采集固定 100 道 MMLU、GSM8K 与 C-Eval 题目，每种模式重复三次，使用 1,024 context 和 batch 12。目标对照为宽松 67/100、严格 58/100、22.618 token/s；DSpark 为 73/100、59/100、32.678 token/s，吞吐提升 1.445 倍。两种模式各自完全稳定，但跨模式只有 54/100 个完整输出逐字一致，而且每个 DSpark 请求都进入过精确回放路径。因此没有观察到分数下降，但 K10/S6 未通过无损生产默认门槛，仍是显式基准配置。
 
-DFlash 不包含在上述数字中。它与 DSpark 使用不同的制品契约，不能叠加；本机尚无真正的 DFlash GGUF 通过验收。
+DFlash v1 不包含在上述数字中。它与 DSpark 使用不同的制品契约，不能叠加；本机尚无真正的 DFlash v1 GGUF 通过验收。DFlash2 是上面单独列出的原生采集。
 
 ## 原始 Q6_K 的峰值边界
 
@@ -49,6 +64,8 @@ DFlash 不包含在上述数字中。它与 DSpark 使用不同的制品契约�
 当前纯 Q6_K 矩阵的宽松分数保持 67/100，严格格式分数从 60/100 降到 58/100。MTP 有 2 个宽松收益、2 个宽松损失，提取答案一致 89/100，完整输出一致 50/100；双方都未截断的 59 题保持相同提取答案。因此不能宣称智力不变或逐字无损，生产默认门槛仍然关闭。
 
 DSpark 的跨领域矩阵没有观察到分数下降：宽松 73/100、严格 59/100，对照为 67/100 与 58/100；双方都未截断的 58 题保持相同提取答案。但完整输出一致率只有 54/100，因此不能宣称无损默认等价，更不能把固定任务分数解释为通用智力。
+
+DFlash2 校准中，两种模式都是 9/12，提取答案 12/12 一致，但完整输出只有 7/12 一致。这组小样本没有观察到分数下降，却也不能证明通用智力等价或逐字无损。
 
 此前的混合制品 K7/S7 配置在固定重复样本上没有观察到回归：
 
@@ -83,6 +100,7 @@ DSpark 的跨领域矩阵没有观察到分数下降：宽松 73/100、严格 59
 - [100 题重复质量协议](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [当前纯 Q6_K 机器可读证据](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/pure-q6-rtx4090-3x.evidence.json)
 - [DSpark 峰值、质量证据与精确复现](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
+- [原生 DFlash2 报告、质量边界与精确复现](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
 - [UD-Q8_K_XL 异构放置边界](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 更换芯片、驱动、显示负载、时钟策略、模型字节或提示词后，应将结果视为一次新实验，不能静默合并进本次验收记录。

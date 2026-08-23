@@ -176,7 +176,23 @@ runner 在 `finally` 中恢复 GPU 时钟，并把失败报告也保留下来，
 
 只有同时满足以下条件才算通过：9 个请求都生成 1,024 token；稳态中位数不低于 175 token/s；所有输出 SHA-256 一致；模型身份精确匹配；后端独占；工作树干净；要求的主机控制真实生效。
 
-## 8. 复现原生 DSpark 门槛
+## 8. 验证只使用 Q6_K 目标的原生 DFlash2 采集
+
+两种模式都使用同一份 22.88 GB Q6_K 目标。1.14 GB Q4 DFlash2 制品只负责
+proposal，不是目标模型。无需模型或 GPU 即可重新计算原生配对：
+
+```powershell
+a3s-power-speculative-bench compare `
+  .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dflash2\native-target-only.json `
+  .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dflash2\native-dflash2-k7-s6.json
+```
+
+结果应为 33.075 对 144.453 token/s 解码中位数、4.367 倍提升和输出完全一致；
+请求全程中位数为 25.744 对 63.182 token/s。[完整 DFlash2 指南](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
+固定了干净源码提交 `72a1ecd`、制品与二进制哈希、`A3S_POWER_HOME` 注册、
+主机控制、质量证据和精确复跑命令。
+
+## 9. 复现原生 DSpark 门槛
 
 外部 DSpark 使用保持不变的 22,884,408,288 字节 Q6_K 目标和固定摘要的 1.10 GB DSpark Q4 制品。先运行两个无需模型与 GPU 的校验器：
 

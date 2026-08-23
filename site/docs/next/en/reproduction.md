@@ -198,11 +198,21 @@ Retain these files under `$benchmarkRoot`:
 
 The capture is valid only when all nine requests generate 1,024 tokens, every output SHA-256 is identical, model identity matches exactly, the backend is exclusive, the worktree is clean, and stream priority, affinity, clock, and power controls actually took effect. The caller decides whether it meets a host-specific deployment SLO; the historical 176.61 result is not an automatic failure threshold for the current shared desktop.
 
-## 8. Verify the Q6_K-only DFlash2 prototype
+## 8. Verify the Q6_K-only native DFlash2 capture
 
 Both paired modes use the same 22.88 GB Q6_K target. The 1.14 GB Q4 DFlash2
-artifact is an auxiliary proposer, never a target result. Verify the path-free
-peak and three-order quality package without a model or GPU:
+artifact is an auxiliary proposer, never a target result. Recompute the native
+five-sample comparison without a model or GPU:
+
+```powershell
+a3s-power-speculative-bench compare `
+  .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dflash2\native-target-only.json `
+  .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dflash2\native-dflash2-k7-s6.json
+```
+
+It verifies 33.075 versus 144.453 token/s median decode, a 4.367x speedup,
+and exact cross-mode output parity. Median end-to-end throughput is 25.744
+versus 63.182 token/s. Verify the separate representative quality package:
 
 ```powershell
 py -3.13 .\tools\dflash2_evidence.py verify `
@@ -210,14 +220,13 @@ py -3.13 .\tools\dflash2_evidence.py verify `
   --json
 ```
 
-The verifier recomputes 35.380 versus 108.429 token/s on the repetitive prompt,
-29.702 versus 45.143 token/s on the fixed 12-task workload, 12/12 answer
-parity, and 7/12 complete-output parity. Adding
-`--require-production-default` must fail because the output gate is not exact
-and the pinned Power binding does not execute DFlash2. Use the
+The historical verifier recomputes 29.702 versus 45.143 token/s on the fixed
+12-task workload, 12/12 answer parity, and 7/12 complete-output parity. Adding
+`--require-production-default` must fail because the representative output
+gate is not exact; native execution is available. Use the
 [full DFlash2 guide](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)
-for upstream PR 27342, artifact/runtime hashes, CUDA build flags, host controls,
-and exact paired commands.
+for clean Power commit `72a1ecd`, artifact/runtime hashes, `A3S_POWER_HOME`
+registration, CUDA build flags, host controls, and exact paired commands.
 
 ## 9. Reproduce the native DSpark gate
 
@@ -291,6 +300,6 @@ for the typed registration body, target-only and DSpark ACL files, raw reports,
 artifact revisions, and exact paired runner commands. DFlash v1 is not part of
 that result: DFlash v1 and DSpark are alternative artifact contracts, and no
 compatible DFlash v1 GGUF has completed this gate. DFlash2 uses the separate
-prototype package in step 8.
+native package in step 8.
 
 The complete [Windows/CUDA guide](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) also covers the paired full-vocabulary control, the 12-task pure-Q6_K calibration, and the previous mixed-artifact gates. The [quality-matrix protocol](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md#reproduce) explains how to rerun the existing 100-task × 3-run evaluation.

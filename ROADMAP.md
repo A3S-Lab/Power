@@ -210,6 +210,11 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
       target, source, tools, reports, task/config inputs, and continuous GPU
       monitor logs; keep its lossless-default gate closed when output or strict
       score parity is not established.
+- [x] Add a typed native DFlash2 binding and reviewed pinned-llama.cpp runtime
+      port, then publish a clean paired capture with the unchanged Q6_K target,
+      exact artifact and binary identities, idle/runtime GPU telemetry, five
+      deterministic outputs, and offline comparison. Keep DFlash2 opt-in until
+      representative complete-output parity and cross-model evidence pass.
 
 ## Cross-repository delivery order
 

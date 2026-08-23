@@ -14,6 +14,7 @@ description: A3S Power 后端能力、构建配置、服务端点、制品存储
 | `mistralrs` | 默认 Candle 后端，支持 GGUF、SafeTensors、视觉与嵌入 | 无 C++ 推理引擎 |
 | `llamacpp` | 成熟 GGUF 后端，支持原生 MTP | CMake、C++ 编译器、libclang |
 | `llamacpp-cuda` | llama.cpp 的 CUDA 执行 | CUDA toolkit |
+| `llamacpp-external-draft` | 已验证的外部 DFlash、DFlash2 或 DSpark 执行；制品契约类型化且失败关闭 | 对固定 llama-cpp-rs／llama.cpp 源码应用已审查补丁 |
 | `llamacpp-mtp-fr` | 实验性缩减词表 MTP draft 投影 | 对固定 llama.cpp 源码应用已审查补丁 |
 | `picolm` | 面向受限 TEE 内存的纯 Rust 层流式 GGUF 后端 | 无 C/C++ 推理引擎 |
 | `embedded-cuda` / `embedded-metal` | 模型自有嵌入式图的加速器支持 | 平台工具链 |

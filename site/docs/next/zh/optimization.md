@@ -70,7 +70,7 @@ Prompt lookup、n-gram context、原生 MTP、DFlash 与 DSpark 适配器共用�
 - FR 只缩小 draft head 的投影行数，对工作负载非常敏感。
 - TBQ4、动态量化和混合量化是制品选择，不是通用运行时开关。
 - 按请求宽度控制器由原生 MTP、DFlash 与 DSpark 适配器共享；`spec_mtp_adaptive` 只是兼容键名，不代表 Qwen 专用实现。
-- DFlash2 使用独立的 selector/convolution 制品契约。上游原型在高接受率提示词上达到 108.429 token/s，在固定 12 题负载上达到 45.143 token/s 均值；Rust 绑定暴露等价事务状态之前，原生执行保持失败关闭。
+- DFlash2 使用独立的 selector/convolution 制品契约。原生 Power 在高接受率提示词上达到 144.453 token/s 解码中位数，对照为 33.075；固定 12 题负载为 45.143 对 29.702 token/s，完整输出只一致 7/12，因此该模式仍需显式启用。
 
 接受率不是最终目标。需要比较每次目标前向提交的 token 数，与 draft、目标校验、同步、采样、回放和图形状成本。
 

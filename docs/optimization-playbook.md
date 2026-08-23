@@ -163,9 +163,8 @@ Available adapter families include:
 - verified external DFlash or DSpark GGUF artifacts for llama.cpp; the first
   native DSpark Q4 acceptance capture is published, while DFlash v1 still
   awaits a compatible accepted artifact;
-- typed DFlash2 admission with a strict selector/convolution tensor contract;
-  execution remains fail-closed in the pinned Rust binding, while an exact
-  upstream standalone prototype has separate benchmark evidence;
+- native DFlash2 execution with a typed selector/convolution tensor contract,
+  reviewed pinned-llama.cpp runtime port, and clean Q6_K paired evidence;
 - the shared `draft-model` protocol identity, which still awaits a production
   llama.cpp adapter.
 
@@ -197,15 +196,18 @@ first probe, closes that path after a partial first round, and moves sustained
 low-yield requests through a one-way target-only circuit. Healthy partial
 rounds retain a captured graph shape instead of continuously resizing K. This
 shared controller applies to native MTP, DFlash, and DSpark adapters even
-though its compatibility ACL key remains `spec_mtp_adaptive`. DFlash2 can use
-the same policy only after its backend exposes equivalent transactional state.
+though its compatibility ACL key remains `spec_mtp_adaptive`. Native DFlash2
+currently uses its fixed external-draft shape and the same target-authoritative
+verification contract; adaptive-width admission requires a separate measured
+profile rather than being inferred from the binding.
 
-The current Q6_K-only DFlash2 prototype reached 108.429 token/s median on a
-98.230%-acceptance repetitive prompt and 45.143 token/s mean on the fixed
-12-task workload, versus 29.702 token/s target-only. It retained all 12
-extracted answers but only 7/12 complete output hashes. That result is useful
-proposal-width and memory evidence; it is not a native backend result, a
-lossless default, or a 175 token/s floor.
+The current Q6_K-only native DFlash2 capture reached 144.453 token/s median
+decode versus 33.075 target-only (4.367x), with 98.230% acceptance, five exact
+paired outputs, and zero replay. Median end-to-end throughput was 63.182 versus
+25.744 token/s. The separate fixed 12-task workload reached 45.143 versus
+29.702 token/s and retained all 12 extracted answers but only 7/12 complete
+output hashes. The result establishes a native high-acceptance boundary, not a
+lossless default or a 175 token/s floor.
 
 ### Full vocabulary, FR, and artifact quantization
 

@@ -16,7 +16,7 @@ than treating the backend name as the architecture.
 | `mistralrs` | Default Candle-based GGUF, SafeTensors, vision, and embedding backend | No C++ inference engine |
 | `llamacpp` | Mature GGUF backend with native MTP support | CMake, C++ compiler, and libclang |
 | `llamacpp-cuda` | CUDA execution for llama.cpp | CUDA toolkit |
-| `llamacpp-external-draft` | Verified external DFlash or DSpark draft execution | Reviewed external-draft patch to pinned llama-cpp-rs source |
+| `llamacpp-external-draft` | Verified external DFlash, DFlash2, or DSpark execution with typed fail-closed artifact contracts | Reviewed external-draft and DFlash2 patches to pinned llama-cpp-rs/llama.cpp source |
 | `llamacpp-mtp-fr` | Experimental reduced-vocabulary MTP draft projection | Reviewed patch to pinned llama.cpp source |
 | `picolm` | Pure-Rust, layer-streaming GGUF backend for constrained TEE memory | No C/C++ inference engine |
 | `embedded-cuda` / `embedded-metal` | Accelerators for model-owned embedded graphs | Platform toolkit |

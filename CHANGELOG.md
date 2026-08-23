@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added a typed native DFlash2 external-draft backend for the pinned
+  llama-cpp-rs/llama.cpp source. Registration and load reject DFlash v1/DFlash2
+  mismatches and malformed selector/convolution metadata; the patch installer
+  now applies the complete stack idempotently, invalidates stale dependency
+  builds, and is exercised twice by Windows CI. A clean unchanged-Q6_K RTX
+  4090 capture records 144.453 token/s median decode versus 33.075 target-only
+  (4.367x), 63.182 versus 25.744 token/s median end-to-end, five exact paired
+  outputs, 98.230% proposal acceptance, and zero replay. The representative
+  quality gate remains opt-in because complete-output parity is 7/12.
 - Added a bounded cross-host release-handoff manifest builder and verifier. It
   binds the exact regular-file inventory under one dedicated staging root to
   portable relative paths, lengths, SHA-256 digests, platform, version, and

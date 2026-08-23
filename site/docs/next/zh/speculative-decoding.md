@@ -32,7 +32,7 @@ Power 提供共享的事务、调度、回滚与证据协议。后端适配器�
 | 不含原生 prediction tensor 的 llama.cpp | `off` |
 | 带 `*.nextn_predict_layers > 0` 的 llama.cpp | `off`、`mtp` |
 | 带已验证外部 DFlash GGUF 的 llama.cpp | `off`、`dflash` |
-| 带已验证 DFlash2 GGUF 的 Power 清单 | 只完成准入；等待绑定更新期间执行保持失败关闭 |
+| 带已验证外部 DFlash2 GGUF 的 llama.cpp | `off`、`dflash2` |
 | 带已验证外部 DSpark GGUF 的 llama.cpp | `off`、`dspark` |
 
 `draft-model` 仍是尚无生产 llama.cpp 适配器的保留策略。DFlash v1、DFlash2
@@ -40,9 +40,9 @@ Power 提供共享的事务、调度、回滚与证据协议。后端适配器�
 tokenizer、来源与摘要，不会把其中一种静默当作另一种。显式请求不受支持的
 模式会返回错误。
 
-DFlash2 有独立的类型策略与 selector/convolution 张量契约。当前固定的
-`llama-cpp-rs` revision 尚未暴露上游 DFlash2 执行器，所以显式或 `auto`
-选择都会返回需要审查绑定更新的错误，不会被重命名为 DFlash v1。
+DFlash2 有独立的类型策略与 selector/convolution 张量契约。Power 已把审查过
+的执行器改动移植到固定 llama.cpp 源码；元数据错误或 DFlash v1／DFlash2
+类型不匹配会在原生执行前直接报错。
 
 ## Draft 宽度不等于回滚宽度
 
@@ -59,7 +59,7 @@ spec_mtp_recurrent_snapshots = 7
 
 Power 的防护型 K7/S6 路径只允许一次精确重放，之后把该请求的 proposal 上限收紧到 6。它在不改变高接受率路径的前提下限制重放。K7/S7 完全避开该条件，因此是平衡型默认配置。
 
-按请求工作的自适应控制器不会把重放当成第一条反馈。它从 `min(K, S)` 开始；首轮 proposal 全部接受才开启更宽的 K 形状，首轮只要部分接受，就在该请求中关闭宽路径。健康的部分接受轮保持图形状；连续低收益则单向切回目标模型。原生 MTP、DFlash 与 DSpark 后端共享这套调度器；为兼容现有配置，ACL 键仍叫 `spec_mtp_adaptive`。DFlash2 只有在后端暴露等价事务状态后才能接入同一调度器。
+按请求工作的自适应控制器不会把重放当成第一条反馈。它从 `min(K, S)` 开始；首轮 proposal 全部接受才开启更宽的 K 形状，首轮只要部分接受，就在该请求中关闭宽路径。健康的部分接受轮保持图形状；连续低收益则单向切回目标模型。原生 MTP、DFlash 与 DSpark 后端共享这套调度器；为兼容现有配置，ACL 键仍叫 `spec_mtp_adaptive`。原生 DFlash2 当前使用固定外部草稿形状，自适应配置需要单独采集证据。
 
 ## Q6_K 验收与 FR
 
@@ -88,11 +88,13 @@ FR 只减少 MTP draft head 投影的行数，不改写 Q6_K 权重。它可以�
 
 外部 DSpark 是独立路径，不与 DFlash 或原生 MTP 叠加。固定 K10/S6 的 context-512 峰值达到 169.324 token/s 中位数、167.102 最低值，相对配对目标对照提升 5.250 倍；三次 256-token 输出逐字一致，接受率 90.873%，回放为零。
 
-单独的 DFlash2 原型始终使用不变的 Q6_K 目标，1.14 GB Q4 文件只作为
-proposal 模型。12 题交叉校准中，两种模式都是 9/12，提取答案 12/12 一致，
-完整输出 7/12 一致；请求全程吞吐均值从 29.702 提高到 45.143 token/s。
-高接受率重复提示词达到 108.429 token/s 中位数与 98.230% 接受率。这是精确
-上游 llama.cpp 的实验记录，不是 Power 原生执行，也没有达到 175 token/s。
+原生 DFlash2 始终使用不变的 Q6_K 目标，1.14 GB Q4 文件只负责 proposal。
+五次配对的 256-token 测试中，解码中位数为 144.453 token/s，对照为 33.075，
+提升 4.367 倍；请求全程中位数为 63.182 对 25.744 token/s。五次输出完全一致，
+接受率 98.230%，回放为零。单独的 12 题交叉校准中，两种模式都是 9/12，提取
+答案 12/12 一致，但完整输出只有 7/12 一致；请求全程吞吐均值从 29.702 提高到
+45.143 token/s。原生峰值没有达到稳定 175 token/s，质量结果也不足以把它设为
+无损默认模式。
 
 context-1024 的跨领域诊断给出了更接近真实工作负载的边界：600 个请求全部成功，DSpark 请求全程吞吐为 32.678 token/s，目标对照为 22.618 token/s，提升 1.445 倍，并未观察到分数下降。但跨模式完整输出一致率只有 54/100，而且每个 DSpark 请求都进入过精确回放。因此该配置可用于显式实验，尚不能成为无损生产默认值。
 
@@ -102,4 +104,4 @@ context-1024 的跨领域诊断给出了更接近真实工作负载的边界：6
 
 随后用干净的 5 题集合复测了全部答案损失，并加入 1 道正向对照。512-token 配置重复 3 轮，每轮都是 5/5 配对答案一致、0 损失；把预算提高到 1,024 token 后，5 题全部未截断且答案 5/5 一致。完整输出仍为 0/5 一致。控制器继续保持显式启用，因为目标模型裁决每个提交 token，并不承诺串行与批量 CUDA 轨迹逐字一致；这组损失样本结果也不能替代代表性质量矩阵。
 
-完整执行路径参阅[优化手册](./optimization)，数字解读参阅[性能证据](./performance)，适配器 API、基准命令与验收规则参阅[规范推测解码设计](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)，DFlash2 的原始边界与失败关闭状态参阅[专用证据包](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)。
+完整执行路径参阅[优化手册](./optimization)，数字解读参阅[性能证据](./performance)，适配器 API、基准命令与验收规则参阅[规范推测解码设计](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)，DFlash2 的原生配对结果、质量边界与复现命令参阅[专用证据包](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)。

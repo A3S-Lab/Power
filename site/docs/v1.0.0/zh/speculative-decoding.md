@@ -32,9 +32,10 @@ Power 提供共享的事务、调度、回滚与证据协议。后端适配器�
 | 不含原生 prediction tensor 的 llama.cpp | `off` |
 | 带 `*.nextn_predict_layers > 0` 的 llama.cpp | `off`、`mtp` |
 | 带已验证外部 DFlash GGUF 的 llama.cpp | `off`、`dflash` |
+| 带已验证外部 DFlash2 GGUF 的 llama.cpp | `off`、`dflash2` |
 | 带已验证外部 DSpark GGUF 的 llama.cpp | `off`、`dspark` |
 
-`draft-model` 仍是尚无生产 llama.cpp 适配器的保留策略。DFlash 与 DSpark 使用不同的外部制品契约；Power 会校验制品类型、目标绑定、tokenizer、来源与摘要，不会把其中一种静默当作另一种。显式请求不受支持的模式会返回错误。
+`draft-model` 仍是尚无生产 llama.cpp 适配器的保留策略。DFlash v1、DFlash2 与 DSpark 使用不同的外部制品契约；Power 会校验制品类型、目标绑定、tokenizer、来源与摘要，不会把其中一种静默当作另一种。显式请求不受支持的模式会返回错误。
 
 ## Draft 宽度不等于回滚宽度
 
@@ -75,6 +76,8 @@ FR 只减少 MTP draft head 投影的行数。它可以提高窄词表分布上�
 
 外部 DSpark 是独立路径，不与 DFlash 或原生 MTP 叠加。固定 K10/S6 的 context-512 峰值达到 169.324 token/s 中位数、167.102 最低值，相对配对目标对照提升 5.250 倍；三次 256-token 输出逐字一致，接受率 90.873%，回放为零。
 
+原生 DFlash2 是另一套独立契约。目标始终是同一份 Q6_K，1.14 GB Q4 文件只负责 proposal。五次配对的 256-token 测试中，解码中位数为 144.453 token/s，对照为 33.075，提升 4.367 倍；请求全程中位数为 63.182 对 25.744 token/s。五次输出一致，接受率 98.230%，回放为零。单独的 12 题质量校准保留全部提取答案，但完整输出只一致 7/12，因此 DFlash2 仍需显式启用，也没有形成稳定 175 token/s 下限。
+
 context-1024 的跨领域诊断给出了更接近真实工作负载的边界：600 个请求全部成功，DSpark 请求全程吞吐为 32.678 token/s，目标对照为 22.618 token/s，提升 1.445 倍，并未观察到分数下降。但跨模式完整输出一致率只有 54/100，而且每个 DSpark 请求都进入过精确回放。因此该配置可用于显式实验，尚不能成为无损生产默认值。
 
-完整解读参阅[性能证据](/performance)，适配器 API、基准命令与验收规则参阅[规范推测解码设计](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)。
+完整解读参阅[性能证据](/performance)，适配器 API、基准命令与验收规则参阅[规范推测解码设计](https://github.com/A3S-Lab/Power/blob/main/docs/speculative-decoding.md)，原生 DFlash2 报告与复现步骤参阅[专用证据包](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2)。
