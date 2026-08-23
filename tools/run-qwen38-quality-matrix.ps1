@@ -29,6 +29,11 @@ param(
 
     [UInt64]$ProcessorAffinityMask = 0,
 
+    [ValidateRange(0, 10000)]
+    [int]$LockGpuClockMHz = 0,
+
+    [switch]$CudaHighPriority,
+
     [ValidateScript({ $_ -ge 0 })]
     [int]$NvidiaGpuIndex = 0,
 
@@ -601,6 +606,18 @@ $environment = [ordered]@{
         }
         logical_processor_count = [Environment]::ProcessorCount
     }
+    host_controls = [ordered]@{
+        cuda_high_priority = [bool]$CudaHighPriority
+        gpu_clock = [ordered]@{
+            gpu_index = $NvidiaGpuIndex
+            requested_mhz = if ($LockGpuClockMHz -gt 0) {
+                $LockGpuClockMHz
+            } else {
+                $null
+            }
+            lock_applied = $false
+        }
+    }
     gpu_admission = [ordered]@{
         gpu_index = $NvidiaGpuIndex
         maximum_idle_utilization_percent = $MaximumIdleGpuUtilizationPercent
@@ -648,6 +665,12 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
             $previous.process_priority -eq $environment.process_priority -and
             $previous.process_affinity.requested_mask -eq
                 $environment.process_affinity.requested_mask -and
+            [bool]$previous.host_controls.cuda_high_priority -eq
+                $environment.host_controls.cuda_high_priority -and
+            $previous.host_controls.gpu_clock.gpu_index -eq
+                $environment.host_controls.gpu_clock.gpu_index -and
+            $previous.host_controls.gpu_clock.requested_mhz -eq
+                $environment.host_controls.gpu_clock.requested_mhz -and
             [int]$previous.gpu_admission.gpu_index -eq
                 $environment.gpu_admission.gpu_index -and
             [int]$previous.gpu_admission.maximum_idle_utilization_percent -eq
@@ -713,6 +736,7 @@ $environmentNames = @(
     'A3S_POWER_DATA_DIR',
     'A3S_POWER_SPEC_MODE',
     'A3S_POWER_SPEC_MTP_FR_VOCAB_SIZE',
+    'GGML_CUDA_HIGH_PRIORITY',
     'RUST_LOG'
 )
 $savedEnvironment = @{}
@@ -721,7 +745,30 @@ foreach ($name in $environmentNames) {
     $savedEnvironment[$name] = if ($item) { $item.Value } else { $null }
 }
 
+$gpuClockLocked = $false
 try {
+    if ($CudaHighPriority) {
+        $env:GGML_CUDA_HIGH_PRIORITY = '1'
+    } else {
+        Remove-Item Env:GGML_CUDA_HIGH_PRIORITY -ErrorAction SilentlyContinue
+    }
+    if ($LockGpuClockMHz -gt 0) {
+        $nvidiaSmi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+        if (-not $nvidiaSmi) {
+            throw 'nvidia-smi.exe is required when LockGpuClockMHz is configured'
+        }
+        & $nvidiaSmi.Source `
+            "--id=$NvidiaGpuIndex" `
+            --lock-gpu-clocks="$LockGpuClockMHz,$LockGpuClockMHz" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to lock NVIDIA GPU $NvidiaGpuIndex at $LockGpuClockMHz MHz"
+        }
+        $gpuClockLocked = $true
+        $environment.host_controls.gpu_clock.lock_applied = $true
+    }
+    $environment | ConvertTo-Json -Depth 8 |
+        Set-Content -LiteralPath $environmentPath -Encoding utf8
+
     for ($repetition = 1; $repetition -le $Repetitions; $repetition++) {
         for ($position = 0; $position -lt $modes.Count; $position++) {
             $mode = $modes[($position + $repetition - 1) % $modes.Count]
@@ -736,6 +783,13 @@ try {
         }
     }
 } finally {
+    if ($gpuClockLocked) {
+        & nvidia-smi.exe `
+            "--id=$NvidiaGpuIndex" --reset-gpu-clocks | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Failed to reset NVIDIA GPU $NvidiaGpuIndex graphics clock"
+        }
+    }
     foreach ($name in $environmentNames) {
         if ($null -eq $savedEnvironment[$name]) {
             Remove-Item "Env:$name" -ErrorAction SilentlyContinue
