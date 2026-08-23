@@ -97,7 +97,7 @@ model_hash "your-model" {
 
 发布门禁与具体模型的质量评测相互独立。它把同一个 Power revision、精确权重和已审查图绑定到各平台自己的 shape profile 与 TEE 策略，并验证标量／批处理一致性、有界峰值内存、活动任务取消清理、队列超时、replica 恢复和显式精确回退。证据结构中没有 Qwen、GGUF、分词器、解码器或模型族分发字段。
 
-受信任的构造路径由类型系统约束。严格的机密 GPU 验证会返回一个绑定到精确报告的不可构造证明；只有 `ReleaseCapture::promote_confidential_gpu` 能用它把有效的本地 CUDA 捕获提升为机密 GPU 捕获。原始报告、反序列化标签或调用方写入的布尔值都不能铸造这类发布证据。生成的 bundle 仍须由发布信任根认证。
+受信任的构造路径由类型系统约束。严格的机密 GPU 验证会返回一个绑定到精确报告的不可构造证明；只有 `ReleaseCapture::promote_confidential_gpu` 能用它把有效的本地 CUDA 捕获提升为机密 GPU 捕获。原始报告、反序列化标签或调用方写入的布尔值都不能铸造这类发布证据。提升后的捕获会显式保留已接受的推理执行摘要与可选辅助制品摘要，最终 bundle 回放会直接校验两者。生成的 bundle 仍须由发布信任根认证。
 
 组装前，验证每份跨主机传输的捕获：
 
@@ -134,7 +134,7 @@ python3 tools/qwen38_quality_evidence.py verify \
 
 ## 复现外部硬件捕获
 
-仓库中的流程会先在真实 Metal 设备上运行完整契约，再用同一个新鲜 nonce 绑定保留原字节的 NVIDIA evidence、远程 NRAS verdict、CPU TEE 报告、规范化 GPU 执行策略与模型自有加速器声明。`a3s-power-verify --promote-capture` 在同一进程内消费严格验证证明，并以禁止覆盖的方式创建机密捕获。
+仓库中的流程会先在真实 Metal 设备上运行完整契约，再用同一个新鲜 nonce 绑定保留原字节的 NVIDIA evidence、远程 NRAS verdict、CPU TEE 报告、规范化 GPU 与推理执行策略、可选辅助制品集合，以及模型自有加速器声明。`a3s-power-verify --promote-capture` 在同一进程内消费严格验证证明，并以禁止覆盖的方式创建机密捕获。
 
 精确命令、ACL、设备 pin、失败条件与制品清单见[外部 Metal 与机密 GPU 发布捕获](https://github.com/A3S-Lab/Power/blob/main/docs/external-release-capture.md)。每个生产标签都必须携带同一源码父提交的 Metal 与机密 GPU 证明；硬件证据缺失或验证失败都会阻止发布。
 

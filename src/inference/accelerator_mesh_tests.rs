@@ -165,7 +165,7 @@ fn confidential_report(
         .with_runtime(
             RuntimePolicyClaim::new().with_execution(ExecutionPolicyClaim {
                 gpu_sha256: hex::decode(&declaration.execution_policy_sha256).unwrap(),
-                inference_sha256: None,
+                inference_sha256: Some(vec![0x66; 32]),
                 auxiliary_artifacts_sha256: None,
             }),
         );

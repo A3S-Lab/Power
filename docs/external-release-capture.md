@@ -189,6 +189,16 @@ The inference digest command loads the ACL through Power's normal parser and
 therefore includes validated environment overrides. Run it in the same
 reviewed environment as the server, preserve the ACL and override inventory,
 and use an explicit `spec_mode` when the release must prove one decoder.
+If the reviewed deployment manifest declares an external draft, LoRA adapter,
+or multimodal projector, derive and retain its path-independent set digest too:
+
+```bash
+auxiliary_artifacts_sha256="$(target/release/a3s-power-verify \
+  --print-auxiliary-artifacts-digest /reviewed/model-manifest.json)"
+test "${#auxiliary_artifacts_sha256}" -eq 64
+```
+
+Do not set an auxiliary pin for a manifest with no auxiliary artifacts.
 
 For the generic release calibration path, materialize the deterministic
 SafeTensors collection before configuring the server. Run the same command on
@@ -424,15 +434,22 @@ target/release/a3s-power-verify \
   --gpu-firmware-version <reviewed-firmware-version>
 ```
 
+When the attested deployment declares auxiliary artifacts, append
+`--auxiliary-artifacts-digest "$auxiliary_artifacts_sha256"`. The flag is
+mandatory in that case and must be omitted when no auxiliary digest is claimed.
+
 Promotion uses the fixed `verify_confidential_gpu_attestation` profile and
 consumes its opaque exact-report proof immediately. It rejects `--allow-offline`,
 live `--url` input, missing evidence pins, a non-local or non-CUDA source,
 mismatched weights/device/policy, malformed declarations, and builds without
 `embedded-inference` or `hw-verify`. `confidential-gpu.json` is synchronized and
 committed with same-directory create-new semantics; an existing path is never
-replaced. Promotion also writes the verified CPU TEE type into the digest-bound
-confidential release binding. The v1 bundle verifier accepts `sev-snp` only;
-TDX cannot enter the v1 release class through a custom verifier.
+replaced. Promotion writes the verified CPU TEE type, inference-execution
+digest, and optional auxiliary-artifacts digest into the digest-bound
+confidential release binding. Final capture and bundle replay validate those
+explicit fields as well as the aggregate claims digest. The v1 bundle verifier
+accepts `sev-snp` only; TDX cannot enter the v1 release class through a custom
+verifier.
 
 ## Build and verify the strict bundle
 

@@ -27,6 +27,8 @@ pub struct ConfidentialGpuBinding {
     declaration_sha256: String,
     weights_sha256: String,
     execution_policy_sha256: String,
+    inference_execution_policy_sha256: String,
+    auxiliary_artifacts_sha256: Option<String>,
     runtime_device: RuntimeDeviceIdentity,
     device_mesh_sha256: Option<String>,
 }
@@ -131,6 +133,22 @@ impl ConfidentialGpuBinding {
                     .to_string(),
             ));
         }
+        let inference_execution_policy_sha256 = execution
+            .inference_sha256
+            .as_deref()
+            .ok_or_else(|| {
+                PowerError::PolicyViolation(
+                    "confidential GPU claims do not bind an inference execution policy".to_string(),
+                )
+            })
+            .and_then(|digest| {
+                encode_attested_sha256(digest, "confidential GPU inference execution policy")
+            })?;
+        let auxiliary_artifacts_sha256 = execution
+            .auxiliary_artifacts_sha256
+            .as_deref()
+            .map(|digest| encode_attested_sha256(digest, "confidential GPU auxiliary artifacts"))
+            .transpose()?;
 
         let mut hasher = Sha256::new();
         hasher.update(canonical_claims_bytes(claims)?);
@@ -142,6 +160,8 @@ impl ConfidentialGpuBinding {
             declaration_sha256: declaration.declaration_sha256.clone(),
             weights_sha256: declaration.weights_sha256.clone(),
             execution_policy_sha256: declaration.execution_policy_sha256.clone(),
+            inference_execution_policy_sha256,
+            auxiliary_artifacts_sha256,
             runtime_device: declaration.runtime_device,
             device_mesh_sha256: declaration
                 .device_mesh
@@ -168,6 +188,14 @@ impl ConfidentialGpuBinding {
 
     pub fn execution_policy_sha256(&self) -> &str {
         &self.execution_policy_sha256
+    }
+
+    pub fn inference_execution_policy_sha256(&self) -> &str {
+        &self.inference_execution_policy_sha256
+    }
+
+    pub fn auxiliary_artifacts_sha256(&self) -> Option<&str> {
+        self.auxiliary_artifacts_sha256.as_deref()
     }
 
     pub fn runtime_device(&self) -> RuntimeDeviceIdentity {
@@ -199,7 +227,18 @@ impl ConfidentialGpuBinding {
                     .to_string(),
             ));
         }
-        validate_sha256(&self.claims_sha256, "confidential GPU claims")
+        validate_sha256(&self.claims_sha256, "confidential GPU claims")?;
+        validate_sha256(
+            &self.inference_execution_policy_sha256,
+            "confidential GPU inference execution policy",
+        )?;
+        if let Some(auxiliary_artifacts_sha256) = &self.auxiliary_artifacts_sha256 {
+            validate_sha256(
+                auxiliary_artifacts_sha256,
+                "confidential GPU auxiliary artifacts",
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -210,10 +249,27 @@ impl std::fmt::Debug for ConfidentialGpuBinding {
             .field("tee_type", &self.tee_type)
             .field("claims_sha256", &self.claims_sha256)
             .field("declaration_sha256", &self.declaration_sha256)
+            .field("inference_execution_policy", &"sha256")
+            .field(
+                "auxiliary_artifacts",
+                &self.auxiliary_artifacts_sha256.as_ref().map(|_| "sha256"),
+            )
             .field("runtime_device", &self.runtime_device)
             .field("device_mesh_sha256", &self.device_mesh_sha256)
             .finish_non_exhaustive()
     }
+}
+
+#[cfg(any(feature = "server", test))]
+fn encode_attested_sha256(digest: &[u8], label: &str) -> Result<String> {
+    if digest.len() != 32 {
+        return Err(PowerError::PolicyViolation(format!(
+            "{label} must be a 32-byte SHA-256 digest"
+        )));
+    }
+    let digest = hex::encode(digest);
+    validate_sha256(&digest, label)?;
+    Ok(digest)
 }
 
 #[cfg(any(feature = "server", test))]

@@ -360,8 +360,12 @@ confidential capture must pass the fixed
 `verify_confidential_gpu_attestation` profile and carry its opaque,
 exact-report proof into `ReleaseCapture::promote_confidential_gpu`; raw reports,
 deserialized labels, and caller-authored verification booleans cannot mint that
-class. The resulting digest-bound capture is still evidence, not authorship, so
-the release system must authenticate its bundle digest.
+class. Promotion explicitly projects the verifier-pinned inference-execution
+digest and optional auxiliary-artifacts digest into the confidential capture;
+bundle replay validates both, so accepted MTP/FR, prompt-cache, residency,
+threading, Flash Attention, and proposer identities remain directly auditable.
+The resulting digest-bound capture is still evidence, not authorship, so the
+release system must authenticate its bundle digest.
 
 For v1, the confidential binding is explicitly SEV-SNP-only. The release
 workflow requires a tag to identify an evidence-only child of the frozen source

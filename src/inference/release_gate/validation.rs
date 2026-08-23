@@ -160,6 +160,16 @@ pub(super) fn validate_security(security: &ReleaseCaptureSecurity) -> Result<()>
             &binding.execution_policy_sha256,
             "confidential GPU execution policy",
         )?;
+        validate_sha256(
+            &binding.inference_execution_policy_sha256,
+            "confidential GPU inference execution policy",
+        )?;
+        if let Some(auxiliary_artifacts_sha256) = &binding.auxiliary_artifacts_sha256 {
+            validate_sha256(
+                auxiliary_artifacts_sha256,
+                "confidential GPU auxiliary artifacts",
+            )?;
+        }
         if let Some(device_mesh_sha256) = &binding.device_mesh_sha256 {
             validate_sha256(device_mesh_sha256, "confidential GPU device mesh")?;
         }

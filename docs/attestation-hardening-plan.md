@@ -538,6 +538,11 @@ Landed in the current working tree:
   and local CUDA capture, then commits bounded output with no-overwrite
   semantics. The external hardware workflow is documented in
   `external-release-capture.md`.
+- Made confidential release promotion retain the strictly verified
+  inference-execution digest and optional auxiliary-artifacts digest as explicit
+  capture fields. Final capture and bundle verification reject absent,
+  malformed, or mutated policy and auxiliary identities instead of relying only
+  on the aggregate claims digest.
 
 Still open:
 

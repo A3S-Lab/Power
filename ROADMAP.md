@@ -159,6 +159,9 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
       local CUDA capture to confidential-GPU evidence; the proof borrows the
       exact authenticated report, and a raw report or caller label cannot mint
       the production security class.
+- [x] Preserve the verifier-pinned inference-execution policy and optional
+      auxiliary-artifact set as explicit confidential release fields, and
+      reject missing, malformed, or mutated digests during bundle replay.
 - [x] Add the external Metal/confidential-GPU capture runbook that collects vendor
       evidence, invokes strict proof-backed promotion, and preserves the raw
       report plus trust-root material for the same immutable release revision.

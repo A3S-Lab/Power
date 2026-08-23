@@ -117,8 +117,10 @@ The trusted construction path is type-safe. Strict confidential-GPU
 verification returns an opaque proof bound to the exact report; only
 `ReleaseCapture::promote_confidential_gpu` can use that proof to promote a valid
 local CUDA capture. A raw report, deserialized label, or caller-authored boolean
-cannot mint confidential release evidence. The resulting bundle still needs an
-authenticated release trust root.
+cannot mint confidential release evidence. Promotion preserves the accepted
+inference-execution digest and optional auxiliary-artifacts digest as explicit
+capture fields; final bundle replay validates both. The resulting bundle still
+needs an authenticated release trust root.
 
 Validate each transferred capture before assembly:
 
@@ -176,10 +178,10 @@ passed.
 
 The checked-in workflow runs the complete contract on a real Metal device, then
 uses one fresh nonce to bind preserved NVIDIA evidence, the remote NRAS verdict,
-the CPU TEE report, the canonical GPU execution policy, and a model-owned
-accelerator declaration. `a3s-power-verify --promote-capture` consumes the
-strict proof in-process and creates a new confidential capture without replacing
-an existing file.
+the CPU TEE report, the canonical GPU and inference execution policies, any
+auxiliary-artifact set, and a model-owned accelerator declaration.
+`a3s-power-verify --promote-capture` consumes the strict proof in-process and
+creates a new confidential capture without replacing an existing file.
 
 Read [External Metal and Confidential-GPU Release Capture](https://github.com/A3S-Lab/Power/blob/main/docs/external-release-capture.md)
 for the exact commands, ACL, device pins, failure conditions, and artifact

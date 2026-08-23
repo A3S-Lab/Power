@@ -302,6 +302,9 @@ pub struct ConfidentialReleaseBinding {
     pub(super) accelerator_declaration_sha256: String,
     pub(super) weights_sha256: String,
     pub(super) execution_policy_sha256: String,
+    pub(super) inference_execution_policy_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) auxiliary_artifacts_sha256: Option<String>,
     pub(super) runtime_device: RuntimeDeviceIdentity,
     pub(super) device_mesh_sha256: Option<String>,
 }
@@ -315,6 +318,10 @@ impl ConfidentialReleaseBinding {
             accelerator_declaration_sha256: binding.declaration_sha256().to_string(),
             weights_sha256: binding.weights_sha256().to_string(),
             execution_policy_sha256: binding.execution_policy_sha256().to_string(),
+            inference_execution_policy_sha256: binding
+                .inference_execution_policy_sha256()
+                .to_string(),
+            auxiliary_artifacts_sha256: binding.auxiliary_artifacts_sha256().map(str::to_string),
             runtime_device: binding.runtime_device(),
             device_mesh_sha256: binding.device_mesh_sha256().map(str::to_string),
         }
@@ -340,6 +347,14 @@ impl ConfidentialReleaseBinding {
         &self.execution_policy_sha256
     }
 
+    pub fn inference_execution_policy_sha256(&self) -> &str {
+        &self.inference_execution_policy_sha256
+    }
+
+    pub fn auxiliary_artifacts_sha256(&self) -> Option<&str> {
+        self.auxiliary_artifacts_sha256.as_deref()
+    }
+
     pub fn runtime_device(&self) -> RuntimeDeviceIdentity {
         self.runtime_device
     }
@@ -358,6 +373,11 @@ impl std::fmt::Debug for ConfidentialReleaseBinding {
             .field("accelerator_declaration", &"sha256")
             .field("weights", &"sha256")
             .field("execution_policy", &"sha256")
+            .field("inference_execution_policy", &"sha256")
+            .field(
+                "auxiliary_artifacts",
+                &self.auxiliary_artifacts_sha256.as_ref().map(|_| "sha256"),
+            )
             .field("runtime_device", &self.runtime_device)
             .field(
                 "device_mesh",

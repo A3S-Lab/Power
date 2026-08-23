@@ -1138,7 +1138,10 @@ a verified local CUDA capture and pass through
 `verify_confidential_gpu_attestation` and
 `ReleaseCapture::promote_confidential_gpu`. The opaque proof is tied to the
 authenticated report's lifetime; neither a raw report, a deserialized security
-label, nor a permissive `VerifyResult` can invoke that promotion path.
+label, nor a permissive `VerifyResult` can invoke that promotion path. The
+promoted binding keeps the accepted inference-execution policy and optional
+auxiliary-artifact set as explicit validated digests, so final release replay
+can audit the exact acceleration policy without learning model topology.
 
 Policy schema v2 separates the revision-wide Power, weight, and graph identity
 from `ReleasePlatformBinding`. Each platform pins its own shape-profile

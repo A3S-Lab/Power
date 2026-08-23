@@ -44,6 +44,10 @@ deployment boundary, not a restriction to LLMs or to a particular model family.
   bounds, model residency, mmap/mlock, threads, Flash Attention, and parallel
   slots. Strict clients derive the expected value from the resolved ACL and
   explicit speculative modes remain fail-closed.
+- Proof-promoted confidential captures preserve that accepted inference digest
+  and any accepted auxiliary-artifacts digest as explicit release fields. Final
+  bundle replay therefore audits the exact execution and proposer identities,
+  in addition to the aggregate attestation-claims digest.
 - Strict SEV-SNP verification now binds policy fields to the exact signed raw
   report. Intel TDX fails closed until a DCAP Quote/QVL path is implemented.
 

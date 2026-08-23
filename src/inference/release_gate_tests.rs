@@ -352,6 +352,7 @@ fn policy_and_security_mismatches_fail_closed() {
             "acceleratorDeclarationSha256": digest('8'),
             "weightsSha256": fixture.shape.weights_sha256.clone(),
             "executionPolicySha256": digest('9'),
+            "inferenceExecutionPolicySha256": digest('a'),
             "runtimeDevice": { "kind": "cpu", "ordinal": null },
             "deviceMeshSha256": null
         }
@@ -373,6 +374,7 @@ fn policy_and_security_mismatches_fail_closed() {
             "acceleratorDeclarationSha256": digest('8'),
             "weightsSha256": fixture.shape.weights_sha256.clone(),
             "executionPolicySha256": fixture.shape.tee_policy_sha256.clone(),
+            "inferenceExecutionPolicySha256": digest('a'),
             "runtimeDevice": { "kind": "cuda", "ordinal": 0 },
             "deviceMeshSha256": null
         }

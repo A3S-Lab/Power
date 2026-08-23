@@ -53,10 +53,14 @@ profile and returns a non-serializable proof tied to the exact authenticated
 report. `ReleaseCapture::promote_confidential_gpu` consumes that proof plus the
 matching accelerator declaration, verifies the source is a valid local CUDA
 capture, projects the verified claims, and rebuilds the capture under the
-confidential-GPU class. `ReleaseCapture::build` accepts only local captures, so
-a caller-supplied label cannot invoke the trusted mint path. Deserialized
-bundles remain evidence inputs and still require the external signed trust-root
-check described below.
+confidential-GPU class. The projection retains the aggregate claims digest and
+also exposes the verifier-pinned inference-execution digest plus any
+auxiliary-artifacts digest. Capture and bundle replay validate those fields, so
+the accepted runtime policy and external proposer, adapter, or projector set
+remain directly reviewable after promotion. `ReleaseCapture::build` accepts
+only local captures, so a caller-supplied label cannot invoke the trusted mint
+path. Deserialized bundles remain evidence inputs and still require the
+external signed trust-root check described below.
 
 Projects that are not preparing a v1 production release may construct an
 explicit narrower policy, for example a CPU-only development policy. Such a
@@ -271,8 +275,10 @@ are likewise outside the gate.
 
 Optimizations such as Flash Attention, fused kernels, speculative decoding, MTP,
 reduced projections, tensor sharing, or device-resident chains must be included
-in the reviewed graph and runtime artifact identities. None receives a special
-verification branch.
+in the reviewed graph, canonical inference-execution policy, and auxiliary
+artifact identities as applicable. Proof promotion preserves the accepted
+inference and auxiliary digests explicitly; none of these optimizations receives
+a model-specific verification branch.
 
 ## Current evidence status
 

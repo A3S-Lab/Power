@@ -20,6 +20,7 @@ const NONCE: [u8; 32] = [0x11; 32];
 const EVIDENCE_DIGEST: [u8; 32] = [0x33; 32];
 const VERDICT_DIGEST: [u8; 32] = [0x44; 32];
 const INFERENCE_EXECUTION_DIGEST: [u8; 32] = [0x66; 32];
+const AUXILIARY_ARTIFACTS_DIGEST: [u8; 32] = [0x77; 32];
 
 struct AcceptFixtureSignature;
 
@@ -87,7 +88,7 @@ fn report_for(declaration: &AcceleratorResidencyDeclaration) -> AttestationRepor
             RuntimePolicyClaim::new().with_execution(ExecutionPolicyClaim {
                 gpu_sha256: hex::decode(&declaration.execution_policy_sha256).unwrap(),
                 inference_sha256: Some(INFERENCE_EXECUTION_DIGEST.to_vec()),
-                auxiliary_artifacts_sha256: None,
+                auxiliary_artifacts_sha256: Some(AUXILIARY_ARTIFACTS_DIGEST.to_vec()),
             }),
         );
     let report_data = build_claims_report_data(&claims).unwrap();
@@ -141,7 +142,7 @@ fn verify_options<'a>(
             hex::decode(&declaration.execution_policy_sha256).unwrap(),
         ),
         expected_inference_execution_digest: Some(INFERENCE_EXECUTION_DIGEST.to_vec()),
-        expected_auxiliary_artifacts_digest: None,
+        expected_auxiliary_artifacts_digest: Some(AUXILIARY_ARTIFACTS_DIGEST.to_vec()),
         hardware_verifier: Some(verifier),
     }
 }
@@ -289,6 +290,31 @@ fn opaque_confidential_proof_enables_a_strict_v1_bundle() {
     assert_eq!(binding.weights_sha256(), declaration.weights_sha256);
     assert_eq!(binding.runtime_device(), declaration.runtime_device);
     assert_eq!(binding.tee_type(), TeeType::SevSnp);
+    let expected_inference = hex::encode(INFERENCE_EXECUTION_DIGEST);
+    let expected_auxiliary = hex::encode(AUXILIARY_ARTIFACTS_DIGEST);
+    assert_eq!(
+        binding.inference_execution_policy_sha256(),
+        expected_inference
+    );
+    assert_eq!(
+        binding.auxiliary_artifacts_sha256(),
+        Some(expected_auxiliary.as_str())
+    );
+
+    let promoted_json = serde_json::to_value(&promoted).unwrap();
+    assert_eq!(
+        promoted_json["security"]["binding"]["inferenceExecutionPolicySha256"].as_str(),
+        Some(expected_inference.as_str())
+    );
+    assert_eq!(
+        promoted_json["security"]["binding"]["auxiliaryArtifactsSha256"].as_str(),
+        Some(expected_auxiliary.as_str())
+    );
+    let mut tampered = promoted_json;
+    tampered["security"]["binding"]["inferenceExecutionPolicySha256"] =
+        serde_json::Value::String(hex::encode([0x88; 32]));
+    let tampered: ReleaseCapture = serde_json::from_value(tampered).unwrap();
+    assert!(tampered.verify().is_err());
 
     let relabel_error = ReleaseCapture::build(
         promoted.security.clone(),

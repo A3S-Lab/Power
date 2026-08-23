@@ -153,7 +153,7 @@ fn confidential_report(
         .with_runtime(
             RuntimePolicyClaim::new().with_execution(ExecutionPolicyClaim {
                 gpu_sha256: execution_digest,
-                inference_sha256: None,
+                inference_sha256: Some(vec![0x66; 32]),
                 auxiliary_artifacts_sha256: None,
             }),
         );
@@ -584,6 +584,79 @@ fn confidential_binding_rejects_wrong_policy_model_and_simulation() {
         ConfidentialGpuBinding::from_attestation_report_for_test(&wrong_model, &declaration)
             .is_err()
     );
+
+    let mut missing_inference = confidential_report(
+        &declaration,
+        hex::decode(&declaration.execution_policy_sha256).unwrap(),
+        hex::decode(hierarchy.store().sha256()).unwrap(),
+    );
+    missing_inference
+        .claims
+        .as_mut()
+        .unwrap()
+        .runtime
+        .as_mut()
+        .unwrap()
+        .execution
+        .as_mut()
+        .unwrap()
+        .inference_sha256 = None;
+    missing_inference.report_data =
+        build_claims_report_data(missing_inference.claims.as_ref().unwrap()).unwrap();
+    let missing_inference_error =
+        ConfidentialGpuBinding::from_attestation_report_for_test(&missing_inference, &declaration)
+            .unwrap_err();
+    assert!(missing_inference_error
+        .to_string()
+        .contains("inference execution policy"));
+
+    let mut short_inference = confidential_report(
+        &declaration,
+        hex::decode(&declaration.execution_policy_sha256).unwrap(),
+        hex::decode(hierarchy.store().sha256()).unwrap(),
+    );
+    short_inference
+        .claims
+        .as_mut()
+        .unwrap()
+        .runtime
+        .as_mut()
+        .unwrap()
+        .execution
+        .as_mut()
+        .unwrap()
+        .inference_sha256 = Some(vec![0x66; 31]);
+    short_inference.report_data =
+        build_claims_report_data(short_inference.claims.as_ref().unwrap()).unwrap();
+    assert!(ConfidentialGpuBinding::from_attestation_report_for_test(
+        &short_inference,
+        &declaration,
+    )
+    .is_err());
+
+    let mut short_auxiliary = confidential_report(
+        &declaration,
+        hex::decode(&declaration.execution_policy_sha256).unwrap(),
+        hex::decode(hierarchy.store().sha256()).unwrap(),
+    );
+    short_auxiliary
+        .claims
+        .as_mut()
+        .unwrap()
+        .runtime
+        .as_mut()
+        .unwrap()
+        .execution
+        .as_mut()
+        .unwrap()
+        .auxiliary_artifacts_sha256 = Some(vec![0x77; 31]);
+    short_auxiliary.report_data =
+        build_claims_report_data(short_auxiliary.claims.as_ref().unwrap()).unwrap();
+    assert!(ConfidentialGpuBinding::from_attestation_report_for_test(
+        &short_auxiliary,
+        &declaration,
+    )
+    .is_err());
 
     let mut missing_device = confidential_report(
         &declaration,

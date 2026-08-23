@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Preserved the verifier-accepted inference-execution digest and optional
+  auxiliary-artifacts digest as explicit fields in proof-promoted confidential
+  GPU captures. Final release-bundle replay now validates those pins directly,
+  so an attested speculative/MTP/FR, prompt-cache, residency, threading, Flash
+  Attention, or auxiliary-proposer identity cannot disappear behind the
+  aggregate claims digest during promotion.
 - Bound the resolved server inference configuration into model attestation and
   every request receipt. A domain-separated digest now covers speculative mode
   and MTP/FR controls, prompt-cache bounds, residency/load policy, threading,
