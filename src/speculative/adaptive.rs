@@ -53,12 +53,13 @@ impl AdaptiveK {
 ///
 /// The controller sizes the next proposal from the observed accepted-prefix
 /// length and opens a one-way target-only circuit after a sustained low-yield
-/// window. A configured width may initially exceed the resident rollback
-/// window: high-acceptance requests keep that faster path, while the first
-/// oversized rejection is replayed exactly by the backend and clamps later
-/// proposals to the resident window. The circuit is deliberately request-local:
-/// a poor prompt must not poison later requests whose draft distribution may
-/// be very different.
+/// window. It starts inside the resident rollback window and promotes directly
+/// to the configured wide shape only when its first rollback-safe probe is
+/// fully accepted. High-acceptance requests therefore recover the wide path
+/// quickly, while an ordinary first rejection remains an in-place rollback
+/// instead of forcing a full target-prefix replay.
+/// The circuit is deliberately request-local: a poor prompt must not poison
+/// later requests whose draft distribution may be very different.
 #[derive(Debug, Clone)]
 pub struct AdaptiveSpeculationController {
     current: usize,
@@ -72,6 +73,7 @@ pub struct AdaptiveSpeculationController {
     target_only_after_round: Option<u64>,
     rollback_limit: usize,
     rollback_guard_after_round: Option<u64>,
+    wide_probe_pending: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -87,16 +89,18 @@ impl AdaptiveSpeculationController {
 
     /// Create a controller with a bounded resident rollback window.
     ///
-    /// The configured proposal maximum remains available until an observed
-    /// rejected suffix actually exceeds `rollback_limit`. This avoids paying a
-    /// permanent throughput penalty for a fallback path that high-acceptance
-    /// requests never exercise.
+    /// The configured proposal maximum remains available, but the first round
+    /// starts at the largest rollback-safe width. A fully accepted first probe
+    /// promotes directly to that maximum without making every mixed-workload
+    /// request pay one unavoidable prefix replay or graph capture for every
+    /// intermediate width. A partial first probe closes the wide path for that
+    /// request.
     pub fn new(initial: usize, min: usize, max: usize, rollback_limit: usize) -> Self {
         let max = max.max(1);
         let min = min.max(1).min(max);
         let rollback_limit = rollback_limit.max(min).min(max);
         Self {
-            current: initial.clamp(min, max),
+            current: initial.clamp(min, max).min(rollback_limit),
             min,
             max,
             accepted_prefix_ema: None,
@@ -107,6 +111,7 @@ impl AdaptiveSpeculationController {
             target_only_after_round: None,
             rollback_limit,
             rollback_guard_after_round: None,
+            wide_probe_pending: max > rollback_limit,
         }
     }
 
@@ -144,6 +149,7 @@ impl AdaptiveSpeculationController {
             self.max = self.rollback_limit;
             self.current = self.current.min(self.max);
             self.rollback_guard_after_round = Some(self.rounds);
+            self.wide_probe_pending = false;
         }
         self.window[self.window_cursor] = SpeculationRound { accepted, drafted };
         self.window_cursor = (self.window_cursor + 1) % Self::OBSERVATION_WINDOW;
@@ -155,11 +161,25 @@ impl AdaptiveSpeculationController {
         let previous_ema = self.accepted_prefix_ema.unwrap_or(accepted as f32);
         let ema = Self::EMA_ALPHA * accepted as f32 + (1.0 - Self::EMA_ALPHA) * previous_ema;
         self.accepted_prefix_ema = Some(ema);
+        let wide_probe = self.wide_probe_pending
+            && self.current == self.rollback_limit
+            && self.max > self.rollback_limit;
+        if wide_probe {
+            self.wide_probe_pending = false;
+        }
 
         if accepted == 0 {
             self.current = self.current.div_ceil(2).max(self.min);
         } else if accepted == drafted {
-            self.current = self.current.saturating_add(1).min(self.max);
+            if wide_probe {
+                // Jump directly to the configured shape after one strong safe
+                // probe. Avoiding intermediate widths keeps the request on two
+                // reusable CUDA Graph shapes and does not add a target pass to
+                // the calibrated high-acceptance path.
+                self.current = self.max;
+            } else if self.current != self.rollback_limit || self.max <= self.rollback_limit {
+                self.current = self.current.saturating_add(1).min(self.max);
+            }
         } else if accepted.saturating_mul(2) >= drafted {
             // A target pass that commits at least half of the proposal is
             // already well amortized. Treat this as a healthy partial round

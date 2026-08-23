@@ -759,10 +759,10 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_speculation_starts_at_configured_width_above_rollback_window() {
+    fn adaptive_speculation_warm_starts_inside_rollback_window() {
         let controller = AdaptiveSpeculationController::new(7, 1, 7, 6);
 
-        assert_eq!(controller.draft_limit(), Some(7));
+        assert_eq!(controller.draft_limit(), Some(6));
         assert_eq!(controller.effective_max(), 7);
         assert_eq!(controller.rollback_guard_after_round(), None);
     }
@@ -771,7 +771,8 @@ mod tests {
     fn adaptive_speculation_clamps_only_after_replay_worthy_rejection() {
         let mut controller = AdaptiveSpeculationController::new(7, 1, 7, 6);
 
-        controller.observe(1, 7);
+        controller.observe(6, 6);
+        assert_eq!(controller.draft_limit(), Some(7));
         assert_eq!(controller.effective_max(), 7);
         assert_eq!(controller.rollback_guard_after_round(), None);
 
@@ -816,12 +817,30 @@ mod tests {
 
     #[test]
     fn adaptive_speculation_keeps_width_when_target_pass_is_well_amortized() {
-        let mut controller = AdaptiveSpeculationController::new(10, 1, 10, 6);
+        let mut controller = AdaptiveSpeculationController::new(10, 1, 10, 10);
 
         controller.observe(5, 10);
         assert_eq!(controller.draft_limit(), Some(10));
         controller.observe(7, 10);
         assert_eq!(controller.draft_limit(), Some(10));
+    }
+
+    #[test]
+    fn adaptive_speculation_jumps_wide_after_first_safe_full_acceptance() {
+        let mut controller = AdaptiveSpeculationController::new(10, 1, 10, 6);
+
+        controller.observe(6, 6);
+        assert_eq!(controller.draft_limit(), Some(10));
+    }
+
+    #[test]
+    fn adaptive_speculation_closes_wide_probe_after_partial_acceptance() {
+        let mut controller = AdaptiveSpeculationController::new(10, 1, 10, 6);
+
+        controller.observe(5, 6);
+        controller.observe(6, 6);
+        controller.observe(6, 6);
+        assert_eq!(controller.draft_limit(), Some(6));
     }
 
     #[test]
