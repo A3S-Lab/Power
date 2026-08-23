@@ -184,32 +184,35 @@ evidence commit may add only the two regular files under
 This two-commit layout avoids the impossible requirement for a checked-in
 bundle to contain the hash of the commit that contains the bundle.
 
-First derive and validate the frozen source revision, then pass that revision to
-the isolated read-only verifier:
+From a clean checkout of the evidence child, run the same candidate preflight
+used by release CI. The explicit containment ref is `HEAD` before publication
+or `refs/remotes/origin/main` after the evidence child has reached the remote
+main branch:
 
 ```bash
-source_commit="$(bash tools/verify-release-evidence-commit.sh 1.0.0 HEAD)"
-
-a3s-power-tensor-batch-bench verify-release-bundle \
-  --bundle release/v1.0.0/release-evidence.json \
-  --expected-sha256-file release/v1.0.0/release-evidence.sha256 \
-  --power-version 1.0.0 \
-  --power-commit "${source_commit}"
+source_commit="$(bash tools/verify-release-candidate.sh \
+  --evidence-ref HEAD \
+  --main-ref refs/remotes/origin/main)"
 ```
 
-It bounded-reads both files, denies unknown bundle fields, replays every nested
-digest and contract, requires the exact four-platform v1 policy, checks the
-external pin, matches the requested version and source revision, and enforces
-the SEV-SNP confidential boundary. The pin file must contain one lowercase
-SHA-256 digest with only an optional LF or CRLF line ending.
+The preflight requires a clean checkout, derives the locked Cargo package
+version, rejects `0.x`, verifies a dated matching changelog entry with an empty
+Unreleased section, validates the exact evidence-only child layout and the
+caller-selected main containment ref, then invokes the isolated bundle verifier.
+That verifier bounded-reads both files, denies unknown fields, replays every
+nested digest and contract, requires the exact four-platform v1 policy, checks
+the external pin, matches the version and source revision, and enforces the
+SEV-SNP confidential boundary. The pin file must contain one lowercase SHA-256
+digest with only an optional LF or CRLF line ending.
 
-Release CI runs both checks for every non-`0.x` tag before artifacts can be
-published. It also requires the evidence child to be reachable from `main` and
-the annotated tag signature to carry GitHub's verified status. It builds
-binaries and publishes the crate from the frozen source parent while attaching
-the evidence pair from the tagged child. Missing, pre-existing, mixed
-source/evidence, lightweight-tag, or unverified-tag inputs therefore block v1
-instead of silently degrading to the available local platforms.
+Release CI runs this same preflight for every non-`0.x` tag before artifacts can
+be published, with `refs/remotes/origin/main` as the containment ref. It also
+requires the annotated tag signature to carry GitHub's verified status. It
+builds binaries and publishes the crate from the frozen source parent while
+attaching the evidence pair from the tagged child. Missing, pre-existing, mixed
+source/evidence, dirty-checkout, pending-changelog, lightweight-tag, or
+unverified-tag inputs therefore block v1 instead of silently degrading to the
+available local platforms.
 
 ## Capture runners
 

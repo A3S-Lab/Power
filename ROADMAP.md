@@ -180,6 +180,10 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
       complete diff adds only the bundle and pin; build and publish artifacts
       from its frozen source parent. The child must be reachable from `main` and
       the annotated tag must have a GitHub-verified signature.
+- [x] Add one pre-tag candidate command that fails closed on a dirty checkout,
+      pre-v1 or pending changelog state, invalid evidence-child layout, missing
+      main containment, or failed strict four-platform bundle replay. Release CI
+      uses the same command instead of duplicating the semantic gate inline.
 - [x] Implement reviewed Intel DCAP Quote generation and QVL verification, or
       explicitly exclude TDX from the v1 production support matrix. A local
       TDREPORT now fails closed and is not treated as a PCK-signed Quote. The

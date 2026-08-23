@@ -94,6 +94,8 @@ jobs:
       - run: tools/check-embedded-deps.sh
       - name: Test release evidence commit layout
         run: tools/test-release-evidence-commit.sh
+      - name: Test release candidate preflight
+        run: bash tools/test-release-candidate.sh
       - name: Test release workflow contract
         run: tools/test-release-workflow-contract.sh
       - name: Test prompt-cache benchmark client

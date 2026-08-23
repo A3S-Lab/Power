@@ -171,6 +171,20 @@ python3 tools/dspark_quality_followup_evidence.py verify \
 
 这种拆分消除了提交哈希的自引用：bundle 认证源码父提交，签名子提交再认证 bundle。仅有源码或历史基准文件，不能证明某个版本已经通过生产发布门禁。
 
+创建标签前，先在本地运行与发布 CI 相同的失败关闭预检：
+
+```bash
+git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+bash tools/verify-release-candidate.sh \
+  --evidence-ref HEAD \
+  --main-ref refs/remotes/origin/main
+```
+
+它只接受工作树干净、版本不低于 v1、变更日志已经收口、证据子提交位于远程
+`main`，且严格四平台 bundle 能完整回放的候选版本。原生 Metal 与经
+SEV-SNP/NVIDIA 证明提升的机密 GPU 证据仍然是硬要求；预检不会用模拟或部分
+捕获替代它们。
+
 ## 复现外部硬件捕获
 
 仓库中的流程会先在真实 Metal 设备上运行完整契约，再用同一个新鲜 nonce 绑定保留原字节的 NVIDIA evidence、远程 NRAS verdict、CPU TEE 报告、规范化 GPU 与推理执行策略、可选辅助制品集合，以及模型自有加速器声明。`a3s-power-verify --promote-capture` 在同一进程内消费严格验证证明，并以禁止覆盖的方式创建机密捕获。

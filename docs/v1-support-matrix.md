@@ -93,6 +93,9 @@ reachable from `main`. Release binaries and the crates.io package are built from
 `S`. A GitHub-verified annotated tag and the GitHub source archive point to `E`,
 which carries the authenticated evidence pair. Lightweight or unverified tags
 fail the release workflow. Cargo excludes `release/` from the published crate.
+Freeze `S` only after moving every pending changelog item into the dated
+`[<crate-version>]` entry and leaving `[Unreleased]` empty; the candidate gate
+checks that state from the source commit rather than trusting the worktree.
 
 From a clean checkout of `S`, assemble both create-new artifacts from the four
 independently reviewed captures. The command rejects mislabeled platforms,
@@ -144,8 +147,9 @@ git diff --cached --check
 git commit -m "release: add v${version} production evidence"
 
 evidence_commit="$(git rev-parse HEAD)"
-test "$(bash tools/verify-release-evidence-commit.sh \
-  "${version}" "${evidence_commit}")" = "${source_commit}"
+test "$(bash tools/verify-release-candidate.sh \
+  --evidence-ref "${evidence_commit}" \
+  --main-ref HEAD)" = "${source_commit}"
 git push origin HEAD:main
 git tag -s "v${version}" -m "A3S Power v${version}"
 git push origin "v${version}"
@@ -154,26 +158,19 @@ git push origin "v${version}"
 From the tagged clean checkout, reproduce the release decision with:
 
 ```bash
-version="$(cargo metadata --locked --no-deps --format-version 1 \
-  | jq -r '.packages[] | select(.name == "a3s-power") | .version')"
-source_commit="$(bash tools/verify-release-evidence-commit.sh \
-  "${version}" HEAD)"
-
-cargo run --locked --release --no-default-features \
-  --features embedded-inference \
-  --bin a3s-power-tensor-batch-bench -- \
-  verify-release-bundle \
-  --bundle "release/v${version}/release-evidence.json" \
-  --expected-sha256-file "release/v${version}/release-evidence.sha256" \
-  --power-version "${version}" \
-  --power-commit "${source_commit}"
+git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+source_commit="$(bash tools/verify-release-candidate.sh \
+  --evidence-ref HEAD \
+  --main-ref refs/remotes/origin/main)"
 ```
 
-Verification recomputes the bundle and nested digests, requires the exact four
-platform classes, checks the external digest pin, compares the exact version and
-Git source revision, validates the exact evidence-only child layout, and
-requires SEV-SNP for the confidential-GPU capture. The release workflow runs
-these checks before any `v1.x` or later tag can publish artifacts.
+Verification requires a clean checkout, the locked non-`0.x` Cargo version, a
+dated matching changelog entry with no pending Unreleased content, and main-ref
+containment. It then recomputes the bundle and nested digests, requires the exact
+four platform classes, checks the external digest pin, compares the exact
+version and Git source revision, validates the exact evidence-only child layout,
+and requires SEV-SNP for the confidential-GPU capture. The release workflow
+runs the same preflight before any `v1.x` or later tag can publish artifacts.
 
 The checked-in digest is a mutation-detection pin. Release authorship still
 requires the repository's signed tag/release trust root and preserved raw

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added a centralized pre-tag production-candidate verifier. It requires a
+  clean evidence-child checkout, locked non-`0.x` package identity, a dated
+  matching changelog entry with no pending Unreleased content, exact
+  source-parent/evidence-child layout, caller-selected main containment, and a
+  successful strict four-platform bundle replay. Release CI now calls the same
+  command, with deterministic isolated-Git tests covering rejection paths.
 - Published the clean RTX 4090 `pure-q6` quality capture: 600 error-free
   requests over three cyclic repetitions, with the unchanged Q6_K target in
   both autoregressive and full-vocabulary MTP modes and zero continuous-GPU

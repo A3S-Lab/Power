@@ -389,6 +389,23 @@ fallback, software-rendered, or unnamed hardware; hosted paravirtual Metal is
 preflight evidence, not production evidence. See the
 [v1 Production Support Matrix](docs/v1-support-matrix.md).
 
+Before creating a production tag, `verify-release-candidate.sh` performs one
+fail-closed preflight over the clean checked-out evidence child. It derives the
+Cargo version, requires a dated changelog entry with no pending Unreleased
+content, validates the source-parent/evidence-child layout and requested main
+containment ref, then replays the pinned strict four-platform bundle:
+
+```bash
+git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+bash tools/verify-release-candidate.sh \
+  --evidence-ref HEAD \
+  --main-ref refs/remotes/origin/main
+```
+
+The command prints the frozen source commit only after every local gate passes.
+GitHub still independently requires a verified annotated tag, and absent native
+Metal or proof-promoted SEV-SNP/NVIDIA evidence remains release-blocking.
+
 `a3s-power-tensor-batch-bench release-run` applies the same collector to any
 caller-owned reviewed graph, typed tensors, opaque profile identities, and
 independent reference output. `release-fixture` is only a reproducible Add-graph

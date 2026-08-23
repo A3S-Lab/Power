@@ -31,6 +31,8 @@ for workflow in "$ci_workflow" "$release_workflow"; do
     fail "$workflow must contain one cross installation"
   grep -F -- '--rev "${CROSS_GIT_REV}" --locked' "$workflow" >/dev/null ||
     fail "$workflow must install cross from the pinned revision and lockfile"
+  [ "$(grep -Fc 'bash tools/test-release-candidate.sh' "$workflow")" -eq 1 ] ||
+    fail "$workflow must run the release candidate preflight contract test"
 done
 
 [ "$(grep -Ec '^  contents: read$' "$release_workflow")" -eq 1 ] ||
@@ -42,6 +44,15 @@ fi
   fail "exactly one release job must receive repository write permission"
 grep -F '          save-if: false' "$release_workflow" >/dev/null ||
   fail "release package validation cache must be restore-only"
+[ "$(grep -Fc 'bash tools/verify-release-candidate.sh' "$release_workflow")" -eq 1 ] ||
+  fail "release workflow must invoke one centralized candidate preflight"
+grep -F -- '--evidence-ref "${TAG_COMMIT}"' "$release_workflow" >/dev/null ||
+  fail "release candidate preflight must verify the signed tag target"
+grep -F -- '--main-ref refs/remotes/origin/main' "$release_workflow" >/dev/null ||
+  fail "release candidate preflight must require remote-main containment"
+if grep -F 'verify-release-bundle' "$release_workflow" >/dev/null; then
+  fail "release workflow must not duplicate semantic bundle verification"
+fi
 
 release_source="$(cat -- "$release_workflow")"
 case "$release_source" in

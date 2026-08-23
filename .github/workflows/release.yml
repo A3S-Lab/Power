@@ -76,6 +76,9 @@ jobs:
       - name: Release evidence commit layout test
         run: bash tools/test-release-evidence-commit.sh
 
+      - name: Release candidate preflight test
+        run: bash tools/test-release-candidate.sh
+
       - name: Release workflow contract test
         run: bash tools/test-release-workflow-contract.sh
 
@@ -124,29 +127,10 @@ jobs:
             exit 1
           fi
 
-          EVIDENCE_DIR="release/v${CRATE_VERSION}"
-          BUNDLE_PATH="${EVIDENCE_DIR}/release-evidence.json"
-          PIN_PATH="${EVIDENCE_DIR}/release-evidence.sha256"
-          test -f "${BUNDLE_PATH}" || {
-            echo "missing production release evidence bundle: ${BUNDLE_PATH}" >&2
-            exit 1
-          }
-          test -f "${PIN_PATH}" || {
-            echo "missing production release evidence digest pin: ${PIN_PATH}" >&2
-            exit 1
-          }
-
-          TAG_COMMIT="$(git rev-parse HEAD)"
-          POWER_COMMIT="$(bash tools/verify-release-evidence-commit.sh "${CRATE_VERSION}" "${TAG_COMMIT}")"
+          POWER_COMMIT="$(bash tools/verify-release-candidate.sh \
+            --evidence-ref "${TAG_COMMIT}" \
+            --main-ref refs/remotes/origin/main)"
           echo "source_commit=${POWER_COMMIT}" >> "$GITHUB_OUTPUT"
-          cargo run --locked --release --no-default-features \
-            --features embedded-inference \
-            --bin a3s-power-tensor-batch-bench -- \
-            verify-release-bundle \
-            --bundle "${BUNDLE_PATH}" \
-            --expected-sha256-file "${PIN_PATH}" \
-            --power-version "${CRATE_VERSION}" \
-            --power-commit "${POWER_COMMIT}"
 
       - name: Install Linux CPU feature dependencies
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake

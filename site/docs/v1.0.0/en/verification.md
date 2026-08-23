@@ -175,6 +175,20 @@ source parent, while the signed child authenticates the bundle. Source code or
 historical benchmark files alone are never sufficient evidence that a release
 passed.
 
+Run the same fail-closed candidate gate locally before creating the tag:
+
+```bash
+git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+bash tools/verify-release-candidate.sh \
+  --evidence-ref HEAD \
+  --main-ref refs/remotes/origin/main
+```
+
+It accepts only a clean non-`0.x` evidence child with a finalized changelog,
+remote-main containment, and a successfully replayed strict four-platform
+bundle. Native Metal and proof-promoted SEV-SNP/NVIDIA evidence are still
+mandatory; the preflight never substitutes synthetic or partial captures.
+
 ## Reproduce external hardware capture
 
 The checked-in workflow runs the complete contract on a real Metal device, then

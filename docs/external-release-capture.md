@@ -480,7 +480,9 @@ Once the independently reviewed CPU, ordinary CUDA, Metal, and promoted
 confidential-GPU captures are available from the same frozen source revision,
 assemble the canonical release pair without copying nested digest fields by
 hand. Keep the source commit in a variable before creating the files; the later
-evidence commit has a different hash by construction:
+evidence commit has a different hash by construction. The frozen source must
+already contain the dated version entry and an empty Unreleased changelog
+section, because the candidate preflight reads that committed state:
 
 ```bash
 set -euo pipefail
@@ -538,8 +540,9 @@ git diff --cached --check
 git commit -m "release: add v${power_version} production evidence"
 
 evidence_commit="$(git rev-parse HEAD)"
-test "$(bash tools/verify-release-evidence-commit.sh \
-  "$power_version" "$evidence_commit")" = "$source_commit"
+test "$(bash tools/verify-release-candidate.sh \
+  --evidence-ref "$evidence_commit" \
+  --main-ref HEAD)" = "$source_commit"
 git push origin HEAD:main
 git tag -s "v${power_version}" -m "A3S Power v${power_version}"
 git push origin "v${power_version}"
@@ -555,11 +558,12 @@ mapping, the exact common revision and workload, distinct tensor evidence,
 all platform-specific bindings, and the SEV-SNP confidential boundary. Both
 outputs use create-new semantics. If creating or synchronizing either file
 fails normally, the command removes any new half-pair; an existing caller-owned
-file is never replaced. The layout verifier then requires the tagged evidence
-commit to be the direct child of the measured source commit and to contain no
-other changes. Push that child to `main` before the signed annotated tag;
-release CI requires both main-branch reachability and GitHub-verified tag status,
-then builds and publishes from the source parent.
+file is never replaced. The candidate preflight then requires a clean checkout,
+an empty Unreleased changelog section, the exact versioned entry, the direct
+source-parent/evidence-child layout, caller-selected main containment, and a
+successful strict bundle replay. Push that child to `main` before the signed
+annotated tag; release CI repeats the preflight against `origin/main`, requires
+GitHub-verified tag status, then builds and publishes from the source parent.
 
 ## Artifact inventory
 
@@ -600,7 +604,8 @@ Before building the four-platform bundle:
 5. reproduce the confidential capture's launch-measurement and raw-report pins
    from `report.json` with the command above;
 6. recompute the artifact manifest from read-only copies;
-7. run the pinned `verify-release-bundle` command documented in the
+7. run the pinned `verify-release-bundle` command above, then the final
+   `verify-release-candidate.sh` preflight documented in the
    [v1 Production Support Matrix](v1-support-matrix.md); and
 8. authenticate the final bundle digest through the release trust root.
 
