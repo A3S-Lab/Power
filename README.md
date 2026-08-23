@@ -76,6 +76,9 @@ The repeated quality runner enforces that scope through its default
 `pure-q6` profile: both `q6-off` and `q6-mtp-full-vocab` resolve to the exact
 same Q6_K model identity. Inspect the contract without loading a model with
 `./tools/run-qwen38-quality-matrix.ps1 -Q6PowerHome unused -DescribeProfile`.
+Formal long-running captures also enable continuous per-process NVIDIA SM
+monitoring, so a GPU job that starts after the idle gate invalidates the run
+instead of silently depressing its throughput.
 
 | Qwen3.8-27B Q6_K target mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |

@@ -365,6 +365,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -MaximumIdleGpuUtilizationPercent 8 `
   -MinimumIdleGpuMemoryFreeMiB 23000 `
   -IdleGpuSampleCount 3 -IdleGpuWaitSeconds 300 `
+  -RequireContinuousGpuExclusivity `
+  -MaximumForeignGpuUtilizationPercent 2 `
   -RequireHighPerformancePowerPlan -RequireCleanTree
 ```
 
@@ -373,7 +375,9 @@ Both report labels must carry model SHA-256
 the environment receipt must contain `tbq4_model: null`, and no mode may carry
 an external-draft digest. A result is not promoted merely because the MTP row
 is faster: paired lenient and strict scores, truncation, stability, replay,
-and per-task answer changes must be reviewed together.
+and per-task answer changes must be reviewed together. The continuous
+`nvidia-smi pmon` log also has to contain no newly started process above 2% SM
+utilization; startup-only idle admission is insufficient for a long matrix.
 
 The following command deliberately replays the archived three-mode
 mixed-artifact S7 matrix and is not the active acceptance run:

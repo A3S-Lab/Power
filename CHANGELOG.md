@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TBQ4 target weights nor an external proposer, and retain the older mixed and
   external-draft profiles only as explicitly named research replays. A Windows
   contract test locks that boundary in CI.
+- Added opt-in, fail-closed continuous NVIDIA process monitoring to long
+  quality captures. The runner records a pre-run process baseline, samples
+  per-process SM utilization once per second with `nvidia-smi pmon`, permits
+  only the baseline and its own server, and invalidates evidence when a newly
+  started process exceeds the configured foreign-GPU threshold.
 - Preserved the verifier-accepted 48-byte launch measurement and the SHA-256
   identity of the exact raw signed CPU TEE report as explicit fields in every
   proof-promoted confidential GPU capture. Final capture and bundle replay now

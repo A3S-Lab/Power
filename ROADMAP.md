@@ -194,6 +194,10 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
       mixed-quantization and external-draft experiments. The default repeated
       matrix resolves both control and optimized modes to one unchanged Q6_K
       artifact and exposes its resolved contract before model loading.
+- [x] Keep long Windows quality captures under continuous process-level GPU
+      observation after admission. A new foreign PID above the configured SM
+      threshold invalidates the evidence and is retained in the environment
+      receipt instead of being mistaken for an inference regression.
 
 ## Cross-repository delivery order
 

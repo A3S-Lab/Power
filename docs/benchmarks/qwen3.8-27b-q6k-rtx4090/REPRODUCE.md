@@ -444,13 +444,17 @@ not require TBQ4 weights or an external proposer:
   -MaximumIdleGpuUtilizationPercent 8 `
   -MinimumIdleGpuMemoryFreeMiB 23000 `
   -IdleGpuSampleCount 3 -IdleGpuWaitSeconds 300 `
+  -RequireContinuousGpuExclusivity `
+  -MaximumForeignGpuUtilizationPercent 2 `
   -RequireHighPerformancePowerPlan -RequireCleanTree
 ```
 
 Use `-Q6PowerHome unused -DescribeProfile` to inspect the two-mode contract
 without loading a model. A valid environment receipt has `tbq4_model: null`,
 and both modes bind the exact Q6_K SHA-256. The result still requires paired
-quality review; target verification alone does not prove identical text.
+quality review; target verification alone does not prove identical text. The
+continuous per-process monitor invalidates the run if a new process exceeds
+2% NVIDIA SM utilization after the initial idle admission.
 
 For a shorter configuration calibration, replay the current pure-Q6_K paired
 mixed-task profile with a splatted argument table. Supplying the Boolean

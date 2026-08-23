@@ -60,6 +60,11 @@ param(
     [ValidateRange(1, 300)]
     [int]$IdleGpuWaitSeconds = 60,
 
+    [switch]$RequireContinuousGpuExclusivity,
+
+    [ValidateRange(0, 100)]
+    [int]$MaximumForeignGpuUtilizationPercent = 2,
+
     [string]$TargetDirectory = 'target-native-sm89-ninja',
 
     [string]$OutputRoot = 'target-qwen38-quality',
@@ -105,6 +110,8 @@ if ($MaxTokensCap -gt 0 -and $MaxTokensOverride -gt 0) {
 $powerRoot = Split-Path -Parent $PSScriptRoot
 $profileHelper = Join-Path $PSScriptRoot 'lib/qwen38-quality-profile.ps1'
 . $profileHelper
+$pmonHelper = Join-Path $PSScriptRoot 'lib/nvidia-pmon.ps1'
+. $pmonHelper
 $profileDefinition = Resolve-Qwen38QualityProfile -Profile $Profile
 if ($DescribeProfile) {
     $profileDefinition | ConvertTo-Json -Depth 6
@@ -347,7 +354,13 @@ function Invoke-ModeRun {
     $stdout = Join-Path $output "$runStem.stdout.log"
     $stderr = Join-Path $output "$runStem.stderr.log"
     $report = Join-Path $output "$runStem.json"
+    $pmonLog = Join-Path $output "$runStem.nvidia-pmon.log"
+    $pmonErrorLog = Join-Path $output "$runStem.nvidia-pmon.stderr.log"
     $process = $null
+    $pmonProcess = $null
+    $pmonBaseline = @()
+    $pmonSummary = $null
+    $pmonFailure = $null
 
     $admission = Wait-NvidiaGpuIdleAdmission
     $script:gpuAdmissions += [ordered]@{
@@ -358,7 +371,8 @@ function Invoke-ModeRun {
     $environment | ConvertTo-Json -Depth 8 |
         Set-Content -LiteralPath $environmentPath -Encoding utf8
 
-    if ($ReuseCompatible -and (Test-Path -LiteralPath $report -PathType Leaf)) {
+    if ($ReuseCompatible -and -not $RequireContinuousGpuExclusivity -and
+        (Test-Path -LiteralPath $report -PathType Leaf)) {
         try {
             $existing = Get-ReportMetadata -Path $report
             $identityMatches =
@@ -399,8 +413,18 @@ function Invoke-ModeRun {
         } catch {
         }
     }
-    foreach ($staleRunFile in @($report, $stdout, $stderr)) {
+    foreach ($staleRunFile in @(
+            $report,
+            $stdout,
+            $stderr,
+            $pmonLog,
+            $pmonErrorLog
+        )) {
         Remove-Item -LiteralPath $staleRunFile -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($RequireContinuousGpuExclusivity) {
+        $pmonBaseline = @(Get-NvidiaPmonSnapshot -GpuIndex $NvidiaGpuIndex)
     }
 
     $env:A3S_POWER_HOME = $Mode.power_home
@@ -457,6 +481,13 @@ function Invoke-ModeRun {
             throw "Server did not expose model $Model"
         }
 
+        if ($RequireContinuousGpuExclusivity) {
+            $pmonProcess = Start-NvidiaPmonMonitor `
+                -GpuIndex $NvidiaGpuIndex `
+                -OutputPath $pmonLog `
+                -ErrorPath $pmonErrorLog
+        }
+
         $arguments = @(
             $evaluator,
             'run',
@@ -498,14 +529,61 @@ function Invoke-ModeRun {
             throw "Mode $($Mode.label) repetition $Repetition did not complete $expectedTaskCount error-free requests"
         }
     } finally {
+        if ($pmonProcess) {
+            $pmonResult = Complete-NvidiaPmonMonitor `
+                -Process $pmonProcess `
+                -Baseline $pmonBaseline `
+                -ServerProcessId ([int]$process.Id) `
+                -OutputPath $pmonLog `
+                -MaximumForeignSmUtilizationPercent `
+                    $MaximumForeignGpuUtilizationPercent
+            $pmonSummary = $pmonResult.summary
+            $pmonFailure = $pmonResult.failure
+        }
         if ($process -and -not $process.HasExited) {
             $process.Kill()
             $process.WaitForExit()
         }
+        if ($RequireContinuousGpuExclusivity) {
+            if (-not $pmonProcess -and -not $pmonFailure) {
+                $pmonFailure = 'NVIDIA pmon did not start'
+            }
+
+            $script:gpuMonitors += [ordered]@{
+                run = $runStem
+                baseline_processes = $pmonBaseline
+                server_pid = if ($process) { [int]$process.Id } else { $null }
+                sample_interval_seconds = 1
+                log = [System.IO.Path]::GetFileName($pmonLog)
+                summary = $pmonSummary
+                failure = $pmonFailure
+            }
+            $environment.gpu_monitors = @($script:gpuMonitors)
+            $environment | ConvertTo-Json -Depth 10 |
+                Set-Content -LiteralPath $environmentPath -Encoding utf8
+        }
+    }
+
+    if ($pmonFailure) {
+        throw "Continuous GPU exclusivity failed for ${runStem}: $pmonFailure"
+    }
+    if ($pmonSummary -and $pmonSummary.interference_detected) {
+        $foreign = @($pmonSummary.foreign_processes | ForEach-Object {
+            "PID $($_.pid) $($_.command) ($($_.maximum_sm_utilization_percent)%)"
+        }) -join ', '
+        throw "Foreign GPU activity invalidated ${runStem}: $foreign"
     }
 }
 
-$requiredPaths = @($server, $evaluator, $reporter, $manifest, $config)
+$requiredPaths = @(
+    $server,
+    $evaluator,
+    $reporter,
+    $manifest,
+    $config,
+    $profileHelper,
+    $pmonHelper
+)
 if ($taskSelectionPath) {
     $requiredPaths += $taskSelectionPath
 }
@@ -601,6 +679,10 @@ $environment = [ordered]@{
             -Algorithm SHA256).Hash.ToLowerInvariant()
         reporter_sha256 = (Get-FileHash -LiteralPath $reporter `
             -Algorithm SHA256).Hash.ToLowerInvariant()
+        profile_helper_sha256 = (Get-FileHash -LiteralPath $profileHelper `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        pmon_helper_sha256 = (Get-FileHash -LiteralPath $pmonHelper `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     q6_model = $q6Identity
     tbq4_model = $tbq4Identity
@@ -638,6 +720,18 @@ $environment = [ordered]@{
         wait_seconds = $IdleGpuWaitSeconds
     }
     gpu_admissions = @()
+    gpu_exclusivity = [ordered]@{
+        required = [bool]$RequireContinuousGpuExclusivity
+        provider = if ($RequireContinuousGpuExclusivity) {
+            'nvidia-pmon'
+        } else {
+            $null
+        }
+        sample_interval_seconds = 1
+        maximum_foreign_sm_utilization_percent =
+            $MaximumForeignGpuUtilizationPercent
+    }
+    gpu_monitors = @()
     num_ctx = $NumCtx
     num_batch = $NumBatch
     max_tokens_cap = if ($MaxTokensCap -gt 0) { $MaxTokensCap } else { $null }
@@ -688,6 +782,10 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
                 $environment.benchmark_tools.evaluator_sha256 -and
             $previous.benchmark_tools.reporter_sha256 -eq
                 $environment.benchmark_tools.reporter_sha256 -and
+            $previous.benchmark_tools.profile_helper_sha256 -eq
+                $environment.benchmark_tools.profile_helper_sha256 -and
+            $previous.benchmark_tools.pmon_helper_sha256 -eq
+                $environment.benchmark_tools.pmon_helper_sha256 -and
             $previous.q6_model.sha256 -eq $environment.q6_model.sha256 -and
             $previous.q6_model.external_draft.sha256 -eq
                 $environment.q6_model.external_draft.sha256 -and
@@ -714,6 +812,10 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
                 $environment.gpu_admission.sample_interval_milliseconds -and
             [int]$previous.gpu_admission.wait_seconds -eq
                 $environment.gpu_admission.wait_seconds -and
+            [bool]$previous.gpu_exclusivity.required -eq
+                $environment.gpu_exclusivity.required -and
+            [int]$previous.gpu_exclusivity.maximum_foreign_sm_utilization_percent -eq
+                $environment.gpu_exclusivity.maximum_foreign_sm_utilization_percent -and
             [int]$previous.num_ctx -eq $environment.num_ctx -and
             [int]$previous.num_batch -eq $environment.num_batch -and
             (($null -eq $previous.max_tokens_cap -and
@@ -740,6 +842,7 @@ if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
 }
 Write-Output "Existing report environment compatible: $reuseCompatible"
 $gpuAdmissions = @()
+$gpuMonitors = @()
 $environment | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $environmentPath -Encoding utf8
 
 if ($PreparedTaskCache) {
