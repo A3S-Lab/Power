@@ -38,6 +38,14 @@ projectors must carry measured size/SHA-256 identities, must pass load-time
 verification, and must be covered by the caller-pinned canonical
 auxiliary-artifacts digest in attestation and request receipts.
 
+The runtime-policy boundary separately binds the resolved server inference
+configuration: speculative/MTP/FR controls, prompt-cache bounds, model
+residency, mmap/mlock, threads, Flash Attention, and parallel slots. Strict
+verification requires the independent caller to pin this digest whenever it is
+declared; the confidential-GPU profile requires it unconditionally. An
+explicit speculative mode is required when the accepted policy must name one
+decoder rather than the honest backend-selected `auto` contract.
+
 ## Confidential-computing boundary
 
 | CPU TEE | v1 status | Reason |

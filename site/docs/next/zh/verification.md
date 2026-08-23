@@ -60,19 +60,27 @@ a3s-power-verify \
   --model your-model \
   --nonce <fresh-client-nonce-hex> \
   --model-hash <64-character-artifact-sha256> \
+  --inference-execution-digest <resolved-power-policy-sha256> \
   --auxiliary-artifacts-digest <portable-auxiliary-set-sha256> \
   --expected-measurement <96-character-launch-measurement-hex>
 ```
 
-模型使用外部 draft、LoRA adapter 或多模态 projector 时，先从已审查的部署 manifest
-计算与本机路径无关的期望值：
+先从已审查的 ACL 计算服务端策略摘要。模型还使用外部 draft、LoRA adapter 或
+多模态 projector 时，再从部署 manifest 计算与本机路径无关的期望值：
 
 ```bash
+a3s-power-verify --print-inference-execution-digest power.acl
 a3s-power-verify --print-auxiliary-artifacts-digest model-manifest.json
 ```
 
-证明中声明辅助制品时，严格验证要求调用方固定该摘要。摘要覆盖制品角色、解码
+新的本地模型报告始终声明推理策略，因此严格客户端必须固定其摘要。证明中声明
+辅助制品时，还必须固定辅助制品摘要。该摘要覆盖制品角色、解码
 契约、字节长度、制品哈希以及外部 draft 的目标绑定，不包含本机路径。
+
+推理执行摘要覆盖完全解析后的 ACL 中的投机解码、MTP/FR、前缀缓存边界、
+模型驻留、mmap/mlock、线程数、Flash Attention 和并行请求槽位；环境变量覆盖会
+改变摘要。验收必须证明某一种解码器时，应使用显式 `spec_mode`；`auto` 证明的是
+后端选择策略，不会伪装成已经预先选定 MTP、DFlash 或 DSpark。
 
 由验证器，而不是服务运营方，选择可接受的启动度量、制品哈希、运行策略、GPU 证据与回执字段。
 
@@ -82,7 +90,7 @@ a3s-power-verify --print-auxiliary-artifacts-digest model-manifest.json
 | --- | --- |
 | AMD SEV-SNP | 原始报告解析、nonce 与度量绑定、VCEK 获取、ECDSA P-384 签名验证 |
 | Intel TDX | 失败即关闭：当前本地 TDREPORT 不是可远程验证的 DCAP Quote，仍需实现 Quote 生成与 QVL 验证 |
-| NVIDIA 机密 GPU | 新鲜设备声明、固件与拓扑策略、固定 NRAS verdict、GPU 执行摘要 |
+| NVIDIA 机密 GPU | 新鲜设备声明、固件与拓扑策略、固定 NRAS verdict、GPU 放置摘要与推理执行摘要 |
 
 Power 默认在内存中缓存获取到的 AMD KDS 证书材料一小时。运营方可调整该缓存，但网络或证书失败在生产中仍然是阻断错误，除非存在显式审查过的离线证书设计。任何缓存设置都不能启用 TDX 验证。
 

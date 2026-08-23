@@ -167,20 +167,18 @@ pub async fn handler(
         }
     };
 
-    let runtime_policy = match crate::api::prompt_policy::runtime_policy_claim_with_gpu_config(
-        &manifest,
-        Some(&state.config.gpu),
-    ) {
-        Ok(policy) => policy,
-        Err(e) => {
-            state.metrics.decrement_active_requests();
-            return openai_error(
-                "receipt_failed",
-                &format!("failed to build runtime policy receipt claim: {e}"),
-            )
-            .into_response();
-        }
-    };
+    let runtime_policy =
+        match crate::api::prompt_policy::runtime_policy_claim(&manifest, Some(&state.config)) {
+            Ok(policy) => policy,
+            Err(e) => {
+                state.metrics.decrement_active_requests();
+                return openai_error(
+                    "receipt_failed",
+                    &format!("failed to build runtime policy receipt claim: {e}"),
+                )
+                .into_response();
+            }
+        };
 
     let backend = match state.find_backend_for_manifest(&manifest) {
         Ok(b) => b,

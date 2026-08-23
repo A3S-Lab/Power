@@ -19,6 +19,7 @@ use crate::verify::{
 const NONCE: [u8; 32] = [0x11; 32];
 const EVIDENCE_DIGEST: [u8; 32] = [0x33; 32];
 const VERDICT_DIGEST: [u8; 32] = [0x44; 32];
+const INFERENCE_EXECUTION_DIGEST: [u8; 32] = [0x66; 32];
 
 struct AcceptFixtureSignature;
 
@@ -85,6 +86,7 @@ fn report_for(declaration: &AcceleratorResidencyDeclaration) -> AttestationRepor
         .with_runtime(
             RuntimePolicyClaim::new().with_execution(ExecutionPolicyClaim {
                 gpu_sha256: hex::decode(&declaration.execution_policy_sha256).unwrap(),
+                inference_sha256: Some(INFERENCE_EXECUTION_DIGEST.to_vec()),
                 auxiliary_artifacts_sha256: None,
             }),
         );
@@ -138,6 +140,7 @@ fn verify_options<'a>(
         expected_gpu_execution_digest: Some(
             hex::decode(&declaration.execution_policy_sha256).unwrap(),
         ),
+        expected_inference_execution_digest: Some(INFERENCE_EXECUTION_DIGEST.to_vec()),
         expected_auxiliary_artifacts_digest: None,
         hardware_verifier: Some(verifier),
     }

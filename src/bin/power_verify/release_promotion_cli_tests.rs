@@ -21,6 +21,8 @@ fn complete_promotion_args() -> Vec<String> {
         "33".repeat(32).as_str(),
         "--gpu-execution-digest",
         "22".repeat(32).as_str(),
+        "--inference-execution-digest",
+        "55".repeat(32).as_str(),
     ])
 }
 

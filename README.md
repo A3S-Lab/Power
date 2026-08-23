@@ -585,21 +585,33 @@ a3s-power-verify \
   --url http://127.0.0.1:11434 \
   --nonce <client-nonce-hex> \
   --model-hash <artifact-sha256-hex> \
+  --inference-execution-digest <resolved-power-policy-sha256> \
   --auxiliary-artifacts-digest <portable-auxiliary-set-sha256> \
   --expected-measurement <launch-measurement-hex>
 ```
 
-When the model uses a draft, LoRA adapter, or multimodal projector, derive the
-path-independent pin from the reviewed deployment manifest before verification:
+Derive the server policy pin from the reviewed ACL. When the model also uses a
+draft, LoRA adapter, or multimodal projector, derive its path-independent pin
+from the reviewed deployment manifest:
 
 ```bash
+a3s-power-verify --print-inference-execution-digest power.acl
 a3s-power-verify --print-auxiliary-artifacts-digest model-manifest.json
 ```
 
-Strict verification requires that pin whenever the attested runtime declares
-auxiliary artifacts. The digest commits to roles, decoder contracts, sizes,
+New local-model reports always declare the inference policy, so strict clients
+pin its digest. Strict verification requires the auxiliary pin whenever the
+attested runtime declares auxiliary artifacts. That digest commits to roles, decoder contracts, sizes,
 artifact hashes, and external-draft target binding; host-local paths are not
 part of the identity.
+
+The inference-execution digest commits to the normalized speculative mode and
+MTP/FR controls, prompt-cache bounds, model residency, mmap/mlock, thread
+count, Flash Attention, and parallel request slots from the fully resolved ACL
+configuration. Environment overrides therefore change the digest. Use an
+explicit `spec_mode` when a verifier must prove one exact decoder; `auto`
+honestly commits to backend selection rather than pretending it selected MTP,
+DFlash, or DSpark in advance.
 
 The verifier selects acceptable launch measurements, artifact hashes, runtime
 policy, GPU evidence, and receipt fields. The server does not get to weaken

@@ -248,6 +248,7 @@ pub fn chat_receipt_with_runtime_policy_and_effective_prompt(
         "prompt_cache_key_sha256",
         request.prompt_cache_key.as_deref(),
     );
+    insert_optional_keep_alive(&mut parameters, request.keep_alive.as_deref())?;
 
     Ok(AttestationReceipt {
         schema: AttestationReceipt::SCHEMA.to_string(),
@@ -391,6 +392,7 @@ pub fn completion_receipt_with_runtime_policy_and_effective_prompt(
         "prompt_cache_key_sha256",
         request.prompt_cache_key.as_deref(),
     );
+    insert_optional_keep_alive(&mut parameters, request.keep_alive.as_deref())?;
 
     Ok(AttestationReceipt {
         schema: AttestationReceipt::SCHEMA.to_string(),
@@ -453,6 +455,23 @@ fn insert_optional_string_sha256(
             serde_json::Value::String(hex::encode(Sha256::digest(value.as_bytes()))),
         );
     }
+}
+
+fn insert_optional_keep_alive(
+    parameters: &mut BTreeMap<String, serde_json::Value>,
+    value: Option<&str>,
+) -> crate::error::Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let seconds = crate::config::parse_keep_alive(value)
+        .map_err(crate::error::PowerError::InvalidRequest)?
+        .as_secs();
+    parameters.insert(
+        "keep_alive_seconds".to_string(),
+        serde_json::Value::Number(seconds.into()),
+    );
+    Ok(())
 }
 
 fn insert_optional_u32(
@@ -604,6 +623,44 @@ mod tests {
         }
     }
 
+    fn completion_request() -> CompletionRequest {
+        CompletionRequest {
+            model: "llama3".to_string(),
+            prompt: "hello".to_string(),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            n: None,
+            logprobs: None,
+            echo: None,
+            best_of: None,
+            logit_bias: None,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_ctx: None,
+            num_batch: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            stop: None,
+            stream: Some(false),
+            stream_options: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            response_format: None,
+            suffix: None,
+            prompt_cache_key: None,
+            keep_alive: None,
+            unsupported: Default::default(),
+        }
+    }
+
     #[test]
     fn chat_receipt_digest_is_stable_for_same_request() {
         let receipt = chat_receipt(&chat_request()).unwrap();
@@ -658,41 +715,7 @@ mod tests {
 
     #[test]
     fn completion_receipt_effective_prompt_changes_digest() {
-        let request = CompletionRequest {
-            model: "llama3".to_string(),
-            prompt: "hello".to_string(),
-            temperature: None,
-            top_p: None,
-            max_tokens: None,
-            n: None,
-            logprobs: None,
-            echo: None,
-            best_of: None,
-            logit_bias: None,
-            top_k: None,
-            min_p: None,
-            repeat_penalty: None,
-            repeat_last_n: None,
-            penalize_newline: None,
-            num_ctx: None,
-            num_batch: None,
-            mirostat: None,
-            mirostat_tau: None,
-            mirostat_eta: None,
-            tfs_z: None,
-            typical_p: None,
-            stop: None,
-            stream: Some(false),
-            stream_options: None,
-            frequency_penalty: None,
-            presence_penalty: None,
-            seed: None,
-            response_format: None,
-            suffix: None,
-            prompt_cache_key: None,
-            keep_alive: None,
-            unsupported: Default::default(),
-        };
+        let request = completion_request();
         let base = completion_receipt(&request).unwrap();
         let with_effective = completion_receipt_with_runtime_policy_and_effective_prompt(
             &request,
@@ -727,6 +750,57 @@ mod tests {
         assert_ne!(
             receipt_digest(&first_receipt).unwrap(),
             receipt_digest(&chat_receipt(&second).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn keep_alive_override_is_semantically_bound() {
+        let mut minutes = chat_request();
+        minutes.keep_alive = Some("5m".to_string());
+        let mut seconds = minutes.clone();
+        seconds.keep_alive = Some("300".to_string());
+
+        let minutes_receipt = chat_receipt(&minutes).unwrap();
+        let seconds_receipt = chat_receipt(&seconds).unwrap();
+
+        assert_eq!(
+            minutes_receipt.decoding.parameters["keep_alive_seconds"],
+            serde_json::json!(300)
+        );
+        assert_eq!(
+            receipt_digest(&minutes_receipt).unwrap(),
+            receipt_digest(&seconds_receipt).unwrap()
+        );
+    }
+
+    #[test]
+    fn keep_alive_override_rejects_invalid_value() {
+        let mut request = chat_request();
+        request.keep_alive = Some("eventually".to_string());
+
+        assert!(chat_receipt(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid keep_alive"));
+    }
+
+    #[test]
+    fn completion_keep_alive_override_is_semantically_bound() {
+        let mut minutes = completion_request();
+        minutes.keep_alive = Some("5m".to_string());
+        let mut seconds = minutes.clone();
+        seconds.keep_alive = Some("300".to_string());
+
+        let minutes_receipt = completion_receipt(&minutes).unwrap();
+        let seconds_receipt = completion_receipt(&seconds).unwrap();
+
+        assert_eq!(
+            minutes_receipt.decoding.parameters["keep_alive_seconds"],
+            serde_json::json!(300)
+        );
+        assert_eq!(
+            receipt_digest(&minutes_receipt).unwrap(),
+            receipt_digest(&seconds_receipt).unwrap()
         );
     }
 

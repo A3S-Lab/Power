@@ -39,6 +39,11 @@ deployment boundary, not a restriction to LLMs or to a particular model family.
   content identities independent of host paths. Strict startup, backend load,
   signature verification, model-bound attestation, request receipts, and the
   independent verifier all bind the same canonical auxiliary-artifacts digest.
+- Model-bound attestation and request receipts now bind one canonical
+  inference-execution digest for speculative/MTP/FR policy, prompt-cache
+  bounds, model residency, mmap/mlock, threads, Flash Attention, and parallel
+  slots. Strict clients derive the expected value from the resolved ACL and
+  explicit speculative modes remain fail-closed.
 - Strict SEV-SNP verification now binds policy fields to the exact signed raw
   report. Intel TDX fails closed until a DCAP Quote/QVL path is implemented.
 

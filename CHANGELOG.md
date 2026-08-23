@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Bound the resolved server inference configuration into model attestation and
+  every request receipt. A domain-separated digest now covers speculative mode
+  and MTP/FR controls, prompt-cache bounds, residency/load policy, threading,
+  Flash Attention, and parallel slots. Strict verification requires a
+  caller-owned pin when the claim is present, GPU-confidential verification
+  requires it unconditionally, and `a3s-power-verify` can derive the pin from
+  an ACL file. Proxy receipts no longer claim local GPU or inference execution
+  policy for work performed by an upstream service.
 - Bound every local inference artifact, not only the primary weights. Model
   registration now captures Power-measured size and SHA-256 identities for
   LoRA adapters and multimodal projectors; strict TEE startup rejects legacy

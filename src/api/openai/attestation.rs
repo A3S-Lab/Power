@@ -396,11 +396,8 @@ async fn resolve_model_claims(
             )
         })?;
 
-    let runtime = crate::api::prompt_policy::runtime_policy_claim_with_gpu_config(
-        &manifest,
-        Some(&state.config.gpu),
-    )
-    .map_err(|e| {
+    let runtime = crate::api::prompt_policy::runtime_policy_claim(&manifest, Some(&state.config))
+        .map_err(|e| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to build runtime policy claim: {e}"),
@@ -1042,6 +1039,8 @@ mod tests {
         );
         let expected_gpu_execution_digest =
             crate::api::prompt_policy::canonical_gpu_execution_digest(&state.config.gpu).unwrap();
+        let expected_inference_execution_digest =
+            crate::api::prompt_policy::canonical_inference_execution_digest(&state.config).unwrap();
 
         let resp = handler(State(state), with_model("test-model"))
             .await
@@ -1071,6 +1070,13 @@ mod tests {
                 .as_ref()
                 .map(|execution| execution.gpu_sha256.clone()),
             Some(expected_gpu_execution_digest)
+        );
+        assert_eq!(
+            runtime
+                .execution
+                .as_ref()
+                .and_then(|execution| execution.inference_sha256.clone()),
+            Some(expected_inference_execution_digest)
         );
         assert_eq!(
             report.report_data,

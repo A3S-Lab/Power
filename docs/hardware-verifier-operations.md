@@ -80,6 +80,7 @@ a3s-power-verify \
   --model llama3 \
   --nonce <nonce-hex> \
   --model-hash <64-char-model-sha256> \
+  --inference-execution-digest <64-char-resolved-policy-sha256> \
   --expected-measurement <96-char-launch-measurement-hex>
 ```
 
@@ -90,6 +91,7 @@ a3s-power-verify \
   --file report.json \
   --nonce <nonce-hex> \
   --model-hash <64-char-model-sha256> \
+  --inference-execution-digest <64-char-resolved-policy-sha256> \
   --hw-cert-cache-ttl-secs 3600 \
   --expected-measurement <96-char-launch-measurement-hex>
 ```
@@ -97,7 +99,9 @@ a3s-power-verify \
 For NVIDIA GPU confidential-computing deployments, add the GPU confidential
 profile pins described in the README, including `--gpu-confidential`,
 `--gpu-verdict-digest`, GPU/NVSwitch topology pins, claims-version pins, and
-`--gpu-execution-digest`.
+both `--gpu-execution-digest` and `--inference-execution-digest`. Derive the
+latter from the exact resolved server ACL with
+`a3s-power-verify --print-inference-execution-digest power.acl`.
 
 To preserve externally collected NVIDIA bytes, configure
 `gpu_attestation.source = "configured"` with absolute `evidence_path` and

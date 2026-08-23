@@ -95,9 +95,15 @@ Landed in the current working tree:
   digests and GPU evidence provider/format/count pins from the canonical claims
   and reject mismatched claims/report_data bindings.
 - Added runtime policy claims for model-bound attestations. Power now hashes
-  applied chat templates and canonical GPU execution/offload parameters into
-  `AttestationClaimsV2`; unapplied manifest system prompts, pre-seeded
-  messages, and default generation parameters are intentionally not claimed.
+  applied chat templates, canonical GPU execution/offload parameters, and the
+  resolved local inference configuration into `AttestationClaimsV2`; unapplied
+  manifest system prompts, pre-seeded messages, and default generation
+  parameters are intentionally not claimed. Remote proxy receipts omit local
+  execution claims because their inference occurs upstream.
+- The inference-execution claim covers normalized speculative/MTP/FR controls,
+  prompt-cache bounds, residency/load policy, threads, Flash Attention, and
+  parallel slots. Strict verification requires an independent pin when the
+  claim is present; GPU-confidential verification requires it unconditionally.
 - Extended execution policy claims with a portable auxiliary-artifacts digest
   covering speculative drafts, LoRA adapters, and multimodal projectors. The
   attestation endpoint re-verifies their current bytes, request receipts carry
@@ -112,14 +118,15 @@ Landed in the current working tree:
   nonce freshness, an expected NVIDIA NRAS verdict digest, verifier-pinned GPU
   provider/format/count policy, structured device claims, verifier-pinned GPU
   topology, claims schema version, identity/version policy, secure-boot/debug
-  state, runtime policy, and GPU execution/offload digest pinning as one
+  state, runtime policy, GPU execution/offload digest pinning, and server
+  inference-execution digest pinning as one
   profile. The production GPU profile no longer accepts raw evidence digest
   pinning as a substitute for pinning the NRAS verdict digest.
 - Added per-request inference receipts for `/v1/chat/completions` and
   `/v1/completions`. Non-streaming responses include `attestation_receipt` and
   `attestation_receipt_sha256`; streaming responses emit a final receipt event
   before `[DONE]`. Receipt v2 includes the same runtime
-  chat-template/GPU execution policy claim semantics used by model-bound
+  chat-template/GPU/inference execution policy claim semantics used by model-bound
   attestation.
 - OpenAI-compatible chat and completion requests now expose extended local
   sampling controls (`top_k`, `min_p`, `repeat_penalty`, `repeat_last_n`,
@@ -327,7 +334,8 @@ Landed in the current working tree:
   coverage for both rejecting overclaimed image receipts and accepting image
   receipts that keep `effective_prompt` absent.
 - Tightened `a3s-power-verify` digest pin parsing so receipt, effective-prompt,
-  GPU evidence/verdict, chat-template, decoding-policy, and GPU execution pins
+  GPU evidence/verdict, chat-template, decoding-policy, GPU execution, and
+  inference-execution pins
   must be exactly 64-character SHA-256 hex values before verification policy is
   evaluated.
 - Tightened GPU evidence/verdict SDK verifier pins so callers must provide full
@@ -393,8 +401,8 @@ Landed in the current working tree:
   completion body with `stream = false` to the digest endpoint and accept only
   an upstream-declared `text.prompt` SHA-256 claim.
 - Tightened receipt well-formed verification so embedded runtime-policy digests
-  must be 32-byte SHA-256 values, including prompt, decoding, and GPU execution
-  digests.
+  must be 32-byte SHA-256 values, including prompt, decoding, GPU execution,
+  inference execution, and auxiliary-artifact digests.
 - Exposed the same original-request receipt comparison through
   `a3s-power-verify --receipt-chat-request-file` and
   `--receipt-completion-request-file`.
@@ -949,12 +957,20 @@ Current implementation:
 - Model-bound attestation includes `runtime.execution.gpu_sha256` for the
   canonical GPU execution/offload configuration: `gpu_layers`, `main_gpu`, and
   `tensor_split`.
+- Model-bound attestation and request receipts include
+  `runtime.execution.inference_sha256`, a domain-separated digest of the
+  resolved speculative/MTP/FR controls, prompt-cache bounds, model residency,
+  mmap/mlock, threads, Flash Attention, and parallel slots. `auto` remains a
+  distinct honest policy value; deployments that require one decoder use an
+  explicit fail-closed mode.
 - Verifiers can pin these digests with
   `VerificationPolicy::require_runtime_policy()` or
   `a3s-power-verify --require-runtime-policy`; GPU execution/offload pins use
   `--gpu-execution-digest`, and the CLI can compute the matching pin with
   `--print-gpu-execution-digest` from `gpu_layers`, `main_gpu`, and
-  `tensor_split`.
+  `tensor_split`. Server inference pins use `--inference-execution-digest` and
+  can be derived from the resolved ACL with
+  `--print-inference-execution-digest`.
 - `/v1/chat/completions` and `/v1/completions` build an
   `a3s.power.inference-receipt.v2` receipt from prompt-bearing API input,
   model runtime chat-template/GPU execution policy claims, and

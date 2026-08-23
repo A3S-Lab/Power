@@ -114,10 +114,19 @@ manifest and pins it during report verification:
 
 ```bash
 a3s-power-verify --print-auxiliary-artifacts-digest model-manifest.json
+a3s-power-verify --print-inference-execution-digest power.acl
 a3s-power-verify --file report.json \
+  --inference-execution-digest <printed-policy-sha256> \
   --auxiliary-artifacts-digest <printed-sha256> \
   --expected-measurement <launch-measurement-hex>
 ```
+
+The inference digest is separate from draft identity. It binds the normalized
+`spec_mode`, proposal width, adaptive/recurrent/FR controls, prompt-cache
+bounds, memory loading, threading, Flash Attention, and parallel slots from
+the resolved ACL. Use an explicit mode for exact decoder acceptance; `auto`
+commits to backend selection policy and cannot be relabeled as MTP, DFlash, or
+DSpark evidence.
 
 ## Prefix-cache composition
 

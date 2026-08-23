@@ -444,6 +444,13 @@ pub struct ExecutionPolicyClaim {
     /// SHA-256 of canonical GPU execution parameters.
     #[serde(with = "hex_bytes")]
     pub gpu_sha256: Vec<u8>,
+    /// SHA-256 of canonical server-side inference execution parameters.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_bytes_opt"
+    )]
+    pub inference_sha256: Option<Vec<u8>>,
     /// SHA-256 of canonical content identities for auxiliary inference
     /// artifacts such as speculative drafts, LoRA adapters, and multimodal
     /// projectors.

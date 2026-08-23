@@ -176,11 +176,19 @@ gpu_execution_sha256="$(target/release/a3s-power-verify \
   --main-gpu 0 \
   --tensor-split 1.0)"
 test "${#gpu_execution_sha256}" -eq 64
+
+inference_execution_sha256="$(target/release/a3s-power-verify \
+  --print-inference-execution-digest /reviewed/power.acl)"
+test "${#inference_execution_sha256}" -eq 64
 ```
 
 Include every `cpu_tensors` and `gpu_tensors` override with repeated
 `--cpu-tensor` and `--gpu-tensor` flags. The digest command and the server ACL
 must describe exactly the same values.
+The inference digest command loads the ACL through Power's normal parser and
+therefore includes validated environment overrides. Run it in the same
+reviewed environment as the server, preserve the ACL and override inventory,
+and use an explicit `spec_mode` when the release must prove one decoder.
 
 For the generic release calibration path, materialize the deterministic
 SafeTensors collection before configuring the server. Run the same command on
@@ -405,6 +413,7 @@ target/release/a3s-power-verify \
   --gpu-verdict-format nvidia-nvattest-attestation-json \
   --gpu-evidence-count 1 \
   --gpu-execution-digest "$gpu_execution_sha256" \
+  --inference-execution-digest "$inference_execution_sha256" \
   --gpu-count 1 \
   --nvswitch-count 0 \
   --gpu-ueid <reviewed-exact-gpu-ueid> \

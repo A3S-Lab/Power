@@ -66,22 +66,32 @@ a3s-power-verify \
   --model your-model \
   --nonce <fresh-client-nonce-hex> \
   --model-hash <64-character-artifact-sha256> \
+  --inference-execution-digest <resolved-power-policy-sha256> \
   --auxiliary-artifacts-digest <portable-auxiliary-set-sha256> \
   --expected-measurement <96-character-launch-measurement-hex>
 ```
 
-If the model uses an external draft, LoRA adapter, or multimodal projector,
-derive the path-independent expected value from its reviewed deployment
-manifest:
+Derive the server policy pin from the reviewed ACL. If the model also uses an
+external draft, LoRA adapter, or multimodal projector, derive its
+path-independent expected value from the reviewed deployment manifest:
 
 ```bash
+a3s-power-verify --print-inference-execution-digest power.acl
 a3s-power-verify --print-auxiliary-artifacts-digest model-manifest.json
 ```
 
-Strict verification requires this caller-owned pin whenever the attested
-runtime declares auxiliary artifacts. Roles, decoder contracts, byte lengths,
+New local-model reports always declare the inference policy, so strict clients
+pin its digest. Strict verification requires the auxiliary pin whenever the
+attested runtime declares auxiliary artifacts. Roles, decoder contracts, byte lengths,
 artifact hashes, and external-draft target binding are covered; local paths are
 excluded.
+
+The inference-execution digest covers normalized speculative/MTP/FR controls,
+prompt-cache bounds, model residency, mmap/mlock, threads, Flash Attention, and
+parallel request slots from the fully resolved ACL. Environment overrides
+therefore change the digest. Configure an explicit `spec_mode` when acceptance
+must prove one decoder; `auto` deliberately proves backend selection policy,
+not a decoder chosen in advance.
 
 The verifier - not the server operator - chooses the accepted launch
 measurement, artifact hash, runtime policy, GPU evidence, and receipt fields.
@@ -92,7 +102,7 @@ measurement, artifact hash, runtime policy, GPU evidence, and receipt fields.
 | --- | --- |
 | AMD SEV-SNP | Raw report parsing, nonce and measurement binding, VCEK retrieval, and ECDSA P-384 signature verification |
 | Intel TDX | Fails closed: the current local TDREPORT is not a remotely verifiable DCAP Quote; Quote generation and QVL are pending |
-| NVIDIA confidential GPU | Fresh device claims, firmware and topology policy, pinned NRAS verdict, and GPU execution digest |
+| NVIDIA confidential GPU | Fresh device claims, firmware and topology policy, pinned NRAS verdict, GPU placement digest, and inference-execution digest |
 
 Power caches fetched AMD KDS certificate material in memory for one hour by
 default. Operators can tune that cache, but a network or certificate failure

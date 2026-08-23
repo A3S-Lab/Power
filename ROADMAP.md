@@ -40,6 +40,10 @@ kernels.
 - [x] Content-address every local auxiliary inference artifact and bind its
       portable identity through strict startup, backend load, signatures,
       attestation, receipts, and caller-owned verifier policy.
+- [x] Bind the resolved model-neutral server inference policy into attestation
+      and request receipts, including speculative/MTP/FR controls,
+      prompt-cache bounds, memory loading, threads, Flash Attention, and
+      parallel slots; require independent pins on strict declared-policy paths.
 
 ### P1 — Canonical tensor batch layout
 

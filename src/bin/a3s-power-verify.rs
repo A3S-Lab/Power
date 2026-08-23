@@ -34,10 +34,11 @@ use std::time::Duration;
 
 use a3s_power::api::prompt_policy::{
     canonical_auxiliary_artifacts_digest, canonical_gpu_execution_digest,
+    canonical_inference_execution_digest,
 };
 use a3s_power::api::receipt::{AttestationReceipt, ReceiptRequestType};
 use a3s_power::api::types::{ChatCompletionRequest, CompletionRequest};
-use a3s_power::config::GpuConfig;
+use a3s_power::config::{GpuConfig, PowerConfig};
 use a3s_power::model::manifest::ModelManifest;
 use a3s_power::tee::attestation::AttestationReport;
 #[cfg(feature = "embedded-inference")]
@@ -72,16 +73,27 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     validate_release_promotion_options(&opts)?;
 
     if opts.print_gpu_execution_digest {
-        if opts.print_auxiliary_artifacts_digest.is_some() {
+        if opts.print_auxiliary_artifacts_digest.is_some()
+            || opts.print_inference_execution_digest.is_some()
+        {
             anyhow::bail!(
-                "--print-gpu-execution-digest conflicts with --print-auxiliary-artifacts-digest"
+                "--print-gpu-execution-digest conflicts with other digest-printing modes"
             );
         }
         println!("{}", gpu_execution_digest_from_opts(&opts)?);
         return Ok(());
     }
     if let Some(path) = opts.print_auxiliary_artifacts_digest.as_deref() {
+        if opts.print_inference_execution_digest.is_some() {
+            anyhow::bail!(
+                "--print-auxiliary-artifacts-digest conflicts with --print-inference-execution-digest"
+            );
+        }
         println!("{}", auxiliary_artifacts_digest_from_manifest(path)?);
+        return Ok(());
+    }
+    if let Some(path) = opts.print_inference_execution_digest.as_deref() {
+        println!("{}", inference_execution_digest_from_config(path)?);
         return Ok(());
     }
 
@@ -124,6 +136,9 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     }
     if opts.gpu_confidential && opts.gpu_execution_digest.is_none() {
         anyhow::bail!("--gpu-confidential requires --gpu-execution-digest");
+    }
+    if opts.gpu_confidential && opts.inference_execution_digest.is_none() {
+        anyhow::bail!("--gpu-confidential requires --inference-execution-digest");
     }
     if opts.gpu_confidential && !opts.has_gpu_confidential_device_pins() {
         anyhow::bail!(
@@ -198,6 +213,10 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     let expected_gpu_execution_digest = decode_optional_hex_arg(
         "--gpu-execution-digest",
         opts.gpu_execution_digest.as_deref(),
+    )?;
+    let expected_inference_execution_digest = decode_optional_hex_arg(
+        "--inference-execution-digest",
+        opts.inference_execution_digest.as_deref(),
     )?;
     let expected_auxiliary_artifacts_digest = decode_optional_hex_arg(
         "--auxiliary-artifacts-digest",
@@ -297,6 +316,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         expected_chat_template_digest,
         expected_decoding_parameters_digest,
         expected_gpu_execution_digest,
+        expected_inference_execution_digest,
         expected_auxiliary_artifacts_digest,
         hardware_verifier: hardware_verifier.as_deref(),
     };
@@ -534,10 +554,14 @@ struct CliOpts {
     decoding_policy_digest: Option<String>,
     /// Expected SHA-256 digest of canonical GPU execution parameters.
     gpu_execution_digest: Option<String>,
+    /// Expected SHA-256 digest of canonical server-side inference parameters.
+    inference_execution_digest: Option<String>,
     /// Expected SHA-256 digest of canonical auxiliary artifact identities.
     auxiliary_artifacts_digest: Option<String>,
     /// Manifest JSON used to print its canonical auxiliary-artifacts digest.
     print_auxiliary_artifacts_digest: Option<String>,
+    /// Power ACL config used to print its canonical inference-execution digest.
+    print_inference_execution_digest: Option<String>,
     /// Print the canonical GPU execution digest for supplied GPU parameters.
     print_gpu_execution_digest: bool,
     /// GPU layer offload value used by --print-gpu-execution-digest.
@@ -817,8 +841,10 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
         chat_template_digest: None,
         decoding_policy_digest: None,
         gpu_execution_digest: None,
+        inference_execution_digest: None,
         auxiliary_artifacts_digest: None,
         print_auxiliary_artifacts_digest: None,
+        print_inference_execution_digest: None,
         print_gpu_execution_digest: false,
         digest_gpu_layers: None,
         digest_main_gpu: 0,
@@ -1014,6 +1040,10 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
             "--gpu-execution-digest" => {
                 opts.gpu_execution_digest = Some(next_arg(args, &mut i, "--gpu-execution-digest")?);
             }
+            "--inference-execution-digest" => {
+                opts.inference_execution_digest =
+                    Some(next_arg(args, &mut i, "--inference-execution-digest")?);
+            }
             "--auxiliary-artifacts-digest" => {
                 opts.auxiliary_artifacts_digest =
                     Some(next_arg(args, &mut i, "--auxiliary-artifacts-digest")?);
@@ -1023,6 +1053,13 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
                     args,
                     &mut i,
                     "--print-auxiliary-artifacts-digest",
+                )?);
+            }
+            "--print-inference-execution-digest" => {
+                opts.print_inference_execution_digest = Some(next_arg(
+                    args,
+                    &mut i,
+                    "--print-inference-execution-digest",
                 )?);
             }
             "--print-gpu-execution-digest" => {
@@ -1128,11 +1165,12 @@ fn parse_args(args: &[String]) -> anyhow::Result<CliOpts> {
 
     if !opts.print_gpu_execution_digest
         && opts.print_auxiliary_artifacts_digest.is_none()
+        && opts.print_inference_execution_digest.is_none()
         && opts.url.is_none()
         && opts.file.is_none()
     {
         return Err(anyhow::anyhow!(
-            "one of --url, --file, --print-gpu-execution-digest, or --print-auxiliary-artifacts-digest is required. Run with --help for usage."
+            "one of --url, --file, --print-gpu-execution-digest, --print-inference-execution-digest, or --print-auxiliary-artifacts-digest is required. Run with --help for usage."
         ));
     }
 
@@ -1168,6 +1206,9 @@ fn validate_release_promotion_options(opts: &CliOpts) -> anyhow::Result<()> {
     }
     if opts.print_auxiliary_artifacts_digest.is_some() {
         anyhow::bail!("release promotion conflicts with --print-auxiliary-artifacts-digest");
+    }
+    if opts.print_inference_execution_digest.is_some() {
+        anyhow::bail!("release promotion conflicts with --print-inference-execution-digest");
     }
     if opts.allow_offline {
         anyhow::bail!(
@@ -1333,6 +1374,27 @@ fn gpu_execution_digest_from_opts(opts: &CliOpts) -> anyhow::Result<String> {
 }
 
 const MAX_MODEL_MANIFEST_JSON_BYTES: u64 = 1024 * 1024;
+const MAX_POWER_CONFIG_ACL_BYTES: u64 = 1024 * 1024;
+
+fn inference_execution_digest_from_config(path: &str) -> anyhow::Result<String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| anyhow::anyhow!("failed to inspect Power config {path}: {error}"))?;
+    if !metadata.is_file() {
+        anyhow::bail!("Power config is not a regular file: {path}");
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_POWER_CONFIG_ACL_BYTES {
+        anyhow::bail!(
+            "Power config must contain 1..={MAX_POWER_CONFIG_ACL_BYTES} bytes, found {}",
+            metadata.len()
+        );
+    }
+    let config = PowerConfig::load_from(path)
+        .map_err(|error| anyhow::anyhow!("failed to load Power config: {error}"))?;
+    let digest = canonical_inference_execution_digest(&config).map_err(|error| {
+        anyhow::anyhow!("failed to compute inference execution digest: {error}")
+    })?;
+    Ok(hex::encode(digest))
+}
 
 fn auxiliary_artifacts_digest_from_manifest(path: &str) -> anyhow::Result<String> {
     let metadata = std::fs::metadata(path)
@@ -1423,7 +1485,7 @@ OPTIONS:
     --gpu-evidence-format <FORMAT> Expected GPU evidence byte-format label
     --gpu-verdict-format <FORMAT>  Expected GPU verdict byte-format label
     --gpu-evidence-count <N>       Expected number of GPU evidence entries
-    --gpu-confidential             Require production NVIDIA GPU CC profile plus evidence nonce, NRAS verdict digest, evidence metadata, topology, claims-version, and identity/version pins
+    --gpu-confidential             Require production NVIDIA GPU CC profile plus evidence nonce, NRAS verdict digest, evidence metadata, topology, identity/version, GPU placement, and inference-policy pins
     --require-gpu-evidence         Require a v2 GPU evidence claim and digest verification; requires --nonce
     --require-gpu-device-claims    Require structured NVIDIA GPU/NVSwitch identity and freshness claims; requires --nonce
     --gpu-count <N>                Expected number of NVIDIA GPU device claims
@@ -1442,8 +1504,10 @@ OPTIONS:
     --chat-template-digest <HEX>   Expected SHA-256 digest of the chat template string
     --decoding-policy-digest <HEX> Expected SHA-256 digest of default decoding parameters
     --gpu-execution-digest <HEX>   Expected SHA-256 digest of GPU execution/offload parameters
+    --inference-execution-digest <HEX> Expected SHA-256 digest of server-side inference parameters
     --auxiliary-artifacts-digest <HEX> Expected SHA-256 digest of speculative draft, LoRA adapter, and projector identities
     --print-auxiliary-artifacts-digest <MANIFEST> Print the canonical auxiliary-artifacts digest and exit
+    --print-inference-execution-digest <CONFIG> Print the canonical inference-execution digest from resolved Power ACL and exit
     --print-gpu-execution-digest   Print the canonical GPU execution/offload digest and exit
     --gpu-layers <N>               GPU layer offload value for --print-gpu-execution-digest
     --main-gpu <N>                 Main GPU index for --print-gpu-execution-digest (default: 0)
@@ -1522,6 +1586,7 @@ EXAMPLES:
         --gpu-verdict-format nvidia-nvattest-attestation-json \
         --gpu-evidence-count <N> \
         --gpu-execution-digest <64-char-hex> \
+        --inference-execution-digest <64-char-hex> \
         --gpu-count 1 \
         --nvswitch-count 0 \
         --gpu-ueid 655333107904478077882826344426270545524203067314 \
@@ -1548,6 +1613,7 @@ EXAMPLES:
         --gpu-verdict-format nvidia-nvattest-attestation-json \
         --gpu-evidence-count 1 \
         --gpu-execution-digest <64-char-hex> \
+        --inference-execution-digest <64-char-hex> \
         --gpu-count 1 \
         --nvswitch-count 0 \
         --gpu-ueid <expected-gpu-ueid> \
@@ -1566,6 +1632,9 @@ EXAMPLES:
         --tensor-split 0.5,0.5 \
         --cpu-tensor output.weight \
         --gpu-tensor token_embd.weight
+
+    # Compute the server inference-policy digest from the resolved ACL
+    a3s-power-verify --print-inference-execution-digest power.acl
 
     # Verify an inference receipt against the saved attestation report
     a3s-power-verify --file report.json \
@@ -2266,6 +2335,8 @@ mod tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
             "--gpu-execution-digest".to_string(),
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            "--inference-execution-digest".to_string(),
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
         ];
 
         let err = run(&args).unwrap_err();
@@ -2384,6 +2455,36 @@ mod tests {
     }
 
     #[test]
+    fn test_run_gpu_confidential_requires_inference_execution_digest() {
+        let report_file = write_report_file();
+        let args = vec![
+            "--file".to_string(),
+            report_file.path().display().to_string(),
+            "--expected-measurement".to_string(),
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            "--nonce".to_string(),
+            "1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+            "--gpu-confidential".to_string(),
+            "--gpu-verdict-digest".to_string(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            "--gpu-provider".to_string(),
+            "nvidia-nras".to_string(),
+            "--gpu-evidence-format".to_string(),
+            "nvidia-nvattest-evidence-json".to_string(),
+            "--gpu-verdict-format".to_string(),
+            "nvidia-nvattest-attestation-json".to_string(),
+            "--gpu-evidence-count".to_string(),
+            "1".to_string(),
+            "--gpu-execution-digest".to_string(),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        ];
+
+        let err = run(&args).unwrap_err();
+
+        assert!(err.to_string().contains("--inference-execution-digest"));
+    }
+
+    #[test]
     fn test_run_gpu_confidential_requires_identity_pin() {
         let report_file = write_report_file();
         let args = vec![
@@ -2406,6 +2507,8 @@ mod tests {
             "1".to_string(),
             "--gpu-execution-digest".to_string(),
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            "--inference-execution-digest".to_string(),
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
         ];
 
         let err = run(&args).unwrap_err();
@@ -2436,6 +2539,8 @@ mod tests {
             "1".to_string(),
             "--gpu-execution-digest".to_string(),
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            "--inference-execution-digest".to_string(),
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
             "--gpu-claims-version".to_string(),
             "3.0".to_string(),
             "--gpu-oemid".to_string(),
@@ -2470,6 +2575,8 @@ mod tests {
             "1".to_string(),
             "--gpu-execution-digest".to_string(),
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            "--inference-execution-digest".to_string(),
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
             "--gpu-claims-version".to_string(),
             "3.0".to_string(),
             "--gpu-ueid".to_string(),
@@ -2506,6 +2613,8 @@ mod tests {
             "1".to_string(),
             "--gpu-execution-digest".to_string(),
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            "--inference-execution-digest".to_string(),
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
             "--gpu-count".to_string(),
             "1".to_string(),
             "--gpu-hwmodel".to_string(),
@@ -2598,6 +2707,8 @@ mod tests {
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
             "--gpu-execution-digest".to_string(),
             "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string(),
+            "--inference-execution-digest".to_string(),
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string(),
             "--auxiliary-artifacts-digest".to_string(),
             "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
             "--require-runtime-policy".to_string(),
@@ -2610,6 +2721,10 @@ mod tests {
         assert_eq!(
             opts.gpu_execution_digest.as_deref(),
             Some("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+        );
+        assert_eq!(
+            opts.inference_execution_digest.as_deref(),
+            Some("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
         );
         assert_eq!(
             opts.auxiliary_artifacts_digest.as_deref(),
@@ -2711,6 +2826,49 @@ mod tests {
             opts.print_auxiliary_artifacts_digest.as_deref(),
             Some("manifest.json")
         );
+    }
+
+    #[test]
+    fn test_inference_execution_digest_from_config_matches_canonicalizer() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("power.acl");
+        std::fs::write(
+            &config_path,
+            "spec_mode = \"mtp\"\nspec_draft_max = 7\nflash_attention = true\n",
+        )
+        .unwrap();
+        let config = PowerConfig::load_from(&config_path.display().to_string()).unwrap();
+        let expected = hex::encode(canonical_inference_execution_digest(&config).unwrap());
+
+        assert_eq!(
+            inference_execution_digest_from_config(&config_path.display().to_string()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_parse_args_print_inference_execution_digest() {
+        let args = vec![
+            "--print-inference-execution-digest".to_string(),
+            "power.acl".to_string(),
+        ];
+
+        let opts = parse_args(&args).unwrap();
+
+        assert_eq!(
+            opts.print_inference_execution_digest.as_deref(),
+            Some("power.acl")
+        );
+    }
+
+    #[test]
+    fn test_inference_execution_digest_pin_rejects_invalid_hex() {
+        let error = decode_optional_hex_arg("--inference-execution-digest", Some("not-a-digest"))
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("--inference-execution-digest must be a 64-character SHA-256 hex digest"));
     }
 
     #[test]

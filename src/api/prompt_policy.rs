@@ -6,14 +6,15 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::config::GpuConfig;
+use crate::config::{GpuConfig, PowerConfig};
 use crate::error::{PowerError, Result};
 use crate::model::manifest::{ModelFormat, ModelManifest};
+use crate::speculative::SpeculativeStrategy;
 use crate::tee::attestation::{ExecutionPolicyClaim, PromptPolicyClaim, RuntimePolicyClaim};
 
-pub(crate) fn runtime_policy_claim_with_gpu_config(
+pub(crate) fn runtime_policy_claim(
     manifest: &ModelManifest,
-    gpu: Option<&GpuConfig>,
+    config: Option<&PowerConfig>,
 ) -> Result<Option<RuntimePolicyClaim>> {
     let mut runtime = RuntimePolicyClaim::new();
 
@@ -21,9 +22,10 @@ pub(crate) fn runtime_policy_claim_with_gpu_config(
         runtime = runtime.with_prompt(prompt);
     }
 
-    if let Some(gpu) = gpu {
+    if let Some(config) = config.filter(|_| manifest.format != ModelFormat::Remote) {
         runtime = runtime.with_execution(ExecutionPolicyClaim {
-            gpu_sha256: canonical_gpu_execution_digest(gpu)?,
+            gpu_sha256: canonical_gpu_execution_digest(&config.gpu)?,
+            inference_sha256: Some(canonical_inference_execution_digest(config)?),
             auxiliary_artifacts_sha256: canonical_auxiliary_artifacts_digest(manifest)?,
         });
     }
@@ -139,6 +141,48 @@ pub fn canonical_gpu_execution_digest(gpu: &GpuConfig) -> Result<Vec<u8>> {
     Ok(sha256_bytes(&bytes))
 }
 
+/// Return the SHA-256 digest of Power's canonical server-side inference policy.
+///
+/// This binds the configured speculative-decoding, prompt-cache, memory-load,
+/// threading, Flash Attention, and request-slot settings. Request-specific
+/// overrides remain bound by inference receipts. `spec_mode = "auto"` is
+/// intentionally distinct from every explicit strategy; callers that need to
+/// prove one exact decoder must configure and pin that explicit mode.
+pub fn canonical_inference_execution_digest(config: &PowerConfig) -> Result<Vec<u8>> {
+    let spec_mode = SpeculativeStrategy::parse(&config.spec_mode).ok_or_else(|| {
+        PowerError::Config(format!("unsupported spec_mode '{}'", config.spec_mode))
+    })?;
+    let draft_p_min = canonical_named_f32(config.spec_draft_p_min, "spec_draft_p_min")?;
+    let keep_alive_seconds = crate::config::parse_keep_alive(&config.keep_alive)
+        .map_err(PowerError::Config)?
+        .as_secs();
+
+    let canonical = serde_json::json!({
+        "flash_attention": config.flash_attention,
+        "keep_alive_seconds": keep_alive_seconds,
+        "max_loaded_models": config.max_loaded_models,
+        "num_parallel": config.num_parallel,
+        "num_thread": config.num_thread,
+        "prompt_cache_max_entries": config.prompt_cache_max_entries,
+        "prompt_cache_ttl_seconds": config.prompt_cache_ttl_seconds,
+        "spec_draft_max": config.spec_draft_max,
+        "spec_draft_min": config.spec_draft_min,
+        "spec_draft_p_min": draft_p_min,
+        "spec_mode": spec_mode.as_str(),
+        "spec_mtp_adaptive": config.spec_mtp_adaptive,
+        "spec_mtp_fr_vocab_size": config.spec_mtp_fr_vocab_size,
+        "spec_mtp_recurrent_chain": config.spec_mtp_recurrent_chain,
+        "spec_mtp_recurrent_snapshots": config.spec_mtp_recurrent_snapshots,
+        "use_mlock": config.use_mlock,
+        "use_mmap": config.use_mmap,
+    });
+    let bytes = serde_json::to_vec(&canonical)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"a3s.power.inference-execution.v1\0");
+    hasher.update(bytes);
+    Ok(hasher.finalize().to_vec())
+}
+
 /// Return the portable digest of every content-addressed auxiliary inference
 /// artifact declared by a model manifest.
 ///
@@ -234,16 +278,15 @@ fn update_length_prefixed(hasher: &mut Sha256, bytes: &[u8]) {
 }
 
 fn canonical_f32(value: f32, index: usize) -> Result<serde_json::Value> {
+    canonical_named_f32(value, &format!("gpu.tensor_split[{index}]"))
+}
+
+fn canonical_named_f32(value: f32, field: &str) -> Result<serde_json::Value> {
     if !value.is_finite() {
-        return Err(PowerError::Config(format!(
-            "gpu.tensor_split[{index}] must be finite"
-        )));
+        return Err(PowerError::Config(format!("{field} must be finite")));
     }
-    let number = serde_json::Number::from_f64(value as f64).ok_or_else(|| {
-        PowerError::Config(format!(
-            "gpu.tensor_split[{index}] cannot be represented as JSON"
-        ))
-    })?;
+    let number = serde_json::Number::from_f64(value as f64)
+        .ok_or_else(|| PowerError::Config(format!("{field} cannot be represented as JSON")))?;
     Ok(serde_json::Value::Number(number))
 }
 
@@ -286,7 +329,14 @@ mod tests {
 
     #[test]
     fn runtime_policy_empty_manifest_returns_none() {
-        assert!(runtime_policy_claim_with_gpu_config(&manifest(), None)
+        assert!(runtime_policy_claim(&manifest(), None).unwrap().is_none());
+    }
+
+    #[test]
+    fn runtime_policy_does_not_claim_local_execution_for_remote_model() {
+        let remote = ModelManifest::remote("upstream-model");
+
+        assert!(runtime_policy_claim(&remote, Some(&PowerConfig::default()))
             .unwrap()
             .is_none());
     }
@@ -301,9 +351,7 @@ mod tests {
             content: "hello".to_string(),
         }];
 
-        let runtime = runtime_policy_claim_with_gpu_config(&manifest, None)
-            .unwrap()
-            .unwrap();
+        let runtime = runtime_policy_claim(&manifest, None).unwrap().unwrap();
         let prompt = runtime.prompt.unwrap();
         assert_eq!(
             prompt.chat_template_source.as_deref(),
@@ -328,9 +376,7 @@ mod tests {
             ("top_p".to_string(), serde_json::json!(0.9)),
         ]));
 
-        assert!(runtime_policy_claim_with_gpu_config(&manifest, None)
-            .unwrap()
-            .is_none());
+        assert!(runtime_policy_claim(&manifest, None).unwrap().is_none());
     }
 
     #[test]
@@ -342,13 +388,21 @@ mod tests {
             cpu_tensors: Vec::new(),
             gpu_tensors: Vec::new(),
         };
-        let runtime = runtime_policy_claim_with_gpu_config(&manifest(), Some(&gpu))
+        let config = PowerConfig {
+            gpu: gpu.clone(),
+            ..PowerConfig::default()
+        };
+        let runtime = runtime_policy_claim(&manifest(), Some(&config))
             .unwrap()
             .unwrap();
 
         assert_eq!(
             runtime.execution.as_ref().unwrap().gpu_sha256,
             canonical_gpu_execution_digest(&gpu).unwrap()
+        );
+        assert_eq!(
+            runtime.execution.as_ref().unwrap().inference_sha256,
+            Some(canonical_inference_execution_digest(&config).unwrap())
         );
     }
 
@@ -407,6 +461,54 @@ mod tests {
             canonical_gpu_execution_digest(&base).unwrap(),
             canonical_gpu_execution_digest(&placed).unwrap()
         );
+    }
+
+    #[test]
+    fn inference_execution_digest_changes_with_optimization_policy() {
+        let baseline = PowerConfig::default();
+        let tuned = PowerConfig {
+            spec_mode: "mtp".to_string(),
+            spec_draft_max: Some(7),
+            flash_attention: true,
+            ..baseline.clone()
+        };
+
+        assert_ne!(
+            canonical_inference_execution_digest(&baseline).unwrap(),
+            canonical_inference_execution_digest(&tuned).unwrap()
+        );
+    }
+
+    #[test]
+    fn inference_execution_digest_normalizes_strategy_aliases_and_keep_alive() {
+        let first = PowerConfig {
+            spec_mode: "prompt_lookup".to_string(),
+            keep_alive: "5m".to_string(),
+            ..PowerConfig::default()
+        };
+        let second = PowerConfig {
+            spec_mode: "prompt-lookup".to_string(),
+            keep_alive: "300".to_string(),
+            ..PowerConfig::default()
+        };
+
+        assert_eq!(
+            canonical_inference_execution_digest(&first).unwrap(),
+            canonical_inference_execution_digest(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn inference_execution_digest_rejects_invalid_float() {
+        let config = PowerConfig {
+            spec_draft_p_min: f32::NAN,
+            ..PowerConfig::default()
+        };
+
+        assert!(canonical_inference_execution_digest(&config)
+            .unwrap_err()
+            .to_string()
+            .contains("spec_draft_p_min must be finite"));
     }
 
     #[test]
@@ -491,7 +593,11 @@ mod tests {
         });
         let gpu = GpuConfig::default();
 
-        let runtime = runtime_policy_claim_with_gpu_config(&model, Some(&gpu))
+        let config = PowerConfig {
+            gpu,
+            ..PowerConfig::default()
+        };
+        let runtime = runtime_policy_claim(&model, Some(&config))
             .unwrap()
             .unwrap();
 
