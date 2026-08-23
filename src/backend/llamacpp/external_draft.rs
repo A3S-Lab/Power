@@ -26,7 +26,7 @@ pub(super) fn loads_mtp_weights(spec_mode: &str, external_draft_selected: bool) 
 }
 
 pub(super) fn selected_external_draft(
-    manifest: &ModelManifest,
+    _manifest: &ModelManifest,
     spec_mode: &str,
 ) -> Result<Option<ExternalDraftArtifact>> {
     let requested = SpeculativeStrategy::parse(spec_mode)
@@ -46,7 +46,7 @@ pub(super) fn selected_external_draft(
 
         #[cfg(feature = "llamacpp-external-draft")]
         {
-            let artifact = manifest.external_draft.as_ref().ok_or_else(|| {
+            let artifact = _manifest.external_draft.as_ref().ok_or_else(|| {
                 PowerError::Config(format!(
                     "spec_mode '{}' requires model manifest.external_draft",
                     expected_kind.as_str()
@@ -65,7 +65,7 @@ pub(super) fn selected_external_draft(
     }
     if matches!(requested, SpeculativeStrategy::Auto) {
         #[cfg(feature = "llamacpp-external-draft")]
-        return Ok(manifest.external_draft.clone());
+        return Ok(_manifest.external_draft.clone());
 
         #[cfg(not(feature = "llamacpp-external-draft"))]
         return Ok(None);
