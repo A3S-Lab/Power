@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-24
+
+### Added
+
 - Added a typed native DFlash2 external-draft backend for the pinned
   llama-cpp-rs/llama.cpp source. Registration and load reject DFlash v1/DFlash2
   mismatches and malformed selector/convolution metadata; the patch installer
@@ -81,20 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evaluation, evictions, and entries. Final opted-in SSE usage events expose
   backend prompt-evaluation time, and a hash-bound cold/warm benchmark client
   turns those timings and cache counters into reproducible evidence.
-- Fixed `serve --config` so omitted `--host` and `--port` flags preserve the
-  ACL values instead of silently replacing them with CLI defaults. `/health`
-  now reports effective token-metric suppression, including the privacy policy
-  automatically activated by `redact_logs`, so benchmark preflight cannot
-  mistake rounded counters for exact evidence.
 - Published a clean five-pair RTX 4090 Qwen3.8-27B Q6_K prompt-cache capture.
   With Flash Attention enabled and speculation disabled, median backend
   prefill improved 23.5299x, median TTFT improved 13.1593x, and evaluated
   prompt tokens fell 99.3843%; the report binds the server commit, exact model
   digest, health policy, metrics, and request receipts.
-
-## [1.0.0] - 2026-08-22
-
-### Added
 
 - Added deterministic persistent release-fixture weights and a
   `release-confidential-fixture` command. The latter pins the fixture on the
@@ -202,6 +197,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `serve --config` so omitted `--host` and `--port` flags preserve the
+  ACL values instead of silently replacing them with CLI defaults. `/health`
+  now reports effective token-metric suppression, including the privacy policy
+  automatically activated by `redact_logs`, so benchmark preflight cannot
+  mistake rounded counters for exact evidence.
 - Made `ReleaseEvidenceBundle::build_strict_v1` enforce the production
   confidential-TEE and Metal-host constraints immediately. Strict verification
   now requires native Apple Silicon/macOS identities and rejects virtual,
