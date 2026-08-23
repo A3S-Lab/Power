@@ -20,6 +20,7 @@ use llama_cpp_2::speculative::{
 };
 use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
 
+#[cfg(feature = "llamacpp-external-draft")]
 use super::external_draft::dflash2_backend_unavailable;
 use super::{backend_ref, send_completion_result};
 use crate::backend::types::CompletionResponseChunk;
