@@ -75,7 +75,7 @@ replay condition entirely and is the balanced default.
 ## TBQ4 and FR solve different problems
 
 TBQ4 is an artifact-construction choice. It reduces selected tensor bandwidth;
-it is not a generic runtime switch. The current mixed artifact keeps the MTP
+it is not a generic runtime switch. The archived mixed artifact keeps the MTP
 block at Q6_K, uses Q4_0 for main FFN tensors, and uses Q4_K for the separate
 draft head.
 
@@ -94,15 +94,18 @@ The untouched Q6_K peak combines:
 - the original 22,884,408,288-byte Q6_K artifact;
 - native MTP with an 8,192-row draft-only token-ID prefix;
 - seven proposals and six recurrent snapshots;
+- fixed B11 target-verification capacity and normal CUDA Graphs;
 - batched target and draft greedy CUDA sampling;
-- Flash Attention and full CUDA layer offload;
+- short-batch Flash Attention off and full CUDA layer offload;
 - exact target verification and deterministic output digests.
 
-It reached 176.6109 token/s median steady decode versus 147.0207 token/s for
-the same-artifact full-vocabulary K7/S7 control. On the one-pass 12-task
-calibration, however, full-vocabulary K7/S6 reached 47.032 token/s
-request-wide while prefix FR reached 37.290 token/s. The peak profile has not
-yet completed the repeated 100-task matrix.
+The latest exact-build capture reached 174.413 token/s median steady decode,
+with a 172.723 minimum and 177.150 maximum. The earlier quiet-host high-water
+mark was 176.6109 token/s; the same-artifact full-vocabulary K7/S7 control was
+147.0207 token/s. On the one-pass 12-task calibration, however,
+full-vocabulary K7/S6 reached 47.032 token/s request-wide while prefix FR
+reached 37.290 token/s. The prefix-FR peak profile has not completed the
+repeated 100-task matrix; the active repeated matrix uses full-vocabulary MTP.
 
 The previous mixed-artifact K7/S7 profile remains the representative quality
 capture: 175.2089 token/s median steady decode, 83.228 token/s request-wide,

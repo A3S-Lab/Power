@@ -1,6 +1,6 @@
 ---
 title: Reproduction
-description: Reproduce the current A3S Power Q6_K execution-path case study, from 23 offline evidence hashes to a full RTX 4090 replay.
+description: Reproduce the current A3S Power Q6_K execution-path case study, from pinned offline evidence to a full RTX 4090 replay.
 ---
 
 # Reproduction
@@ -19,10 +19,10 @@ The current untouched-Q6_K capture records a clean source revision and exact bin
 | Model SHA-256 | `562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727` |
 | Peak mode | Prefix-FR8192 MTP K7/S6; exact target verification |
 | Work shape | 1 warm-up + 9 measured requests; 1,024 generated tokens each; batch 11; greedy; short-batch Flash Attention off |
-| Current shared-desktop capture | **172.8353 token/s median**; 171.2981 minimum; 175.5329 maximum; 1 / 9 samples at least 175 |
+| Latest exact-build capture | **174.4133 token/s median**; 172.7230 minimum; 177.1497 maximum; 4 / 9 samples at least 175 |
 | Earlier quiet-host high-water mark | **176.6109 token/s median**; 173.2630 minimum; 7 / 9 samples at least 175 |
 | Full-vocabulary control | 147.0207 token/s median, 146.0917 minimum |
-| Current 12-task paired calibration | Off 28.713; fixed K6/S6/B8 46.923 token/s; 63.42% gain |
+| Archived 12-task paired calibration | Off 28.713; fixed K6/S6/B8 46.923 token/s; 63.42% gain |
 | Output SHA-256 | `a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523` |
 
 ## 1. Acquire the source and freeze experiment identity
@@ -41,11 +41,30 @@ if ($dirtyFiles.Count -ne 0) {
 $powerCommit
 ```
 
-The current deep-optimization capture records clean source revision `f6326bb05bb8101c2335ec7c3c2f1e261fd86071`. Replaying from a newer clean revision is valid, but it is a new experiment and must not overwrite the checked-in JSON.
+The latest peak capture records clean source revision `da2c1dd5a2c6a573ef8be7789de4a67fdb2a0eb0`; the active quality matrix records `64aef15ddff7232c6261385700c8a912d1ed0963`. Replaying from a newer clean revision is valid, but it is a new experiment and must retain its own evidence.
 
-## 2. Run the model-free offline verifier first
+## 2. Run the model-free offline verifiers first
 
-This command does not load the 22.88 GB model and does not require an NVIDIA GPU. It verifies 23 file SHA-256 values and recomputes sample counts, medians, minima, quality scores, request-wide throughput, acceptance, replay counts, paired answers, and deterministic output identity:
+The active Q6_K-only verifier does not load the 22.88 GB model and does not
+require an NVIDIA GPU. It pins the full compact payload and recomputes the 600
+request quality matrix:
+
+```powershell
+py -3.13 .\tools\test_qwen38_q6_quality_evidence.py
+py -3.13 .\tools\qwen38_q6_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\pure-q6-rtx4090-3x.evidence.json `
+  --json
+```
+
+It recomputes 23.642 token/s for autoregressive Q6_K and 41.035 token/s for
+the same Q6_K with full-vocabulary MTP. The optional `--require-lossless` gate
+intentionally fails because exact output parity is 50/100 and strict scoring
+has two losses.
+
+### Verify archived peak and calibration evidence
+
+The broader historical verifier checks 23 file SHA-256 values and recomputes
+the older peak, mixed-artifact quality, and paired-calibration records:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `

@@ -202,14 +202,13 @@ mean adding a model-name branch to the scheduler.
 
 The checked-in RTX 4090 integration keeps the exact Q6_K bytes unchanged.
 
-- K7/S6/B11 peak profile: 172.835 token/s median, 171.298 minimum, and
-  175.533 maximum under 5–8% WDDM background use.
+- K7/S6/B11 peak profile: 174.413 token/s median, 172.723 minimum, and
+  177.150 maximum across nine exact-build samples.
 - Earlier quiet-host high-water mark: 176.611 token/s median.
-- K6/S6/B8 general profile: 46.923 token/s request-wide versus 28.713
-  target-only, a 63.42% gain.
-- Paired calibration: all 12 final answers and the 9/12 score matched; proposal
-  acceptance was 26.81%, verified tokens per target pass were 2.591, and replay
-  was zero.
+- Active full-vocabulary 3x100 quality profile: 41.035 token/s request-wide
+  versus 23.642 target-only, a 73.57% gain.
+- The active profile kept its 67/100 lenient score but moved from 60/100 to
+  58/100 strict, so it remains opt-in rather than a lossless default.
 
 The peak profile combines fixed graph shapes, short-batch Flash Attention off,
 normal CUDA Graphs, exact MTP verification, a measured target batch,

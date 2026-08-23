@@ -13,33 +13,27 @@ type Locale = "zh" | "en";
 
 const modeData = [
   {
-    mode: "Q6_K / AR",
+    mode: "Q6_K / AR · 3×100",
     quality: { zh: "67 / 60", en: "67 / 60" },
-    request: "30.883",
-    steady: "35.5793",
+    request: "23.642",
+    steady: "—",
   },
   {
-    mode: "Q6_K + MTP / FR · K6/S6/B8",
-    quality: { zh: "9 / 9", en: "9 / 9" },
-    request: "46.923",
+    mode: "Q6_K + MTP / full · 3×100",
+    quality: { zh: "67 / 58", en: "67 / 58" },
+    request: "41.035",
     steady: "—",
+    current: true,
   },
   {
     mode: "Q6_K + MTP / FR · K7/S6/B11",
     quality: { zh: "输出哈希一致", en: "Matching digest" },
     request: "—",
-    steady: "172.835",
-    current: true,
-  },
-  {
-    mode: "TBQ4 + MTP / full",
-    quality: { zh: "76 / 66", en: "76 / 66" },
-    request: "83.228",
-    steady: "175.2089",
+    steady: "174.413",
   },
 ];
 
-const benchmarkMetricValues = ["172.835", "46.923", "63.42%", "23 / 23"];
+const benchmarkMetricValues = ["174.413", "41.035", "73.57%", "6 / 6"];
 
 const homeCopy = {
   zh: {
@@ -54,7 +48,7 @@ const homeCopy = {
     facts: [
       { value: "3", label: "CPU、CUDA、Metal 设备" },
       { value: "4", label: "种后端与嵌入路径" },
-      { value: "23 / 23", label: "性能证据通过校验" },
+      { value: "Q6_K", label: "当前目标模型验收" },
     ],
     principlesTitle: "一套运行时，守住三件事。",
     principles: [
@@ -74,17 +68,17 @@ const homeCopy = {
     measuredTitle: "一台 RTX 4090，一组可复现结果。",
     reproduce: "复现这组数据",
     benchmarkContext:
-      "Qwen3.8-27B · 原始 Q6_K · revision f6326bb · K7/S6/B11 · 1 次预热 + 9 × 1,024 token",
+      "Qwen3.8-27B · 原始 Q6_K · 峰值 revision da2c1dd · 质量 revision 64aef15",
     metrics: [
       "Q6_K 稳态解码中位数 token/s",
-      "通用配置的请求全程 token/s",
+      "MTP 质量负载请求全程 token/s",
       "相对自回归的请求全程提升",
-      "证据文件通过哈希校验",
+      "质量轮次通过 GPU 独占校验",
     ],
     columns: ["模式", "质量证据", "请求全程 t/s", "稳态 t/s"],
     current: "当前",
     note:
-      "172.835 token/s 是共享 WDDM 桌面上的 9 次稳态中位数，不是服务保底值。各行质量数据使用对应的归档校准集，完整口径见性能页。",
+      "174.413 token/s 是 9 次 1,024-token 稳态解码的中位数，最低 172.723，不是 175 token/s 服务保底值。MTP 在 3×100 题上快 1.736 倍，但严格分数从 60/100 降到 58/100，因此不是无损默认模式。",
     surfacesTitle: "按你的方式接入。",
     surfaces: [
       {
@@ -133,7 +127,7 @@ const homeCopy = {
     facts: [
       { value: "3", label: "CPU, CUDA, and Metal devices" },
       { value: "4", label: "backend and embedded paths" },
-      { value: "23 / 23", label: "performance artifacts verified" },
+      { value: "Q6_K", label: "active target acceptance" },
     ],
     principlesTitle: "One runtime. Three hard guarantees.",
     principles: [
@@ -153,17 +147,17 @@ const homeCopy = {
     measuredTitle: "One RTX 4090. One reproducible result.",
     reproduce: "Reproduce these numbers",
     benchmarkContext:
-      "Qwen3.8-27B · untouched Q6_K · revision f6326bb · K7/S6/B11 · 1 warm-up + 9 × 1,024 tokens",
+      "Qwen3.8-27B · untouched Q6_K · peak revision da2c1dd · quality revision 64aef15",
     metrics: [
       "median Q6_K steady decode token/s",
-      "request-wide token/s on the general profile",
+      "request-wide token/s on the MTP quality workload",
       "request-wide gain over autoregressive",
-      "evidence artifacts passed hash checks",
+      "quality runs passed GPU exclusivity checks",
     ],
     columns: ["Mode", "Quality evidence", "Request-wide t/s", "Steady t/s"],
     current: "CURRENT",
     note:
-      "172.835 token/s is the median of nine steady runs on a shared WDDM desktop, not a service floor. Each row uses its corresponding archived quality set; see Performance for the full methodology.",
+      "174.413 token/s is the median of nine 1,024-token steady-decode runs; the 172.723 minimum does not establish a 175 token/s service floor. MTP was 1.736× faster on the 3×100 quality workload, but strict score moved from 60/100 to 58/100, so it is not a lossless default.",
     surfacesTitle: "Use Power your way.",
     surfaces: [
       {

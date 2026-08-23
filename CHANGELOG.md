@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Published the clean RTX 4090 `pure-q6` quality capture: 600 error-free
+  requests over three cyclic repetitions, with the unchanged Q6_K target in
+  both autoregressive and full-vocabulary MTP modes and zero continuous-GPU
+  monitor violations. The path-free verifier recomputes 23.642 versus 41.035
+  request-wide token/s, equal 67/100 lenient scores, the 60/100 to 58/100
+  strict-score change, and 50/100 exact-output parity; its lossless gate remains
+  closed.
 - Made the repeated Qwen3.8 quality runner default to a machine-described
   `pure-q6` profile. Its autoregressive control and full-vocabulary MTP
   candidate both resolve to the same untouched Q6_K artifact, require neither

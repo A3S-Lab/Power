@@ -26,30 +26,27 @@ as auxiliary speculative proposers; they are not target-model quality results.
 Mixed-quantization and Q8 captures are historical research outside this
 acceptance table.
 
-| Qwen3.8-27B Q6_K target mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
+| Active Qwen3.8-27B Q6_K mode | Fixed 100-task score, mean of 3 runs | Request-wide throughput | Three-run range |
 | --- | --- | ---: | ---: |
-| Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
-| Untouched Q6_K, paired DFlash2 calibration control | 9/12 lenient and strict in every repetition | 29.702 token/s mean | 35.380 token/s |
-| **Untouched Q6_K + DFlash2 Q4 proposer, K7** | 9/12 lenient and strict; **12/12 answer parity, 7/12 complete-output parity** | **45.143 token/s mean** | **108.429 token/s** |
-| Untouched Q6_K, paired DSpark control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s |
-| **Untouched Q6_K + external DSpark Q4, K10/S6 (peak prompt)** | Exact paired 256-token output and receipt hashes | **65.825 token/s median** | **169.324 token/s** |
-| Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; 54/100 exact-output parity | **32.678 token/s** | - |
-| **Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (controlled peak)** | Identical output and receipt hashes in all 3 samples | **63.535 token/s median** | **164.756 token/s median; 160.881 minimum** |
-| Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (100 tasks, 1x) | 69/100 lenient; 56/100 strict; 55/100 exact-output parity versus the 67/100 and 58/100 control | **31.052 token/s** | - |
-| Adaptive DSpark loss-focused follow-up (5 selected tasks) | **5/5 answer parity, 0 losses** at 512 tokens × 3; **5/5 untruncated parity** at 1,024 tokens | **30.521 vs 24.967 token/s** at 512 tokens | - |
-| **Untouched Q6_K + prefix-FR8192, fixed K6/S6/B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **46.923 token/s** | - |
-| **Untouched Q6_K + prefix-FR8192, fixed K7/S6/B11, high-priority CUDA** | Fixed peak prompt retained the same output digest | - | **172.835 token/s** on a shared WDDM desktop |
-| Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact greedy parity on the fixed peak prompt | - | 147.0207 token/s |
-| Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x; 11 truncated) | **47.032 token/s** | - |
-| **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x; 11 truncated) | 37.290 token/s | **176.6109 token/s** |
+| Untouched Q6_K, autoregressive control | 67/100 lenient; 60/100 strict | 23.642 token/s | 23.543--23.832 |
+| **Same Q6_K, full-vocabulary MTP** | 67/100 lenient; 58/100 strict | **41.035 token/s (1.736x)** | 40.197--41.696 |
+
+All six runs completed 100/100 requests without errors and passed continuous
+per-process GPU exclusivity checks. Each mode was internally deterministic.
+Across modes, MTP retained 89/100 extracted answers and 50/100 complete output
+hashes, with two lenient gains and two losses. Strict formatting had zero gains
+and two losses, so the candidate is faster but not a lossless default.
 
 `Request-wide` includes prompt processing, generation, HTTP, and request
-overhead. `Steady decode` is a warmed-up, repetitive 1,024-token shape. A dash
-means there is no defensible apples-to-apples capture for that cell.
+overhead. It is not the same metric as warmed-up 1,024-token steady decode.
+The compact [Q6_K-only evidence package](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/pure-q6-rtx4090-3x.evidence.json)
+can be verified without a model or GPU.
 
-The DSpark rows use a shorter context-512, 256-token acceptance shape rather
-than the 1,024-token MTP peak shape. They are paired with each other, not with
-the historical autoregressive row.
+## Archived auxiliary-proposer research
+
+The archived DSpark captures use a shorter context-512, 256-token acceptance
+shape rather than the 1,024-token MTP peak shape. Their controls are local to
+those captures and must not be compared with the active table above.
 
 ## Q6_K-only DFlash2 boundary
 
@@ -129,18 +126,18 @@ contract and standalone capture.
 
 ## The untouched-Q6_K execution-path case study
 
-The 22,884,408,288-byte Q6_K artifact was not requantized. The current clean
-capture uses fixed K7/S6/B11, an 8,192-row draft-only token-ID prefix,
+The 22,884,408,288-byte Q6_K artifact was not requantized. The latest
+exact-build replay uses fixed K7/S6/B11, an 8,192-row draft-only token-ID prefix,
 short-batch Flash Attention off, normal CUDA Graphs, high-priority CUDA
 streams, full CUDA offload, physical-core affinity, and one loaded model with
-one concurrent request. Across nine 1,024-token samples it reached 172.835
-token/s median, 171.298 minimum, and 175.533 maximum while the shared Windows
-display GPU already showed 5–8% utilization.
+one concurrent request. Across nine 1,024-token samples it reached 174.413
+token/s median and 172.723 minimum with one deterministic output digest. This
+fresh run did not establish a stable 175 token/s floor.
 
 The earlier quiet-host high-water mark for the same artifact remains 176.6109
-token/s. Its 20.13% comparison used the full-vocabulary K7/S7 control at
-147.0207 token/s. Both captures retained the same deterministic output digest;
-the earlier result is not a service floor for the current shared desktop.
+token/s with a 173.263 minimum. Its 20.13% comparison used the full-vocabulary
+K7/S7 control at 147.0207 token/s. These are peak-shape boundaries, not service
+guarantees for the shared desktop.
 
 The general short-task profile uses fixed K6/S6/B8. The current paired
 12-task, 256-token capture reached 46.923 token/s versus 28.713 token/s for the
@@ -169,6 +166,14 @@ The current acceptance host is Windows 11 with an RTX 4090 and a 10-core,
 not a portable product default.
 
 ## Did quality fall?
+
+The active Q6_K-only matrix kept the lenient score at 67/100 while strict
+format scoring moved from 60/100 to 58/100. MTP produced two lenient gains and
+two losses, 89/100 extracted-answer parity, and 50/100 complete-output parity.
+All 59 tasks untruncated in both modes kept the same extracted answer. The
+fixed sample therefore shows no aggregate lenient-score decrease, but it does
+not prove unchanged intelligence or lossless output; the production-default
+gate remains closed.
 
 The fixed external-DSpark matrix observed no score decrease: 73/100 lenient
 and 59/100 strict versus its target-only control at 67/100 and 58/100. Its

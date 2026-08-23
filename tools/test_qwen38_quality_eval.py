@@ -523,6 +523,34 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(paired["content_sha256_parity"], 2)
         self.assertIn("Untouched Q6_K + DSpark Q4", quality.render_markdown(aggregate))
 
+    def test_q6_mtp_markdown_uses_the_q6_label_and_utf8_strict_marker(
+        self,
+    ) -> None:
+        rows = [result_row("a", "A", "A", strict_prediction="A")]
+        reports = []
+        for order, mode in enumerate(("q6-off", "q6-mtp-full-vocab"), 1):
+            reports.append(
+                {
+                    "mode_label": mode,
+                    "repetition": 1,
+                    "order_index": order,
+                    "model_sha256": "same-q6-model",
+                    "tasks_sha256": "tasks",
+                    "server_sha256": "server",
+                    "results": rows,
+                    "summary": quality.report_summary(rows),
+                    "speculative_runtime": None,
+                }
+            )
+
+        aggregate = quality.aggregate_reports(
+            reports, comparisons=[("q6-off", "q6-mtp-full-vocab")]
+        )
+        markdown = quality.render_markdown(aggregate)
+
+        self.assertIn("Untouched Q6_K + full-vocabulary MTP", markdown)
+        self.assertIn("\u6700\u7ec8\u7b54\u6848", markdown)
+
     def test_selected_task_runtime_without_benchmark_partitions_is_aggregated(
         self,
     ) -> None:

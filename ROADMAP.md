@@ -198,6 +198,10 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
       observation after admission. A new foreign PID above the configured SM
       threshold invalidates the evidence and is retained in the environment
       receipt instead of being mistaken for an inference regression.
+- [x] Publish a clean, path-free Q6_K-only 3x100 quality package that pins the
+      target, source, tools, reports, task/config inputs, and continuous GPU
+      monitor logs; keep its lossless-default gate closed when output or strict
+      score parity is not established.
 
 ## Cross-repository delivery order
 

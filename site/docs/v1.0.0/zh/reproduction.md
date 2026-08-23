@@ -18,8 +18,8 @@ description: 从离线证据验真到 RTX 4090 完整复跑，复现 A3S Power �
 | 模型制品 | 原始 Q6_K GGUF，22,884,408,288 字节 |
 | 模型 SHA-256 | `562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727` |
 | 峰值模式 | 前缀 FR8192 MTP K7/S6；目标模型精确校验 |
-| 工作形状 | 1 次预热 + 9 次实测；每次生成 1,024 token；batch 14；greedy |
-| 稳态门槛 | 中位数 175 token/s；已提交结果 **176.6109**，最低 173.2630；7 / 9 个样本不低于 175 |
+| 工作形状 | 1 次预热 + 9 次实测；每次生成 1,024 token；batch 11；greedy；关闭短批量 Flash Attention |
+| 最新精确构建结果 | **174.4133 token/s 中位数**；最低 172.7230；最高 177.1497；4 / 9 个样本不低于 175 |
 | 全词表对照 | 中位数 147.0207 token/s，最低 146.0917 |
 | 12 题请求全程校准 | 关闭 MTP 29.713；全词表 47.032；前缀 FR 37.290 token/s |
 | 输出 SHA-256 | `a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523` |
@@ -40,11 +40,26 @@ if ($dirtyFiles.Count -ne 0) {
 $powerCommit
 ```
 
-当前原始 Q6_K 门槛记录的干净源码 revision 为 `eb6aeda59561eff3e4e7592704cab6fc863b72c7`。从更新的干净 revision 复跑是允许的，但结果应作为新实验保存，不能覆盖已提交 JSON。
+最新峰值采集的干净源码 revision 为 `da2c1dd5a2c6a573ef8be7789de4a67fdb2a0eb0`，当前质量矩阵为 `64aef15ddff7232c6261385700c8a912d1ed0963`。从更新的干净 revision 复跑是允许的，但必须保留独立证据，不能覆盖已有记录。
 
 ## 2. 先做无需模型的离线验真
 
-这个命令不加载 22.88 GB 模型，也不需要 NVIDIA GPU。它验证 14 个文件 SHA-256，并重新计算样本数、中位数、最低值、质量分数、请求全程吞吐、接受率、重放次数与确定性输出身份：
+当前纯 Q6_K 校验器不加载 22.88 GB 模型，也不需要 NVIDIA GPU。它固定整个
+紧凑证据载荷，并重新计算干净的 600 请求质量矩阵：
+
+```powershell
+py -3.13 .\tools\test_qwen38_q6_quality_evidence.py
+py -3.13 .\tools\qwen38_q6_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\pure-q6-rtx4090-3x.evidence.json `
+  --json
+```
+
+它会重新计算 23.642 对 41.035 token/s。完整输出一致率为 50/100，严格评分有
+2 个损失，因此 `--require-lossless` 会失败，MTP 保持为可选模式。
+
+### 验证历史峰值与混合制品证据
+
+下面的历史校验器验证 14 个文件 SHA-256，并重新计算较早的峰值与混合制品记录：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -72,7 +87,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 3. 对齐验收主机
 
-176.61 token/s 是下面这台机器上的边界，不是跨硬件承诺：
+这些 token/s 数值是下面这台机器上的边界，不是跨硬件承诺：
 
 | 层级 | 验收环境 |
 | --- | --- |

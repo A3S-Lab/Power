@@ -456,6 +456,30 @@ quality review; target verification alone does not prove identical text. The
 continuous per-process monitor invalidates the run if a new process exceeds
 2% NVIDIA SM utilization after the initial idle admission.
 
+The accepted RTX 4090 capture completed all 600 requests without errors or
+foreign-GPU violations:
+
+| Mode | Lenient / strict | Mean request-wide token/s | Three-run range |
+| --- | ---: | ---: | ---: |
+| `q6-off` | 67/100 / 60/100 | 23.642 | 23.543--23.832 |
+| `q6-mtp-full-vocab` | 67/100 / 58/100 | **41.035** | 40.197--41.696 |
+
+Replay the checked-in path-free evidence without the model or GPU:
+
+```powershell
+py -3.13 .\tools\test_qwen38_q6_quality_evidence.py
+py -3.13 .\tools\qwen38_q6_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\pure-q6-rtx4090-3x.evidence.json `
+  --json
+```
+
+The verifier pins the Q6_K bytes, clean Power commit, server and benchmark-tool
+hashes, six raw report hashes, task/config hashes, and six NVIDIA process-log
+hashes. It rejects TBQ4/Q8 targets and any auxiliary proposer. The optional
+`--require-lossless` gate fails for this capture because cross-mode complete
+output parity is 50/100 and strict scoring has two losses; this result is an
+opt-in speed/quality diagnostic, not a lossless default.
+
 For a shorter configuration calibration, replay the current pure-Q6_K paired
 mixed-task profile with a splatted argument table. Supplying the Boolean
 recurrent-chain option this way avoids PowerShell's cross-process Boolean

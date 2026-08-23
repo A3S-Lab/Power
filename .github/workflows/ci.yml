@@ -101,6 +101,7 @@ jobs:
       - name: Test Qwen3.8 quality benchmark contracts
         run: |
           python3 tools/test_qwen38_quality_eval.py
+          python3 tools/test_qwen38_q6_quality_evidence.py
           python3 tools/test_qwen38_quality_evidence.py
           python3 tools/test_dspark_adaptive_evidence.py
           python3 tools/test_dspark_quality_followup_evidence.py
@@ -116,6 +117,9 @@ jobs:
             --json
           python3 tools/dflash2_evidence.py verify \
             --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dflash2/evidence.json \
+            --json
+          python3 tools/qwen38_q6_quality_evidence.py verify \
+            --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/pure-q6-rtx4090-3x.evidence.json \
             --json
 
   windows-embedded:

@@ -18,8 +18,8 @@ The current untouched-Q6_K capture records a clean source revision and exact bin
 | Model artifact | Untouched Q6_K GGUF, 22,884,408,288 bytes |
 | Model SHA-256 | `562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727` |
 | Peak mode | Prefix-FR8192 MTP K7/S6; exact target verification |
-| Work shape | 1 warm-up + 9 measured requests; 1,024 generated tokens each; batch 14; greedy |
-| Steady gate | 175 token/s median; committed result **176.6109**, minimum 173.2630; 7 / 9 samples at least 175 |
+| Work shape | 1 warm-up + 9 measured requests; 1,024 generated tokens each; batch 11; greedy; short-batch Flash Attention off |
+| Latest exact-build result | **174.4133 token/s median**; 172.7230 minimum; 177.1497 maximum; 4 / 9 samples at least 175 |
 | Full-vocabulary control | 147.0207 token/s median, 146.0917 minimum |
 | 12-task request-wide calibration | Off 29.713; full vocabulary 47.032; prefix FR 37.290 token/s |
 | Output SHA-256 | `a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523` |
@@ -40,11 +40,29 @@ if ($dirtyFiles.Count -ne 0) {
 $powerCommit
 ```
 
-The current pure-Q6_K gate records clean source revision `eb6aeda59561eff3e4e7592704cab6fc863b72c7`. Replaying from a newer clean revision is valid, but it is a new experiment and must not overwrite the checked-in JSON.
+The latest peak capture records clean source revision `da2c1dd5a2c6a573ef8be7789de4a67fdb2a0eb0`; the active quality matrix records `64aef15ddff7232c6261385700c8a912d1ed0963`. Replaying from a newer clean revision is valid, but it is a new experiment and must retain its own evidence.
 
-## 2. Run the model-free offline verifier first
+## 2. Run the model-free offline verifiers first
 
-This command does not load the 22.88 GB model and does not require an NVIDIA GPU. It verifies 14 file SHA-256 values and recomputes sample counts, medians, minima, quality scores, request-wide throughput, acceptance, replay counts, and deterministic output identity:
+The active Q6_K-only verifier does not load the 22.88 GB model and does not
+require an NVIDIA GPU. It pins the full compact payload and recomputes the clean
+600-request quality matrix:
+
+```powershell
+py -3.13 .\tools\test_qwen38_q6_quality_evidence.py
+py -3.13 .\tools\qwen38_q6_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\pure-q6-rtx4090-3x.evidence.json `
+  --json
+```
+
+It recomputes 23.642 versus 41.035 request-wide token/s. Exact output parity is
+50/100 and strict scoring has two losses, so `--require-lossless` fails and the
+MTP mode remains opt-in.
+
+### Verify archived peak and mixed-artifact evidence
+
+The historical verifier checks 14 file SHA-256 values and recomputes the older
+peak and mixed-artifact records:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -72,7 +90,7 @@ Any changed evidence byte or statistic produces a nonzero exit code and names th
 
 ## 3. Match the acceptance host
 
-The 176.61 token/s value is a boundary on this host, not a cross-hardware promise:
+These token/s values are boundaries on this host, not cross-hardware promises:
 
 | Layer | Acceptance environment |
 | --- | --- |

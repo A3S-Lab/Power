@@ -19,7 +19,49 @@ Inspect the resolved profile without loading the model or starting a server:
   -Q6PowerHome unused -DescribeProfile
 ```
 
-## External-DSpark quality diagnostic
+## Current Q6_K-only acceptance capture
+
+The clean capture at Power commit
+`64aef15ddff7232c6261385700c8a912d1ed0963` ran 100 fixed
+MMLU/GSM8K/C-Eval tasks three times in each mode. Both modes loaded the exact
+22,884,408,288-byte Q6_K artifact with SHA-256
+`562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727`.
+The environment receipt records `tbq4_model: null`, no external draft, six
+successful idle-admission windows, and six continuous NVIDIA process monitors
+with zero foreign-GPU violations.
+
+| Mode | Lenient | Strict | Truncated | Mean request-wide throughput | Three-run range |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Q6_K, autoregressive control | 67/100 | 60/100 | 38/100 | 23.642 token/s | 23.543--23.832 |
+| Same Q6_K, full-vocabulary MTP | 67/100 | 58/100 | 41/100 | **41.035 token/s** | 40.197--41.696 |
+
+MTP increased request-wide throughput by **1.736x**. Both modes reproduced all
+100 extracted answers and complete outputs across their own three runs. In the
+paired comparison, MTP had two lenient gains and two losses, 89/100 extracted
+answer parity, and 50/100 complete-output parity. All 59 tasks that finished
+without truncation in both modes retained the same extracted answer. Strict
+format scoring moved from 60/100 to 58/100, with zero gains and two losses.
+
+This establishes a repeatable Q6_K speed/quality tradeoff on the fixed sample;
+it does not establish byte-identical output or a lossless production default.
+Verify the compact, path-free evidence without a model or GPU:
+
+```powershell
+py -3.13 .\tools\qwen38_q6_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\pure-q6-rtx4090-3x.evidence.json `
+  --json
+```
+
+Adding `--require-lossless` intentionally fails with `50/100` exact outputs
+and two strict losses. That negative gate prevents the speed row from being
+silently promoted as an intelligence-preserving default.
+
+## Archived auxiliary-proposer diagnostics
+
+The following records are retained for research reproduction and are not part
+of the active Q6_K-only acceptance decision.
+
+### External-DSpark quality diagnostic
 
 The native external-DSpark K10/S6 profile has now been replayed against the
 same fixed 100-task MMLU/GSM8K/C-Eval set, three times per mode and in rotating

@@ -113,13 +113,13 @@ The untouched Q6_K peak combines:
   single-request scheduling;
 - exact target verification and deterministic output digests.
 
-The current clean nine-run capture reached 172.835 token/s median steady
-decode, 171.298 minimum, and 175.533 maximum while the shared Windows display
-GPU already showed 5–8% utilization. The earlier quiet-host high-water mark is
-176.6109 token/s; the same-artifact full-vocabulary K7/S7 control reached
-147.0207 token/s.
+The latest exact-build nine-run capture reached 174.413 token/s median steady
+decode, 172.723 minimum, and 177.150 maximum. Four of nine samples reached 175,
+so this is not a stable 175 token/s floor. The earlier quiet-host high-water
+mark is 176.6109 token/s; the same-artifact full-vocabulary K7/S7 control
+reached 147.0207 token/s.
 
-The general short-task profile uses fixed K6/S6/B8. In the current paired
+The archived short-task calibration uses fixed K6/S6/B8. In its paired
 12-task, 256-token calibration it reached 46.923 token/s versus 28.713 token/s
 with speculation off, a 63.42% gain. Both modes retained all 12 final answers
 and the 9/12 score. Acceptance was 26.81%, verified tokens per target pass were

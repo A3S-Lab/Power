@@ -80,22 +80,20 @@ Formal long-running captures also enable continuous per-process NVIDIA SM
 monitoring, so a GPU job that starts after the idle gate invalidates the run
 instead of silently depressing its throughput.
 
-| Qwen3.8-27B Q6_K target mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
+| Active Qwen3.8-27B Q6_K mode | Fixed 100-task score, mean of 3 runs | Request-wide throughput | Run range |
 | --- | --- | ---: | ---: |
-| Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |
-| Untouched Q6_K, paired DFlash2 calibration control | 9/12 lenient and strict in every repetition | 29.702 token/s mean | 35.380 token/s |
-| **Untouched Q6_K + external DFlash2 Q4 proposer, K7** | 9/12 lenient and strict; **12/12 answer parity, 7/12 complete-output parity** | **45.143 token/s mean** (1.520x paired control) | **108.429 token/s** |
-| Untouched Q6_K, DSpark acceptance control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s |
-| **Untouched Q6_K + external DSpark Q4, K10/S6 (peak prompt)** | Exact paired 256-token output and receipt hashes | **65.825 token/s median** | **169.324 token/s** |
-| Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; **54/100 exact-output parity** versus target-only | **32.678 token/s** (1.445x paired control) | - |
-| **Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (controlled peak)** | Identical output and receipt hashes across all 3 samples | **63.535 token/s median** | **164.756 token/s median; 160.881 minimum** |
-| Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (100 tasks, 1x) | 69/100 lenient; 56/100 strict; **55/100 exact-output parity** versus 67/100 and 58/100 target-only | **31.052 token/s** (1.358x paired control) | - |
-| Adaptive DSpark loss-focused follow-up (5 selected tasks) | **5/5 answer parity and 0 losses** at 512 tokens × 3; **5/5 untruncated parity** at 1,024 tokens | **30.521 vs 24.967 token/s** at 512 tokens (1.222x) | - |
-| **Untouched Q6_K + prefix-FR8192, fixed K6/S6, B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **46.923 token/s** | - |
-| **Untouched Q6_K + prefix-FR8192, fixed K7/S6, B11, high-priority CUDA** | Fixed peak prompt retained the control digest | - | **172.835 token/s** on a contended desktop |
-| Untouched Q6_K, full-vocabulary MTP, K7/S7 | Fixed peak prompt has exact greedy parity | - | 147.0207 token/s |
-| Untouched Q6_K, full-vocabulary MTP, K7/S6 | 5/12 lenient; 3/12 strict (1x calibration; 11 truncated) | **47.032 token/s** | - |
-| **Untouched Q6_K + prefix-FR8192 MTP, K7/S6** | 4/12 lenient; 3/12 strict (1x calibration; 11 truncated) | 37.290 token/s | **176.6109 token/s** |
+| Untouched Q6_K, autoregressive control | 67/100 lenient; 60/100 strict | 23.642 token/s | 23.543--23.832 |
+| **Same Q6_K, full-vocabulary MTP** | 67/100 lenient; 58/100 strict | **41.035 token/s (1.736x)** | 40.197--41.696 |
+
+All six 100-request runs completed without errors and passed continuous
+per-process GPU exclusivity checks. Both modes were internally deterministic.
+Across modes, MTP retained 89/100 extracted answers and 50/100 complete output
+hashes; it had two lenient gains and two losses, while strict formatting had
+zero gains and two losses. It therefore remains opt-in rather than a lossless
+production default. The [path-free Q6_K evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/pure-q6-rtx4090-3x.evidence.json)
+recomputes these values without loading a model or GPU.
+
+### Archived auxiliary-proposer research
 
 The native external-DSpark acceptance capture used one clean CUDA commit and
 the same batch-12, context-512, 256-token greedy request for both rows. DSpark
@@ -159,11 +157,12 @@ DFlash2 artifact contract but its pinned `llama-cpp-rs` backend intentionally
 rejects execution until a reviewed binding update lands, so the profile is
 experimental and not a native production result.
 
-The current untouched 22,884,408,288-byte Q6_K artifact sustained a 176.6109
-token/s median across nine 1,024-token samples, with a 173.2630 minimum and
-seven samples at or above 175. Prefix-FR8192 improved steady decode by 20.13%
-over its 147.0207 token/s full-vocabulary K7/S7 control, and both emitted the
-same deterministic output digest. No model weight was requantized.
+The latest exact-build replay of the untouched 22,884,408,288-byte Q6_K
+artifact reached a 174.413 token/s median across nine 1,024-token samples, with
+a 172.723 minimum and one deterministic output digest. It did not establish a
+stable 175 token/s floor. An earlier quiet-host capture reached a 176.6109
+token/s median with a 173.2630 minimum and seven samples at or above 175;
+neither result is a service guarantee. No model weight was requantized.
 
 The 2026-08-22 execution-only follow-up kept those exact bytes and separated
 two workload shapes. The peak K7/S6/B11 profile disables Flash Attention only
@@ -175,11 +174,11 @@ control, a 63.42% gain, with
 the same 12 final answers, the same 9/12 score, and zero replay. CUDA graphs are
 essential: disabling them fell to 133.876 token/s on the peak workload.
 
-That capture crosses 175 as a median boundary; it does **not** establish a
-175 token/s service floor because two samples were below it. New acceptance
-runs can independently require the median and every measured sample, and the
-generic GGUF runner can require a configurable pre-start quiet window and
-retains an input-bound preflight receipt when the idle-GPU ceiling is exceeded.
+Even the earlier 176.6109 median capture did **not** establish a 175 token/s
+service floor because two samples were below it. New acceptance runs can
+independently require the median and every measured sample, and the generic
+GGUF runner can require a configurable pre-start quiet window and retains an
+input-bound preflight receipt when the idle-GPU ceiling is exceeded.
 On this shared Windows display GPU, exclusive scheduling is part of the
 requirement, not an inference flag.
 

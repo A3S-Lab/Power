@@ -1,6 +1,6 @@
 ---
 title: 复现实验
-description: 从 23 个离线证据哈希到 RTX 4090 完整复跑，复现 A3S Power 当前 Q6_K 执行路径案例。
+description: 从固定离线证据到 RTX 4090 完整复跑，复现 A3S Power 当前 Q6_K 执行路径案例。
 ---
 
 # 复现实验
@@ -19,10 +19,10 @@ description: 从 23 个离线证据哈希到 RTX 4090 完整复跑，复现 A3S 
 | 模型 SHA-256 | `562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727` |
 | 峰值模式 | 前缀 FR8192 MTP K7/S6；目标模型精确校验 |
 | 工作形状 | 1 次预热 + 9 次实测；每次生成 1,024 token；batch 11；greedy；短批量 Flash Attention 关闭 |
-| 当前共享桌面采集 | **172.8353 token/s 中位数**；最低 171.2981；最高 175.5329；1 / 9 个样本不低于 175 |
+| 最新精确构建采集 | **174.4133 token/s 中位数**；最低 172.7230；最高 177.1497；4 / 9 个样本不低于 175 |
 | 较安静主机历史高水位 | **176.6109 token/s 中位数**；最低 173.2630；7 / 9 个样本不低于 175 |
 | 全词表对照 | 中位数 147.0207 token/s，最低 146.0917 |
-| 当前 12 题配对校准 | 关闭 MTP 28.713；固定 K6/S6/B8 为 46.923 token/s；提升 63.42% |
+| 历史 12 题配对校准 | 关闭 MTP 28.713；固定 K6/S6/B8 为 46.923 token/s；提升 63.42% |
 | 输出 SHA-256 | `a54538eaaf6cc0b8b43cbafd489c7779f0f5206c93d5034fd3a16f4366a90523` |
 
 ## 1. 获取源码并冻结实验身份
@@ -41,11 +41,28 @@ if ($dirtyFiles.Count -ne 0) {
 $powerCommit
 ```
 
-当前深度优化采集的干净源码 revision 为 `f6326bb05bb8101c2335ec7c3c2f1e261fd86071`。从更新的干净 revision 复跑是允许的，但结果应作为新实验保存，不能覆盖已提交 JSON。
+最新峰值采集的干净源码 revision 为 `da2c1dd5a2c6a573ef8be7789de4a67fdb2a0eb0`，当前质量矩阵为 `64aef15ddff7232c6261385700c8a912d1ed0963`。从更新的干净 revision 复跑是允许的，但必须保留独立证据，不能覆盖已有记录。
 
 ## 2. 先做无需模型的离线验真
 
-这个命令不加载 22.88 GB 模型，也不需要 NVIDIA GPU。它验证 23 个文件 SHA-256，并重新计算样本数、中位数、最低值、质量分数、请求全程吞吐、接受率、重放次数、配对答案与确定性输出身份：
+当前纯 Q6_K 校验器不加载 22.88 GB 模型，也不需要 NVIDIA GPU。它固定整个
+紧凑证据载荷，并重新计算 600 请求质量矩阵：
+
+```powershell
+py -3.13 .\tools\test_qwen38_q6_quality_evidence.py
+py -3.13 .\tools\qwen38_q6_quality_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\pure-q6-rtx4090-3x.evidence.json `
+  --json
+```
+
+它会重新计算 Q6_K 自回归的 23.642 token/s，以及同一 Q6_K 使用全词表 MTP
+后的 41.035 token/s。可选的 `--require-lossless` 会按设计失败，因为完整输出
+一致率是 50/100，严格评分有 2 个损失。
+
+### 验证历史峰值与校准证据
+
+下面的历史校验器验证 23 个文件 SHA-256，并重新计算较早的峰值、混合制品
+质量和配对校准记录：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `

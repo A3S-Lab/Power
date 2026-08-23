@@ -415,6 +415,7 @@ def render_markdown(aggregate: dict[str, Any]) -> str:
         "tbq4-mtp-fr": "TBQ4 + MTP + FR",
         "tbq4-mtp-full-vocab": "TBQ4 + full-vocabulary MTP",
         "q6-dspark": "Untouched Q6_K + DSpark Q4",
+        "q6-mtp-full-vocab": "Untouched Q6_K + full-vocabulary MTP",
     }
     lines = [
         "# Qwen3.8-27B quality and workload-throughput matrix",
@@ -437,7 +438,7 @@ def render_markdown(aggregate: dict[str, Any]) -> str:
         [
             "",
             "Accuracy uses the deterministic lenient extractor; strict accuracy requires an "
-            "explicit \x60FINAL:\x60 or \x60最终答案:\x60 marker. Workload throughput is completion tokens "
+            "explicit \x60FINAL:\x60 or \x60\u6700\u7ec8\u7b54\u6848:\x60 marker. Workload throughput is completion tokens "
             "divided by full request latency and is not the repetitive-prompt peak benchmark.",
             "",
         ]
