@@ -139,7 +139,7 @@ function Start-NvidiaPmonMonitor {
         throw 'nvidia-smi.exe is required for continuous GPU exclusivity'
     }
     $process = Start-Process -FilePath $nvidiaSmi.Source `
-        -ArgumentList @('pmon', "--id=$GpuIndex", '-s', 'um', '-d', '1') `
+        -ArgumentList @('pmon', "--id=$GpuIndex", '-s', 'u', '-d', '1') `
         -RedirectStandardOutput $OutputPath `
         -RedirectStandardError $ErrorPath `
         -WindowStyle Hidden `

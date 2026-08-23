@@ -56,6 +56,8 @@ Assert-Equal @($summary.foreign_processes).Count 1 `
     'Foreign process count'
 Assert-Equal ([int]$summary.foreign_processes[0].pid) 99680 `
     'Foreign process PID'
+Assert-Equal ([string]$summary.foreign_processes[0].command) `
+    'a3s_use_ocr.exe' 'Foreign process command'
 Assert-Equal ([int]$summary.foreign_processes[0].maximum_sm_utilization_percent) 20 `
     'Foreign process peak SM utilization'
 Assert-Equal ([int]$summary.foreign_processes[0].samples_over_limit) 2 `
