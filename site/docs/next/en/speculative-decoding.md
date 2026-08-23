@@ -72,6 +72,14 @@ rounds in that request to six proposals. The guard bounds replay without
 changing requests that remain on the high-acceptance path. K7/S7 avoids the
 replay condition entirely and is the balanced default.
 
+The opt-in request-local controller avoids using replay as its first signal.
+It starts at `min(K, S)`, opens the wider K shape only after a fully accepted
+first probe, and closes that path after a partial first round. Healthy partial
+rounds retain their graph shape; sustained low-yield rounds open a one-way
+target-only circuit. The same scheduler is shared by native MTP, DFlash, and
+DSpark model-backed adapters. The legacy ACL key remains
+`spec_mtp_adaptive`.
+
 ## TBQ4 and FR solve different problems
 
 TBQ4 is an artifact-construction choice. It reduces selected tensor bandwidth;
@@ -113,11 +121,12 @@ with speculation off, a 63.42% gain. Both modes retained all 12 final answers
 and the 9/12 score. Acceptance was 26.81%, verified tokens per target pass were
 2.591, and replay was zero.
 
-Stable shapes mattered more than nominal acceptance. Adaptive K raised
-acceptance on the same representative workload to 50.07% but fell to 35.178
-token/s because changing verification shapes reduced CUDA Graph reuse.
-Disabling CUDA Graphs also reduced the peak workload to 133.876 token/s. K, S,
-target batch, and graph shape must be tuned as one system.
+Stable shapes mattered more than nominal acceptance. An earlier unrestricted
+adaptive-K experiment raised acceptance on the same representative workload
+to 50.07% but fell to 35.178 token/s because changing verification shapes
+reduced CUDA Graph reuse. Disabling CUDA Graphs also reduced the peak workload
+to 133.876 token/s. K, S, target batch, and graph shape must be tuned as one
+system.
 
 The previous mixed-artifact K7/S7 profile remains the representative quality
 capture: 175.2089 token/s median steady decode, 83.228 token/s request-wide,
@@ -139,6 +148,20 @@ request-wide versus 22.618 for target-only (1.445x), with no observed score
 decrease. Exact complete-output parity was only 54/100 and every DSpark request
 entered fallback replay. The profile is therefore deterministic and useful for
 experimentation, but it is not a lossless production default.
+
+The current adaptive follow-up begins inside the S6 rollback window. Its clean
+controlled peak reached 164.756 token/s median and 160.881 minimum across
+three samples, with identical output and receipt hashes, 92.713% acceptance,
+9.8077 verified tokens per target pass, and zero replay. The paired 100-task
+run reached 31.052 token/s versus 22.872 target-only (1.358x), with zero replay
+and 24 requests moved to target-only.
+
+That adaptive run moved from 67/58 to 69/56 lenient/strict scores and contained
+five lenient gains, three lenient losses, one strict gain, and three strict
+losses. Exact complete-output parity was 55/100; all 57 tasks untruncated in
+both modes retained the same extracted answer. The controller removes the
+known replay tax, but it still remains opt-in because the paired losses fail a
+no-regression gate.
 
 See the [Optimization playbook](./optimization) for the complete execution
 path, [Performance evidence](./performance) for the measurement interpretation, and

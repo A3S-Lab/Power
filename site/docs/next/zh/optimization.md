@@ -48,6 +48,8 @@ Power 可以约束并记录模型自有决策，但不会从文件名、模型�
 
 只有后续请求匹配捕获几何时，图捕获才能复用。Draft 宽度、目标验证容量、batch、上下文桶和并行请求数都会产生新形状。提高 proposal 接受率的自适应配置，也可能因为图形状碎片化而降低总吞吐。
 
+因此，Power 的按请求自适应控制器先在回滚窗口内探测，只保留少量热形状。首轮全部接受才开启宽形状；首轮部分接受就关闭该路径；连续低收益则单向切回目标模型。当前 DSpark 采集只复用 K6/K10 形状，三次峰值都超过 160 token/s，且回放为零；但配对质量损失仍使它不能成为默认配置。
+
 Flash Attention 按配置启用。它通常有利于上下文较长的注意力，但短 target/draft batch 可能被启动和布局成本抵消；这项决策属于模型与后端配置。
 
 Power 会在静态图中间张量的最后一个消费者之后释放它。目前已审查的 CUDA 降低覆盖精确的深度卷积、HardSigmoid 门控、误差函数激活、卷积／偏置／激活和 LayerNorm 尾部模式；未审查的形状和 dtype 继续走普通路径。
@@ -60,13 +62,14 @@ Power 会在静态图中间张量的最后一个消费者之后释放它。目�
 
 ## 精确推测执行
 
-Prompt lookup、n-gram context 与原生 MTP 适配器共用同一事务：检查点、proposal、目标校验、提交匹配前缀、输出一个 correction 或 bonus token，失败时恢复到最后一次提交。
+Prompt lookup、n-gram context、原生 MTP、DFlash 与 DSpark 适配器共用同一事务：检查点、proposal、目标校验、提交匹配前缀、输出一个 correction 或 bonus token，失败时恢复到最后一次提交。
 
 - `spec_draft_max` 限制 proposal 宽度。
 - `spec_mtp_recurrent_snapshots` 限制常驻回滚状态。
 - 目标 batch 必须容纳 anchor 与 proposal 行。
 - FR 只缩小 draft head 的投影行数，对工作负载非常敏感。
 - TBQ4、动态量化和混合量化是制品选择，不是通用运行时开关。
+- 按请求宽度控制器由原生 MTP、DFlash 与 DSpark 适配器共享；`spec_mtp_adaptive` 只是兼容键名，不代表 Qwen 专用实现。
 
 接受率不是最终目标。需要比较每次目标前向提交的 token 数，与 draft、目标校验、同步、采样、回放和图形状成本。
 

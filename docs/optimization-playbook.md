@@ -80,8 +80,12 @@ lose launch reuse.
 The Q6_K case study demonstrates this boundary:
 
 - fixed K6/S6/B8 reached 46.923 token/s request-wide;
-- an adaptive K7/S6 profile reported 50.07% acceptance but fell to 35.178
-  token/s because variable verification shapes reduced graph reuse;
+- an earlier unrestricted adaptive K7/S6 profile reported 50.07% acceptance
+  but fell to 35.178 token/s because variable verification shapes reduced
+  graph reuse;
+- the current DSpark controller limits its hot proposal shapes to K6 and K10,
+  reached 164.756 token/s median and 160.881 minimum on the controlled peak,
+  and recorded zero replay in both that capture and the paired 100-task run;
 - disabling CUDA Graphs reduced the peak workload to 133.876 token/s;
 - the experimental `GGML_CUDA_GRAPH_OPT=1` path reached only 160.613 token/s.
 
@@ -182,6 +186,14 @@ K7/S7 keeps a resident rollback point for every proposal. K7/S6 can reduce
 state work on a high-acceptance path, while the guarded implementation permits
 one exact replay and then clamps later rounds to six proposals. A representative
 workload, not the peak prompt alone, decides between them.
+
+The opt-in request-local controller avoids using replay as its first feedback.
+It starts at `min(K, S)`, opens the wider K shape only after a fully accepted
+first probe, closes that path after a partial first round, and moves sustained
+low-yield requests through a one-way target-only circuit. Healthy partial
+rounds retain a captured graph shape instead of continuously resizing K. This
+shared controller applies to native MTP, DFlash, and DSpark adapters even
+though its compatibility ACL key remains `spec_mtp_adaptive`.
 
 ### Full vocabulary, FR, and artifact quantization
 

@@ -21,6 +21,8 @@ that cell.
 | Untouched Q6_K, paired DSpark control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s | Same request shape and clean binary as the external-draft candidate |
 | **Untouched Q6_K + external DSpark Q4, K10/S6 (peak prompt)** | Exact paired 256-token output and receipt hashes | **65.825 token/s median** | **169.324 token/s** | 5.250x decode speedup; 90.873% acceptance; zero replay; all samples above 160 token/s |
 | Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; **54/100 exact-output parity** versus target-only | **32.678 token/s** | -- | 1.445x paired workload speedup; deterministic, but not eligible as a lossless production default |
+| **Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (controlled peak)** | Identical output and receipt hashes in all 3 samples | **63.535 token/s median** | **164.756 token/s median; 160.881 minimum** | Rollback-safe K6 start; 92.713% acceptance; zero replay; all samples above 160 token/s |
+| Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (100 tasks, 1x) | 69/100 lenient; 56/100 strict; **55/100 exact-output parity** versus the 67/100 and 58/100 control | **31.052 token/s** | -- | 1.358x paired speedup and zero replay, but three paired lenient losses keep it opt-in |
 | **Untouched Q6_K + prefix-FR8192 MTP, fixed K6/S6, B8** | 9/12 lenient and strict in both off/MTP modes (1x; 3 truncated) | **46.923 token/s** | -- | General short-task profile; 63.42% faster than its 28.713 token/s paired off control |
 | **Untouched Q6_K + prefix-FR8192 MTP, fixed K7/S6, B11, high-priority CUDA** | Same fixed-prompt digest as the controls | -- | **172.835 token/s** under a contended desktop | Current clean 9x peak profile; the earlier quiet-host capture remains 176.6109 token/s |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact parity on the fixed peak prompt | -- | 147.0207 token/s | Current balanced steady-decode control |
@@ -48,6 +50,16 @@ that deterministic request. The newer context-1024 100-task matrix measures
 the same profile across MMLU, GSM8K, and C-Eval; it retains the score but only
 54/100 complete responses match target-only byte for byte, so the profile is
 diagnostic rather than a lossless production default.
+
+The current request-local follow-up starts inside the S6 rollback window and
+opens K10 only after a fully accepted first probe. Its controlled peak passed
+the 160 token/s median and all-sample gates at 164.756 and 160.881 token/s,
+with 92.713% acceptance, 9.8077 verified tokens per target pass, and zero
+replay. The paired 100-task run reached 31.052 versus 22.872 token/s (1.358x),
+but contained five lenient gains and three losses, one strict gain and three
+losses, and only 55/100 complete-output parity. The
+[path-free adaptive evidence](dspark/adaptive/evidence.json) consequently marks
+the profile opt-in rather than lossless-by-default.
 
 ## Prompt-prefix cache, 2026-08-22
 

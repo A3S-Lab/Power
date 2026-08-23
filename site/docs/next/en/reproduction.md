@@ -185,7 +185,7 @@ The external-DSpark package is a separate paired experiment. It keeps the same
 22,884,408,288-byte Q6_K target and binds the 1,104,594,816-byte DSpark Q4
 artifact with SHA-256
 `12003c7f2642e2e87e979729e16947a913e2213d82136cb5024a36ec4871fef2`.
-Run its model-free verifier first:
+Run the three model-free verifiers first:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -193,6 +193,10 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 py -3.13 .\tools\qwen38_quality_evidence.py verify `
   --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality\evidence.json `
+  --json
+
+py -3.13 .\tools\dspark_adaptive_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\adaptive\evidence.json `
   --json
 ```
 
@@ -208,6 +212,19 @@ quality capture. It recomputes the 22.618 versus 32.678 token/s workload rates,
 vectors. Adding `--require-production-default` is expected to fail because only
 54/100 complete outputs match; the published K10/S6 matrix is diagnostic, not
 a lossless default.
+
+The third verifier binds the current clean request-local capture. It
+recomputes a 164.756 token/s peak median and 160.881 minimum, identical peak
+output and receipt hashes, zero replay, the 22.872 versus 31.052 token/s
+quality-workload rates, 1.358x speedup, and all 100 paired task vectors. The
+candidate recorded five lenient gains and three losses and only 55/100
+complete-output parity, so `--require-production-default` must fail here too.
+
+The exact performance commands in the package attest the requested 2745 MHz
+GPU clock lock, high-priority CUDA streams, High process priority, `0x55555`
+affinity, clean worktree, idle GPU, and at least 23,000 MiB free VRAM. Those
+controls are evidence from this host, not portable defaults for other CPU or
+GPU topologies.
 
 Use the [DSpark reproduction package](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
 for the typed registration body, target-only and DSpark ACL files, raw reports,

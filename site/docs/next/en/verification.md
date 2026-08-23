@@ -157,6 +157,21 @@ as a production default. `--require-production-default` rejects it because
 exact target/DSpark output parity is 54/100. Integrity, quality observation,
 and deployment acceptance are separate decisions.
 
+The current adaptive package binds the controlled peak and paired 100-task run
+in one path-free document, including host-control attestations, raw-capture
+hashes, runtime telemetry, and every paired task vector:
+
+```bash
+python3 tools/dspark_adaptive_evidence.py verify \
+  --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/adaptive/evidence.json \
+  --json
+```
+
+It verifies a 164.756 token/s peak median, 160.881 minimum, zero replay, and a
+1.358x request-wide quality-workload speedup. Production-default verification
+still rejects it because the matrix contains three paired lenient losses and
+only 55/100 complete-output parity.
+
 ## Production release trust chain
 
 For v1 and later, hardware captures bind a frozen source commit. Its direct

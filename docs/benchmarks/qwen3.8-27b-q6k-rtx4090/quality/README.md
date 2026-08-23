@@ -33,6 +33,42 @@ That makes fixed K10/S6 a high-acceptance peak-prompt profile, not the balanced
 quality default. See the [full DSpark analysis, verifier, and reproduction
 protocol](../dspark/README.md#representative-100-task-diagnostic).
 
+### Adaptive rollback-safe follow-up
+
+The current one-shot controller was then captured once on the same task set,
+target bytes, context 1,024, batch 12, and 256-token cap. The runner attested a
+High process priority, `0x55555` affinity, high-priority CUDA streams, a
+2745 MHz clock lock, and two independent three-sample GPU admission windows.
+
+| Mode | Lenient | Strict | Truncated | Request-wide throughput |
+| --- | ---: | ---: | ---: | ---: |
+| Q6_K target-only | 67/100 | 58/100 | 40/100 | 22.872 token/s |
+| Q6_K + adaptive DSpark Q4 K10/S6 | 69/100 | 56/100 | 42/100 | **31.052 token/s** |
+
+The adaptive path gained **1.358x** request-wide throughput. It accepted
+12,375 of 19,681 proposals (62.878%), committed 3.373 verified tokens per
+target pass, moved 24 requests and 2,934 tokens to target-only, and recorded
+zero fallback replay and zero guard activation. No subsequent K10 proposal was
+recorded: the mixed workload remained at K6 or below, or moved to target-only.
+The separate peak prompt did open K10 and passed the 160 token/s all-sample
+gate.
+
+The paired comparison had five lenient gains and three losses (`p=0.7266`),
+one strict gain and three losses (`p=0.625`), 89/100 extracted-answer parity,
+and 55/100 complete-output parity. All 57 tasks untruncated in both modes kept
+the same extracted answer. The lenient score moved up by two while strict
+score moved down by two, so this one-run diagnostic neither establishes a
+quality gain nor clears a no-regression gate. Adaptive DSpark remains opt-in.
+
+The [path-free adaptive evidence](../dspark/adaptive/evidence.json) includes
+all 100 paired task vectors and can be checked without a model or GPU:
+
+```powershell
+py -3.13 .\tools\dspark_adaptive_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\adaptive\evidence.json `
+  --json
+```
+
 ## Current 100-task full-vocabulary K7/S7 result
 
 The current rollback-complete profile selects **TBQ4 + full-vocabulary MTP,

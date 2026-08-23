@@ -72,6 +72,8 @@ topology and semantics.
 | Untouched Q6_K, DSpark acceptance control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s |
 | **Untouched Q6_K + external DSpark Q4, K10/S6 (peak prompt)** | Exact paired 256-token output and receipt hashes | **65.825 token/s median** | **169.324 token/s** |
 | Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; **54/100 exact-output parity** versus target-only | **32.678 token/s** (1.445x paired control) | - |
+| **Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (controlled peak)** | Identical output and receipt hashes across all 3 samples | **63.535 token/s median** | **164.756 token/s median; 160.881 minimum** |
+| Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (100 tasks, 1x) | 69/100 lenient; 56/100 strict; **55/100 exact-output parity** versus 67/100 and 58/100 target-only | **31.052 token/s** (1.358x paired control) | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K6/S6, B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **46.923 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K7/S6, B11, high-priority CUDA** | Fixed peak prompt retained the control digest | - | **172.835 token/s** on a contended desktop |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Fixed peak prompt has exact greedy parity | - | 147.0207 token/s |
@@ -101,6 +103,26 @@ byte for byte, and every DSpark request exercised exact fallback replay. This
 is useful workload evidence, but it fails Power's lossless production-default
 gate; K10/S6 remains an explicit benchmark profile while graph-shape parity and
 rollback width are recalibrated.
+
+The current request-local controller replaces that unconditional wide start
+with one rollback-safe probe. It begins at K6, jumps directly to K10 only when
+the first K6 proposal is fully accepted, preserves stable graph shapes for
+healthy partial rounds, and opens a one-way target-only circuit after sustained
+low yield. On clean commit `cbdb3f673446b3532c9683dabc816a149ae27b1f`, the
+controlled peak produced 166.988, 160.881, and 164.756 token/s. Its 164.756
+median and 160.881 minimum passed the 160 token/s median and all-sample gates;
+all three output and receipt hashes matched. The peak retained 92.713%
+acceptance, 9.8077 tokens per target pass, and zero replay.
+
+The paired 100-task capture reached 31.052 token/s versus 22.872 token/s for
+target-only, a 1.358x request-wide gain. It accepted 62.878% of proposals,
+committed 3.373 tokens per target pass, switched 24 requests to target-only,
+and recorded zero fallback replay and zero rollback-guard activation. The
+candidate moved from 67/58 to 69/56 lenient/strict answers, with five lenient
+gains, three lenient losses, one strict gain, three strict losses, 89/100
+answer parity, and 55/100 complete-output parity. All 57 tasks untruncated in
+both modes retained the same extracted answer. This is a faster opt-in profile,
+not a lossless default and not a 175 token/s service floor.
 
 DFlash and DSpark are alternative external-draft contracts, not an additive
 mode. DSpark Q4 is implemented and measured; a genuine DFlash GGUF has not yet
@@ -167,6 +189,7 @@ steady-decode or DFlash/DSpark claim.
 - [Repeated quality matrix and reproducible environment](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [Step-by-step reproduction guide](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md)
 - [Native DSpark Q4 peak and 600-request quality captures](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/README.md)
+- [Adaptive DSpark path-free peak and paired-quality evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/adaptive/evidence.json)
 - [UD-Q8_K_XL heterogeneous-placement boundary](docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 ## Start in three steps

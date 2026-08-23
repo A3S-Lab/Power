@@ -64,6 +64,14 @@ batch, context bucket, and parallel-request count can all create another graph.
 An adaptive setting that improves proposal acceptance can still lose overall
 throughput by fragmenting graph reuse.
 
+Power's opt-in request-local controller therefore starts inside the rollback
+window and exposes only a small hot-shape set. It opens the wider shape after a
+fully accepted first probe, closes that path after a partial first round, and
+moves sustained low-yield work through a one-way target-only circuit. The
+current DSpark capture kept K6/K10 reusable shapes, cleared 160 token/s in all
+three peak samples, and recorded zero replay; its paired losses still prevent
+it from becoming the default.
+
 Flash Attention is profile-specific. It usually helps context-heavy attention,
 but setup and layout work can lose on short target/draft batches. The model and
 backend profile owns that decision.
@@ -87,9 +95,10 @@ runtimes.
 
 ## Exact speculation
 
-Prompt lookup, n-gram context, and native MTP adapters share one transaction:
-checkpoint, propose, target-verify, commit the matching prefix, emit one
-correction or bonus token, and restore the last commit on failure.
+Prompt lookup, n-gram context, native MTP, DFlash, and DSpark adapters share
+one transaction: checkpoint, propose, target-verify, commit the matching
+prefix, emit one correction or bonus token, and restore the last commit on
+failure.
 
 - `spec_draft_max` bounds proposal width.
 - `spec_mtp_recurrent_snapshots` bounds resident rollback state.
@@ -97,6 +106,9 @@ correction or bonus token, and restore the last commit on failure.
 - FR limits only draft-head projection rows and is workload-sensitive.
 - TBQ4 and dynamic/mixed quantization are artifact choices, not generic runtime
   switches.
+- The request-local width controller is shared by native MTP, DFlash, and
+  DSpark adapters; `spec_mtp_adaptive` is a compatibility name, not a
+  Qwen-specific implementation.
 
 Acceptance rate alone is not the objective. Measure emitted tokens per target
 pass against draft, target verification, synchronization, sampling, replay,

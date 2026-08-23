@@ -27,6 +27,8 @@ against the same input identities.
 | Untouched Q6_K, paired DSpark control | Exact 256-token greedy output in paired 3x capture | 25.171 token/s median | 32.249 token/s |
 | **Untouched Q6_K + external DSpark Q4, K10/S6 (peak prompt)** | Exact paired 256-token output and receipt hashes | **65.825 token/s median** | **169.324 token/s** |
 | Untouched Q6_K + external DSpark Q4, K10/S6 (100 tasks, 3x) | 73/100 lenient; 59/100 strict; 54/100 exact-output parity | **32.678 token/s** | - |
+| **Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (controlled peak)** | Identical output and receipt hashes in all 3 samples | **63.535 token/s median** | **164.756 token/s median; 160.881 minimum** |
+| Untouched Q6_K + adaptive external DSpark Q4, K10/S6 (100 tasks, 1x) | 69/100 lenient; 56/100 strict; 55/100 exact-output parity versus the 67/100 and 58/100 control | **31.052 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K6/S6/B8** | 9/12 lenient and strict in both paired modes (1x; 3 truncated) | **46.923 token/s** | - |
 | **Untouched Q6_K + prefix-FR8192, fixed K7/S6/B11, high-priority CUDA** | Fixed peak prompt retained the same output digest | - | **172.835 token/s** on a shared WDDM desktop |
 | Untouched Q6_K, full-vocabulary MTP, K7/S7 | Exact greedy parity on the fixed peak prompt | - | 147.0207 token/s |
@@ -69,6 +71,24 @@ DSpark request entered exact fallback replay. The observed score did not fall;
 nevertheless K10/S6 fails the lossless production-default gate and remains an
 explicit benchmark profile.
 
+The current request-local controller replaces the unconditional wide start
+with one rollback-safe K6 probe. A fully accepted first probe opens K10; a
+partial first probe closes that path for the request, and sustained low-yield
+rounds open a one-way target-only circuit. On clean commit
+`cbdb3f673446b3532c9683dabc816a149ae27b1f`, the controlled peak produced
+166.988, 160.881, and 164.756 token/s. Its 164.756 median and 160.881 minimum
+passed both 160 token/s gates with identical output and receipt hashes,
+92.713% acceptance, 9.8077 verified tokens per target pass, and zero replay.
+
+The adaptive 100-task run reached 31.052 token/s against 22.872 target-only,
+a 1.358x request-wide gain. It recorded 62.878% acceptance, 3.373 verified
+tokens per target pass, 24 target-only requests, and zero replay or guard
+activation. Scores moved from 67/58 to 69/56 lenient/strict, with five lenient
+gains and three losses, one strict gain and three losses, 89/100 extracted-
+answer parity, and 55/100 complete-output parity. All 57 tasks untruncated in
+both modes retained the same extracted answer. This establishes a controlled
+160-plus opt-in peak, not a 175 token/s floor or a lossless default.
+
 DFlash is not part of this number. It uses a different artifact contract and
 cannot be layered onto DSpark. No genuine DFlash GGUF has completed the
 acceptance gate on this host.
@@ -101,9 +121,9 @@ Shared WDDM contention is now the main stable-175 boundary.
 
 Negative results remain part of the evidence. Disabling CUDA Graphs reached
 133.876 token/s; `GGML_CUDA_GRAPH_OPT=1` reached 160.613; and
-`CUDA_DEVICE_MAX_CONNECTIONS=32` reached 168.900. Adaptive K raised
-representative-workload acceptance to 50.07% but fell to 35.178 token/s because
-shape variation reduced graph reuse. Flash Attention is therefore
+`CUDA_DEVICE_MAX_CONNECTIONS=32` reached 168.900. An earlier unrestricted
+adaptive-K experiment raised representative-workload acceptance to 50.07% but
+fell to 35.178 token/s because shape variation reduced graph reuse. Flash Attention is therefore
 profile-specific, not a global switch.
 
 This is one llama.cpp/CUDA integration, **not** a service floor or universal
@@ -121,11 +141,13 @@ not a portable product default.
 
 ## Did quality fall?
 
-The external-DSpark matrix observed no score decrease: 73/100 lenient and
-59/100 strict versus its target-only control at 67/100 and 58/100. All 58 tasks
-that were untruncated in both modes retained the same extracted answer. The
-54/100 complete-output parity still blocks a lossless-default claim; fixed-task
-scores are not a measure of general intelligence.
+The fixed external-DSpark matrix observed no score decrease: 73/100 lenient
+and 59/100 strict versus its target-only control at 67/100 and 58/100. Its
+54/100 complete-output parity still blocks a lossless-default claim. The newer
+adaptive run moved lenient score up by two and strict score down by two, with
+three paired lenient losses. All 57 tasks untruncated in both adaptive modes
+retained the same extracted answer, but that does not clear a no-regression
+gate. Fixed-task scores are not a measure of general intelligence.
 
 In the current pure-Q6_K K6/S6/B8 pair, all 12 final answers matched, both modes
 scored 9/12 lenient and strict, eight complete content digests matched, and
@@ -183,6 +205,7 @@ Use the repository's checked-in guide and raw evidence:
 - [Repeated 100-task quality protocol](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/README.md)
 - [Current compact machine-readable evidence](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/full-vocabulary-s7-current-rtx4090-3x.json)
 - [Native DSpark Q4 reports and exact reproduction](https://github.com/A3S-Lab/Power/tree/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark)
+- [Adaptive DSpark peak and paired-quality evidence](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/adaptive/evidence.json)
 - [UD-Q8_K_XL heterogeneous-placement boundary](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/qwen3.8-27b-ud-q8-k-xl-rtx4090/README.md)
 
 Treat a replay on different silicon, driver, display load, clock policy, model

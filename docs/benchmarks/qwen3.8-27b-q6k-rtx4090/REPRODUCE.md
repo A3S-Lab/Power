@@ -542,15 +542,22 @@ py -3.13 .\tools\test_add_gguf_mtp_head.py
 py -3.13 .\tools\test_build_fr_vocabulary.py
 py -3.13 .\tools\test_qwen38_quality_eval.py
 py -3.13 .\tools\test_qwen38_quality_evidence.py
+py -3.13 .\tools\test_dspark_adaptive_evidence.py
 py -3.13 .\tools\qwen38_quality_evidence.py verify `
   --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality\evidence.json `
+  --json
+py -3.13 .\tools\dspark_adaptive_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\adaptive\evidence.json `
   --json
 py -3.13 -m py_compile `
   .\tools\add-gguf-mtp-head.py `
   .\tools\build-fr-vocabulary.py `
   .\tools\qwen38_quality_eval.py `
   .\tools\qwen38_quality_report.py `
-  .\tools\qwen38_quality_evidence.py
+  .\tools\qwen38_quality_evidence.py `
+  .\tools\dspark_adaptive_capture.py `
+  .\tools\dspark_adaptive_evidence_core.py `
+  .\tools\dspark_adaptive_evidence.py
 ```
 
 The performance replay is deliberately not a CI test: the current gate requires
@@ -586,3 +593,22 @@ artifact revisions and hashes, paired runner commands, the 160 token/s peak
 gate, the cross-domain matrix, VRAM boundary, and DFlash non-result. Do not
 merge its request-wide context-1024 statistics with the 256-token peak or the
 1,024-token native-MTP steady-decode result.
+
+The current request-local controller has a separate clean capture. Verify its
+controlled peak and paired 100-task matrix together:
+
+```powershell
+py -3.13 .\tools\dspark_adaptive_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\adaptive\evidence.json `
+  --json
+```
+
+The verifier recomputes the 164.756 token/s peak median, 160.881 token/s
+minimum, 31.052 versus 22.872 token/s workload rates, 1.358x speedup, runtime
+telemetry, host-control attestations, and all 100 paired task vectors. The peak
+had identical output and receipt hashes with zero replay. The quality run had
+five lenient gains and three losses, 55/100 complete-output parity, and zero
+replay. `--require-production-default` must therefore fail for the adaptive
+package as well. Use the exact peak and matrix commands in the DSpark-specific
+guide; they pin the 2745 MHz clock request, high-priority CUDA streams, High
+process priority, `0x55555` affinity, clean tree, and idle-GPU admission gates.

@@ -154,6 +154,9 @@ contracts, not by branches in the Power scheduler.
    The first Qwen3.8 Q6_K + DSpark Q4 peak-prompt capture meets the narrow
    artifact and execution gate. Its broader K10/S6 quality capture does not
    meet the exact-output production-default gate and remains opt-in.
+   The current request-local adaptive profile removes unconditional replay by
+   probing at the rollback-complete width before opening a wider shape; its
+   quality evidence still contains paired losses, so it also remains opt-in.
 6. At least one non-Qwen adapter must pass the same transaction and exactness
    suite before DSpark support is considered cross-architecture complete.
 
@@ -186,6 +189,22 @@ stable within each mode, but complete target/DSpark output parity was only
 The observed score did not fall, yet output divergence means this profile is
 not a lossless production default. The checked-in path-free evidence can be
 verified without a model or GPU; see the linked DSpark report.
+
+The current adaptive follow-up starts at rollback-complete K6 and jumps
+directly to K10 only after a fully accepted first probe. On the controlled
+peak it reached 164.756 token/s median and 160.881 minimum across three
+samples, with 92.713% acceptance, 9.8077 tokens per target pass, identical
+output and receipt hashes, and zero replay. On the paired 100-task workload it
+reached 31.052 token/s versus 22.872 target-only (1.358x), accepted 62.878% of
+proposals, committed 3.373 tokens per target pass, moved 24 requests to
+target-only, and again recorded zero replay or guard activation.
+
+That quality run moved from 67/58 to 69/56 lenient/strict answers. It contained
+five lenient gains and three losses, one strict gain and three losses, 89/100
+answer parity, and 55/100 complete-output parity; all 57 tasks untruncated in
+both modes retained the same answer. The evidence therefore supports a stable
+160-plus opt-in peak and replay-free mixed execution, not a 175 token/s floor
+or a lossless production default.
 
 ## Reproducible Power API benchmark
 
@@ -332,10 +351,17 @@ committed target prefix. Fixed K>S configurations now wrap this fallback in a
 request-local guard: the first exact replay is allowed, then all later rounds
 in that request are clamped to the rollback-complete snapshot width. This
 bounds replay without changing high-acceptance requests that never activate
-the guard. Adaptive K>S configurations use the same rule: they start at the
-configured width and clamp only after an observed rejection actually exceeds
-the resident rollback window. Metrics report guarded requests, activations,
-activation round, and the clamped draft limit.
+the guard. Adaptive K>S configurations avoid making that replay the first
+observation. They start at `min(K, S)`, promote directly to K only when the
+first rollback-complete probe is fully accepted, and permanently close the
+wide probe for that request after a partial first round. A healthy partial
+round that commits at least half the proposal retains its graph shape;
+lower-yield rounds follow the accepted-prefix EMA. Twelve sustained
+mostly-zero rounds open a one-way target-only circuit. Metrics report requested
+widths, target-only transitions, guarded requests, activations, activation
+round, and the clamped draft limit. The legacy configuration key is
+`spec_mtp_adaptive`, but the controller applies equally to native MTP, DFlash,
+and DSpark model-backed strategies.
 
 Record the same explicit snapshot value in both A/B configs; reducing it can
 avoid a GPU-memory allocation cliff, while recovery frequency can reduce
@@ -429,10 +455,10 @@ At a 256-token cap it reached 46.923 token/s versus 28.713 token/s with
 speculation off, a 63.42% gain, with identical final answers and the same 9/12
 lenient and strict score in both modes. Proposal acceptance was only 26.81%,
 but the fixed graph emitted 2.591 verified tokens per target pass with no
-replay. Adaptive K reported a higher 50.07% acceptance yet slowed to 35.178
-token/s because variable verification shapes and a target-only circuit reduced
-CUDA graph reuse. Optimize useful tokens per total phase time, not acceptance
-percentage in isolation.
+replay. An earlier unrestricted adaptive-K experiment reported a higher 50.07%
+acceptance yet slowed to 35.178 token/s because variable verification shapes
+and a target-only circuit reduced CUDA graph reuse. Optimize useful tokens per
+total phase time, not acceptance percentage in isolation.
 
 The CUDA backend already uses dynamic Q8_1 activation quantization for
 quantized matrix-matrix kernels. Forcing the eight-row Q6 verification shape

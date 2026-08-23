@@ -125,6 +125,16 @@ python3 tools/qwen38_quality_evidence.py verify \
 
 该证据能通过完整性校验，同时明确标记为不具备生产默认资格。加入 `--require-production-default` 会因目标与 DSpark 完整输出一致率仅为 54/100 而失败。证据完整性、质量观察与部署准入是三个独立判断。
 
+当前自适应证据把受控峰值与 100 题配对采集合并成一份路径无关文档，其中包含主机控制证明、原始采集摘要、运行时遥测与全部配对任务向量：
+
+```bash
+python3 tools/dspark_adaptive_evidence.py verify \
+  --evidence docs/benchmarks/qwen3.8-27b-q6k-rtx4090/dspark/adaptive/evidence.json \
+  --json
+```
+
+它验证峰值中位数 164.756 token/s、最低 160.881、零回放，以及质量负载 1.358 倍的请求全程加速。由于矩阵包含 3 个配对宽松损失，且完整输出一致率仅为 55/100，生产默认校验仍会拒绝该配置。
+
 ## 生产发布信任链
 
 从 v1 开始，硬件捕获绑定一个冻结的源码提交。它的直接子提交只能新增

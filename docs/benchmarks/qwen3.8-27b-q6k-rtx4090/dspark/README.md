@@ -37,6 +37,70 @@ The checked-in [target-only report](target-only.json),
 [compact environment receipt](evidence.json) bind the raw samples, artifact
 identities, executable hashes, telemetry summary, and capture revision.
 
+## Adaptive request-local result
+
+Fixed K10/S6 is the narrow peak high-water mark, but its representative
+100-task run replayed every request. The current controller starts at the
+rollback-complete K6 shape. A fully accepted first probe jumps directly to
+K10; a partial first probe closes the wide path for that request. Healthy
+partial rounds retain their graph shape, while twelve sustained low-yield
+rounds open a one-way target-only circuit. This policy is model-neutral and is
+shared by native MTP, DFlash, and DSpark adapters.
+
+The clean `cbdb3f673446b3532c9683dabc816a149ae27b1f` capture used the same
+Q6_K target, DSpark artifact, context 512, batch 12, 256-token greedy request,
+2745 MHz clock lock, high-priority CUDA streams, High process priority, and
+`0x55555` CPU affinity.
+
+| Adaptive K10/S6 capture | Result |
+| --- | ---: |
+| Decode samples | 166.988, 160.881, 164.756 token/s |
+| Median / minimum decode | **164.756 / 160.881 token/s** |
+| Median end to end | 63.535 token/s |
+| Proposal acceptance | 229/247, **92.713%** |
+| Verified tokens per target pass | **9.8077** |
+| Fallback replay / guard activation | **0 / 0** |
+| Output / receipt identity | identical across all 3 samples |
+
+The median and every sample passed the 160 token/s gate. This is a stable
+160-plus boundary on the recorded prompt, not a 175 token/s service floor. It
+trades 2.7% of the historical fixed-K10 median for a request-local safe start
+and two reusable high-yield CUDA Graph shapes.
+
+The paired context-1024, batch-12 quality run tells the broader story:
+
+| Mode | Lenient | Strict | Truncated | Request-wide throughput |
+| --- | ---: | ---: | ---: | ---: |
+| Q6_K target-only | 67/100 | 58/100 | 40/100 | 22.872 token/s |
+| Q6_K + adaptive DSpark Q4 | 69/100 | 56/100 | 42/100 | **31.052 token/s** |
+
+The request-wide speedup is **1.358x**. Adaptive DSpark recorded five lenient
+gains and three losses, one strict gain and three losses, 89/100 extracted-
+answer parity, and 55/100 complete-output parity. All 57 tasks untruncated in
+both modes retained the same extracted answer. Runtime telemetry recorded
+62.878% proposal acceptance, 3.373 verified tokens per target pass, 24
+target-only requests and 2,934 target-only tokens, with zero fallback replay
+and zero rollback-guard activation.
+
+The lenient score rose by two while strict score fell by two. Neither delta is
+statistically persuasive, and the three paired losses prevent a no-regression
+claim. The adaptive profile is therefore opt-in; target-only remains the
+strict production default until wide and serial CUDA shapes have an exact
+output contract.
+
+Verify the path-free package without the model or an NVIDIA GPU:
+
+```powershell
+py -3.13 .\tools\dspark_adaptive_evidence.py verify `
+  --evidence .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\adaptive\evidence.json `
+  --json
+```
+
+Adding `--require-production-default` is expected to fail with exact-output
+parity `55/100`. The checked-in [adaptive evidence](adaptive/evidence.json)
+pins the clean commit, binaries, input and artifact digests, peak samples,
+host controls, raw-capture hashes, runtime telemetry, and all 100 task pairs.
+
 ## Representative 100-task diagnostic
 
 The peak prompt is intentionally easy to predict. A separate capture therefore
@@ -106,6 +170,9 @@ The accepted DSpark path combines:
   output tokens;
 - six resident recurrent rollback snapshots, with exact committed-prefix
   replay available when a rejected suffix exceeds that window;
+- an optional request-local adaptive controller that probes inside S6, jumps
+  directly to K10 after one fully accepted probe, and moves sustained low-yield
+  requests to target-only without an automatic full-prefix replay;
 - stable batch-12 CUDA Graph shapes, full target/draft GPU offload, Flash
   Attention, high-priority CUDA streams, and single-model/single-request
   scheduling;
@@ -255,6 +322,17 @@ $common = @{
   -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\dspark-q4-k10-s6.acl `
   -Mode dspark -MinimumTokensPerSecond 160 `
   -MinimumSampleTokensPerSecond 160
+
+$adaptive = @{} + $common
+$adaptive.MaximumIdleGpuUtilizationPercent = 15
+$adaptive.LockGpuClockMHz = 2745
+$adaptive.ProcessorAffinityMask = 349525
+
+.\tools\run-gguf-speculative-benchmark.ps1 @adaptive `
+  -Label adaptive-dspark-q4-k10-s6-c512-b12-256t-3x `
+  -Config .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality-adaptive-k10-s6.acl `
+  -Mode dspark -MinimumTokensPerSecond 160 `
+  -MinimumSampleTokensPerSecond 160
 ```
 
 The DSpark profile peaked at 23,847 MiB, leaving only 717 MiB on this GPU.
@@ -287,6 +365,28 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -RequireHighPerformancePowerPlan -RequireCleanTree
 ```
 
+Replay the current adaptive matrix with its attested host controls:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\run-qwen38-quality-matrix.ps1 `
+  -Q6PowerHome D:\models\a3s-power\dspark-home `
+  -Profile dspark-q4 `
+  -RuntimeConfig .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\dspark\quality-adaptive-k10-s6.acl `
+  -PreparedTaskCache .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\tasks-v1.json `
+  -TargetDirectory target-native-sm89-ninja `
+  -OutputRoot D:\models\a3s-power\quality-dspark-adaptive `
+  -Model qwen3.8-27b-q6-k-dspark-q4 `
+  -Repetitions 1 -NumCtx 1024 -NumBatch 12 -MaxTokensCap 256 `
+  -ProcessPriority High -ProcessorAffinityMask 349525 `
+  -LockGpuClockMHz 2745 -CudaHighPriority `
+  -NvidiaGpuIndex 0 -MaximumIdleGpuUtilizationPercent 15 `
+  -MinimumIdleGpuMemoryFreeMiB 23000 `
+  -IdleGpuSampleCount 3 -IdleGpuSampleIntervalMilliseconds 500 `
+  -IdleGpuWaitSeconds 300 `
+  -RequireHighPerformancePowerPlan -RequireCleanTree
+```
+
 Package a completed raw capture for review with:
 
 ```powershell
@@ -300,13 +400,31 @@ verifier intentionally recognizes only the published clean capture. Updating
 the repository pin requires review of the new source, binary, artifact, GPU,
 task, configuration, and report identities.
 
+Package the adaptive peak and quality captures together after reviewing their
+raw hashes:
+
+```powershell
+py -3.13 .\tools\dspark_adaptive_evidence.py capture `
+  --quality-root D:\models\a3s-power\qwen38\benchmark\quality-dspark-adaptive-one-shot-k10s6-c1024-b12-256t-1x-cbdb3f6 `
+  --peak-report D:\models\a3s-power\qwen38\benchmark\adaptive-dspark-20260823\dspark-k10s6-adaptive-one-shot-cbdb3f6-clock2745-affinity-peak-3x.json `
+  --peak-preflight D:\models\a3s-power\qwen38\benchmark\adaptive-dspark-20260823\dspark-k10s6-adaptive-one-shot-cbdb3f6-clock2745-affinity-peak-3x.preflight.json `
+  --peak-environment D:\models\a3s-power\qwen38\benchmark\adaptive-dspark-20260823\dspark-k10s6-adaptive-one-shot-cbdb3f6-clock2745-affinity-peak-3x.environment.json `
+  --peak-server-log D:\models\a3s-power\qwen38\benchmark\adaptive-dspark-20260823\dspark-k10s6-adaptive-one-shot-cbdb3f6-clock2745-affinity-peak-3x.stdout.log `
+  --output D:\models\a3s-power\adaptive-dspark-evidence.json
+```
+
+The published verifier is intentionally pinned to the reviewed source hashes;
+a fresh capture is expected to require a source and evidence review before it
+can replace the checked-in package.
+
 ## Claim boundary
 
-The 169.324 token/s result is a single-request, short-context, deterministic
-boundary on one prompt and one RTX 4090. The broader 100-task matrix is a
-cross-domain diagnostic, not a full benchmark score: it observed no score
-decrease and a 1.445x request-wide gain, but only 54/100 complete outputs
-matched the target-only mode. K10/S6 is consequently opt-in and not eligible
-as a lossless production default. Stochastic sampling, concurrency, long
-contexts, other models, drivers, and GPU memory pressure require independent
-quality and performance gates.
+The fixed 169.324 token/s and adaptive 164.756 token/s results are
+single-request, short-context, deterministic boundaries on one prompt and one
+RTX 4090. The adaptive minimum of 160.881 token/s supports a controlled
+160-plus claim, not a 175 token/s floor. Its 100-task diagnostic gained 1.358x
+request-wide throughput but included three paired lenient losses and only
+55/100 complete-output matches. Both K10/S6 variants are consequently opt-in
+and not eligible as lossless production defaults. Stochastic sampling,
+concurrency, long contexts, other models, drivers, and GPU memory pressure
+require independent quality and performance gates.
