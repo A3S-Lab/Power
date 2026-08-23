@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Made the repeated Qwen3.8 quality runner default to a machine-described
+  `pure-q6` profile. Its autoregressive control and full-vocabulary MTP
+  candidate both resolve to the same untouched Q6_K artifact, require neither
+  TBQ4 target weights nor an external proposer, and retain the older mixed and
+  external-draft profiles only as explicitly named research replays. A Windows
+  contract test locks that boundary in CI.
 - Preserved the verifier-accepted 48-byte launch measurement and the SHA-256
   identity of the exact raw signed CPU TEE report as explicit fields in every
   proof-promoted confidential GPU capture. Final capture and bundle replay now

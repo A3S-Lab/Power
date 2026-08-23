@@ -190,6 +190,10 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
 - [x] Bind benchmark artifacts to weights, graph declarations, runtime/device,
       TEE policy, and build revision. Third-party headline numbers are never
       reused as A3S measurements.
+- [x] Separate the active Qwen3.8 Q6_K quality profile from archived
+      mixed-quantization and external-draft experiments. The default repeated
+      matrix resolves both control and optimized modes to one unchanged Q6_K
+      artifact and exposes its resolved contract before model loading.
 
 ## Cross-repository delivery order
 

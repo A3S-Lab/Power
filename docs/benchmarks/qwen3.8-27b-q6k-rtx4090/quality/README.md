@@ -1,10 +1,23 @@
 # Qwen3.8-27B representative quality and throughput matrix
 
-This suite complements the repetitive-prompt peak benchmark in the parent
-directory. It measures three inference modes on one fixed 100-task workload,
-repeats every mode three times, rotates execution order, and retains the
-machine-readable task set and per-request evidence needed to reproduce or
-audit the result.
+This archive complements the repetitive-prompt peak benchmark in the parent
+directory. The active acceptance path measures two modes on one fixed
+100-task workload: autoregressive Q6_K and full-vocabulary MTP over the exact
+same unchanged Q6_K bytes. It repeats both modes three times, rotates execution
+order, and retains the machine-readable task set and per-request evidence
+needed to reproduce or audit the result.
+
+The runner now defaults to the machine-described `pure-q6` profile. It does
+not require a TBQ4 Power home and does not load an external proposer. The
+TBQ4, DSpark, and DFlash2 sections below remain immutable research history;
+they are not part of the active target-model acceptance decision.
+
+Inspect the resolved profile without loading the model or starting a server:
+
+```powershell
+.\tools\run-qwen38-quality-matrix.ps1 `
+  -Q6PowerHome unused -DescribeProfile
+```
 
 ## External-DSpark quality diagnostic
 
@@ -69,7 +82,7 @@ py -3.13 .\tools\dspark_adaptive_evidence.py verify `
   --json
 ```
 
-## Current 100-task full-vocabulary K7/S7 result
+## Historical mixed-artifact 100-task full-vocabulary K7/S7 result
 
 The current rollback-complete profile selects **TBQ4 + full-vocabulary MTP,
 fixed K7/S7**. Across the same 100 tasks and three cyclically ordered runs, it
@@ -335,8 +348,35 @@ py -3.13 -m py_compile `
   .\tools\qwen38_quality_report.py
 ```
 
-Then run the current complete three-by-three full-vocabulary S7 matrix using
-the reviewed offline task cache:
+Then run the active two-mode, three-repetition Q6_K-only matrix using the
+reviewed offline task cache:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\run-qwen38-quality-matrix.ps1 `
+  -Q6PowerHome D:\models\a3s-power\qwen38\power-home `
+  -Profile pure-q6 `
+  -PreparedTaskCache .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\tasks-v1.json `
+  -TargetDirectory target-native-sm89-ninja `
+  -OutputRoot target-qwen38-quality-pure-q6 `
+  -Repetitions 3 -NumBatch 14 `
+  -ProcessPriority High -ProcessorAffinityMask 349525 `
+  -CudaHighPriority -LockGpuClockMHz 2745 `
+  -MaximumIdleGpuUtilizationPercent 8 `
+  -MinimumIdleGpuMemoryFreeMiB 23000 `
+  -IdleGpuSampleCount 3 -IdleGpuWaitSeconds 300 `
+  -RequireHighPerformancePowerPlan -RequireCleanTree
+```
+
+Both report labels must carry model SHA-256
+`562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727`;
+the environment receipt must contain `tbq4_model: null`, and no mode may carry
+an external-draft digest. A result is not promoted merely because the MTP row
+is faster: paired lenient and strict scores, truncation, stability, replay,
+and per-task answer changes must be reviewed together.
+
+The following command deliberately replays the archived three-mode
+mixed-artifact S7 matrix and is not the active acceptance run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -354,10 +394,10 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -RequireCleanTree
 ```
 
-`-Profile full-vocabulary-current` selects the checked-in K7/S7 ACL and fails
-if a compatible report from a different commit would otherwise be reused.
-Use a new output directory for every experiment. Omit the profile only when
-deliberately replaying the historical prefix-FR matrix.
+`-Profile full-vocabulary-current` requires the separate TBQ4 Power home and
+selects the archived K7/S7 comparison. `-Profile prefix-fr-release` does the
+same for the earlier prefix-FR experiment. Use a new output directory for
+every experiment; omitting `-Profile` now selects `pure-q6`.
 
 Replay the smaller current-binary rollback calibration with host-staged
 recurrent state and explicit snapshot windows:

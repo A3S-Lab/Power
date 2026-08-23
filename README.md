@@ -72,6 +72,11 @@ needs an auxiliary proposer; it is never scored or reported as the target
 model. Mixed-quantization and Q8 captures remain historical research outside
 the current acceptance decision.
 
+The repeated quality runner enforces that scope through its default
+`pure-q6` profile: both `q6-off` and `q6-mtp-full-vocab` resolve to the exact
+same Q6_K model identity. Inspect the contract without loading a model with
+`./tools/run-qwen38-quality-matrix.ps1 -Q6PowerHome unused -DescribeProfile`.
+
 | Qwen3.8-27B Q6_K target mode | Fixed-task quality proxy | Request-wide throughput | Median steady decode |
 | --- | --- | ---: | ---: |
 | Untouched Q6_K, autoregressive | 67/100 lenient; 60/100 strict (100 tasks, 3x) | 30.883 token/s | 35.5793 token/s (earlier capture) |

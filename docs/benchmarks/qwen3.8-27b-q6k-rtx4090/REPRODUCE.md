@@ -427,11 +427,36 @@ foreach ($entry in $expectedHashes.GetEnumerator()) {
 
 ## 5. Reproduce the representative quality tests
 
-Replay the current pure-Q6_K paired mixed-task profile with a splatted argument
-table. Supplying the Boolean recurrent-chain option this way avoids
-PowerShell's cross-process Boolean argument ambiguity. The run compares the
-same Q6_K bytes, B8 target capacity, host controls, and task selection with
-speculation off and fixed K6/S6 MTP:
+The formal repeated matrix compares autoregressive execution with
+full-vocabulary MTP while loading the same Q6_K artifact in both modes. It does
+not require TBQ4 weights or an external proposer:
+
+```powershell
+.\tools\run-qwen38-quality-matrix.ps1 `
+  -Q6PowerHome D:\models\a3s-power\qwen38\power-home `
+  -Profile pure-q6 `
+  -PreparedTaskCache .\docs\benchmarks\qwen3.8-27b-q6k-rtx4090\quality\tasks-v1.json `
+  -TargetDirectory target-native-sm89-ninja `
+  -OutputRoot target-qwen38-quality-pure-q6 `
+  -Repetitions 3 -NumBatch 14 `
+  -ProcessPriority High -ProcessorAffinityMask 349525 `
+  -CudaHighPriority -LockGpuClockMHz 2745 `
+  -MaximumIdleGpuUtilizationPercent 8 `
+  -MinimumIdleGpuMemoryFreeMiB 23000 `
+  -IdleGpuSampleCount 3 -IdleGpuWaitSeconds 300 `
+  -RequireHighPerformancePowerPlan -RequireCleanTree
+```
+
+Use `-Q6PowerHome unused -DescribeProfile` to inspect the two-mode contract
+without loading a model. A valid environment receipt has `tbq4_model: null`,
+and both modes bind the exact Q6_K SHA-256. The result still requires paired
+quality review; target verification alone does not prove identical text.
+
+For a shorter configuration calibration, replay the current pure-Q6_K paired
+mixed-task profile with a splatted argument table. Supplying the Boolean
+recurrent-chain option this way avoids PowerShell's cross-process Boolean
+argument ambiguity. The run compares the same Q6_K bytes, B8 target capacity,
+host controls, and 12-task selection with speculation off and fixed K6/S6 MTP:
 
 ```powershell
 $sweepArgs = @{

@@ -128,6 +128,8 @@ jobs:
         run: git config --global core.longpaths true
       - name: Test GGUF benchmark preflight contract
         run: .\tools\test-gguf-speculative-preflight.ps1
+      - name: Test Q6_K-only quality profile contract
+        run: .\tools\test-qwen38-quality-profile.ps1
       - name: Test external-draft benchmark contract
         run: .\tools\test-llamacpp-external-draft-benchmark.ps1
       - uses: Swatinem/rust-cache@v2

@@ -4,8 +4,13 @@ param(
 
     [string]$Tbq4PowerHome,
 
-    [ValidateSet('prefix-fr-release', 'full-vocabulary-current', 'dspark-q4')]
-    [string]$Profile = 'prefix-fr-release',
+    [ValidateSet(
+        'pure-q6',
+        'prefix-fr-release',
+        'full-vocabulary-current',
+        'dspark-q4'
+    )]
+    [string]$Profile = 'pure-q6',
 
     [string]$RuntimeConfig,
 
@@ -86,7 +91,9 @@ param(
 
     [switch]$IncludeContent,
 
-    [switch]$ReuseCompatibleReportsAcrossCommits
+    [switch]$ReuseCompatibleReportsAcrossCommits,
+
+    [switch]$DescribeProfile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -96,6 +103,13 @@ if ($MaxTokensCap -gt 0 -and $MaxTokensOverride -gt 0) {
 }
 
 $powerRoot = Split-Path -Parent $PSScriptRoot
+$profileHelper = Join-Path $PSScriptRoot 'lib/qwen38-quality-profile.ps1'
+. $profileHelper
+$profileDefinition = Resolve-Qwen38QualityProfile -Profile $Profile
+if ($DescribeProfile) {
+    $profileDefinition | ConvertTo-Json -Depth 6
+    return
+}
 $server = Join-Path $powerRoot "$TargetDirectory\release\a3s-power.exe"
 $evaluator = Join-Path $PSScriptRoot 'qwen38_quality_eval.py'
 $reporter = Join-Path $PSScriptRoot 'qwen38_quality_report.py'
@@ -104,12 +118,8 @@ $benchmarkRoot = Join-Path $qwenBenchmarkRoot 'quality'
 $manifest = Join-Path $benchmarkRoot 'tasks-v1.manifest.json'
 $config = if (-not [string]::IsNullOrWhiteSpace($RuntimeConfig)) {
     [System.IO.Path]::GetFullPath($RuntimeConfig)
-} elseif ($Profile -eq 'full-vocabulary-current') {
-    Join-Path $benchmarkRoot 'full-vocabulary-current.acl'
-} elseif ($Profile -eq 'dspark-q4') {
-    Join-Path $qwenBenchmarkRoot 'dspark\quality-k10-s6.acl'
 } else {
-    Join-Path $benchmarkRoot 'matrix.acl'
+    Join-Path $qwenBenchmarkRoot $profileDefinition.config_relative_path
 }
 $output = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
     [System.IO.Path]::GetFullPath($OutputRoot)
@@ -531,7 +541,7 @@ if ($RequireHighPerformancePowerPlan -and
 }
 
 New-Item -ItemType Directory -Force -Path $output | Out-Null
-$q6Identity = if ($Profile -eq 'dspark-q4') {
+$q6Identity = if ($profileDefinition.q6_external_draft_kind -eq 'dspark') {
     Get-ModelIdentity -PowerHome $Q6PowerHome -ExpectedHash $Q6ModelHash `
         -ExpectedExternalDraftKind 'dspark' `
         -ExpectedExternalDraftHash $DsparkDraftHash
@@ -539,69 +549,34 @@ $q6Identity = if ($Profile -eq 'dspark-q4') {
     Get-ModelIdentity -PowerHome $Q6PowerHome -ExpectedHash $Q6ModelHash
 }
 $tbq4Identity = $null
-if ($Profile -eq 'dspark-q4') {
-    $modes = @(
-        @{
-            label = 'q6-off'
-            power_home = $q6Identity.power_home
-            model_hash = $Q6ModelHash
-            spec_mode = 'off'
-            fr_vocab_size = $null
-            external_draft_sha256 = $DsparkDraftHash
-        },
-        @{
-            label = 'q6-dspark'
-            power_home = $q6Identity.power_home
-            model_hash = $Q6ModelHash
-            spec_mode = 'dspark'
-            fr_vocab_size = $null
-            external_draft_sha256 = $DsparkDraftHash
-        }
-    )
-    $comparisons = @(, @('q6-off', 'q6-dspark'))
-} else {
+if ($profileDefinition.requires_tbq4) {
     if ([string]::IsNullOrWhiteSpace($Tbq4PowerHome)) {
         throw "Tbq4PowerHome is required for profile '$Profile'"
     }
     $tbq4Identity = Get-ModelIdentity `
         -PowerHome $Tbq4PowerHome -ExpectedHash $Tbq4ModelHash
-    $mtpLabel = if ($Profile -eq 'full-vocabulary-current') {
-        'tbq4-mtp-full-vocab'
-    } else {
-        'tbq4-mtp-fr'
-    }
-    $mtpFrVocabSize = if ($Profile -eq 'full-vocabulary-current') { $null } else { 8192 }
-    $modes = @(
-        @{
-            label = 'q6-off'
-            power_home = $q6Identity.power_home
-            model_hash = $Q6ModelHash
-            spec_mode = 'off'
-            fr_vocab_size = $null
-            external_draft_sha256 = $null
-        },
-        @{
-            label = 'tbq4-off'
-            power_home = $tbq4Identity.power_home
-            model_hash = $Tbq4ModelHash
-            spec_mode = 'off'
-            fr_vocab_size = $null
-            external_draft_sha256 = $null
-        },
-        @{
-            label = $mtpLabel
-            power_home = $tbq4Identity.power_home
-            model_hash = $Tbq4ModelHash
-            spec_mode = 'mtp'
-            fr_vocab_size = $mtpFrVocabSize
-            external_draft_sha256 = $null
-        }
-    )
-    $comparisons = @(
-        @('q6-off', 'tbq4-off'),
-        @('tbq4-off', $modes[2].label)
-    )
 }
+$modes = @($profileDefinition.modes | ForEach-Object {
+    $modelIdentity = if ($_.model_role -eq 'q6') {
+        $q6Identity
+    } else {
+        $tbq4Identity
+    }
+    $externalDraftHash = if ($_.external_draft_kind -eq 'dspark') {
+        $DsparkDraftHash
+    } else {
+        $null
+    }
+    @{
+        label = $_.label
+        power_home = $modelIdentity.power_home
+        model_hash = $modelIdentity.sha256
+        spec_mode = $_.spec_mode
+        fr_vocab_size = $_.fr_vocab_size
+        external_draft_sha256 = $externalDraftHash
+    }
+})
+$comparisons = @($profileDefinition.comparisons)
 $serverHash = (Get-FileHash -LiteralPath $server -Algorithm SHA256).Hash.ToLowerInvariant()
 $gpu = @(& nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap,pstate,power.limit --format=csv,noheader,nounits)
 $cpu = Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors
