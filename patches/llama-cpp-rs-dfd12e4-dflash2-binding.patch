@@ -1,0 +1,83 @@
+diff --git a/llama-cpp-2/src/speculative.rs b/llama-cpp-2/src/speculative.rs
+index a7f8184..cdec4ea 100644
+--- a/llama-cpp-2/src/speculative.rs
++++ b/llama-cpp-2/src/speculative.rs
+@@ -250,6 +250,8 @@ pub enum ExternalDraftSpeculativeKind {
+     Dflash = 1,
+     /// DSpark anchor-first decoding with a Markov head.
+     Dspark = 2,
++    /// DFlash2 block diffusion with convolution state and selector lattice.
++    Dflash2 = 3,
+ }
+ 
+ /// Parameters for external DFlash-family speculative decoding.
+diff --git a/llama-cpp-sys-2/wrapper_common.cpp b/llama-cpp-sys-2/wrapper_common.cpp
+index 98133bb..0685f34 100644
+--- a/llama-cpp-sys-2/wrapper_common.cpp
++++ b/llama-cpp-sys-2/wrapper_common.cpp
+@@ -1,5 +1,6 @@
+ #include "wrapper_common.h"
+ 
++#include <climits>
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
+@@ -391,13 +392,32 @@ static bool llama_rs_external_draft_vocabs_compatible(
+     return true;
+ }
+ 
++static bool llama_rs_positive_model_meta(
++    const llama_model * model,
++    const char * key,
++    int32_t * value = nullptr) {
++    char text[32] = {};
++    if (llama_model_meta_val_str(model, key, text, sizeof(text)) < 0) {
++        return false;
++    }
++    char * end = nullptr;
++    const long parsed = std::strtol(text, &end, 10);
++    if (end == text || *end != '\0' || parsed <= 0 || parsed > INT32_MAX) {
++        return false;
++    }
++    if (value) {
++        *value = static_cast<int32_t>(parsed);
++    }
++    return true;
++}
++
+ static bool llama_rs_external_draft_geometry_compatible(
+     const llama_context * ctx_tgt,
+     const llama_context * ctx_dft,
+     int32_t kind,
+     int32_t n_max,
+     int32_t n_min) {
+-    if (kind != 1 && kind != 2) {
++    if (kind != 1 && kind != 2 && kind != 3) {
+         return false;
+     }
+     const llama_model * model_tgt = llama_get_model(ctx_tgt);
+@@ -410,6 +430,24 @@ static bool llama_rs_external_draft_geometry_compatible(
+         std::strcmp(architecture, "dflash") != 0) {
+         return false;
+     }
++    char selector_text[32] = {};
++    int32_t selector_top_k = 0;
++    const bool has_selector = llama_model_meta_val_str(
++        model_dft, "dflash.selector_top_k", selector_text, sizeof(selector_text)) >= 0;
++    if (has_selector && !llama_rs_positive_model_meta(
++            model_dft, "dflash.selector_top_k", &selector_top_k)) {
++        return false;
++    }
++    const bool is_dflash2 = selector_top_k > 0;
++    if ((kind == 3) != is_dflash2) {
++        return false;
++    }
++    if (is_dflash2 &&
++        (!llama_rs_positive_model_meta(model_dft, "dflash.conv_kernel_size") ||
++         !llama_rs_positive_model_meta(model_dft, "dflash.conv_group_size") ||
++         !llama_rs_positive_model_meta(model_dft, "dflash.selector_rank"))) {
++        return false;
++    }
+     const int32_t * layers = llama_model_target_layer_ids(model_dft);
+     const uint32_t n_layers = llama_model_target_layer_ids_n(model_dft);
+     const int32_t target_layer_count = llama_model_n_layer(model_tgt);

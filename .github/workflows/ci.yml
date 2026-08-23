@@ -150,6 +150,27 @@ jobs:
       - name: Test release handoff contract
         run: cargo test --locked --no-default-features --features embedded-inference --test release_handoff_cli
 
+  windows-llamacpp-patches:
+    name: Check (windows-llamacpp-patches)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Enable long paths for Cargo Git dependencies
+        run: git config --global core.longpaths true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-llamacpp-patches
+      - name: Fetch and apply the reviewed llama.cpp patch set
+        run: |
+          cargo fetch --locked
+          .\tools\apply-llamacpp-power-patches.ps1
+          .\tools\apply-llamacpp-power-patches.ps1
+      - name: Test typed DFlash2 binding and admission
+        run: |
+          cargo test --locked --lib --no-default-features --features llamacpp-external-draft dflash2
+          cargo test --locked --lib --no-default-features --features llamacpp-external-draft test_external_draft_selection_is_typed_and_fail_closed
+
   macos-embedded:
     name: Check (macos-embedded-inference)
     runs-on: macos-latest

@@ -1,5 +1,3 @@
-#[cfg(feature = "llamacpp-external-draft")]
-use super::external_target_context_params;
 #[cfg(feature = "llamacpp-mtp-fr")]
 use super::llamacpp_context_mtp_fr_vocab;
 use super::metrics::FrCoverageMetrics;
@@ -8,6 +6,8 @@ use super::{
     mtp_speculative_params, use_backend_greedy, use_greedy_fast_path, LlamaContextSettings,
     LlamaSamplingSettings, MtpCompletionSettings,
 };
+#[cfg(feature = "llamacpp-external-draft")]
+use super::{external_draft_native_kind, external_target_context_params};
 use llama_cpp_2::context::params::LlamaContextType;
 
 fn settings() -> MtpCompletionSettings {
@@ -225,6 +225,18 @@ fn external_target_context_reserves_every_rejected_draft_state() {
     assert_eq!(params.n_batch(), 10);
     assert_eq!(params.n_rs_seq(), 6);
     assert_eq!(llamacpp_context_output_limits(&params), (9, 9));
+}
+
+#[cfg(feature = "llamacpp-external-draft")]
+#[test]
+fn dflash2_uses_its_typed_native_binding() {
+    let native_kind =
+        external_draft_native_kind(crate::model::external_draft::ExternalDraftKind::Dflash2);
+
+    assert_eq!(
+        native_kind,
+        llama_cpp_2::speculative::ExternalDraftSpeculativeKind::Dflash2
+    );
 }
 
 #[cfg(feature = "llamacpp-mtp-fr")]

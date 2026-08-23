@@ -72,8 +72,9 @@ llamacpp = [
     "dep:encoding_rs",
     "llama-cpp-2?/mtmd",
 ]
-# Verified external DFlash/DSpark execution. The pinned llama-cpp-rs source
-# must first receive patches/llama-cpp-rs-dfd12e4-external-draft.patch.
+# Verified external DFlash, DFlash2, and DSpark execution. The pinned
+# llama-cpp-rs source must first receive the reviewed external-draft and
+# DFlash2 patch set through tools/apply-llamacpp-power-patches.ps1.
 llamacpp-external-draft = ["llamacpp"]
 # Experimental reduced-vocabulary MTP projection. The patch installer applies
 # the complete reviewed speculative patch set, so this profile also exposes the

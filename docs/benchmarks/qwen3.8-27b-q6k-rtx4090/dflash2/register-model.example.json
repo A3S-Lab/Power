@@ -1,0 +1,12 @@
+{
+  "name": "qwen3.8-27b-q6-k-dflash2",
+  "path": "D:/models/a3s-power/qwen38/full/Qwen3.8-27B-Q6_K.gguf",
+  "format": "gguf",
+  "external_draft": {
+    "kind": "dflash2",
+    "path": "D:/models/a3s-power/qwen38/dflash2/Qwen3.8-27B-DFlash2-Q4_K_M.gguf",
+    "source": "https://github.com/ggml-org/llama.cpp/pull/27342",
+    "revision": "1deefcca395743049c3820ab8f9b15043f3e9446",
+    "license": "MIT"
+  }
+}

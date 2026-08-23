@@ -9,14 +9,6 @@ use crate::model::external_draft::{
 use crate::model::manifest::ModelManifest;
 use crate::speculative::SpeculativeStrategy;
 
-pub(super) fn dflash2_backend_unavailable() -> PowerError {
-    PowerError::Config(
-        "spec_mode 'dflash2' is not executable by Power's pinned llama.cpp binding; \
-         use the exact-revision standalone benchmark runner until a reviewed binding update lands"
-            .to_string(),
-    )
-}
-
 /// Whether the configured runtime may execute an embedded MTP draft head.
 ///
 /// llama.cpp skips MTP tensors at model-load time unless `load_mtp` is set.
@@ -39,9 +31,6 @@ pub(super) fn selected_external_draft(
 ) -> Result<Option<ExternalDraftArtifact>> {
     let requested = SpeculativeStrategy::parse(spec_mode)
         .ok_or_else(|| PowerError::Config(format!("unsupported spec_mode '{spec_mode}'")))?;
-    if matches!(requested, SpeculativeStrategy::Dflash2) {
-        return Err(dflash2_backend_unavailable());
-    }
     let expected_kind = match requested {
         SpeculativeStrategy::Dflash => Some(ExternalDraftKind::Dflash),
         SpeculativeStrategy::Dflash2 => Some(ExternalDraftKind::Dflash2),
@@ -75,13 +64,6 @@ pub(super) fn selected_external_draft(
         }
     }
     if matches!(requested, SpeculativeStrategy::Auto) {
-        if manifest
-            .external_draft
-            .as_ref()
-            .is_some_and(|artifact| artifact.kind == ExternalDraftKind::Dflash2)
-        {
-            return Err(dflash2_backend_unavailable());
-        }
         #[cfg(feature = "llamacpp-external-draft")]
         return Ok(manifest.external_draft.clone());
 

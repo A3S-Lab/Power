@@ -21,7 +21,7 @@ use llama_cpp_2::speculative::{
 use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
 
 #[cfg(feature = "llamacpp-external-draft")]
-use super::external_draft::dflash2_backend_unavailable;
+use super::external_draft::external_draft_strategy;
 use super::{backend_ref, send_completion_result};
 use crate::backend::types::CompletionResponseChunk;
 use crate::error::{PowerError, Result};
@@ -104,18 +104,20 @@ pub(super) fn llamacpp_speculative_capabilities(
     }
     #[cfg(feature = "llamacpp-external-draft")]
     if let Some(kind) = external_draft {
-        let supported = match kind {
-            ExternalDraftKind::Dflash => Some(SpeculativeStrategy::Dflash),
-            ExternalDraftKind::Dflash2 => None,
-            ExternalDraftKind::Dspark => Some(SpeculativeStrategy::Dspark),
-        };
-        if let Some(strategy) = supported {
-            capabilities = capabilities.with(strategy);
-        }
+        capabilities = capabilities.with(external_draft_strategy(kind));
     }
     #[cfg(not(feature = "llamacpp-external-draft"))]
     let _ = external_draft;
     capabilities
+}
+
+#[cfg(feature = "llamacpp-external-draft")]
+fn external_draft_native_kind(kind: ExternalDraftKind) -> ExternalDraftSpeculativeKind {
+    match kind {
+        ExternalDraftKind::Dflash => ExternalDraftSpeculativeKind::Dflash,
+        ExternalDraftKind::Dflash2 => ExternalDraftSpeculativeKind::Dflash2,
+        ExternalDraftKind::Dspark => ExternalDraftSpeculativeKind::Dspark,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -395,17 +397,8 @@ pub(super) fn run_external_draft_completion(
         .map_err(|error| {
             PowerError::InferenceFailed(format!("Failed to create external-draft context: {error}"))
         })?;
-    let (strategy, native_kind) = match draft_kind {
-        ExternalDraftKind::Dflash => (
-            SpeculativeStrategy::Dflash,
-            ExternalDraftSpeculativeKind::Dflash,
-        ),
-        ExternalDraftKind::Dflash2 => return Err(dflash2_backend_unavailable()),
-        ExternalDraftKind::Dspark => (
-            SpeculativeStrategy::Dspark,
-            ExternalDraftSpeculativeKind::Dspark,
-        ),
-    };
+    let strategy = external_draft_strategy(draft_kind);
+    let native_kind = external_draft_native_kind(draft_kind);
     let params = ExternalDraftSpeculativeParams {
         kind: native_kind,
         n_max: settings.draft_max as i32,
