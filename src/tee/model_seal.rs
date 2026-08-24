@@ -18,10 +18,16 @@ use crate::tee::key_provider::KeyProvider;
 
 pub use super::model_signature::verify_model_signature_hash;
 
+fn sha256_digest(expected_hash: &str) -> &str {
+    expected_hash
+        .strip_prefix("sha256:")
+        .unwrap_or(expected_hash)
+}
+
 /// Verify a single model artifact's SHA-256 against an expected hash.
 pub fn verify_model_integrity(model_path: &Path, expected_hash: &str) -> Result<bool> {
     let actual = storage::compute_sha256_path(model_path)?;
-    Ok(actual == expected_hash)
+    Ok(actual == sha256_digest(expected_hash))
 }
 
 /// Compute the runtime identity for one registered local model.
@@ -40,7 +46,7 @@ pub fn verify_model_manifest_integrity(
     manifest: &ModelManifest,
     expected_hash: &str,
 ) -> Result<bool> {
-    Ok(compute_manifest_integrity_sha256(manifest)? == expected_hash)
+    Ok(compute_manifest_integrity_sha256(manifest)? == sha256_digest(expected_hash))
 }
 
 /// Verify all registered models against the expected hashes from config.
@@ -67,7 +73,7 @@ pub fn verify_all_models(
             })?;
 
         let actual = compute_manifest_integrity_sha256(&manifest)?;
-        if actual != *expected {
+        if actual != sha256_digest(expected) {
             return Err(PowerError::IntegrityCheckFailed {
                 model: name.clone(),
                 expected: expected.clone(),
@@ -122,7 +128,7 @@ pub async fn verify_all_models_with_key_provider(
             compute_manifest_integrity_sha256(&manifest)?
         };
 
-        if actual != *expected {
+        if actual != sha256_digest(expected) {
             return Err(PowerError::IntegrityCheckFailed {
                 model: name.clone(),
                 expected: expected.clone(),
@@ -256,6 +262,22 @@ mod tests {
         let manifest = make_manifest(dir.path(), "test", b"model-data");
         let result = verify_model_integrity(&manifest.path, &manifest.sha256).unwrap();
         assert!(result);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn documented_sha256_prefix_is_accepted_by_model_integrity_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = make_manifest(dir.path(), "test-model", b"model-data");
+        let documented_pin = format!("sha256:{}", manifest.sha256);
+
+        assert!(verify_model_integrity(&manifest.path, &documented_pin).unwrap());
+        assert!(verify_model_manifest_integrity(&manifest, &documented_pin).unwrap());
+
+        let registry = ModelRegistry::new();
+        registry.register(manifest).unwrap();
+        let hashes = HashMap::from([("test-model".to_string(), documented_pin)]);
+        assert_eq!(verify_all_models(&registry, &hashes).unwrap(), 1);
     }
 
     #[test]
@@ -420,8 +442,10 @@ mod tests {
         };
         let registry = ModelRegistry::new();
         registry.register_transient(manifest).unwrap();
-        let hashes =
-            HashMap::from([("test-model".to_string(), storage::compute_sha256(plaintext))]);
+        let hashes = HashMap::from([(
+            "test-model".to_string(),
+            format!("sha256:{}", storage::compute_sha256(plaintext)),
+        )]);
         let provider = crate::tee::key_provider::StaticKeyProvider::new(
             crate::tee::encrypted_model::KeySource::File(key_path),
         );

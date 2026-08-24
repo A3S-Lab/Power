@@ -197,6 +197,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Accepted the documented `sha256:<digest>` model-integrity pins during strict
+  TEE startup, including SafeTensors collection identities and decrypted
+  plaintext verification, while retaining compatibility with bare digests.
 - Fixed `serve --config` so omitted `--host` and `--port` flags preserve the
   ACL values instead of silently replacing them with CLI defaults. `/health`
   now reports effective token-metric suppression, including the privacy policy
