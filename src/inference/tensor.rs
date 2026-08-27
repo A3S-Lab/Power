@@ -5,6 +5,11 @@ use crate::error::{PowerError, Result};
 
 use super::InferenceLimits;
 
+mod input_upload;
+
+use input_upload::InputUploadGuard;
+pub(crate) use input_upload::InputUploadPool;
+
 /// Provider-neutral owned F32 tensor accepted by an embedded session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -92,11 +97,157 @@ impl TensorInput {
         Ok(Self { shape, values })
     }
 
-    pub(crate) fn into_candle(self, device: &Device) -> Result<Tensor> {
-        Tensor::from_vec(self.values, self.shape.as_slice(), device).map_err(|error| {
-            PowerError::InferenceFailed(format!("failed to materialize input tensor: {error}"))
-        })
+    pub(crate) fn into_candle(
+        self,
+        device: &Device,
+        limits: &InferenceLimits,
+        upload_pool: &InputUploadPool,
+    ) -> Result<(Tensor, InputUploadGuard)> {
+        self.validate(limits, "input tensor")?;
+        input_upload::materialize(
+            self.values,
+            self.shape,
+            device,
+            upload_pool,
+            limits.max_input_bytes,
+            "input tensor",
+        )
     }
+
+    /// Materializes a bounded execution window before any graph work is
+    /// enqueued. This ordering is important for accelerators whose ordinary
+    /// host buffers require a stream synchronization when an upload returns:
+    /// all uploads finish first, so a later upload cannot fence an earlier
+    /// graph execution.
+    pub(crate) fn into_candle_many(
+        inputs: Vec<Self>,
+        device: &Device,
+        limits: &InferenceLimits,
+        upload_pool: &InputUploadPool,
+    ) -> Result<(Vec<Tensor>, InputUploadGuard)> {
+        Self::validate_many(&inputs, limits)?;
+        if device.is_cuda() && inputs.iter().all(|input| !input.values.is_empty()) {
+            return Self::into_one_cuda_storage(inputs, device, limits, upload_pool);
+        }
+        let mut tensors = Vec::with_capacity(inputs.len());
+        let mut uploads = InputUploadGuard::default();
+        for input in inputs {
+            let (tensor, upload) = input.into_candle(device, limits, upload_pool)?;
+            tensors.push(tensor);
+            uploads.append(upload);
+        }
+        Ok((tensors, uploads))
+    }
+
+    fn into_one_cuda_storage(
+        inputs: Vec<Self>,
+        device: &Device,
+        limits: &InferenceLimits,
+        upload_pool: &InputUploadPool,
+    ) -> Result<(Vec<Tensor>, InputUploadGuard)> {
+        let total_elements = inputs.iter().try_fold(0_usize, |total, input| {
+            total.checked_add(input.values.len()).ok_or_else(|| {
+                PowerError::InvalidRequest(
+                    "tensor execution window input element count overflowed".to_string(),
+                )
+            })
+        })?;
+
+        let mut values = Vec::with_capacity(total_elements);
+        let mut partitions = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            partitions.push((input.shape, input.values.len()));
+            values.extend(input.values);
+        }
+        let (aggregate, upload) = input_upload::materialize(
+            values,
+            vec![total_elements],
+            device,
+            upload_pool,
+            limits.max_input_bytes,
+            "the CUDA input window",
+        )?;
+        let tensors = restore_cuda_input_partitions(aggregate, partitions, total_elements)?;
+        Ok((tensors, upload))
+    }
+
+    fn validate(&self, limits: &InferenceLimits, label: &str) -> Result<()> {
+        let elements = limits.checked_elements(&self.shape, label)?;
+        if self.values.len() != elements || self.values.iter().any(|value| !value.is_finite()) {
+            return Err(PowerError::InvalidRequest(format!(
+                "{label} values do not match its finite declared shape"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_many(inputs: &[Self], limits: &InferenceLimits) -> Result<()> {
+        if inputs.is_empty() {
+            return Err(PowerError::InvalidRequest(
+                "a tensor execution window requires at least one input".to_string(),
+            ));
+        }
+        let mut total_elements = 0_usize;
+        for input in inputs {
+            input.validate(limits, "window input tensor")?;
+            let elements = input.values.len();
+            total_elements = total_elements.checked_add(elements).ok_or_else(|| {
+                PowerError::InvalidRequest(
+                    "tensor execution window input element count overflowed".to_string(),
+                )
+            })?;
+        }
+        if total_elements > limits.max_tensor_elements {
+            return Err(PowerError::InvalidRequest(format!(
+                "tensor execution window contains {total_elements} input elements, exceeding the {} element limit",
+                limits.max_tensor_elements
+            )));
+        }
+        let total_bytes = total_elements
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| {
+                PowerError::InvalidRequest(
+                    "tensor execution window input byte count overflowed".to_string(),
+                )
+            })?;
+        if total_bytes > limits.max_input_bytes {
+            return Err(PowerError::InvalidRequest(format!(
+                "tensor execution window contains {total_bytes} input bytes, exceeding the {} byte limit",
+                limits.max_input_bytes
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn restore_cuda_input_partitions(
+    aggregate: Tensor,
+    partitions: Vec<(Vec<usize>, usize)>,
+    total_elements: usize,
+) -> Result<Vec<Tensor>> {
+    let mut offset = 0_usize;
+    let mut tensors = Vec::with_capacity(partitions.len());
+    for (shape, elements) in partitions {
+        let end = offset.checked_add(elements).ok_or_else(|| {
+            PowerError::InferenceFailed("CUDA input window partition offset overflowed".to_string())
+        })?;
+        let tensor = aggregate
+            .narrow(0, offset, elements)
+            .and_then(|tensor| tensor.reshape(shape.as_slice()))
+            .map_err(|error| {
+                PowerError::InferenceFailed(format!(
+                    "failed to restore a CUDA input window tensor: {error}"
+                ))
+            })?;
+        tensors.push(tensor);
+        offset = end;
+    }
+    if offset != total_elements {
+        return Err(PowerError::InferenceFailed(
+            "CUDA input window partitions did not cover every value".to_string(),
+        ));
+    }
+    Ok(tensors)
 }
 
 /// Provider-neutral owned F32 tensor returned by an embedded session.
@@ -111,6 +262,30 @@ pub struct TensorOutput {
 }
 
 impl TensorOutput {
+    pub(crate) fn from_f32_values(
+        shape: Vec<usize>,
+        values: Vec<f32>,
+        limits: &InferenceLimits,
+    ) -> Result<Self> {
+        let expected = limits.checked_elements(&shape, "output tensor")?;
+        if values.len() != expected {
+            return Err(PowerError::InferenceFailed(format!(
+                "embedded inference returned {} output values for shape {shape:?}, expected {expected}",
+                values.len(),
+            )));
+        }
+        if let Some((index, value)) = values
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(PowerError::InferenceFailed(format!(
+                "embedded inference returned non-finite output value {value} at flat index {index}"
+            )));
+        }
+        Ok(Self { shape, values })
+    }
+
     pub(crate) fn from_candle(tensor: &Tensor, limits: &InferenceLimits) -> Result<Self> {
         if tensor.dtype() != DType::F32 {
             return Err(PowerError::InvalidFormat(format!(
@@ -128,24 +303,56 @@ impl TensorOutput {
                     "failed to copy the output tensor from the execution device: {error}"
                 ))
             })?;
-        if values.len() != expected {
-            return Err(PowerError::InferenceFailed(
-                format!(
-                    "embedded inference returned {} output values for shape {shape:?}, expected {expected}",
-                    values.len()
-                ),
-            ));
+        debug_assert_eq!(values.len(), expected);
+        Self::from_f32_values(shape, values, limits)
+    }
+
+    /// Materializes a bounded set of device-resident F32 outputs only after
+    /// the complete execution window has been submitted, preserving exact
+    /// tensor shapes and order.
+    pub(crate) fn from_candle_many(
+        tensors: Vec<Tensor>,
+        limits: &InferenceLimits,
+    ) -> Result<Vec<Self>> {
+        let first = tensors.first().ok_or_else(|| {
+            PowerError::InvalidRequest(
+                "a tensor execution window requires at least one output".to_string(),
+            )
+        })?;
+        let mut shapes = Vec::with_capacity(tensors.len());
+        let mut total_elements = 0_usize;
+        for tensor in &tensors {
+            if tensor.dtype() != DType::F32 {
+                return Err(PowerError::InvalidFormat(format!(
+                    "static graph output must be F32, found {:?}",
+                    tensor.dtype()
+                )));
+            }
+            if !tensor.device().same_device(first.device()) {
+                return Err(PowerError::InferenceFailed(
+                    "window output tensors use different devices".to_string(),
+                ));
+            }
+            let shape = tensor.dims().to_vec();
+            let elements = limits.checked_elements(&shape, "window output tensor")?;
+            total_elements = total_elements.checked_add(elements).ok_or_else(|| {
+                PowerError::InvalidRequest(
+                    "tensor execution window output element count overflowed".to_string(),
+                )
+            })?;
+            shapes.push((shape, elements));
         }
-        if let Some((index, value)) = values
-            .iter()
-            .enumerate()
-            .find(|(_, value)| !value.is_finite())
-        {
-            return Err(PowerError::InferenceFailed(format!(
-                "embedded inference returned non-finite output value {value} at flat index {index}"
+        if total_elements > limits.max_tensor_elements {
+            return Err(PowerError::InvalidRequest(format!(
+                "tensor execution window contains {total_elements} output elements, exceeding the {} element limit",
+                limits.max_tensor_elements
             )));
         }
-        Ok(Self { shape, values })
+        debug_assert_eq!(shapes.len(), tensors.len());
+        tensors
+            .iter()
+            .map(|tensor| Self::from_candle(tensor, limits))
+            .collect()
     }
 
     /// Splits a tensor into exact, ordered leading-axis partitions.
@@ -305,5 +512,128 @@ mod tests {
             values: vec![1.0],
         };
         assert!(malformed.split_leading(&[1, 1], &limits).is_err());
+    }
+
+    #[test]
+    fn execution_window_inputs_obey_aggregate_byte_and_element_limits() {
+        let limits = InferenceLimits {
+            max_input_bytes: 16,
+            max_tensor_elements: 8,
+            ..InferenceLimits::default()
+        };
+        let upload_pool = InputUploadPool::new(limits.max_input_bytes);
+        let inputs = vec![
+            TensorInput::new(vec![1, 2], vec![1.0, 2.0], &limits).unwrap(),
+            TensorInput::new(vec![1, 2], vec![3.0, 4.0], &limits).unwrap(),
+        ];
+        let (tensors, upload_guard) =
+            TensorInput::into_candle_many(inputs, &Device::Cpu, &limits, &upload_pool).unwrap();
+        assert_eq!(tensors.len(), 2);
+        assert_eq!(upload_guard.pinned_upload_count(), 0);
+
+        let inputs = vec![
+            TensorInput::new(vec![1, 2], vec![1.0, 2.0], &limits).unwrap(),
+            TensorInput::new(vec![1, 3], vec![3.0, 4.0, 5.0], &limits).unwrap(),
+        ];
+        assert!(
+            TensorInput::into_candle_many(inputs, &Device::Cpu, &limits, &upload_pool).is_err()
+        );
+    }
+
+    #[cfg(feature = "embedded-cuda")]
+    #[test]
+    #[ignore = "requires an explicit CUDA device"]
+    fn cuda_pinned_input_upload_is_bounded_stream_safe_and_exact() {
+        let limits = InferenceLimits::default();
+        let upload_pool = InputUploadPool::new(limits.max_input_bytes);
+        let device = Device::new_cuda_with_stream(0).unwrap();
+        let Device::Cuda(cuda) = &device else {
+            panic!("explicit CUDA device resolved another backend");
+        };
+        // SAFETY: this test owns the device and its one stream. Disabling
+        // cudarc's optional tensor event tracking proves that the pinned
+        // host allocation's own completion event is sufficient on its own.
+        unsafe { cuda.disable_event_tracking() };
+
+        let (single, single_upload) = TensorInput::new(vec![1, 3], vec![7.0, 8.0, 9.0], &limits)
+            .unwrap()
+            .into_candle(&device, &limits, &upload_pool)
+            .unwrap();
+        assert_eq!(single_upload.pinned_upload_count(), 1);
+        drop(single_upload);
+        assert_eq!(
+            single.flatten_all().unwrap().to_vec1::<f32>().unwrap(),
+            [7.0, 8.0, 9.0]
+        );
+
+        let inputs = vec![
+            TensorInput::new(vec![1, 2], vec![1.0, 2.0], &limits).unwrap(),
+            TensorInput::new(vec![1, 1, 3], vec![3.0, 4.0, 5.0], &limits).unwrap(),
+        ];
+
+        let (tensors, upload_guard) =
+            TensorInput::into_candle_many(inputs, &device, &limits, &upload_pool).unwrap();
+
+        assert_eq!(upload_guard.pinned_upload_count(), 1);
+        assert_eq!(tensors.len(), 2);
+        assert_eq!(tensors[0].dims(), [1, 2]);
+        assert_eq!(tensors[1].dims(), [1, 1, 3]);
+        assert_eq!(
+            tensors[0].flatten_all().unwrap().to_vec1::<f32>().unwrap(),
+            [1.0, 2.0]
+        );
+        assert_eq!(
+            tensors[1].flatten_all().unwrap().to_vec1::<f32>().unwrap(),
+            [3.0, 4.0, 5.0]
+        );
+        assert_eq!(tensors[0].layout().start_offset(), 0);
+        assert_eq!(tensors[1].layout().start_offset(), 2);
+        assert!(tensors[0].device().same_device(tensors[1].device()));
+
+        let tight = InferenceLimits {
+            max_input_bytes: std::mem::size_of::<f32>(),
+            ..limits
+        };
+        let (pageable, pageable_upload) = TensorInput::new(vec![1, 2], vec![10.0, 11.0], &tight)
+            .unwrap()
+            .into_candle(&device, &tight, &upload_pool)
+            .unwrap();
+        assert_eq!(pageable_upload.pinned_upload_count(), 0);
+        assert_eq!(pageable.to_vec2::<f32>().unwrap(), [[10.0, 11.0]]);
+
+        let allocations_before_reuse = upload_pool.allocation_count();
+        drop(upload_guard);
+        let reuse_limits = InferenceLimits::default();
+        let repeated_inputs = vec![
+            TensorInput::new(vec![1, 2], vec![6.0, 7.0], &reuse_limits).unwrap(),
+            TensorInput::new(vec![1, 1, 3], vec![8.0, 9.0, 10.0], &reuse_limits).unwrap(),
+        ];
+        let (repeated, repeated_upload) =
+            TensorInput::into_candle_many(repeated_inputs, &device, &reuse_limits, &upload_pool)
+                .unwrap();
+        assert_eq!(repeated[0].to_vec2::<f32>().unwrap(), [[6.0, 7.0]]);
+        assert_eq!(repeated[1].to_vec3::<f32>().unwrap(), [[[8.0, 9.0, 10.0]]]);
+        drop(repeated_upload);
+        assert_eq!(upload_pool.allocation_count(), allocations_before_reuse);
+        assert!(upload_pool.retained_bytes() <= reuse_limits.max_input_bytes);
+        cuda.cuda_stream().synchronize().unwrap();
+        cuda.cuda_stream().context().check_err().unwrap();
+    }
+
+    #[test]
+    fn execution_window_outputs_preserve_exact_shapes_values_and_order() {
+        let limits = InferenceLimits::default();
+        let tensors = vec![
+            Tensor::from_vec(vec![1.0_f32, 2.0], (1, 2), &Device::Cpu).unwrap(),
+            Tensor::from_vec(vec![3.0_f32, 4.0, 5.0], (1, 1, 3), &Device::Cpu).unwrap(),
+        ];
+
+        let outputs = TensorOutput::from_candle_many(tensors, &limits).unwrap();
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].shape, [1, 2]);
+        assert_eq!(outputs[0].values, [1.0, 2.0]);
+        assert_eq!(outputs[1].shape, [1, 1, 3]);
+        assert_eq!(outputs[1].values, [3.0, 4.0, 5.0]);
     }
 }

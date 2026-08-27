@@ -65,6 +65,17 @@ Multiple exact model sessions may instead share one device-bound
 initialization and retains ready entries until pool drop without adding an
 eviction or persistence policy.
 
+A CUDA-backed `ModelSessionPool` resolves every execution replica as one
+isolated lane with a unique Candle device identity and stream. Model tensors do
+not leave that lane: `TensorInput` and `TensorOutput` are the bounded host
+boundaries. Under that invariant, same-stream CUDA ordering already covers
+every activation dependency, so the lane disables cudarc's redundant
+cross-stream event tracking. Clones retain the same stream, while another
+replica receives another device identity and stream. General
+`RuntimeDevice::resolve` and accelerator-mesh devices keep event tracking;
+Power does not infer isolation for arbitrary runtime users. A real-device test
+locks all three properties.
+
 ## Colibri Ideas Adapted as Generic Mechanisms
 
 - Finite model and device queues reuse one cancellation-aware admission
@@ -292,6 +303,23 @@ eviction or persistence policy.
   integrity implementation.
 - CPU, CUDA, and Metal are explicit device choices. An unavailable explicit
   device fails instead of silently moving execution elsewhere.
+- Each CUDA model-session runtime device owns one cuBLAS handle/stream and one
+  user-owned workspace for that complete session lifetime; general CUDA
+  runtimes retain the vendor default pool. Allocation follows the CUDA 12.6
+  architecture table: 32 MiB for Hopper compute capability 9.x and 4 MiB for
+  other supported architectures. Power verifies 256-byte alignment, binds the
+  buffer before model execution, never reassigns that handle's stream during
+  execution, and fails session-device construction if any step fails. Teardown
+  synchronizes that same stream and resets the handle to the default workspace
+  before freeing the buffer; if reset is impossible during CUDA teardown, the
+  bounded allocation is retained rather than leaving a dangling handle pointer.
+  The workspace is allocated
+  before subsequent native-memory snapshots and contains no model, graph,
+  tensor-geometry, source, content, corpus, or timing selector. This gives
+  concurrent session replicas independent cuBLAS algorithm-selection scratch
+  without a process-global environment setting; repeated downstream 64-page
+  CUDA cache runs are exact to the same-source static-session control after
+  removing only the declared elapsed field.
 - Runtime limits bound graph plans, tensor elements, resident weights, model
   state, context, generation, and concurrency. `WeightHierarchy` can account
   for model-owned fixed dense weights together with its complete host/device
@@ -303,6 +331,95 @@ eviction or persistence policy.
   output remain live, graph order is unchanged, and cancellation is checked at
   the same node boundary. This bounds live activation storage by graph
   dependencies instead of total node count.
+- Static-graph timing is disabled by default. Host operation and total traces
+  measure submission-side intervals only. The separate opt-in CUDA trace
+  records timing-enabled events before and after each executed or fused node
+  window and around the complete graph on that executor's existing model-
+  session stream. Event creation, recording, synchronization, or elapsed-time
+  failures return `PowerError`; a CPU or Metal execution cannot emit a CUDA
+  trace. Output contains only tensor/operator geometry and aggregate counts and
+  durations, never graph/node names, tensor names, values, model identity, or
+  source identity. The sum across session streams is device work, not process
+  wall time or a reconstructed critical path. Because events and per-graph
+  synchronization perturb execution, this mode diagnoses Amdahl candidates but
+  is never enabled for promotion timing or used as an execution selector.
+- After validation and private-`Identity` elision, executor construction folds
+  only private `Reshape` nodes whose tensor and shape-control inputs are both
+  constants. The tensor must be contiguous and nonempty, the output must not be
+  a declared graph output, and the resolved element count must remain within
+  the runtime tensor limit. The result is a metadata view on the already chosen
+  device; a single-element F32 source propagates its cached scalar value.
+  Unsupported or invalid forms stay in the plan and retain their established
+  runtime validation. This may expose existing adjacent fusion windows, but its
+  eligibility contains no graph family, node name, source, value, corpus, or
+  measured-shape branch. The current layout trace removes 16 of 28 executed
+  reshapes and the following channel-bias adds with exact current full-corpus
+  parity; stable end-to-end timing evidence remains pending because the first
+  strict quiet cohort admitted zero samples.
+- After constant-reshape folding, the planner composes consecutive private
+  `Transpose` permutations only when both nodes have one input and output, the
+  intermediate has one consumer and is not retained, and both permutations are
+  explicit, complete, valid, and the same rank. Composition follows ONNX axis
+  selection order. Fanout, retained values, omitted/default or invalid
+  permutations, and unsupported forms remain untouched. An inverse pair stays
+  as one identity-permutation node because plan time does not know runtime
+  rank; the executor returns its input zero-copy only after ordinary runtime
+  permutation/rank validation. Six generic planner tests and the complete
+  CPU/CUDA graph suites pass (`129/0/9` and `133/0/43`). The current recognition
+  trace changes from three `Transpose` plan executions to two while
+  deterministic CPU output, five normalized 64-page OCR cache wires, and all
+  74 Office artifacts remain exact. The unguarded 10.511-pages/s result is not
+  a throughput claim; the strict frozen-binary A/B remains pending.
+- Exact private CUDA F32 sigmoid products have two bounded lowerings. Adjacent
+  `Sigmoid`-`Sigmoid`-`Mul` nodes may execute together only when both contiguous
+  inputs have the same shape and both Sigmoid outputs have exactly one consumer
+  and are not retained outputs. An adjacent `Sigmoid`-`Mul` pair may instead
+  reuse an already materialized contiguous multiplier with the same shape,
+  NCHW per-channel shape `[N, C, 1, 1]`, or NCHW per-spatial-position shape
+  `[N, 1, H, W]`. This second form computes the full-shape Sigmoid and product
+  in one pass while leaving an earlier smaller gate materialized, avoiding
+  redundant exponential work across broadcast channels. Both paths require F32
+  tensors on the same CUDA device, nonzero `u32`-bounded output geometry, the
+  executor element limit, and cancellation admission. Unsupported topology,
+  ownership, dtype, device, layout, or broadcast geometry retains ordinary
+  execution. Generic nonzero-offset CUDA parity tests are byte-exact. The
+  current official layout graph consumes four two-node pairs per call; exact
+  five-document cache and A3S Office reconstruction parity is established, but
+  guarded throughput evidence remains open.
+- An adjacent private F32 `BatchNormalization`-to-`Sigmoid` edge can apply the
+  activation in the normalization output pass on CPU or CUDA. The matcher
+  requires the normalized value to have exactly one consumer and not be a
+  retained output; the existing three-node Swish formula is matched first and
+  remains distinct. This lowering neither extends nor reorders pointwise
+  convolution. Generic formula tests and both complete graph suites pass. In
+  the official layout graph it removes four additional execution boundaries
+  per call, while the exact 64-page cache and 74 Office artifacts remain
+  unchanged. The observed 10.665-pages/s run lacked the continuous quiet-host
+  guard and is retained only as a diagnostic, not a throughput result.
+- Static BatchNormalization mean, variance, and epsilon are prepared once per
+  graph executor as exact per-channel `[mean, stddev]` statistics. The CPU path
+  evaluates the same Rust F32 expression as before; the CUDA preparation kernel
+  retains the former round-to-nearest addition followed by `sqrtf`. Runtime
+  ordinary, depthwise-convolution, and spatial-convolution paths therefore
+  remove per-output-element variance addition and square root while preserving
+  the established `sub -> div -> mul -> add` rounding sequence. Preparation is
+  bounded by channel count and does not inspect model identity, tensor content,
+  page data, or measured shape. Focused CPU and real-CUDA parity, complete graph
+  suites, five normalized 64-page caches, and all 74 Office artifacts are exact.
+  Its only complete OCR timing is an unguarded 9.741-pages/s correctness run, so
+  performance promotion still requires the frozen quiet-host A/B.
+- A reviewed experiment allowed a private bias-free CUDA F32 pointwise
+  convolution to normalize its freshly allocated contiguous GEMM output in
+  place. Its single mutable values argument correctly records cudarc's write
+  dependency, and the two-stream regression remains part of the low-level
+  correctness suite. Exact 64-page OCR and 74-file Office parity also passed.
+  The final 300-second quiet-qualified fixed-order A/B nevertheless measured
+  control/candidate means of 6,185.25/6,213.5 ms, medians of
+  6,146.5/6,268.5 ms, and only two candidate wins in four pairs. Because it
+  failed every promotion gate, production graph dispatch does not select the
+  pointwise in-place post-operation for any graph or geometry. Ordinary and
+  prepared BatchNormalization outputs remain mutable CUDA launch arguments,
+  and the low-level in-place test remains to prevent event-ordering regressions.
 - CUDA multiplier-one F32 depthwise convolutions are lowered to one fused
   kernel per node. Each output thread retains the reviewed kernel-row/kernel-
   column accumulation order with explicit round-to-nearest multiply and add;
@@ -362,6 +479,119 @@ eviction or persistence policy.
   shapes retain ordinary node execution. Cancellation is checked before the
   fused launch and the final output remains subject to the existing element
   limit, liveness, and non-finite tracing boundaries.
+- A contiguous F32 `BatchNormalization` followed by an exact private
+  `Div`-`Erf`-`Add`-`Mul`-`Mul` activation can execute in one CPU or CUDA output
+  pass. The matcher requires constant exact-channel normalization parameters,
+  finite scalar activation initializers, the normalized value's exact two uses
+  inside the activation formula, and no retained or external consumer. The
+  execution preserves subtraction, variance adjustment, square root, division,
+  scale, bias, activation division, error function, addition, and both
+  multiplication boundaries in graph order. Unsupported topology, sharing,
+  dtype, layout, device, parameter shape, or scalar values retain node-by-node
+  execution.
+- Before the general matrix-materialization fallback, a rank-three CUDA F32
+  left operand whose strides prove an exact last-two-axis transpose may feed a
+  contiguous rank-two right operand directly through Candle's cuBLAS-backed
+  strided matrix multiplication. The right matrix remains one immutable
+  zero-batch-stride view. Matching requires the same CUDA device, nonzero
+  compatible dimensions, and exact `[rows * inner, 1, rows]` left strides;
+  every other rank, dtype, layout, or device retains materialization. This
+  changes storage traversal only, not logical matrix geometry or graph order.
+  Generic CUDA tests compare the direct and materialized paths bit-for-bit.
+- An exact private `Add`-`Sigmoid`-`Mul` Swish formula can execute in one CUDA
+  F32 pass when either Add operand is a contiguous rank-one bias whose length
+  exactly equals the other contiguous operand's last axis. The Add result must
+  have exactly the formula's two uses, the Sigmoid result exactly one, and no
+  intermediate may be the retained graph output. Matching depends only on
+  topology, liveness, rank, geometry, dtype, device, layout, cancellation, and
+  the existing element bound. The kernel retains explicit addition,
+  exponential, denominator addition, division, and final multiplication
+  rounding boundaries. Unsupported forms retain ordinary node execution, and
+  model owners remain responsible for inventory and end-to-end parity.
+- An exact private CUDA F32 `MatMul -> Add(last-axis bias)` edge may reuse the
+  GEMM output for its post-operation. The left operand may have any nonempty
+  prefix, the right operand must be a contiguous rank-two matrix, and the
+  contiguous rank-one bias must equal the output column dimension. Matching
+  requires exact single-consumer liveness, no retained intermediate, the same
+  CUDA device, bounded nonzero geometry, and cancellation admission. If the
+  Add result begins the exact private Swish formula above, the matcher composes
+  that formula rather than consuming its Add independently. The cuBLAS call,
+  kernel count, and explicit bias/Swish F32 rounding order remain unchanged;
+  only one output allocation/free pair is removed. Unsupported ranks, sharing,
+  output retention, dtypes, layouts, devices, and post-operation topology keep
+  ordinary execution. Model owners lock inventories; model names, node names,
+  values, sources, corpora, and measured shapes do not participate in dispatch.
+- A row-coalesced terminal-classifier call produces one contiguous F32
+  `[total_rows, projected_width]` tensor on the graph device. Power validates
+  and materializes that tensor once, then partitions its owned host values into
+  the exact caller-declared leading shapes and order. This replaces one
+  device-to-host materialization per output with one per execution window. The
+  partition validates row totals, checked element counts, exact coverage, and
+  preserved rank; it does not alter arithmetic, device placement, model
+  identity, scheduling, or output ownership. CPU and real-CUDA tests compare
+  one-copy and independent-slice materialization from the same device tensor
+  bit-for-bit. Complete graph suites, normalized 64-page OCR caches, and 74
+  reconstructed Office artifacts remain exact. Named-hardware throughput still
+  requires a clean frozen A/B; an unguarded 10.347-pages/s correctness run is
+  diagnostic only.
+- A CUDA multi-input execution window first validates its existing aggregate
+  element and byte limits, concatenates the owned finite F32 host values once,
+  uploads one flat tensor, and restores every original shape and order through
+  contiguous read-only views. This replaces one allocation/upload return per
+  input with one per finite window. Single-input, CPU, Metal, and empty-value
+  paths are unchanged. No graph, model, source, content, corpus, or measured
+  shape participates in admission. Generic CUDA tests lock exact values and a
+  nonzero second-view storage offset, while an independent terminal-classifier
+  window remains bit-exact against separately uploaded executions. Complete
+  graph suites pass `121/0/9` and `125/0/43`; all normalized 64-page OCR caches
+  and 74 reconstructed Office artifacts remain exact. The unguarded 10.435-
+  pages/s OCR diagnostic is not a throughput claim.
+- Direct CUDA F32 pointwise and spatial convolution preserve a fixed
+  at-most-32 leading-axis reduction quantum. Pointwise GEMM partitions its
+  output range directly; spatial convolution lowers the complete input once,
+  partitions only the batched GEMM reduction, and writes every group into one
+  final allocation. This prevents additional leading-axis items from changing
+  earlier F32 results, bounds one reduction launch's workspace, and keeps the
+  logical tensor contiguous without concatenation. Eligibility depends only on
+  CUDA device, dtype, contiguous layout, nonzero tensor geometry, and declared
+  bounds. A generic full-graph comparison is bit-exact across 95,795,200
+  values. Larger OCR batches remain model-owned policy: non-monotonic
+  end-to-end measurements, parity failures for every tested explicit cuBLAS
+  algorithm, and a slower four-lane experiment are negative evidence rather
+  than runtime selectors.
+- Contiguous CPU F32 group-one pointwise and spatial convolutions execute
+  directly over NCHW storage, while multiplier-one depthwise convolution
+  partitions a fresh output by batch/channel and retains the declared kernel
+  accumulation order. Exact private pointwise/spatial channel-bias plus
+  ReLU/GELU topology applies the post-operation in the convolution output
+  buffer. An adjacent private BatchNormalization with constant contiguous F32
+  channel parameters can use the same output buffer for direct pointwise,
+  spatial, or depthwise convolution, optionally retaining the exact private
+  HardSwish tail. Convolution bias precedes normalization and the original
+  subtraction, square-root, division, multiplication, addition, clamp, and
+  final-multiplication order is unchanged. Shared edges, retained intermediates,
+  mismatched channels, and unsupported topology, dtype, layout, device, or
+  convolution forms retain node-by-node execution. A private channel-bias add
+  without an activation can use the same convolution bias path for any valid
+  group count. Direct CPU pointwise convolution can also consume one private
+  identity chain and one exact-output-shaped residual add in that buffer,
+  preserving `(convolution + bias) + residual`. A broadcast residual, shared
+  value, non-contiguous tensor, or other convolution form retains ordinary
+  execution. An existing outer Rayon
+  worker suppresses another full-pool
+  pointwise GEMM/post pass; standalone calls retain internal parallelism, and
+  a bitwise test covers both contexts. The `gemm` dependency includes x86-v4
+  microkernels behind its runtime CPUID dispatch: AVX-512F hosts may select
+  them, while unsupported hosts retain FMA/SIMD/scalar fallback and the build
+  remains portable without `target-cpu=native`. Depthwise interior accumulation consumes
+  the fresh allocation's existing zeros rather than repeating that memory
+  clear. Contiguous horizontal-stride-one interiors use one eight-lane AVX2/FMA
+  accumulator when the x86 host exposes both instructions. Each lane follows
+  the scalar kernel traversal, the remainder stays scalar, and optional bias is
+  added after the complete chain. Short rows, other strides, architectures, or
+  instruction sets retain the scalar implementation. Eight lanes is an ISA
+  fact; eligibility contains no measured shape, model, input-content, or
+  caller-identity rule.
 - Placement and routing telemetry are controlled by `TelemetryMode`. It is off
   by default. Detailed expert heat can reveal input semantics, is never logged
   or persisted automatically, and must remain inside the TEE unless policy

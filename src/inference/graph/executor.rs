@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use candle_core::{DType, Device, Tensor};
+use candle_core::{Device, Tensor};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{PowerError, Result};
@@ -10,18 +10,59 @@ use super::super::{EmbeddedRuntime, ExecutionPermit, TensorInput, TensorOutput, 
 use super::plan::{GraphNode, GraphOp, GraphPlan};
 use super::value::GraphValue;
 
+mod batch_norm;
 mod biased_activation;
+mod biased_swish;
+mod concatenation;
+mod constant_reshape;
+mod contiguous_mean;
+mod contiguous_transpose;
+mod convolution_post;
+#[cfg(feature = "embedded-cpu-optimized")]
+mod cpu_graph_segment;
+#[cfg(feature = "embedded-cuda")]
+mod cuda_fast_divisor;
+#[cfg(all(test, feature = "embedded-cuda"))]
+mod cuda_graph_tests;
+#[cfg(feature = "embedded-cuda")]
+mod cuda_reproducibility;
 mod depthwise;
 mod gated_hard_sigmoid;
 mod gelu_erf;
+mod identity;
 mod layer_norm_affine;
 mod liveness;
+mod matmul_bias;
+mod max_pool;
+mod pointwise_convolution;
+mod profiling;
+mod scalar_affine;
+mod scalar_affine_hard_swish;
+mod sigmoid_product;
+mod spatial;
+mod spatial_convolution;
+mod tensor_geometry;
+mod terminal_softmax;
+
+#[cfg(feature = "embedded-cuda")]
+use spatial::conv;
+use spatial::{conv_transpose, pool, resize};
+
+#[cfg(test)]
+use tensor_geometry::same_upper_padding;
+use tensor_geometry::{
+    axis_index, execution_error, nonnegative_usize, normalized_axes, resolve_reshape, slice_bounds,
+    slice_tensor,
+};
 
 /// Validated single-input/single-output static graph executor.
 pub struct GraphExecutor {
     plan: GraphPlan,
     constants: HashMap<String, GraphValue>,
     scalar_constants: HashMap<String, f32>,
+    batch_norms: HashMap<String, batch_norm::PreparedBatchNorm>,
+    #[cfg(feature = "embedded-cpu-optimized")]
+    cpu_graph_segments: HashMap<usize, cpu_graph_segment::PreparedSegment>,
     value_use_counts: HashMap<String, usize>,
     runtime: EmbeddedRuntime,
 }
@@ -32,6 +73,10 @@ impl GraphExecutor {
         weights: Arc<WeightStore>,
         runtime: EmbeddedRuntime,
     ) -> Result<Self> {
+        let mut plan = plan
+            .elide_private_identities()
+            .fold_private_transposes()
+            .elide_private_identities();
         let mut constants = HashMap::with_capacity(plan.initializers.len());
         let mut scalar_constants = HashMap::new();
         for initializer in &plan.initializers {
@@ -42,11 +87,55 @@ impl GraphExecutor {
                 scalar_constants.insert(initializer.name.clone(), scalar);
             }
         }
+        let retained_outputs = plan
+            .outputs
+            .iter()
+            .map(|output| output.name.clone())
+            .collect();
+        constant_reshape::fold_private_constants(
+            &mut plan.nodes,
+            &retained_outputs,
+            &mut constants,
+            &mut scalar_constants,
+            runtime.limits().max_tensor_elements,
+        );
         let value_use_counts = liveness::value_use_counts(&plan);
+        let output_name = plan
+            .outputs
+            .first()
+            .ok_or_else(|| {
+                PowerError::InvalidFormat(
+                    "static graph must declare exactly one output".to_string(),
+                )
+            })?
+            .name
+            .clone();
+        let batch_norms = batch_norm::prepare(
+            &plan.nodes,
+            &constants,
+            &scalar_constants,
+            &value_use_counts,
+            &output_name,
+        );
+        #[cfg(feature = "embedded-cpu-optimized")]
+        let cpu_graph_segments = if runtime.device().tensor_device().is_cpu() {
+            cpu_graph_segment::prepare(
+                &plan,
+                &constants,
+                &value_use_counts,
+                &output_name,
+                runtime.limits(),
+            )?
+        } else {
+            HashMap::new()
+        };
         Ok(Self {
             plan,
             constants,
             scalar_constants,
+            batch_norms,
+            #[cfg(feature = "embedded-cpu-optimized")]
+            cpu_graph_segments,
             value_use_counts,
             runtime,
         })
@@ -90,7 +179,11 @@ impl GraphExecutor {
                 "static graph execution was cancelled".to_string(),
             ));
         }
-        let input = input.into_candle(self.runtime.device().tensor_device())?;
+        let (input, upload_guard) = input.into_candle(
+            self.runtime.device().tensor_device(),
+            self.runtime.limits(),
+            permit.input_upload_pool(),
+        )?;
         let output = self.run_tensor(input, cancellation)?;
         let projected = projection(&output)?;
         if cancellation.is_cancelled() {
@@ -103,159 +196,573 @@ impl GraphExecutor {
                 "static graph output projection changed tensor devices".to_string(),
             ));
         }
-        TensorOutput::from_candle(&projected, self.runtime.limits())
+        let output = TensorOutput::from_candle(&projected, self.runtime.limits());
+        upload_guard.complete();
+        output
     }
 
     fn run_tensor(&self, input: Tensor, cancellation: &CancellationToken) -> Result<Tensor> {
-        let input_name = self.plan.inputs[0].name.clone();
-        let output_name = self.plan.outputs[0].name.clone();
+        let output_name = self
+            .plan
+            .outputs
+            .first()
+            .ok_or_else(|| {
+                PowerError::InvalidFormat(
+                    "static graph must declare exactly one output".to_string(),
+                )
+            })?
+            .name
+            .clone();
+        self.run_tensor_prefix(input, cancellation, self.plan.nodes.len(), &output_name)
+    }
+
+    fn run_tensor_prefix(
+        &self,
+        input: Tensor,
+        cancellation: &CancellationToken,
+        node_count: usize,
+        output_name: &str,
+    ) -> Result<Tensor> {
+        let input_name = self
+            .plan
+            .inputs
+            .first()
+            .ok_or_else(|| {
+                PowerError::InvalidFormat("static graph must declare exactly one input".to_string())
+            })?
+            .name
+            .clone();
+        let mut profile = profiling::GraphExecutionProfile::from_environment(
+            input.dims(),
+            self.runtime.device().tensor_device(),
+        )?;
         let mut values = self.constants.clone();
         let mut remaining_uses = self.value_use_counts.clone();
         values.insert(input_name, GraphValue::Tensor(input));
         let mut node_index = 0;
-        while let Some(node) = self.plan.nodes.get(node_index) {
+        while let Some(node) = self
+            .plan
+            .nodes
+            .get(node_index)
+            .filter(|_| node_index < node_count)
+        {
+            let node_started = profile
+                .as_ref()
+                .map(|profile| profile.start_node(node, &values))
+                .transpose()?;
             if cancellation.is_cancelled() {
                 return Err(PowerError::InferenceFailed(
                     "static graph execution was cancelled".to_string(),
                 ));
             }
-            if let Some(fused) = biased_activation::try_execute(
-                &self.plan.nodes[node_index..],
-                biased_activation::ExecutionContext {
-                    values: &values,
-                    scalar_constants: &self.scalar_constants,
-                    use_counts: &self.value_use_counts,
-                    retained_output: &output_name,
-                    device: self.runtime.device().tensor_device(),
-                    element_limit: self.runtime.limits().max_tensor_elements,
-                    cancellation,
-                },
-            )? {
-                let window = &self.plan.nodes[node_index..node_index + fused.consumed_nodes];
-                for fused_node in &window[..window.len() - 1] {
-                    liveness::release_consumed_values(
-                        &fused_node.inputs,
-                        &output_name,
-                        &mut remaining_uses,
-                        &mut values,
-                    );
-                }
-                commit_node_output(
-                    &window[window.len() - 1],
-                    fused.value,
-                    &output_name,
-                    self.runtime.limits().max_tensor_elements,
-                    &mut remaining_uses,
-                    &mut values,
-                )?;
-                node_index += fused.consumed_nodes;
+            if identity::try_commit(node, output_name, &mut remaining_uses, &mut values)? {
+                profiling::record_node(&mut profile, node_started, 1)?;
+                node_index += 1;
                 continue;
             }
-            if let Some(window) = self.plan.nodes.get(node_index..node_index + 5) {
-                if let Some(output) = layer_norm_affine::try_execute(
-                    window,
+            #[cfg(feature = "embedded-cpu-optimized")]
+            if let Some(segment) = self.cpu_graph_segments.get(&node_index) {
+                if let Some(fused) =
+                    segment.try_execute(&values, self.runtime.limits(), cancellation)?
+                {
+                    let (consumed, terminal) = fused_node_window(
+                        &self.plan.nodes,
+                        node_index,
+                        fused.consumed_nodes,
+                        &node.name,
+                    )?;
+                    for fused_node in consumed {
+                        liveness::release_consumed_values(
+                            &fused_node.inputs,
+                            output_name,
+                            &mut remaining_uses,
+                            &mut values,
+                        );
+                    }
+                    commit_node_output(
+                        terminal,
+                        fused.value,
+                        output_name,
+                        self.runtime.limits().max_tensor_elements,
+                        &mut remaining_uses,
+                        &mut values,
+                    )?;
+                    profiling::record_node(&mut profile, node_started, fused.consumed_nodes)?;
+                    node_index += fused.consumed_nodes;
+                    continue;
+                }
+            }
+            if node.op == GraphOp::BatchNormalization {
+                if let Some(prepared) = self.batch_norms.get(&node.name) {
+                    if let Some(fused) = batch_norm::try_execute(node, &values, prepared)? {
+                        let (consumed, terminal) = fused_node_window(
+                            &self.plan.nodes,
+                            node_index,
+                            fused.consumed_nodes,
+                            &node.name,
+                        )?;
+                        for fused_node in consumed {
+                            liveness::release_consumed_values(
+                                &fused_node.inputs,
+                                output_name,
+                                &mut remaining_uses,
+                                &mut values,
+                            );
+                        }
+                        commit_node_output(
+                            terminal,
+                            fused.value,
+                            output_name,
+                            self.runtime.limits().max_tensor_elements,
+                            &mut remaining_uses,
+                            &mut values,
+                        )?;
+                        profiling::record_node(&mut profile, node_started, fused.consumed_nodes)?;
+                        node_index += fused.consumed_nodes;
+                        continue;
+                    }
+                }
+            }
+            if node.op == GraphOp::Conv {
+                if let Some(fused) = batch_norm::try_execute_convolution(
+                    &self.plan.nodes[node_index..],
+                    batch_norm::ConvolutionExecutionContext {
+                        values: &values,
+                        prepared: &self.batch_norms,
+                        use_counts: &self.value_use_counts,
+                        retained_output: output_name,
+                        device: self.runtime.device().tensor_device(),
+                        element_limit: self.runtime.limits().max_tensor_elements,
+                        cancellation,
+                    },
+                )? {
+                    let (consumed, terminal) = fused_node_window(
+                        &self.plan.nodes,
+                        node_index,
+                        fused.consumed_nodes,
+                        &node.name,
+                    )?;
+                    for fused_node in consumed {
+                        liveness::release_consumed_values(
+                            &fused_node.inputs,
+                            output_name,
+                            &mut remaining_uses,
+                            &mut values,
+                        );
+                    }
+                    commit_node_output(
+                        terminal,
+                        fused.value,
+                        output_name,
+                        self.runtime.limits().max_tensor_elements,
+                        &mut remaining_uses,
+                        &mut values,
+                    )?;
+                    profiling::record_node(&mut profile, node_started, fused.consumed_nodes)?;
+                    node_index += fused.consumed_nodes;
+                    continue;
+                }
+                if let Some(fused) = biased_activation::try_execute(
+                    &self.plan.nodes[node_index..],
+                    biased_activation::ExecutionContext {
+                        values: &values,
+                        scalar_constants: &self.scalar_constants,
+                        use_counts: &self.value_use_counts,
+                        retained_output: output_name,
+                        device: self.runtime.device().tensor_device(),
+                        element_limit: self.runtime.limits().max_tensor_elements,
+                        cancellation,
+                    },
+                )? {
+                    let (consumed, terminal) = fused_node_window(
+                        &self.plan.nodes,
+                        node_index,
+                        fused.consumed_nodes,
+                        &node.name,
+                    )?;
+                    for fused_node in consumed {
+                        liveness::release_consumed_values(
+                            &fused_node.inputs,
+                            output_name,
+                            &mut remaining_uses,
+                            &mut values,
+                        );
+                    }
+                    commit_node_output(
+                        terminal,
+                        fused.value,
+                        output_name,
+                        self.runtime.limits().max_tensor_elements,
+                        &mut remaining_uses,
+                        &mut values,
+                    )?;
+                    profiling::record_node(&mut profile, node_started, fused.consumed_nodes)?;
+                    node_index += fused.consumed_nodes;
+                    continue;
+                }
+            }
+            if node.op == GraphOp::MatMul {
+                if let Some(fused) = matmul_bias::try_execute(
+                    &self.plan.nodes[node_index..],
                     &values,
-                    &self.scalar_constants,
                     &self.value_use_counts,
-                    &output_name,
+                    output_name,
                     self.runtime.limits().max_tensor_elements,
                     cancellation,
                 )? {
-                    for fused_node in &window[..4] {
+                    let (consumed, terminal) = fused_node_window(
+                        &self.plan.nodes,
+                        node_index,
+                        fused.consumed_nodes,
+                        &node.name,
+                    )?;
+                    for fused_node in consumed {
                         liveness::release_consumed_values(
                             &fused_node.inputs,
-                            &output_name,
+                            output_name,
                             &mut remaining_uses,
                             &mut values,
                         );
                     }
                     commit_node_output(
-                        &window[4],
-                        output,
-                        &output_name,
+                        terminal,
+                        fused.value,
+                        output_name,
                         self.runtime.limits().max_tensor_elements,
                         &mut remaining_uses,
                         &mut values,
                     )?;
-                    node_index += 5;
+                    profiling::record_node(&mut profile, node_started, fused.consumed_nodes)?;
+                    node_index += fused.consumed_nodes;
                     continue;
                 }
             }
-            if let Some(window) = self.plan.nodes.get(node_index..node_index + 5) {
-                if let Some(output) = gelu_erf::try_execute(
-                    window,
+            if node.op == GraphOp::Add {
+                if let Some(fused) = biased_swish::try_execute(
+                    &self.plan.nodes[node_index..],
+                    &values,
+                    &self.value_use_counts,
+                    output_name,
+                    self.runtime.limits().max_tensor_elements,
+                    cancellation,
+                )? {
+                    let (consumed, terminal) = fused_node_window(
+                        &self.plan.nodes,
+                        node_index,
+                        fused.consumed_nodes,
+                        &node.name,
+                    )?;
+                    for fused_node in consumed {
+                        liveness::release_consumed_values(
+                            &fused_node.inputs,
+                            output_name,
+                            &mut remaining_uses,
+                            &mut values,
+                        );
+                    }
+                    commit_node_output(
+                        terminal,
+                        fused.value,
+                        output_name,
+                        self.runtime.limits().max_tensor_elements,
+                        &mut remaining_uses,
+                        &mut values,
+                    )?;
+                    profiling::record_node(&mut profile, node_started, fused.consumed_nodes)?;
+                    node_index += fused.consumed_nodes;
+                    continue;
+                }
+            }
+            if node.op == GraphOp::ReduceMean {
+                if let Some(window) = self.plan.nodes.get(node_index..node_index + 9) {
+                    if let Some(output) = layer_norm_affine::try_execute_full(
+                        window,
+                        &values,
+                        &self.scalar_constants,
+                        &self.value_use_counts,
+                        output_name,
+                        self.runtime.limits().max_tensor_elements,
+                        cancellation,
+                    )? {
+                        for fused_node in &window[..8] {
+                            liveness::release_consumed_values(
+                                &fused_node.inputs,
+                                output_name,
+                                &mut remaining_uses,
+                                &mut values,
+                            );
+                        }
+                        commit_node_output(
+                            &window[8],
+                            output,
+                            output_name,
+                            self.runtime.limits().max_tensor_elements,
+                            &mut remaining_uses,
+                            &mut values,
+                        )?;
+                        profiling::record_node(&mut profile, node_started, 9)?;
+                        node_index += 9;
+                        continue;
+                    }
+                }
+            }
+            if node.op == GraphOp::Add {
+                if let Some(window) = self.plan.nodes.get(node_index..node_index + 5) {
+                    if let Some(output) = layer_norm_affine::try_execute(
+                        window,
+                        &values,
+                        &self.scalar_constants,
+                        &self.value_use_counts,
+                        output_name,
+                        self.runtime.limits().max_tensor_elements,
+                        cancellation,
+                    )? {
+                        for fused_node in &window[..4] {
+                            liveness::release_consumed_values(
+                                &fused_node.inputs,
+                                output_name,
+                                &mut remaining_uses,
+                                &mut values,
+                            );
+                        }
+                        commit_node_output(
+                            &window[4],
+                            output,
+                            output_name,
+                            self.runtime.limits().max_tensor_elements,
+                            &mut remaining_uses,
+                            &mut values,
+                        )?;
+                        profiling::record_node(&mut profile, node_started, 5)?;
+                        node_index += 5;
+                        continue;
+                    }
+                }
+            }
+            if node.op == GraphOp::Div {
+                if let Some(window) = self.plan.nodes.get(node_index..node_index + 5) {
+                    if let Some(output) = gelu_erf::try_execute(
+                        window,
+                        &values,
+                        &self.scalar_constants,
+                        &self.value_use_counts,
+                        output_name,
+                        cancellation,
+                    )? {
+                        for fused_node in &window[..4] {
+                            liveness::release_consumed_values(
+                                &fused_node.inputs,
+                                output_name,
+                                &mut remaining_uses,
+                                &mut values,
+                            );
+                        }
+                        commit_node_output(
+                            &window[4],
+                            output,
+                            output_name,
+                            self.runtime.limits().max_tensor_elements,
+                            &mut remaining_uses,
+                            &mut values,
+                        )?;
+                        profiling::record_node(&mut profile, node_started, 5)?;
+                        node_index += 5;
+                        continue;
+                    }
+                }
+            }
+            if node.op == GraphOp::Sigmoid {
+                if let Some(fused) = sigmoid_product::try_execute(
+                    &self.plan.nodes[node_index..],
+                    &values,
+                    &self.value_use_counts,
+                    output_name,
+                    self.runtime.limits().max_tensor_elements,
+                    cancellation,
+                )? {
+                    let (consumed, terminal) = fused_node_window(
+                        &self.plan.nodes,
+                        node_index,
+                        fused.consumed_nodes,
+                        &node.name,
+                    )?;
+                    for fused_node in consumed {
+                        liveness::release_consumed_values(
+                            &fused_node.inputs,
+                            output_name,
+                            &mut remaining_uses,
+                            &mut values,
+                        );
+                    }
+                    commit_node_output(
+                        terminal,
+                        fused.value,
+                        output_name,
+                        self.runtime.limits().max_tensor_elements,
+                        &mut remaining_uses,
+                        &mut values,
+                    )?;
+                    profiling::record_node(&mut profile, node_started, fused.consumed_nodes)?;
+                    node_index += fused.consumed_nodes;
+                    continue;
+                }
+            }
+            if node.op == GraphOp::HardSigmoid {
+                if let Some(next) = self.plan.nodes.get(node_index + 1) {
+                    if let Some(output) = gated_hard_sigmoid::try_mul(
+                        node,
+                        next,
+                        &values,
+                        &self.value_use_counts,
+                        output_name,
+                        cancellation,
+                    )? {
+                        liveness::release_consumed_values(
+                            &node.inputs,
+                            output_name,
+                            &mut remaining_uses,
+                            &mut values,
+                        );
+                        commit_node_output(
+                            next,
+                            output,
+                            output_name,
+                            self.runtime.limits().max_tensor_elements,
+                            &mut remaining_uses,
+                            &mut values,
+                        )?;
+                        profiling::record_node(&mut profile, node_started, 2)?;
+                        node_index += 2;
+                        continue;
+                    }
+                }
+            }
+            if node.op == GraphOp::Mul {
+                if let Some(fused) = scalar_affine_hard_swish::try_execute(
+                    &self.plan.nodes[node_index..],
                     &values,
                     &self.scalar_constants,
                     &self.value_use_counts,
-                    &output_name,
+                    output_name,
                     cancellation,
                 )? {
-                    for fused_node in &window[..4] {
+                    let (consumed, terminal) = fused_node_window(
+                        &self.plan.nodes,
+                        node_index,
+                        fused.consumed_nodes,
+                        &node.name,
+                    )?;
+                    for fused_node in consumed {
                         liveness::release_consumed_values(
                             &fused_node.inputs,
-                            &output_name,
+                            output_name,
                             &mut remaining_uses,
                             &mut values,
                         );
                     }
                     commit_node_output(
-                        &window[4],
-                        output,
-                        &output_name,
+                        terminal,
+                        fused.value,
+                        output_name,
                         self.runtime.limits().max_tensor_elements,
                         &mut remaining_uses,
                         &mut values,
                     )?;
-                    node_index += 5;
+                    profiling::record_node(&mut profile, node_started, fused.consumed_nodes)?;
+                    node_index += fused.consumed_nodes;
                     continue;
                 }
-            }
-            if let Some(next) = self.plan.nodes.get(node_index + 1) {
-                if let Some(output) = gated_hard_sigmoid::try_mul(
-                    node,
-                    next,
+                if let Some(fused) = scalar_affine::try_execute(
+                    &self.plan.nodes[node_index..],
                     &values,
+                    &self.scalar_constants,
                     &self.value_use_counts,
-                    &output_name,
+                    output_name,
                     cancellation,
                 )? {
-                    liveness::release_consumed_values(
-                        &node.inputs,
-                        &output_name,
-                        &mut remaining_uses,
-                        &mut values,
-                    );
+                    let (consumed, terminal) = fused_node_window(
+                        &self.plan.nodes,
+                        node_index,
+                        fused.consumed_nodes,
+                        &node.name,
+                    )?;
+                    for fused_node in consumed {
+                        liveness::release_consumed_values(
+                            &fused_node.inputs,
+                            output_name,
+                            &mut remaining_uses,
+                            &mut values,
+                        );
+                    }
                     commit_node_output(
-                        next,
-                        output,
-                        &output_name,
+                        terminal,
+                        fused.value,
+                        output_name,
                         self.runtime.limits().max_tensor_elements,
                         &mut remaining_uses,
                         &mut values,
                     )?;
-                    node_index += 2;
+                    profiling::record_node(&mut profile, node_started, fused.consumed_nodes)?;
+                    node_index += fused.consumed_nodes;
                     continue;
                 }
             }
-            let output = execute(node, &values, self.runtime.device().tensor_device())?;
+            let output = execute(
+                node,
+                &values,
+                &self.scalar_constants,
+                self.runtime.device().tensor_device(),
+            )?;
             commit_node_output(
                 node,
                 output,
-                &output_name,
+                output_name,
                 self.runtime.limits().max_tensor_elements,
                 &mut remaining_uses,
                 &mut values,
             )?;
+            profiling::record_node(&mut profile, node_started, 1)?;
             node_index += 1;
         }
-        values
-            .remove(&output_name)
+        let output = values
+            .remove(output_name)
             .ok_or_else(|| {
                 PowerError::InferenceFailed("static graph returned no output".to_string())
             })?
             .tensor("graph output")
-            .cloned()
+            .cloned()?;
+        if let Some(profile) = profile {
+            profile.emit()?;
+        }
+        Ok(output)
     }
+}
+
+fn fused_node_window<'a>(
+    nodes: &'a [GraphNode],
+    start: usize,
+    consumed_nodes: usize,
+    fusion_name: &str,
+) -> Result<(&'a [GraphNode], &'a GraphNode)> {
+    let end = start.checked_add(consumed_nodes).ok_or_else(|| {
+        PowerError::InferenceFailed(format!(
+            "static graph fusion '{fusion_name}' node window overflowed"
+        ))
+    })?;
+    let window = nodes.get(start..end).ok_or_else(|| {
+        PowerError::InferenceFailed(format!(
+            "static graph fusion '{fusion_name}' requested {consumed_nodes} nodes from index {start}, but the graph contains {} nodes",
+            nodes.len()
+        ))
+    })?;
+    window
+        .split_last()
+        .map(|(terminal, consumed)| (consumed, terminal))
+        .ok_or_else(|| {
+            PowerError::InferenceFailed(format!(
+                "static graph fusion '{fusion_name}' requested an empty node window"
+            ))
+        })
 }
 
 fn commit_node_output(
@@ -285,7 +792,13 @@ fn commit_node_output(
         )));
     }
     liveness::release_consumed_values(&node.inputs, retained_output, remaining_uses, values);
-    values.insert(node.outputs[0].clone(), output);
+    let output_name = node.outputs.first().ok_or_else(|| {
+        PowerError::InvalidFormat(format!(
+            "static graph node '{}' is missing output 0",
+            node.name
+        ))
+    })?;
+    values.insert(output_name.clone(), output);
     Ok(())
 }
 
@@ -319,6 +832,7 @@ fn trace_non_finite(node: &GraphNode, value: &GraphValue) -> Result<()> {
 fn execute(
     node: &GraphNode,
     values: &HashMap<String, GraphValue>,
+    scalar_constants: &HashMap<String, f32>,
     device: &Device,
 ) -> Result<GraphValue> {
     let inputs = node
@@ -338,7 +852,7 @@ fn execute(
         GraphOp::Sub => binary(node, &inputs, Tensor::broadcast_sub)?,
         GraphOp::Mul => binary(node, &inputs, Tensor::broadcast_mul)?,
         GraphOp::Div => binary(node, &inputs, Tensor::broadcast_div)?,
-        GraphOp::Pow => pow(node, &inputs)?,
+        GraphOp::Pow => pow(node, &inputs, scalar_constants)?,
         GraphOp::Erf => unary_tensor(node, &inputs, Tensor::erf)?,
         GraphOp::Relu => unary_tensor(node, &inputs, Tensor::relu)?,
         GraphOp::Sqrt => unary_tensor(node, &inputs, Tensor::sqrt)?,
@@ -351,12 +865,12 @@ fn execute(
         GraphOp::Concat => concat(node, &inputs)?,
         GraphOp::ReduceMean => reduce_mean(node, &inputs)?,
         GraphOp::GlobalAveragePool => global_average_pool(node, &inputs)?,
-        GraphOp::Conv => conv(node, &inputs, device)?,
+        GraphOp::Conv => spatial::conv(node, &inputs, device)?,
         GraphOp::ConvTranspose => conv_transpose(node, &inputs)?,
         GraphOp::MaxPool => pool(node, &inputs, true)?,
         GraphOp::AveragePool => pool(node, &inputs, false)?,
         GraphOp::Resize => resize(node, &inputs)?,
-        GraphOp::BatchNormalization => batch_norm(node, &inputs)?,
+        GraphOp::BatchNormalization => batch_norm_fallback(node, &inputs)?,
         GraphOp::MatMul => matmul(node, &inputs)?,
         GraphOp::Reshape => reshape(node, &inputs)?,
         GraphOp::Shape => GraphValue::Ints {
@@ -411,16 +925,22 @@ fn binary(
 }
 
 fn matmul(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
+    let left = required_tensor(node, inputs, 0)?;
+    let right = required_tensor(node, inputs, 1)?;
+    if let Some(output) = super::matrix_multiplication::try_cuda_transposed_lhs(left, right)
+        .map_err(|error| execution_error(node, error))?
+    {
+        return Ok(GraphValue::Tensor(output));
+    }
+
     // ONNX Transpose and Slice legitimately produce strided views. Candle's
-    // matmul kernels require contiguous operands, so materialize only this
-    // operator boundary instead of rejecting a valid reviewed graph.
-    let left = required_tensor(node, inputs, 0)?
-        .contiguous()
-        .map_err(|error| execution_error(node, error))?;
-    let right = required_tensor(node, inputs, 1)?
-        .contiguous()
-        .map_err(|error| execution_error(node, error))?;
-    left.broadcast_matmul(&right)
+    // general matmul path still requires dense operands, so materialize only
+    // this operator boundary instead of rejecting a valid reviewed graph.
+    let left =
+        contiguous_transpose::materialize(left).map_err(|error| execution_error(node, error))?;
+    let right =
+        contiguous_transpose::materialize(right).map_err(|error| execution_error(node, error))?;
+    super::matrix_multiplication::broadcast(&left, &right)
         .map(GraphValue::Tensor)
         .map_err(|error| execution_error(node, error))
 }
@@ -435,16 +955,33 @@ fn unary_tensor(
         .map_err(|error| execution_error(node, error))
 }
 
-fn pow(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
+fn pow(
+    node: &GraphNode,
+    inputs: &[&GraphValue],
+    scalar_constants: &HashMap<String, f32>,
+) -> Result<GraphValue> {
     let base = required_tensor(node, inputs, 0)?;
-    let exponent = required_tensor(node, inputs, 1)?;
-    let exponent = exponent
-        .to_dtype(candle_core::DType::F32)
-        .and_then(|value| value.to_device(&Device::Cpu))
-        .and_then(|value| value.flatten_all())
-        .and_then(|value| value.to_vec1::<f32>())
-        .map_err(|error| execution_error(node, error))?;
-    if exponent.as_slice() != [2.0] {
+    let cached_exponent = cached_scalar_pow_enabled()
+        .then(|| {
+            node.inputs
+                .get(1)
+                .and_then(|name| scalar_constants.get(name))
+                .copied()
+        })
+        .flatten();
+    let is_square = if let Some(exponent) = cached_exponent {
+        exponent == 2.0
+    } else {
+        let exponent = required_tensor(node, inputs, 1)?;
+        let exponent = exponent
+            .to_dtype(candle_core::DType::F32)
+            .and_then(|value| value.to_device(&Device::Cpu))
+            .and_then(|value| value.flatten_all())
+            .and_then(|value| value.to_vec1::<f32>())
+            .map_err(|error| execution_error(node, error))?;
+        exponent.as_slice() == [2.0]
+    };
+    if !is_square {
         return Err(execution_error(
             node,
             "the static graph executor only permits a scalar square exponent",
@@ -453,6 +990,16 @@ fn pow(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
     base.sqr()
         .map(GraphValue::Tensor)
         .map_err(|error| execution_error(node, error))
+}
+
+#[cfg(not(test))]
+fn cached_scalar_pow_enabled() -> bool {
+    true
+}
+
+#[cfg(test)]
+fn cached_scalar_pow_enabled() -> bool {
+    std::env::var_os("A3S_POWER_TEST_DISABLE_CACHED_SCALAR_POW").is_none()
 }
 
 fn hard_sigmoid(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
@@ -475,6 +1022,16 @@ fn concat(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
                 .collect::<Result<Vec<_>>>()?;
             let rank = tensors[0].rank();
             let axis = axis_index(axis, rank, node)?;
+            if tensors.len() == 2
+                && tensors[0].device().is_cpu()
+                && tensors.iter().all(|tensor| {
+                    tensor.dtype() == candle_core::DType::F32 && tensor.is_contiguous()
+                })
+            {
+                return concatenation::concat_two(tensors[0], tensors[1], axis)
+                    .map(GraphValue::Tensor)
+                    .map_err(|error| execution_error(node, error));
+            }
             Tensor::cat(&tensors, axis)
                 .map(GraphValue::Tensor)
                 .map_err(|error| execution_error(node, error))
@@ -504,6 +1061,11 @@ fn reduce_mean(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
     let axes = node.ints("axes", &[])?;
     let axes = normalized_axes(&axes, input.rank(), node)?;
     let keep = node.int("keepdims", 1)? != 0;
+    if let Some(output) = contiguous_mean::try_execute(input, &axes, keep)
+        .map_err(|error| execution_error(node, error))?
+    {
+        return Ok(GraphValue::Tensor(output));
+    }
     let output = if keep {
         input.mean_keepdim(axes.as_slice())
     } else {
@@ -528,160 +1090,20 @@ fn global_average_pool(node: &GraphNode, inputs: &[&GraphValue]) -> Result<Graph
         .map_err(|error| execution_error(node, error))
 }
 
-fn conv(node: &GraphNode, inputs: &[&GraphValue], device: &Device) -> Result<GraphValue> {
-    let mut input = required_tensor(node, inputs, 0)?.clone();
-    let kernel = required_tensor(node, inputs, 1)?;
-    let kernel_shape = pair(&node.ints("kernel_shape", &[])?, "kernel_shape", node)?;
-    let strides = pair(&node.ints("strides", &[1, 1])?, "strides", node)?;
-    let dilations = pair(&node.ints("dilations", &[1, 1])?, "dilations", node)?;
-    if dilations.0 != dilations.1 {
+fn batch_norm_fallback(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
+    let input = required_tensor(node, inputs, 0)?;
+    if input.rank() < 2 {
         return Err(execution_error(
             node,
-            "mixed convolution dilation is unsupported",
+            "BatchNormalization input must have rank >= 2",
         ));
     }
-    let groups = positive_usize(node.int("group", 1)?, "group", node)?;
-    let dimensions = input
-        .dims4()
-        .map_err(|error| execution_error(node, error))?;
-    let kernel_dimensions = kernel
-        .dims4()
-        .map_err(|error| execution_error(node, error))?;
-    let pads = convolution_pads(node, dimensions, kernel_shape, strides, dilations)?;
-    input = pad_spatial(&input, pads, node)?;
-    let common_stride = if strides.0 == strides.1 { strides.0 } else { 1 };
-    let bias = inputs
-        .get(2)
-        .map(|value| value.tensor(&node.name))
-        .transpose()?;
-    let cuda_depthwise = device.is_cuda()
-        && groups == dimensions.1
-        && kernel_dimensions.0 == dimensions.1
-        && kernel_dimensions.1 == 1
-        && input.dtype() == DType::F32
-        && kernel.dtype() == DType::F32
-        && bias.is_none_or(|value| value.dtype() == DType::F32);
-    let output = if cuda_depthwise {
-        depthwise::conv2d(&input, kernel, bias, strides, dilations.0)
-    } else {
-        input.conv2d(kernel, 0, common_stride, dilations.0, groups)
-    }
-    .map_err(|error| execution_error(node, error))?;
-    let mut output = if !cuda_depthwise && strides.0 != strides.1 {
-        subsample_spatial(&output, strides, device, node)?
-    } else {
-        output
-    };
-    if !cuda_depthwise {
-        if let Some(bias) = bias {
-            let channels = bias.dims1().map_err(|error| execution_error(node, error))?;
-            output = output
-                .broadcast_add(
-                    &bias
-                        .reshape((1, channels, 1, 1))
-                        .map_err(|error| execution_error(node, error))?,
-                )
-                .map_err(|error| execution_error(node, error))?;
-        }
-    }
-    Ok(GraphValue::Tensor(output))
-}
-
-fn conv_transpose(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
-    let input = required_tensor(node, inputs, 0)?;
-    let kernel = required_tensor(node, inputs, 1)?;
-    let strides = pair(&node.ints("strides", &[1, 1])?, "strides", node)?;
-    let dilations = pair(&node.ints("dilations", &[1, 1])?, "dilations", node)?;
-    let pads = quad(&node.ints("pads", &[0, 0, 0, 0])?, "pads", node)?;
-    if strides.0 != strides.1
-        || dilations.0 != dilations.1
-        || pads.0 != pads.1
-        || pads.0 != pads.2
-        || pads.0 != pads.3
-        || node.int("group", 1)? != 1
-    {
-        return Err(execution_error(
-            node,
-            "asymmetric or grouped transposed convolution is unsupported",
-        ));
-    }
-    let mut output = input
-        .conv_transpose2d(kernel, pads.0, 0, strides.0, dilations.0)
-        .map_err(|error| execution_error(node, error))?;
-    if let Some(bias) = inputs.get(2) {
-        let bias = bias.tensor(&node.name)?;
-        let channels = bias.dims1().map_err(|error| execution_error(node, error))?;
-        output = output
-            .broadcast_add(
-                &bias
-                    .reshape((1, channels, 1, 1))
-                    .map_err(|error| execution_error(node, error))?,
-            )
-            .map_err(|error| execution_error(node, error))?;
-    }
-    Ok(GraphValue::Tensor(output))
-}
-
-fn pool(node: &GraphNode, inputs: &[&GraphValue], maximum: bool) -> Result<GraphValue> {
-    let mut input = required_tensor(node, inputs, 0)?.clone();
-    let kernel = pair(&node.ints("kernel_shape", &[])?, "kernel_shape", node)?;
-    let strides = pair(&node.ints("strides", &[1, 1])?, "strides", node)?;
-    let dimensions = input
-        .dims4()
-        .map_err(|error| execution_error(node, error))?;
-    let pads = pool_pads(node, dimensions, kernel, strides)?;
-    input = pad_spatial(&input, pads, node)?;
-    let output = if maximum {
-        input.max_pool2d_with_stride(kernel, strides)
-    } else {
-        if node.int("count_include_pad", 0)? != 0 {
-            return Err(execution_error(node, "count_include_pad is unsupported"));
-        }
-        input.avg_pool2d_with_stride(kernel, strides)
-    }
-    .map_err(|error| execution_error(node, error))?;
-    Ok(GraphValue::Tensor(output))
-}
-
-fn resize(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
-    let input = required_tensor(node, inputs, 0)?;
-    let (_, _, height, width) = input
-        .dims4()
-        .map_err(|error| execution_error(node, error))?;
-    let mode = node.string("mode", "nearest")?;
-    if mode != "nearest"
-        || node.string("coordinate_transformation_mode", "half_pixel")? != "asymmetric"
-        || node.string("nearest_mode", "round_prefer_floor")? != "floor"
-    {
-        return Err(execution_error(node, "unsupported Resize policy"));
-    }
-    let scales = inputs
-        .get(2)
-        .ok_or_else(|| execution_error(node, "Resize requires scale factors"))?
-        .tensor(&node.name)?
-        .flatten_all()
-        .and_then(|value| value.to_vec1::<f32>())
-        .map_err(|error| execution_error(node, error))?;
-    if scales.len() != 4 || scales[0] != 1.0 || scales[1] != 1.0 {
-        return Err(execution_error(
-            node,
-            "Resize scales must be NCHW spatial scales",
-        ));
-    }
-    let target_height = ((height as f64) * f64::from(scales[2])).floor() as usize;
-    let target_width = ((width as f64) * f64::from(scales[3])).floor() as usize;
-    input
-        .upsample_nearest2d(target_height, target_width)
-        .map(GraphValue::Tensor)
-        .map_err(|error| execution_error(node, error))
-}
-
-fn batch_norm(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
-    let input = required_tensor(node, inputs, 0)?;
     let channels = input.dim(1).map_err(|error| execution_error(node, error))?;
+    let mut parameter_shape = vec![1_usize; input.rank()];
+    parameter_shape[1] = channels;
     let broadcast = |index| -> Result<Tensor> {
         required_tensor(node, inputs, index)?
-            .reshape((1, channels, 1, 1))
+            .reshape(parameter_shape.as_slice())
             .map_err(|error| execution_error(node, error))
     };
     let scale = broadcast(1)?;
@@ -839,6 +1261,9 @@ fn transpose(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
     if reviewed != (0..input.rank()).collect::<Vec<_>>() {
         return Err(execution_error(node, "perm must be a complete permutation"));
     }
+    if permutation.iter().copied().eq(0..input.rank()) {
+        return Ok(GraphValue::Tensor(input.clone()));
+    }
     input
         .permute(permutation.as_slice())
         .map(GraphValue::Tensor)
@@ -848,301 +1273,15 @@ fn transpose(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
 fn softmax(node: &GraphNode, inputs: &[&GraphValue]) -> Result<GraphValue> {
     let input = required_tensor(node, inputs, 0)?;
     let axis = axis_index(node.int("axis", -1)?, input.rank(), node)?;
-    candle_nn::ops::softmax(input, axis)
+    let output = if axis + 1 == input.rank() {
+        candle_nn::ops::softmax_last_dim(input)
+    } else {
+        candle_nn::ops::softmax(input, axis)
+    };
+    output
         .map(GraphValue::Tensor)
         .map_err(|error| execution_error(node, error))
 }
 
-fn convolution_pads(
-    node: &GraphNode,
-    dimensions: (usize, usize, usize, usize),
-    kernel: (usize, usize),
-    stride: (usize, usize),
-    dilation: (usize, usize),
-) -> Result<(usize, usize, usize, usize)> {
-    match node.string("auto_pad", "NOTSET")? {
-        "NOTSET" => quad(&node.ints("pads", &[0, 0, 0, 0])?, "pads", node),
-        "SAME_UPPER" => {
-            let (_, _, height, width) = dimensions;
-            let (top, bottom) = same_upper_padding(height, kernel.0, stride.0, dilation.0);
-            let (left, right) = same_upper_padding(width, kernel.1, stride.1, dilation.1);
-            Ok((top, left, bottom, right))
-        }
-        other => Err(execution_error(
-            node,
-            format!("unsupported auto_pad '{other}'"),
-        )),
-    }
-}
-
-fn pool_pads(
-    node: &GraphNode,
-    dimensions: (usize, usize, usize, usize),
-    kernel: (usize, usize),
-    stride: (usize, usize),
-) -> Result<(usize, usize, usize, usize)> {
-    convolution_pads(node, dimensions, kernel, stride, (1, 1))
-}
-
-fn same_upper_padding(
-    input: usize,
-    kernel: usize,
-    stride: usize,
-    dilation: usize,
-) -> (usize, usize) {
-    let output = input.div_ceil(stride);
-    let effective = dilation * (kernel.saturating_sub(1)) + 1;
-    let total = ((output.saturating_sub(1)) * stride + effective).saturating_sub(input);
-    (total / 2, total - total / 2)
-}
-
-fn pad_spatial(
-    input: &Tensor,
-    pads: (usize, usize, usize, usize),
-    node: &GraphNode,
-) -> Result<Tensor> {
-    input
-        .pad_with_zeros(2, pads.0, pads.2)
-        .and_then(|value| value.pad_with_zeros(3, pads.1, pads.3))
-        .map_err(|error| execution_error(node, error))
-}
-
-fn subsample_spatial(
-    input: &Tensor,
-    stride: (usize, usize),
-    device: &Device,
-    node: &GraphNode,
-) -> Result<Tensor> {
-    let mut output = input.clone();
-    for (axis, step) in [(2, stride.0), (3, stride.1)] {
-        if step == 1 {
-            continue;
-        }
-        let length = output
-            .dim(axis)
-            .map_err(|error| execution_error(node, error))?;
-        let indices = (0..length)
-            .step_by(step)
-            .map(u32::try_from)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| execution_error(node, "subsample index exceeds u32"))?;
-        let indices = Tensor::from_vec(indices.clone(), indices.len(), device)
-            .map_err(|error| execution_error(node, error))?;
-        output = output
-            .index_select(&indices, axis)
-            .map_err(|error| execution_error(node, error))?;
-    }
-    Ok(output)
-}
-
-fn slice_tensor(
-    input: &Tensor,
-    axis: usize,
-    start: i64,
-    end: i64,
-    step: i64,
-    device: &Device,
-    node: &GraphNode,
-) -> Result<Tensor> {
-    if step <= 0 {
-        return Err(execution_error(node, "Slice step must be positive"));
-    }
-    let length = input
-        .dim(axis)
-        .map_err(|error| execution_error(node, error))?;
-    let (start, end) = slice_bounds(length, start, end, node)?;
-    if step == 1 {
-        return input
-            .narrow(axis, start, end - start)
-            .map_err(|error| execution_error(node, error));
-    }
-    let step = usize::try_from(step).map_err(|_| execution_error(node, "invalid Slice step"))?;
-    let indices = (start..end)
-        .step_by(step)
-        .map(u32::try_from)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|_| execution_error(node, "Slice index exceeds u32"))?;
-    let indices = Tensor::from_vec(indices.clone(), indices.len(), device)
-        .map_err(|error| execution_error(node, error))?;
-    input
-        .index_select(&indices, axis)
-        .map_err(|error| execution_error(node, error))
-}
-
-fn slice_bounds(length: usize, start: i64, end: i64, node: &GraphNode) -> Result<(usize, usize)> {
-    let length_i64 = i64::try_from(length).map_err(|_| execution_error(node, "axis too large"))?;
-    let normalize = |value: i64| {
-        if value < 0 {
-            (length_i64 + value).max(0)
-        } else {
-            value.min(length_i64)
-        }
-    };
-    let start = normalize(start);
-    let end = normalize(end);
-    if end < start {
-        return Err(execution_error(node, "Slice end precedes start"));
-    }
-    Ok((start as usize, end as usize))
-}
-
-fn resolve_reshape(input: &[usize], requested: &[i64], node: &GraphNode) -> Result<Vec<usize>> {
-    if requested.is_empty() {
-        return Err(execution_error(node, "Reshape target must not be empty"));
-    }
-    let input_elements = input.iter().product::<usize>();
-    let mut output = Vec::with_capacity(requested.len());
-    let mut inferred = None;
-    let mut known = 1_usize;
-    for (index, dimension) in requested.iter().copied().enumerate() {
-        match dimension {
-            -1 if inferred.is_none() => {
-                inferred = Some(index);
-                output.push(1);
-            }
-            0 if index < input.len() => {
-                known = known
-                    .checked_mul(input[index])
-                    .ok_or_else(|| execution_error(node, "Reshape dimensions overflowed"))?;
-                output.push(input[index]);
-            }
-            value if value > 0 => {
-                let value = usize::try_from(value)
-                    .map_err(|_| execution_error(node, "invalid Reshape dimension"))?;
-                known = known
-                    .checked_mul(value)
-                    .ok_or_else(|| execution_error(node, "Reshape dimensions overflowed"))?;
-                output.push(value);
-            }
-            _ => return Err(execution_error(node, "invalid Reshape target")),
-        }
-    }
-    if let Some(index) = inferred {
-        if known == 0 || !input_elements.is_multiple_of(known) {
-            return Err(execution_error(node, "Reshape target cannot be inferred"));
-        }
-        output[index] = input_elements / known;
-    } else if known != input_elements {
-        return Err(execution_error(node, "Reshape changes the element count"));
-    }
-    Ok(output)
-}
-
-fn normalized_axes(axes: &[i64], rank: usize, node: &GraphNode) -> Result<Vec<usize>> {
-    axes.iter()
-        .map(|axis| axis_index(*axis, rank, node))
-        .collect()
-}
-
-fn axis_index(axis: i64, rank: usize, node: &GraphNode) -> Result<usize> {
-    let rank_i64 = i64::try_from(rank).map_err(|_| execution_error(node, "rank exceeds i64"))?;
-    let axis = if axis < 0 { rank_i64 + axis } else { axis };
-    if axis < 0 || axis >= rank_i64 {
-        return Err(execution_error(
-            node,
-            format!("axis {axis} is out of range for rank {rank}"),
-        ));
-    }
-    Ok(axis as usize)
-}
-
-fn pair(values: &[i64], name: &str, node: &GraphNode) -> Result<(usize, usize)> {
-    if values.len() != 2 {
-        return Err(execution_error(
-            node,
-            format!("{name} must contain two values"),
-        ));
-    }
-    Ok((
-        positive_usize(values[0], name, node)?,
-        positive_usize(values[1], name, node)?,
-    ))
-}
-
-fn quad(values: &[i64], name: &str, node: &GraphNode) -> Result<(usize, usize, usize, usize)> {
-    if values.len() != 4 {
-        return Err(execution_error(
-            node,
-            format!("{name} must contain four values"),
-        ));
-    }
-    Ok((
-        nonnegative_usize(values[0], name, node)?,
-        nonnegative_usize(values[1], name, node)?,
-        nonnegative_usize(values[2], name, node)?,
-        nonnegative_usize(values[3], name, node)?,
-    ))
-}
-
-fn positive_usize(value: i64, name: &str, node: &GraphNode) -> Result<usize> {
-    if value <= 0 {
-        return Err(execution_error(node, format!("{name} must be positive")));
-    }
-    usize::try_from(value).map_err(|_| execution_error(node, format!("{name} exceeds usize")))
-}
-
-fn nonnegative_usize(value: i64, name: &str, node: &GraphNode) -> Result<usize> {
-    if value < 0 {
-        return Err(execution_error(
-            node,
-            format!("{name} must be non-negative"),
-        ));
-    }
-    usize::try_from(value).map_err(|_| execution_error(node, format!("{name} exceeds usize")))
-}
-
-fn execution_error(node: &GraphNode, error: impl std::fmt::Display) -> PowerError {
-    PowerError::InferenceFailed(format!(
-        "static graph node '{}' ({:?}) failed: {error}",
-        node.name, node.op
-    ))
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn node() -> GraphNode {
-        GraphNode {
-            name: "test".to_string(),
-            op: GraphOp::Reshape,
-            inputs: Vec::new(),
-            outputs: vec!["out".to_string()],
-            attributes: Default::default(),
-        }
-    }
-
-    #[test]
-    fn reshape_resolves_zero_and_inferred_dimensions() {
-        assert_eq!(
-            resolve_reshape(&[2, 3, 4], &[0, -1], &node()).unwrap(),
-            [2, 12]
-        );
-        assert!(resolve_reshape(&[2, 3], &[-1, -1], &node()).is_err());
-    }
-
-    #[test]
-    fn same_upper_padding_puts_odd_pixel_at_end() {
-        assert_eq!(same_upper_padding(48, 2, 1, 1), (0, 1));
-        assert_eq!(same_upper_padding(48, 3, 2, 1), (0, 1));
-    }
-
-    #[test]
-    fn matmul_materializes_a_transposed_rhs_view() {
-        let mut node = node();
-        node.op = GraphOp::MatMul;
-        let left = GraphValue::Tensor(
-            Tensor::zeros((3, 8, 41, 15), candle_core::DType::F32, &Device::Cpu).unwrap(),
-        );
-        let right = Tensor::zeros((3, 8, 41, 15), candle_core::DType::F32, &Device::Cpu)
-            .unwrap()
-            .transpose(2, 3)
-            .unwrap();
-        assert!(!right.is_contiguous());
-        let right = GraphValue::Tensor(right);
-
-        let output = matmul(&node, &[&left, &right]).unwrap();
-
-        assert_eq!(output.shape(), [3, 8, 41, 41]);
-    }
-}
+mod tests;

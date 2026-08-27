@@ -176,6 +176,56 @@ impl GraphPlan {
         }
     }
 
+    /// Removes validated private `Identity` nodes from the execution plan and
+    /// rewrites their consumers to the exact source value.
+    ///
+    /// Graph-output identities remain explicit so the published output name
+    /// and contract are unchanged. The source graph identity is retained: this
+    /// is an execution-only alias simplification after full validation, not a
+    /// different model graph.
+    pub(super) fn elide_private_identities(mut self) -> Self {
+        let retained_outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.name.clone())
+            .collect::<BTreeSet<_>>();
+        let mut aliases = BTreeMap::<String, String>::new();
+        let mut executable = Vec::with_capacity(self.nodes.len());
+        for mut node in std::mem::take(&mut self.nodes) {
+            for input in &mut node.inputs {
+                if let Some(source) = aliases.get(input) {
+                    *input = source.clone();
+                }
+            }
+            let private_identity = node.op == GraphOp::Identity
+                && node.inputs.len() == 1
+                && node.outputs.len() == 1
+                && !retained_outputs.contains(&node.outputs[0]);
+            if private_identity {
+                aliases.insert(node.outputs[0].clone(), node.inputs[0].clone());
+            } else {
+                executable.push(node);
+            }
+        }
+        self.nodes = executable;
+        self
+    }
+
+    /// Composes validated private `Transpose` producer-consumer pairs.
+    ///
+    /// The transformation is execution-only and retains the reviewed source
+    /// identity. Runtime-ranked default permutations and invalid explicit
+    /// permutations remain untouched for the executor to resolve or reject.
+    pub(super) fn fold_private_transposes(mut self) -> Self {
+        let retained_outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.name.clone())
+            .collect::<BTreeSet<_>>();
+        super::transpose_folding::fold_private_transposes(&mut self.nodes, &retained_outputs);
+        self
+    }
+
     fn validate(
         &self,
         expected: &GraphIdentity,
@@ -349,6 +399,69 @@ fn validate_name(value: &str, limits: &InferenceLimits) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_plan_elides_private_identity_chains_but_keeps_published_alias() {
+        let plan = GraphPlan {
+            schema_version: GRAPH_SCHEMA_VERSION,
+            family: "model".to_string(),
+            role: "encoder".to_string(),
+            source: GraphSource {
+                format: "onnx".to_string(),
+                sha256: "a".repeat(64),
+                opset: 17,
+            },
+            inputs: vec![GraphTensor {
+                name: "input".to_string(),
+                shape: vec![],
+            }],
+            outputs: vec![GraphTensor {
+                name: "published".to_string(),
+                shape: vec![],
+            }],
+            initializers: vec![Initializer {
+                name: "bias".to_string(),
+                dtype: "float32".to_string(),
+                shape: vec![1],
+            }],
+            nodes: vec![
+                node(
+                    "first-alias",
+                    GraphOp::Identity,
+                    &["input"],
+                    "aliased-input",
+                ),
+                node("add", GraphOp::Add, &["aliased-input", "bias"], "sum"),
+                node("second-alias", GraphOp::Identity, &["sum"], "aliased-sum"),
+                node(
+                    "published-alias",
+                    GraphOp::Identity,
+                    &["aliased-sum"],
+                    "published",
+                ),
+            ],
+        };
+
+        let simplified = plan.elide_private_identities();
+
+        assert_eq!(simplified.nodes.len(), 2);
+        assert_eq!(simplified.nodes[0].op, GraphOp::Add);
+        assert_eq!(simplified.nodes[0].inputs, ["input", "bias"]);
+        assert_eq!(simplified.nodes[1].op, GraphOp::Identity);
+        assert_eq!(simplified.nodes[1].inputs, ["sum"]);
+        assert_eq!(simplified.nodes[1].outputs, ["published"]);
+        assert_eq!(simplified.identity().source_sha256, "a".repeat(64));
+    }
+
+    fn node(name: &str, op: GraphOp, inputs: &[&str], output: &str) -> GraphNode {
+        GraphNode {
+            name: name.to_string(),
+            op,
+            inputs: inputs.iter().map(|input| (*input).to_string()).collect(),
+            outputs: vec![output.to_string()],
+            attributes: BTreeMap::new(),
+        }
+    }
 
     #[test]
     fn reviewed_identity_requires_a_sha256() {

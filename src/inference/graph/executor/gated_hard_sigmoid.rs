@@ -8,6 +8,7 @@ use crate::error::{PowerError, Result};
 use super::super::plan::{GraphNode, GraphOp};
 use super::super::value::GraphValue;
 
+mod cpu;
 #[cfg(feature = "embedded-cuda")]
 mod cuda;
 
@@ -23,7 +24,7 @@ pub(super) fn try_mul(
     values: &HashMap<String, GraphValue>,
     use_counts: &HashMap<String, usize>,
     retained_output: &str,
-    _cancellation: &CancellationToken,
+    cancellation: &CancellationToken,
 ) -> Result<Option<GraphValue>> {
     let Some((gate_name, multiplicand_name)) =
         matched_inputs(hard_sigmoid, multiply, use_counts, retained_output)
@@ -40,7 +41,7 @@ pub(super) fn try_mul(
         .tensor(&multiply.name)?;
     if gate.dtype() != DType::F32
         || multiplicand.dtype() != DType::F32
-        || !gate.device().is_cuda()
+        || !(gate.device().is_cpu() || gate.device().is_cuda())
         || !multiplicand.device().same_device(gate.device())
         || gate.elem_count() == 0
         || multiplicand.elem_count() == 0
@@ -51,16 +52,25 @@ pub(super) fn try_mul(
     {
         return Ok(None);
     }
+    if cancellation.is_cancelled() {
+        return Err(PowerError::InferenceFailed(
+            "static graph execution was cancelled".to_string(),
+        ));
+    }
+    let alpha = hard_sigmoid.float("alpha", 0.2)? as f32;
+    let beta = hard_sigmoid.float("beta", 0.5)? as f32;
+    if gate.device().is_cpu() {
+        let output = cpu::mul(multiplicand, gate, alpha, beta).map_err(|error| {
+            PowerError::InferenceFailed(format!(
+                "static graph nodes '{}' and '{}' fused gated HardSigmoid failed: {error}",
+                hard_sigmoid.name, multiply.name
+            ))
+        })?;
+        return Ok(Some(GraphValue::Tensor(output)));
+    }
 
     #[cfg(feature = "embedded-cuda")]
     {
-        if _cancellation.is_cancelled() {
-            return Err(PowerError::InferenceFailed(
-                "static graph execution was cancelled".to_string(),
-            ));
-        }
-        let alpha = hard_sigmoid.float("alpha", 0.2)? as f32;
-        let beta = hard_sigmoid.float("beta", 0.5)? as f32;
         let output = cuda::mul(multiplicand, gate, alpha, beta).map_err(|error| {
             PowerError::InferenceFailed(format!(
                 "static graph nodes '{}' and '{}' fused gated HardSigmoid failed: {error}",

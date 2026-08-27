@@ -122,6 +122,7 @@ pub use storage_benchmark::{
 pub use telemetry::{
     PlacementTelemetry, RouteHeat, RoutingHistory, StorageSourceTelemetry, TelemetryMode,
 };
+pub(crate) use tensor::InputUploadPool;
 pub use tensor::{TensorInput, TensorOutput};
 pub use tuning::evaluate_tuning_profile;
 pub use tuning_types::{
@@ -144,3 +145,16 @@ pub use weights::{
 };
 
 pub(crate) const RUNTIME_NAME: &str = "a3s-power-native";
+
+// Execution receipts must distinguish builds that can select a numerically
+// different graph implementation. The CPU segment optimizer is selected only
+// from graph topology and tensor metadata, but oneDNN's accumulation order can
+// still differ by a few ULPs from the scalar Candle path. Encoding that choice
+// in the existing runtime version keeps every output attributable without
+// leaking model-specific graph details into the public receipt.
+#[cfg(feature = "embedded-cpu-optimized")]
+pub(crate) const RUNTIME_VERSION: &str =
+    concat!(env!("CARGO_PKG_VERSION"), "+cpu-f32-graph-onednn-3.13.1-v1");
+
+#[cfg(not(feature = "embedded-cpu-optimized"))]
+pub(crate) const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");

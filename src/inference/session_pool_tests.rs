@@ -31,6 +31,27 @@ fn policy(max_sessions: usize, max_resident_bytes: u64) -> ModelSessionPoolPolic
     ModelSessionPoolPolicy::new(max_sessions, max_resident_bytes, 1, 1).unwrap()
 }
 
+fn replica_policy(
+    max_sessions: usize,
+    max_resident_bytes: u64,
+    max_execution_replicas: usize,
+) -> ModelSessionPoolPolicy {
+    ModelSessionPoolPolicy::new(max_sessions, max_resident_bytes, max_execution_replicas, 1)
+        .unwrap()
+}
+
+#[test]
+fn pool_memory_discovery_uses_the_resolved_device_without_loading_a_model() {
+    let pool = ModelSessionPool::<u32>::new(DevicePreference::Cpu, policy(1, 64)).unwrap();
+
+    let memory = pool.memory_snapshot().unwrap();
+
+    assert_eq!(memory.runtime_device, "cpu");
+    assert!(memory.host.total_bytes > 0);
+    assert!(memory.device.is_none());
+    assert_eq!(pool.snapshot().registered_sessions, 0);
+}
+
 async fn wait_for<F>(condition: F)
 where
     F: Fn() -> bool,
@@ -78,6 +99,44 @@ async fn exact_session_is_initialized_once_and_reused() {
     assert_eq!(snapshot.registered_sessions, 1);
     assert_eq!(snapshot.ready_sessions, 1);
     assert_eq!(snapshot.reserved_bytes, 32);
+}
+
+#[tokio::test]
+async fn execution_replicas_are_pool_bounded_and_cuda_only() {
+    let pool =
+        ModelSessionPool::<u32>::new(DevicePreference::Cpu, replica_policy(2, 64, 2)).unwrap();
+    let primary = pool
+        .get_or_load_replica(
+            spec('a', 32),
+            0,
+            &CancellationToken::new(),
+            |_runtime, _cancellation| async { Ok(7_u32) },
+        )
+        .await
+        .unwrap();
+    assert_eq!(primary.execution_replica(), 0);
+
+    let unsupported = pool
+        .get_or_load_replica(
+            spec('a', 32),
+            1,
+            &CancellationToken::new(),
+            |_runtime, _cancellation| async { Ok(9_u32) },
+        )
+        .await;
+    assert!(matches!(unsupported, Err(PowerError::InvalidRequest(_))));
+    assert_eq!(pool.snapshot().registered_sessions, 1);
+
+    let outside_bound = pool
+        .get_or_load_replica(
+            spec('a', 32),
+            2,
+            &CancellationToken::new(),
+            |_runtime, _cancellation| async { Ok(11_u32) },
+        )
+        .await;
+    assert!(matches!(outside_bound, Err(PowerError::InvalidRequest(_))));
+    assert_eq!(pool.snapshot().registered_sessions, 1);
 }
 
 #[tokio::test]

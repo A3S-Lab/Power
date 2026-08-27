@@ -1,7 +1,14 @@
 use candle_core::Device;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "embedded-cuda")]
+use std::sync::Arc;
 
 use crate::error::{PowerError, Result};
+
+#[cfg(feature = "embedded-cuda")]
+mod cuda_workspace;
+#[cfg(feature = "embedded-cuda")]
+use cuda_workspace::CudaBlasWorkspace;
 
 /// Typed device selection for an embedded model session.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,7 +76,13 @@ pub struct RuntimeDevice {
     kind: RuntimeDeviceKind,
     ordinal: Option<usize>,
     name: String,
+    isolated_session_stream: bool,
     pub(crate) candle: Device,
+    // Keep the device buffer alive until after Candle drops its cuBLAS handle.
+    // Rust drops fields in declaration order, so this field must follow
+    // `candle`.
+    #[cfg(feature = "embedded-cuda")]
+    cublas_workspace: Option<Arc<CudaBlasWorkspace>>,
 }
 
 impl RuntimeDevice {
@@ -107,13 +120,66 @@ impl RuntimeDevice {
         &self.candle
     }
 
+    /// Resolves a device for a model-session lane whose tensors never cross
+    /// into another CUDA stream.
+    ///
+    /// Model session inputs and outputs cross the Power boundary as bounded
+    /// host tensors. Each CUDA replica owns a unique Candle device identity
+    /// and one stream, so per-activation cross-stream events duplicate the
+    /// stream's ordering. General runtimes retain event tracking for explicit
+    /// accelerator-mesh transfers.
+    pub(crate) fn resolve_model_session(preference: DevicePreference) -> Result<Self> {
+        Self::resolve(preference)?.into_isolated_session_stream()
+    }
+
+    /// Creates one additional execution stream on the same resolved CUDA
+    /// device. Replica zero is the pool's original stream; higher replica
+    /// indices are admitted and bounded by the owning session pool.
+    pub(crate) fn execution_replica(&self, replica_index: usize) -> Result<Self> {
+        if replica_index == 0 {
+            return Ok(self.clone());
+        }
+        match (self.kind, self.ordinal) {
+            (RuntimeDeviceKind::Cuda, Some(ordinal)) => {
+                let replica = Self::cuda(ordinal)?;
+                if self.isolated_session_stream {
+                    replica.into_isolated_session_stream()
+                } else {
+                    Ok(replica)
+                }
+            }
+            _ => Err(PowerError::InvalidRequest(
+                "additional execution replicas require a CUDA device".to_string(),
+            )),
+        }
+    }
+
     fn cpu() -> Self {
         Self {
             kind: RuntimeDeviceKind::Cpu,
             ordinal: None,
             name: "cpu".to_string(),
+            isolated_session_stream: false,
             candle: Device::Cpu,
+            #[cfg(feature = "embedded-cuda")]
+            cublas_workspace: None,
         }
+    }
+
+    #[allow(unused_mut)] // Mutated only by the embedded CUDA build.
+    fn into_isolated_session_stream(mut self) -> Result<Self> {
+        #[cfg(feature = "embedded-cuda")]
+        if let Device::Cuda(device) = &self.candle {
+            // SAFETY: this mode is constructed only by ModelSessionPool. One
+            // pool entry owns one unique Candle device and one stream; clones
+            // retain that stream, and another execution replica receives a
+            // distinct DeviceId. TensorInput/TensorOutput are host boundaries,
+            // so no tensor allocated here is consumed by another stream.
+            unsafe { device.disable_event_tracking() };
+            self.cublas_workspace = Some(Arc::new(CudaBlasWorkspace::configure(device)?));
+            self.isolated_session_stream = true;
+        }
+        Ok(self)
     }
 
     fn auto() -> Result<Self> {
@@ -130,7 +196,7 @@ impl RuntimeDevice {
 
     #[cfg(feature = "embedded-cuda")]
     fn cuda(ordinal: usize) -> Result<Self> {
-        let candle = Device::new_cuda(ordinal).map_err(|error| {
+        let candle = Device::new_cuda_with_stream(ordinal).map_err(|error| {
             PowerError::BackendNotAvailable(format!(
                 "failed to initialize CUDA device {ordinal}: {error}"
             ))
@@ -139,7 +205,9 @@ impl RuntimeDevice {
             kind: RuntimeDeviceKind::Cuda,
             ordinal: Some(ordinal),
             name: format!("cuda:{ordinal}"),
+            isolated_session_stream: false,
             candle,
+            cublas_workspace: None,
         })
     }
 
@@ -161,7 +229,10 @@ impl RuntimeDevice {
             kind: RuntimeDeviceKind::Metal,
             ordinal: Some(ordinal),
             name: format!("metal:{ordinal}"),
+            isolated_session_stream: false,
             candle,
+            #[cfg(feature = "embedded-cuda")]
+            cublas_workspace: None,
         })
     }
 
@@ -187,10 +258,13 @@ impl RuntimeDevice {
                 ordinal: Some(ordinal),
             }
             .name(),
+            isolated_session_stream: false,
             // Contract tests use CPU storage while exercising the logical
             // accelerator control path. This constructor is absent from
             // production builds.
             candle: Device::Cpu,
+            #[cfg(feature = "embedded-cuda")]
+            cublas_workspace: None,
         })
     }
 }
@@ -202,6 +276,18 @@ impl std::fmt::Debug for RuntimeDevice {
             .field("kind", &self.kind)
             .field("ordinal", &self.ordinal)
             .field("name", &self.name)
+            .field("cublas_workspace_bytes", &{
+                #[cfg(feature = "embedded-cuda")]
+                {
+                    self.cublas_workspace
+                        .as_ref()
+                        .map_or(0, |workspace| workspace.bytes())
+                }
+                #[cfg(not(feature = "embedded-cuda"))]
+                {
+                    0_usize
+                }
+            })
             .finish_non_exhaustive()
     }
 }
@@ -228,5 +314,61 @@ mod tests {
     fn unavailable_cuda_fails_instead_of_falling_back() {
         #[cfg(not(feature = "embedded-cuda"))]
         assert!(RuntimeDevice::resolve(DevicePreference::Cuda { ordinal: 0 }).is_err());
+    }
+
+    #[cfg(feature = "embedded-cuda")]
+    #[test]
+    #[ignore = "requires an explicit CUDA device"]
+    fn model_session_streams_omit_only_redundant_cross_stream_events() {
+        let general = RuntimeDevice::resolve(DevicePreference::Cuda { ordinal: 0 }).unwrap();
+        let session =
+            RuntimeDevice::resolve_model_session(DevicePreference::Cuda { ordinal: 0 }).unwrap();
+        let replica = session.execution_replica(1).unwrap();
+
+        let Device::Cuda(general_cuda) = &general.candle else {
+            panic!("explicit CUDA resolution returned another device kind");
+        };
+        let Device::Cuda(session_cuda) = &session.candle else {
+            panic!("model-session CUDA resolution returned another device kind");
+        };
+        let Device::Cuda(replica_cuda) = &replica.candle else {
+            panic!("model-session replica returned another device kind");
+        };
+
+        assert!(general_cuda.is_event_tracking());
+        assert!(!session_cuda.is_event_tracking());
+        assert!(!replica_cuda.is_event_tracking());
+        assert!(!session.candle.same_device(&replica.candle));
+        assert!(general.cublas_workspace.is_none());
+        for runtime in [&session, &replica] {
+            assert!(runtime
+                .cublas_workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.bytes() > 0));
+        }
+        assert!(!Arc::ptr_eq(
+            session.cublas_workspace.as_ref().unwrap(),
+            replica.cublas_workspace.as_ref().unwrap(),
+        ));
+    }
+
+    #[cfg(feature = "embedded-cuda")]
+    #[test]
+    #[ignore = "requires an explicit CUDA device"]
+    fn model_session_workspace_resets_before_an_escaped_device_is_reused() {
+        let escaped = {
+            let session =
+                RuntimeDevice::resolve_model_session(DevicePreference::Cuda { ordinal: 0 })
+                    .unwrap();
+            assert!(session.cublas_workspace.is_some());
+            session.tensor_device().clone()
+        };
+        let left =
+            candle_core::Tensor::from_vec(vec![1.0_f32, 2.0, 3.0, 4.0], (2, 2), &escaped).unwrap();
+        let right =
+            candle_core::Tensor::from_vec(vec![5.0_f32, 6.0, 7.0, 8.0], (2, 2), &escaped).unwrap();
+        let output = left.matmul(&right).unwrap().to_vec2::<f32>().unwrap();
+
+        assert_eq!(output, [[19.0, 22.0], [43.0, 50.0]]);
     }
 }

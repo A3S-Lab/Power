@@ -13,8 +13,8 @@ use crate::error::{PowerError, Result};
 
 use super::sealed_state::decode_sha256;
 use super::{
-    DevicePreference, EmbeddedRuntime, InferenceLimits, ModelIdentity, RuntimeDevice,
-    RuntimeDeviceIdentity, RuntimeDeviceKind,
+    DevicePreference, EmbeddedRuntime, HardwareMemorySnapshot, InferenceLimits, ModelIdentity,
+    RuntimeDevice, RuntimeDeviceIdentity, RuntimeDeviceKind,
 };
 
 /// Exact model and model-owned execution identity for one shareable session.
@@ -219,6 +219,7 @@ struct PoolInner<T> {
 struct SessionEntry<T> {
     spec: ModelSessionSpec,
     declaration_sha256: String,
+    execution_replica: usize,
     runtime: EmbeddedRuntime,
     value: OnceCell<Arc<T>>,
     loading_callers: AtomicUsize,
@@ -247,7 +248,12 @@ where
 {
     pub fn new(preference: DevicePreference, policy: ModelSessionPoolPolicy) -> Result<Self> {
         policy.validate()?;
-        let device = RuntimeDevice::resolve(preference)?;
+        // A pool entry is an isolated execution lane: its model tensors stay
+        // on one unique device stream and only bounded host tensors cross the
+        // public input/output boundary. CUDA lanes can therefore omit cudarc's
+        // redundant per-activation cross-stream events without weakening the
+        // general runtime or accelerator-mesh synchronization policy.
+        let device = RuntimeDevice::resolve_model_session(preference)?;
         let device_admission = AdmissionController::new_bounded(
             policy.max_concurrent_device_requests,
             policy.max_queued_device_requests,
@@ -276,10 +282,31 @@ where
         F: FnOnce(EmbeddedRuntime, CancellationToken) -> Fut + Send,
         Fut: Future<Output = Result<T>> + Send,
     {
+        self.get_or_load_replica(spec, 0, cancellation, loader)
+            .await
+    }
+
+    /// Gets or initializes one exact, bounded execution replica.
+    ///
+    /// Every replica retains the same model/session declaration while CUDA
+    /// replicas execute on independent streams. All replicas remain inside
+    /// this pool's aggregate session, residency, device-concurrency, and
+    /// queue bounds.
+    pub async fn get_or_load_replica<F, Fut>(
+        &self,
+        spec: ModelSessionSpec,
+        execution_replica: usize,
+        cancellation: &CancellationToken,
+        loader: F,
+    ) -> Result<ModelSession<T>>
+    where
+        F: FnOnce(EmbeddedRuntime, CancellationToken) -> Fut + Send,
+        Fut: Future<Output = Result<T>> + Send,
+    {
         if cancellation.is_cancelled() {
             return Err(PowerError::InferenceCancelled);
         }
-        let (key, entry) = self.entry(spec)?;
+        let (key, entry) = self.entry(spec, execution_replica)?;
         let _load_guard = SessionLoadGuard {
             pool: self.clone(),
             key,
@@ -323,9 +350,25 @@ where
         }
     }
 
-    fn entry(&self, spec: ModelSessionSpec) -> Result<(String, Arc<SessionEntry<T>>)> {
+    /// Discovers memory for the pool's resolved device without loading a model
+    /// or spawning a process.
+    pub fn memory_snapshot(&self) -> Result<HardwareMemorySnapshot> {
+        self.inner.device.memory_snapshot()
+    }
+
+    fn entry(
+        &self,
+        spec: ModelSessionSpec,
+        execution_replica: usize,
+    ) -> Result<(String, Arc<SessionEntry<T>>)> {
         spec.validate()?;
-        let key = spec.binding.key_sha256();
+        if execution_replica >= self.inner.policy.max_concurrent_device_requests {
+            return Err(PowerError::InvalidRequest(format!(
+                "model session execution replica {execution_replica} exceeds the pool bound of {}",
+                self.inner.policy.max_concurrent_device_requests
+            )));
+        }
+        let key = session_replica_key(&spec.binding.key_sha256(), execution_replica)?;
         let mut sessions = lock(&self.inner.sessions);
         if let Some(existing) = sessions.get(&key) {
             if existing.spec != spec {
@@ -358,15 +401,17 @@ where
                 maximum_resident_bytes: self.inner.policy.max_resident_bytes,
             });
         }
-        let declaration_sha256 = spec.declaration_sha256(self.inner.device.identity())?;
+        let device = self.inner.device.execution_replica(execution_replica)?;
+        let declaration_sha256 = spec.declaration_sha256(device.identity())?;
         let runtime = EmbeddedRuntime::with_device_admission(
-            self.inner.device.clone(),
+            device,
             spec.limits.clone(),
             self.inner.device_admission.clone(),
         )?;
         let entry = Arc::new(SessionEntry {
             spec,
             declaration_sha256,
+            execution_replica,
             runtime,
             value: OnceCell::new(),
             loading_callers: AtomicUsize::new(1),
@@ -446,6 +491,10 @@ impl<T> ModelSession<T> {
         &self.entry.declaration_sha256
     }
 
+    pub fn execution_replica(&self) -> usize {
+        self.entry.execution_replica
+    }
+
     pub fn runtime(&self) -> &EmbeddedRuntime {
         &self.entry.runtime
     }
@@ -453,6 +502,19 @@ impl<T> ModelSession<T> {
     pub fn value(&self) -> &T {
         &self.value
     }
+}
+
+fn session_replica_key(binding_sha256: &str, execution_replica: usize) -> Result<String> {
+    let execution_replica = u64::try_from(execution_replica).map_err(|_| {
+        PowerError::InvalidRequest(
+            "model session execution replica cannot be represented".to_string(),
+        )
+    })?;
+    let mut digest = Sha256::new();
+    digest.update(b"a3s-power-model-session-replica-key-v1\0");
+    update_text(&mut digest, binding_sha256);
+    digest.update(execution_replica.to_le_bytes());
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 impl<T> std::fmt::Debug for ModelSession<T> {

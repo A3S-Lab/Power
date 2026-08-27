@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{AcceleratorExecutionEvidence, RuntimeDevice, RUNTIME_NAME};
+use super::{AcceleratorExecutionEvidence, RuntimeDevice, RUNTIME_NAME, RUNTIME_VERSION};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -37,7 +37,7 @@ impl RuntimeIdentity {
     pub(crate) fn current(device: &RuntimeDevice) -> Self {
         Self {
             name: RUNTIME_NAME.to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: RUNTIME_VERSION.to_string(),
             device: device.name().to_string(),
         }
     }
@@ -308,5 +308,17 @@ mod tests {
         });
         let receipt: ExecutionReceipt = serde_json::from_value(encoded).unwrap();
         assert!(receipt.microbatch.is_none());
+    }
+
+    #[test]
+    fn runtime_version_identifies_the_compiled_numeric_execution_profile() {
+        #[cfg(feature = "embedded-cpu-optimized")]
+        assert_eq!(
+            RUNTIME_VERSION,
+            concat!(env!("CARGO_PKG_VERSION"), "+cpu-f32-graph-onednn-3.13.1-v1")
+        );
+
+        #[cfg(not(feature = "embedded-cpu-optimized"))]
+        assert_eq!(RUNTIME_VERSION, env!("CARGO_PKG_VERSION"));
     }
 }

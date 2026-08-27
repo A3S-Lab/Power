@@ -3,14 +3,36 @@ use std::collections::HashMap;
 use candle_core::{DType, Device, Tensor};
 use tokio_util::sync::CancellationToken;
 
-use crate::error::{PowerError, Result};
+use crate::error::PowerError;
+use crate::error::Result;
 
 use super::super::plan::{GraphNode, GraphOp};
 use super::super::value::GraphValue;
-use super::{execute, gelu_erf};
+use super::execute;
+use super::gelu_erf;
 
+mod cpu;
 #[cfg(feature = "embedded-cuda")]
 mod cuda;
+
+#[cfg(feature = "embedded-cuda")]
+pub(super) fn cuda_channel_bias(input: &Tensor, bias: &Tensor) -> candle_core::Result<Tensor> {
+    cuda::bias(input, bias)
+}
+
+#[cfg(all(test, feature = "embedded-cuda"))]
+pub(super) fn cuda_channel_bias_relu(input: &Tensor, bias: &Tensor) -> candle_core::Result<Tensor> {
+    cuda::relu(input, bias)
+}
+
+#[cfg(all(test, feature = "embedded-cuda"))]
+pub(super) fn cuda_channel_bias_relu_into(
+    output: &Tensor,
+    input: &Tensor,
+    bias: &Tensor,
+) -> candle_core::Result<()> {
+    cuda::relu_into(output, input, bias)
+}
 
 const MAX_IDENTITY_NODES: usize = 2;
 
@@ -51,33 +73,227 @@ pub(super) fn try_execute(
     let Some(matched) = matched_window(nodes, use_counts, retained_output) else {
         return Ok(None);
     };
-    if !device.is_cuda() {
-        return Ok(None);
-    }
-
-    #[cfg(feature = "embedded-cuda")]
-    {
-        execute_cuda(
+    if device.is_cpu() {
+        return execute_cpu(
             matched,
             values,
             scalar_constants,
             device,
             element_limit,
             cancellation,
-        )
+        );
+    }
+    if device.is_cuda() {
+        #[cfg(feature = "embedded-cuda")]
+        {
+            return execute_cuda(
+                matched,
+                values,
+                scalar_constants,
+                device,
+                element_limit,
+                cancellation,
+            );
+        }
     }
 
-    #[cfg(not(feature = "embedded-cuda"))]
+    Ok(None)
+}
+
+fn execute_cpu(
+    matched: MatchedWindow<'_>,
+    values: &HashMap<String, GraphValue>,
+    scalar_constants: &HashMap<String, f32>,
+    device: &Device,
+    element_limit: usize,
+    cancellation: &CancellationToken,
+) -> Result<Option<FusedOutput>> {
+    let bias = tensor(values, matched.bias, matched.add)?;
+    if bias.dtype() != DType::F32
+        || !bias.device().is_cpu()
+        || !bias.device().same_device(device)
+        || !bias.is_contiguous()
     {
-        let _ = (
-            matched,
-            values,
-            scalar_constants,
-            element_limit,
-            cancellation,
-        );
-        Ok(None)
+        return Ok(None);
     }
+
+    if let MatchedActivation::Residual { node, residual } = matched.activation {
+        let residual = tensor(values, residual, node)?;
+        if residual.dtype() != DType::F32
+            || !residual.device().is_cpu()
+            || !residual.device().same_device(device)
+            || !residual.is_contiguous()
+        {
+            return Ok(None);
+        }
+        let (Some(input_name), Some(kernel_name)) = (
+            matched.convolution.inputs.first(),
+            matched.convolution.inputs.get(1),
+        ) else {
+            return Ok(None);
+        };
+        let input = value(values, input_name, matched.convolution)?;
+        let kernel = value(values, kernel_name, matched.convolution)?;
+        let bias_value = value(values, matched.bias, matched.add)?;
+        let output_channels = kernel
+            .tensor(&matched.convolution.name)?
+            .dims4()
+            .ok()
+            .map(|dimensions| dimensions.0);
+        if !output_channels.is_some_and(|channels| channel_bias_shape(bias_value, channels)) {
+            return Ok(None);
+        }
+        let Some(output) = super::spatial::try_conv_with_residual(
+            matched.convolution,
+            &[input, kernel, bias_value],
+            device,
+            residual,
+        )?
+        else {
+            return Ok(None);
+        };
+        let output = output.tensor(&matched.convolution.name)?;
+        if output.elem_count() == 0 || output.elem_count() > element_limit {
+            return Err(PowerError::InferenceFailed(format!(
+                "static graph node '{}' produced {} tensor elements, exceeding the {element_limit}-element limit",
+                matched.convolution.name,
+                output.elem_count(),
+            )));
+        }
+        if cancellation.is_cancelled() {
+            return Err(PowerError::InferenceFailed(
+                "static graph execution was cancelled".to_string(),
+            ));
+        }
+        return Ok(Some(FusedOutput {
+            value: GraphValue::Tensor(output.clone()),
+            consumed_nodes: matched.consumed_nodes,
+        }));
+    }
+
+    if matches!(matched.activation, MatchedActivation::Bias) {
+        let (Some(input_name), Some(kernel_name)) = (
+            matched.convolution.inputs.first(),
+            matched.convolution.inputs.get(1),
+        ) else {
+            return Ok(None);
+        };
+        let input = value(values, input_name, matched.convolution)?;
+        let kernel = value(values, kernel_name, matched.convolution)?;
+        let bias = value(values, matched.bias, matched.add)?;
+        let output_channels = kernel
+            .tensor(&matched.convolution.name)?
+            .dims4()
+            .ok()
+            .map(|dimensions| dimensions.0);
+        if !output_channels.is_some_and(|channels| channel_bias_shape(bias, channels)) {
+            return Ok(None);
+        }
+        let output = super::spatial::conv(matched.convolution, &[input, kernel, bias], device)?;
+        let output = output.tensor(&matched.convolution.name)?;
+        if output.elem_count() == 0 || output.elem_count() > element_limit {
+            return Err(PowerError::InferenceFailed(format!(
+                "static graph node '{}' produced {} tensor elements, exceeding the {element_limit}-element limit",
+                matched.convolution.name,
+                output.elem_count(),
+            )));
+        }
+        if cancellation.is_cancelled() {
+            return Err(PowerError::InferenceFailed(
+                "static graph execution was cancelled".to_string(),
+            ));
+        }
+        return Ok(Some(FusedOutput {
+            value: GraphValue::Tensor(output.clone()),
+            consumed_nodes: matched.consumed_nodes,
+        }));
+    }
+
+    let gelu_parameters = match matched.activation {
+        MatchedActivation::Gelu {
+            divisor,
+            offset,
+            scale,
+        } => {
+            let (Some(&divisor), Some(&offset), Some(&scale)) = (
+                scalar_constants.get(divisor),
+                scalar_constants.get(offset),
+                scalar_constants.get(scale),
+            ) else {
+                return Ok(None);
+            };
+            Some((divisor, offset, scale))
+        }
+        _ => None,
+    };
+    let gated = match matched.activation {
+        MatchedActivation::GatedHardSigmoid { node, multiplicand } => Some((
+            tensor(values, multiplicand, node)?,
+            node.float("alpha", 0.2)? as f32,
+            node.float("beta", 0.5)? as f32,
+        )),
+        _ => None,
+    };
+
+    let convolution = execute(matched.convolution, values, scalar_constants, device)?;
+    let convolution = convolution.tensor(&matched.convolution.name)?;
+    if convolution.dtype() != DType::F32
+        || !convolution.device().is_cpu()
+        || !convolution.device().same_device(device)
+        || convolution.elem_count() == 0
+        || !convolution.is_contiguous()
+    {
+        return Ok(None);
+    }
+    if convolution.elem_count() > element_limit {
+        return Err(PowerError::InferenceFailed(format!(
+            "static graph node '{}' produced {} tensor elements, exceeding the {element_limit}-element limit",
+            matched.convolution.name,
+            convolution.elem_count(),
+        )));
+    }
+    let (_, channels, _, _) = convolution
+        .dims4()
+        .map_err(|error| fused_error(matched, error))?;
+    if bias.dims4().ok() != Some((1, channels, 1, 1)) {
+        return Ok(None);
+    }
+    if cancellation.is_cancelled() {
+        return Err(PowerError::InferenceFailed(
+            "static graph execution was cancelled".to_string(),
+        ));
+    }
+
+    let output = match matched.activation {
+        MatchedActivation::Bias | MatchedActivation::Residual { .. } => return Ok(None),
+        MatchedActivation::Relu => cpu::relu(convolution, bias),
+        MatchedActivation::Gelu { .. } => {
+            let Some((divisor, offset, scale)) = gelu_parameters else {
+                return Ok(None);
+            };
+            cpu::gelu_erf(convolution, bias, divisor, offset, scale)
+        }
+        MatchedActivation::GatedHardSigmoid { .. } => {
+            let Some((multiplicand, alpha, beta)) = gated else {
+                return Ok(None);
+            };
+            if multiplicand.dtype() != DType::F32
+                || !multiplicand.device().is_cpu()
+                || !multiplicand.device().same_device(device)
+                || multiplicand.elem_count() == 0
+                || !multiplicand.is_contiguous()
+                || !gated_nchw_shapes(convolution.dims(), multiplicand.dims())
+            {
+                return Ok(None);
+            }
+            cpu::gated_hard_sigmoid_mul(multiplicand, convolution, bias, alpha, beta)
+        }
+    }
+    .map_err(|error| fused_error(matched, error))?;
+    Ok(Some(FusedOutput {
+        value: GraphValue::Tensor(output),
+        consumed_nodes: matched.consumed_nodes,
+    }))
 }
 
 #[cfg(feature = "embedded-cuda")]
@@ -133,7 +349,91 @@ fn execute_cuda(
         }
     }
 
-    let convolution = execute(matched.convolution, values, device)?;
+    if let MatchedActivation::Residual { node, residual } = matched.activation {
+        let residual = tensor(values, residual, node)?;
+        if residual.dtype() != DType::F32
+            || !residual.device().is_cuda()
+            || !residual.device().same_device(device)
+            || !residual.is_contiguous()
+        {
+            return Ok(None);
+        }
+        let convolution = execute(matched.convolution, values, scalar_constants, device)?;
+        let convolution = convolution.tensor(&matched.convolution.name)?;
+        if convolution.dtype() != DType::F32
+            || !convolution.device().is_cuda()
+            || !convolution.device().same_device(device)
+            || convolution.elem_count() == 0
+            || u32::try_from(convolution.elem_count()).is_err()
+            || !convolution.is_contiguous()
+        {
+            return Ok(None);
+        }
+        if convolution.elem_count() > element_limit {
+            return Err(PowerError::InferenceFailed(format!(
+                "static graph node '{}' produced {} tensor elements, exceeding the {element_limit}-element limit",
+                matched.convolution.name,
+                convolution.elem_count(),
+            )));
+        }
+        let (_, channels, _, _) = convolution
+            .dims4()
+            .map_err(|error| fused_error(matched, error))?;
+        if bias.dims4().ok() != Some((1, channels, 1, 1)) || residual.dims() != convolution.dims() {
+            return Ok(None);
+        }
+        if cancellation.is_cancelled() {
+            return Err(PowerError::InferenceFailed(
+                "static graph execution was cancelled".to_string(),
+            ));
+        }
+        let output = cuda::bias_residual(convolution, residual, bias)
+            .map_err(|error| fused_error(matched, error))?;
+        return Ok(Some(FusedOutput {
+            value: GraphValue::Tensor(output),
+            consumed_nodes: matched.consumed_nodes,
+        }));
+    }
+
+    if matches!(matched.activation, MatchedActivation::Bias) {
+        let (Some(input_name), Some(kernel_name)) = (
+            matched.convolution.inputs.first(),
+            matched.convolution.inputs.get(1),
+        ) else {
+            return Ok(None);
+        };
+        let input = value(values, input_name, matched.convolution)?;
+        let kernel = value(values, kernel_name, matched.convolution)?;
+        let bias = value(values, matched.bias, matched.add)?;
+        let output_channels = kernel
+            .tensor(&matched.convolution.name)?
+            .dims4()
+            .ok()
+            .map(|dimensions| dimensions.0);
+        if !output_channels.is_some_and(|channels| channel_bias_shape(bias, channels)) {
+            return Ok(None);
+        }
+        let output = super::conv(matched.convolution, &[input, kernel, bias], device)?;
+        let output = output.tensor(&matched.convolution.name)?;
+        if output.elem_count() == 0 || output.elem_count() > element_limit {
+            return Err(PowerError::InferenceFailed(format!(
+                "static graph node '{}' produced {} tensor elements, exceeding the {element_limit}-element limit",
+                matched.convolution.name,
+                output.elem_count(),
+            )));
+        }
+        if cancellation.is_cancelled() {
+            return Err(PowerError::InferenceFailed(
+                "static graph execution was cancelled".to_string(),
+            ));
+        }
+        return Ok(Some(FusedOutput {
+            value: GraphValue::Tensor(output.clone()),
+            consumed_nodes: matched.consumed_nodes,
+        }));
+    }
+
+    let convolution = execute(matched.convolution, values, scalar_constants, device)?;
     let convolution = convolution.tensor(&matched.convolution.name)?;
     if convolution.dtype() != DType::F32
         || !convolution.device().is_cuda()
@@ -164,6 +464,7 @@ fn execute_cuda(
     }
 
     let output = match matched.activation {
+        MatchedActivation::Bias | MatchedActivation::Residual { .. } => return Ok(None),
         MatchedActivation::Relu => cuda::relu(convolution, bias),
         MatchedActivation::Gelu { .. } => {
             let Some((divisor, offset, scale)) = gelu_parameters else {
@@ -199,6 +500,11 @@ struct MatchedWindow<'a> {
 
 #[derive(Clone, Copy)]
 enum MatchedActivation<'a> {
+    Bias,
+    Residual {
+        node: &'a GraphNode,
+        residual: &'a str,
+    },
     Relu,
     Gelu {
         divisor: &'a str,
@@ -280,6 +586,31 @@ fn matched_window<'a>(
 
     let activation_node = nodes.get(cursor)?;
     let activation = match activation_node.op {
+        GraphOp::Add => {
+            let [left, right] = activation_node.inputs.as_slice() else {
+                return None;
+            };
+            let residual = match (left == activation_input, right == activation_input) {
+                (true, false) => right.as_str(),
+                (false, true) => left.as_str(),
+                _ => return None,
+            };
+            if !activation_node.attributes.is_empty()
+                || !private_intermediate(activation_input, 1, use_counts, retained_output)
+            {
+                return None;
+            }
+            MatchedWindow {
+                convolution,
+                add,
+                bias,
+                activation: MatchedActivation::Residual {
+                    node: activation_node,
+                    residual,
+                },
+                consumed_nodes: cursor + 1,
+            }
+        }
         GraphOp::Relu => {
             let [input] = activation_node.inputs.as_slice() else {
                 return None;
@@ -355,9 +686,22 @@ fn matched_window<'a>(
                 consumed_nodes: end,
             }
         }
-        _ => return None,
+        _ => MatchedWindow {
+            convolution,
+            add,
+            bias,
+            activation: MatchedActivation::Bias,
+            consumed_nodes: cursor,
+        },
     };
     Some(activation)
+}
+
+fn channel_bias_shape(value: &GraphValue, channels: usize) -> bool {
+    let Ok(value) = value.tensor("convolution channel-bias fusion") else {
+        return false;
+    };
+    value.dims1().ok() == Some(channels) || value.dims4().ok() == Some((1, channels, 1, 1))
 }
 
 fn private_intermediate(
@@ -396,6 +740,19 @@ fn tensor<'a>(
             ))
         })?
         .tensor(&node.name)
+}
+
+fn value<'a>(
+    values: &'a HashMap<String, GraphValue>,
+    input: &str,
+    node: &GraphNode,
+) -> Result<&'a GraphValue> {
+    values.get(input).ok_or_else(|| {
+        PowerError::InferenceFailed(format!(
+            "static graph node '{}' could not resolve input '{input}'",
+            node.name
+        ))
+    })
 }
 
 fn fused_error(matched: MatchedWindow<'_>, error: impl std::fmt::Display) -> PowerError {

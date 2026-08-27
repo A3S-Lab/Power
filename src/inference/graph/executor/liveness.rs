@@ -2,6 +2,9 @@ use std::collections::HashMap;
 
 use super::{GraphPlan, GraphValue};
 
+#[cfg(test)]
+const RETAIN_INTERMEDIATES_ENV: &str = "A3S_POWER_CUDA_GRAPH_TEST_RETAIN_INTERMEDIATES";
+
 /// Counts every graph input occurrence so eager intermediate tensors can be
 /// released immediately after their last consumer has finished.
 pub(super) fn value_use_counts(plan: &GraphPlan) -> HashMap<String, usize> {
@@ -23,7 +26,17 @@ pub(super) fn release_consumed_values(
     remaining_uses: &mut HashMap<String, usize>,
     values: &mut HashMap<String, GraphValue>,
 ) {
-    release_consumed(inputs, retained_value, remaining_uses, values);
+    #[cfg(test)]
+    let remove_unused = std::env::var_os(RETAIN_INTERMEDIATES_ENV).is_none();
+    #[cfg(not(test))]
+    let remove_unused = true;
+    release_consumed(
+        inputs,
+        retained_value,
+        remaining_uses,
+        values,
+        remove_unused,
+    );
 }
 
 fn release_consumed<T>(
@@ -31,6 +44,7 @@ fn release_consumed<T>(
     retained_value: &str,
     remaining_uses: &mut HashMap<String, usize>,
     values: &mut HashMap<String, T>,
+    remove_unused: bool,
 ) {
     for input in inputs.iter().filter(|input| !input.is_empty()) {
         let Some(remaining) = remaining_uses.get_mut(input) else {
@@ -40,7 +54,7 @@ fn release_consumed<T>(
             continue;
         }
         *remaining -= 1;
-        if *remaining == 0 && input != retained_value {
+        if remove_unused && *remaining == 0 && input != retained_value {
             values.remove(input);
         }
     }
@@ -62,6 +76,7 @@ mod tests {
             "output",
             &mut remaining,
             &mut values,
+            true,
         );
         assert_eq!(remaining["shared"], 1);
         assert_eq!(values["shared"], 7);
@@ -71,6 +86,7 @@ mod tests {
             "output",
             &mut remaining,
             &mut values,
+            true,
         );
         assert_eq!(remaining["shared"], 0);
         assert!(!values.contains_key("shared"));
@@ -86,6 +102,7 @@ mod tests {
             "output",
             &mut remaining,
             &mut values,
+            true,
         );
 
         assert_eq!(remaining["output"], 0);
@@ -102,8 +119,26 @@ mod tests {
             "output",
             &mut remaining,
             &mut values,
+            true,
         );
 
         assert_eq!(values["live"], 1);
+    }
+
+    #[test]
+    fn retention_mode_updates_use_counts_without_releasing_storage() {
+        let mut remaining = HashMap::from([("intermediate".to_string(), 1)]);
+        let mut values = HashMap::from([("intermediate".to_string(), 13_u8)]);
+
+        release_consumed(
+            &["intermediate".to_string()],
+            "output",
+            &mut remaining,
+            &mut values,
+            false,
+        );
+
+        assert_eq!(remaining["intermediate"], 0);
+        assert_eq!(values["intermediate"], 13);
     }
 }

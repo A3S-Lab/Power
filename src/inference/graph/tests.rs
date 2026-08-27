@@ -66,6 +66,96 @@ fn model_owned_reviewed_plan_executes_on_shared_runtime() {
     assert_eq!(output.values, [4.0, 6.0]);
 }
 
+fn terminal_softmax_plan_json() -> String {
+    serde_json::json!({
+        "schemaVersion": 1,
+        "family": "test-model",
+        "role": "encoder",
+        "source": {
+            "format": "onnx",
+            "sha256": SOURCE_SHA256,
+            "opset": 17
+        },
+        "inputs": [{"name": "input", "shape": [1, 2]}],
+        "outputs": [{"name": "output", "shape": [1, 2]}],
+        "initializers": [{"name": "bias", "dtype": "float32", "shape": [2]}],
+        "nodes": [
+            {
+                "name": "add-bias",
+                "op": "Add",
+                "inputs": ["input", "bias"],
+                "outputs": ["biased-logits"],
+                "attributes": {}
+            },
+            {
+                "name": "alias-logits",
+                "op": "Identity",
+                "inputs": ["biased-logits"],
+                "outputs": ["logits"],
+                "attributes": {}
+            },
+            {
+                "name": "terminal-softmax",
+                "op": "Softmax",
+                "inputs": ["logits"],
+                "outputs": ["output"],
+                "attributes": {"axis": -1}
+            }
+        ]
+    })
+    .to_string()
+}
+
+fn terminal_classifier_plan_json() -> String {
+    serde_json::json!({
+        "schemaVersion": 1,
+        "family": "test-model",
+        "role": "encoder",
+        "source": {
+            "format": "onnx",
+            "sha256": SOURCE_SHA256,
+            "opset": 17
+        },
+        "inputs": [{"name": "input", "shape": [1, 2]}],
+        "outputs": [{"name": "output", "shape": [1, 3]}],
+        "initializers": [
+            {"name": "weights", "dtype": "float32", "shape": [2, 3]},
+            {"name": "bias", "dtype": "float32", "shape": [3]}
+        ],
+        "nodes": [
+            {
+                "name": "classifier",
+                "op": "MatMul",
+                "inputs": ["input", "weights"],
+                "outputs": ["unbiased-logits"],
+                "attributes": {}
+            },
+            {
+                "name": "add-classifier-bias",
+                "op": "Add",
+                "inputs": ["unbiased-logits", "bias"],
+                "outputs": ["biased-logits"],
+                "attributes": {}
+            },
+            {
+                "name": "alias-classifier-logits",
+                "op": "Identity",
+                "inputs": ["biased-logits"],
+                "outputs": ["logits"],
+                "attributes": {}
+            },
+            {
+                "name": "terminal-softmax",
+                "op": "Softmax",
+                "inputs": ["logits"],
+                "outputs": ["output"],
+                "attributes": {"axis": -1}
+            }
+        ]
+    })
+    .to_string()
+}
+
 fn gated_hard_sigmoid_plan_json() -> String {
     serde_json::json!({
         "schemaVersion": 1,
@@ -193,6 +283,303 @@ fn model_owned_output_projection_runs_before_host_materialization() {
 
     assert_eq!(output.shape, [1, 1]);
     assert_eq!(output.values, [10.0]);
+}
+
+#[test]
+fn terminal_softmax_projection_receives_logits_under_the_graph_boundary() {
+    let directory = tempfile::tempdir().unwrap();
+    let values = [1_f32, 2_f32];
+    let bytes = values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let view = TensorView::new(Dtype::F32, vec![2], &bytes).unwrap();
+    serialize_to_file(
+        vec![("bias", view)],
+        None,
+        &directory.path().join("model.safetensors"),
+    )
+    .unwrap();
+
+    let limits = InferenceLimits::default();
+    let store = Arc::new(WeightStore::open(directory.path(), &limits).unwrap());
+    let identity = GraphIdentity::new("test-model", "encoder", "onnx", SOURCE_SHA256, 17);
+    let plan = GraphPlan::parse(&terminal_softmax_plan_json(), &identity, &store, &limits).unwrap();
+    let runtime = EmbeddedRuntime::new(DevicePreference::Cpu, limits.clone()).unwrap();
+    let graph = GraphExecutor::new(plan, store, runtime.clone()).unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+    let direct_input = TensorInput::new(vec![1, 2], vec![3.0, 4.0], &limits).unwrap();
+    let direct = graph.run(direct_input, &permit, &cancellation).unwrap();
+    let input = TensorInput::new(vec![1, 2], vec![3.0, 4.0], &limits).unwrap();
+
+    let output = graph
+        .run_with_terminal_softmax_projection(input, &permit, &cancellation, |logits| {
+            assert_eq!(logits.to_vec2::<f32>().unwrap(), [[4.0, 6.0]]);
+            candle_nn::ops::softmax(logits, logits.rank() - 1)
+                .map_err(|error| crate::error::PowerError::InferenceFailed(error.to_string()))
+        })
+        .unwrap();
+
+    assert_eq!(direct.shape, [1, 2]);
+    assert!((direct.values[0] - 0.119_202_92).abs() <= 1e-7);
+    assert!((direct.values[1] - 0.880_797).abs() <= 1e-7);
+    assert_eq!(output.shape, [1, 2]);
+    assert!((output.values[0] - 0.119_202_92).abs() <= 1e-7);
+    assert!((output.values[1] - 0.880_797).abs() <= 1e-7);
+}
+
+#[test]
+fn terminal_bias_softmax_projection_receives_unbiased_logits_and_initializer() {
+    let directory = tempfile::tempdir().unwrap();
+    let values = [1_f32, 2_f32];
+    let bytes = values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let view = TensorView::new(Dtype::F32, vec![2], &bytes).unwrap();
+    serialize_to_file(
+        vec![("bias", view)],
+        None,
+        &directory.path().join("model.safetensors"),
+    )
+    .unwrap();
+
+    let limits = InferenceLimits::default();
+    let store = Arc::new(WeightStore::open(directory.path(), &limits).unwrap());
+    let identity = GraphIdentity::new("test-model", "encoder", "onnx", SOURCE_SHA256, 17);
+    let plan = GraphPlan::parse(&terminal_softmax_plan_json(), &identity, &store, &limits).unwrap();
+    let runtime = EmbeddedRuntime::new(DevicePreference::Cpu, limits.clone()).unwrap();
+    let graph = GraphExecutor::new(plan, store, runtime.clone()).unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+    let input = TensorInput::new(vec![1, 2], vec![3.0, 4.0], &limits).unwrap();
+
+    let output = graph
+        .run_with_terminal_bias_softmax_projection(input, &permit, &cancellation, |logits, bias| {
+            assert_eq!(logits.to_vec2::<f32>().unwrap(), [[3.0, 4.0]]);
+            assert_eq!(bias.to_vec1::<f32>().unwrap(), [1.0, 2.0]);
+            let biased = logits
+                .broadcast_add(bias)
+                .map_err(|error| crate::error::PowerError::InferenceFailed(error.to_string()))?;
+            candle_nn::ops::softmax(&biased, biased.rank() - 1)
+                .map_err(|error| crate::error::PowerError::InferenceFailed(error.to_string()))
+        })
+        .unwrap();
+
+    assert_eq!(output.shape, [1, 2]);
+    assert!((output.values[0] - 0.119_202_92).abs() <= 1e-7);
+    assert!((output.values[1] - 0.880_797).abs() <= 1e-7);
+}
+
+#[test]
+fn terminal_classifier_projection_receives_features_weights_and_bias() {
+    let directory = tempfile::tempdir().unwrap();
+    let weights = [1_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let bias = [0.5_f32, -0.5, 1.0];
+    let weight_bytes = weights
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let bias_bytes = bias
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let weight_view = TensorView::new(Dtype::F32, vec![2, 3], &weight_bytes).unwrap();
+    let bias_view = TensorView::new(Dtype::F32, vec![3], &bias_bytes).unwrap();
+    serialize_to_file(
+        vec![("weights", weight_view), ("bias", bias_view)],
+        None,
+        &directory.path().join("model.safetensors"),
+    )
+    .unwrap();
+
+    let limits = InferenceLimits::default();
+    let store = Arc::new(WeightStore::open(directory.path(), &limits).unwrap());
+    let identity = GraphIdentity::new("test-model", "encoder", "onnx", SOURCE_SHA256, 17);
+    let plan =
+        GraphPlan::parse(&terminal_classifier_plan_json(), &identity, &store, &limits).unwrap();
+    let runtime = EmbeddedRuntime::new(DevicePreference::Cpu, limits.clone()).unwrap();
+    let graph = GraphExecutor::new(plan, store, runtime.clone()).unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+    let direct_input = TensorInput::new(vec![1, 2], vec![2.0, 3.0], &limits).unwrap();
+    let direct = graph.run(direct_input, &permit, &cancellation).unwrap();
+    let input = TensorInput::new(vec![1, 2], vec![2.0, 3.0], &limits).unwrap();
+
+    let output = graph
+        .run_with_terminal_matmul_bias_softmax_projection(
+            input,
+            &permit,
+            &cancellation,
+            |features, weights, bias| {
+                assert_eq!(features.to_vec2::<f32>().unwrap(), [[2.0, 3.0]]);
+                assert_eq!(
+                    weights.to_vec2::<f32>().unwrap(),
+                    [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+                );
+                assert_eq!(bias.to_vec1::<f32>().unwrap(), [0.5, -0.5, 1.0]);
+                let logits = features.broadcast_matmul(weights).map_err(|error| {
+                    crate::error::PowerError::InferenceFailed(error.to_string())
+                })?;
+                let biased = logits.broadcast_add(bias).map_err(|error| {
+                    crate::error::PowerError::InferenceFailed(error.to_string())
+                })?;
+                candle_nn::ops::softmax(&biased, biased.rank() - 1)
+                    .map_err(|error| crate::error::PowerError::InferenceFailed(error.to_string()))
+            },
+        )
+        .unwrap();
+
+    let second_direct = graph
+        .run(
+            TensorInput::new(vec![1, 2], vec![1.0, 4.0], &limits).unwrap(),
+            &permit,
+            &cancellation,
+        )
+        .unwrap();
+    let window = graph
+        .run_many_with_terminal_matmul_bias_softmax_projection(
+            vec![
+                TensorInput::new(vec![1, 2], vec![2.0, 3.0], &limits).unwrap(),
+                TensorInput::new(vec![1, 2], vec![1.0, 4.0], &limits).unwrap(),
+            ],
+            &permit,
+            &cancellation,
+            |features, weights, bias| {
+                let logits = features.broadcast_matmul(weights).map_err(|error| {
+                    crate::error::PowerError::InferenceFailed(error.to_string())
+                })?;
+                let biased = logits.broadcast_add(bias).map_err(|error| {
+                    crate::error::PowerError::InferenceFailed(error.to_string())
+                })?;
+                candle_nn::ops::softmax(&biased, biased.rank() - 1)
+                    .map_err(|error| crate::error::PowerError::InferenceFailed(error.to_string()))
+            },
+        )
+        .unwrap();
+    let ranked_direct = graph
+        .run(
+            TensorInput::new(vec![1, 2, 2], vec![1.0, 4.0, 3.0, 2.0], &limits).unwrap(),
+            &permit,
+            &cancellation,
+        )
+        .unwrap();
+    let row_coalesced = graph
+        .run_many_with_row_coalesced_terminal_matmul_bias_softmax_projection(
+            vec![
+                TensorInput::new(vec![1, 2], vec![2.0, 3.0], &limits).unwrap(),
+                TensorInput::new(vec![1, 2, 2], vec![1.0, 4.0, 3.0, 2.0], &limits).unwrap(),
+            ],
+            &permit,
+            &cancellation,
+            |features, weights, bias| {
+                assert_eq!(features.dims(), [3, 2]);
+                let logits = features.broadcast_matmul(weights).map_err(|error| {
+                    crate::error::PowerError::InferenceFailed(error.to_string())
+                })?;
+                let biased = logits.broadcast_add(bias).map_err(|error| {
+                    crate::error::PowerError::InferenceFailed(error.to_string())
+                })?;
+                candle_nn::ops::softmax(&biased, biased.rank() - 1)
+                    .map_err(|error| crate::error::PowerError::InferenceFailed(error.to_string()))
+            },
+        )
+        .unwrap();
+    let empty = graph.run_many_with_row_coalesced_terminal_matmul_bias_softmax_projection(
+        Vec::new(),
+        &permit,
+        &cancellation,
+        |features, _, _| Ok(features.clone()),
+    );
+
+    assert_eq!(output.shape, direct.shape);
+    assert_eq!(output.values, direct.values);
+    assert_eq!(window, [direct, second_direct]);
+    assert_eq!(row_coalesced, [output, ranked_direct]);
+    assert!(matches!(
+        empty,
+        Err(crate::error::PowerError::InvalidRequest(_))
+    ));
+}
+
+#[cfg(feature = "embedded-cuda")]
+#[test]
+#[ignore = "requires an explicit CUDA device"]
+fn cuda_terminal_classifier_window_upload_matches_individual_inputs_bit_for_bit() {
+    let directory = tempfile::tempdir().unwrap();
+    let weights = [1_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let bias = [0.5_f32, -0.5, 1.0];
+    let weight_bytes = weights
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let bias_bytes = bias
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let weight_view = TensorView::new(Dtype::F32, vec![2, 3], &weight_bytes).unwrap();
+    let bias_view = TensorView::new(Dtype::F32, vec![3], &bias_bytes).unwrap();
+    serialize_to_file(
+        vec![("weights", weight_view), ("bias", bias_view)],
+        None,
+        &directory.path().join("model.safetensors"),
+    )
+    .unwrap();
+
+    let limits = InferenceLimits::default();
+    let store = Arc::new(WeightStore::open(directory.path(), &limits).unwrap());
+    let identity = GraphIdentity::new("test-model", "encoder", "onnx", SOURCE_SHA256, 17);
+    let plan =
+        GraphPlan::parse(&terminal_classifier_plan_json(), &identity, &store, &limits).unwrap();
+    let runtime =
+        EmbeddedRuntime::new(DevicePreference::Cuda { ordinal: 0 }, limits.clone()).unwrap();
+    let graph = GraphExecutor::new(plan, store, runtime.clone()).unwrap();
+    let cancellation = CancellationToken::new();
+    let permit = runtime.begin(&cancellation).unwrap();
+
+    let first_input = || TensorInput::new(vec![1, 2], vec![2.0, 3.0], &limits).unwrap();
+    let second_input =
+        || TensorInput::new(vec![1, 2, 2], vec![1.0, 4.0, 3.0, 2.0], &limits).unwrap();
+    let project = |features: &candle_core::Tensor,
+                   weights: &candle_core::Tensor,
+                   bias: &candle_core::Tensor| {
+        let logits = features
+            .broadcast_matmul(weights)
+            .map_err(|error| crate::error::PowerError::InferenceFailed(error.to_string()))?;
+        let biased = logits
+            .broadcast_add(bias)
+            .map_err(|error| crate::error::PowerError::InferenceFailed(error.to_string()))?;
+        candle_nn::ops::softmax(&biased, biased.rank() - 1)
+            .map_err(|error| crate::error::PowerError::InferenceFailed(error.to_string()))
+    };
+
+    let first = graph
+        .run_with_terminal_matmul_bias_softmax_projection(
+            first_input(),
+            &permit,
+            &cancellation,
+            project,
+        )
+        .unwrap();
+    let second = graph
+        .run_with_terminal_matmul_bias_softmax_projection(
+            second_input(),
+            &permit,
+            &cancellation,
+            project,
+        )
+        .unwrap();
+    let window = graph
+        .run_many_with_terminal_matmul_bias_softmax_projection(
+            vec![first_input(), second_input()],
+            &permit,
+            &cancellation,
+            project,
+        )
+        .unwrap();
+
+    assert_eq!(window, [first, second]);
 }
 
 fn run_gated_hard_sigmoid_plan(device: DevicePreference) -> TensorOutput {

@@ -1,5 +1,8 @@
 use candle_core::{IndexOp, Result, Tensor};
 
+use super::convolution_post::ConvolutionPostOperation;
+
+mod cpu;
 #[cfg(feature = "embedded-cuda")]
 mod cuda;
 
@@ -16,14 +19,24 @@ pub(super) fn conv2d(
     input: &Tensor,
     kernel: &Tensor,
     bias: Option<&Tensor>,
+    pads: (usize, usize, usize, usize),
     strides: (usize, usize),
     dilation: usize,
 ) -> Result<Tensor> {
     #[cfg(feature = "embedded-cuda")]
     if input.device().is_cuda() {
-        return cuda::conv2d(input, kernel, bias, strides, dilation);
+        return cuda::conv2d(input, kernel, bias, pads, strides, dilation);
     }
 
+    if input.device().is_cpu()
+        && input.is_contiguous()
+        && kernel.is_contiguous()
+        && bias.is_none_or(Tensor::is_contiguous)
+    {
+        return cpu::conv2d(input, kernel, bias, pads, strides, dilation);
+    }
+
+    let input = pad_spatial(input, pads)?;
     let (_, channels, input_height, input_width) = input.dims4()?;
     let (output_channels, kernel_channels, kernel_height, kernel_width) = kernel.dims4()?;
     if channels == 0
@@ -56,7 +69,7 @@ pub(super) fn conv2d(
     let mut output = None;
     for kernel_y in 0..kernel_height {
         for kernel_x in 0..kernel_width {
-            let source = sampled_axis(input, 2, kernel_y * dilation, output_height, strides.0)?;
+            let source = sampled_axis(&input, 2, kernel_y * dilation, output_height, strides.0)?;
             let source = sampled_axis(&source, 3, kernel_x * dilation, output_width, strides.1)?;
             let weight = kernel
                 .i((.., 0, kernel_y, kernel_x))?
@@ -77,6 +90,58 @@ pub(super) fn conv2d(
         output = output.broadcast_add(&bias.reshape((1, channels, 1, 1))?)?;
     }
     Ok(output)
+}
+
+#[cfg(all(test, feature = "embedded-cuda"))]
+pub(super) fn cuda_conv2d_into(
+    output: &Tensor,
+    input: &Tensor,
+    kernel: &Tensor,
+    pads: (usize, usize, usize, usize),
+    strides: (usize, usize),
+    dilation: usize,
+) -> Result<()> {
+    cuda::conv2d_into(output, input, kernel, pads, strides, dilation)
+}
+
+pub(super) fn try_conv2d_with_post_operation(
+    input: &Tensor,
+    kernel: &Tensor,
+    bias: Option<&Tensor>,
+    pads: (usize, usize, usize, usize),
+    strides: (usize, usize),
+    dilation: usize,
+    post_operation: ConvolutionPostOperation,
+) -> Result<Option<Tensor>> {
+    #[cfg(feature = "embedded-cuda")]
+    if input.device().is_cuda() {
+        return cuda::try_conv2d_with_post_operation(
+            input,
+            kernel,
+            bias,
+            pads,
+            strides,
+            dilation,
+            post_operation,
+        );
+    }
+
+    if !input.device().is_cpu()
+        || !input.is_contiguous()
+        || !kernel.is_contiguous()
+        || bias.is_some_and(|bias| !bias.is_contiguous())
+        || !cpu::supports_fused_multiply_add()
+    {
+        return Ok(None);
+    }
+    cpu::conv2d_with_post_operation(input, kernel, bias, pads, strides, dilation, post_operation)
+        .map(Some)
+}
+
+fn pad_spatial(input: &Tensor, pads: (usize, usize, usize, usize)) -> Result<Tensor> {
+    input
+        .pad_with_zeros(2, pads.0, pads.2)?
+        .pad_with_zeros(3, pads.1, pads.3)
 }
 
 fn sampled_axis(
@@ -129,15 +194,11 @@ mod tests {
         .unwrap();
 
         let expected = input.conv2d(&kernel, 0, 1, 1, 3).unwrap();
-        let actual = conv2d(&input, &kernel, None, (1, 1), 1).unwrap();
+        let actual = conv2d(&input, &kernel, None, (0, 0, 0, 0), (1, 1), 1).unwrap();
         let expected = expected.flatten_all().unwrap().to_vec1::<f32>().unwrap();
         let actual = actual.flatten_all().unwrap().to_vec1::<f32>().unwrap();
 
-        assert_eq!(actual.len(), expected.len());
-        assert!(actual
-            .iter()
-            .zip(expected)
-            .all(|(actual, expected)| (actual - expected).abs() <= 0.000_01));
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -156,15 +217,12 @@ mod tests {
         .unwrap();
 
         let expected = input.conv2d(&kernel, 0, 1, 2, 2).unwrap();
-        let actual = conv2d(&input, &kernel, None, (1, 1), 2).unwrap();
+        let actual = conv2d(&input, &kernel, None, (0, 0, 0, 0), (1, 1), 2).unwrap();
 
         assert_eq!(actual.dims(), expected.dims());
         let expected = expected.flatten_all().unwrap().to_vec1::<f32>().unwrap();
         let actual = actual.flatten_all().unwrap().to_vec1::<f32>().unwrap();
-        assert!(actual
-            .iter()
-            .zip(expected)
-            .all(|(actual, expected)| (actual - expected).abs() <= 0.000_01));
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -183,15 +241,12 @@ mod tests {
         .unwrap();
 
         let expected = input.conv2d(&kernel, 0, 2, 1, 2).unwrap();
-        let actual = conv2d(&input, &kernel, None, (2, 2), 1).unwrap();
+        let actual = conv2d(&input, &kernel, None, (0, 0, 0, 0), (2, 2), 1).unwrap();
 
         assert_eq!(actual.dims(), expected.dims());
         let expected = expected.flatten_all().unwrap().to_vec1::<f32>().unwrap();
         let actual = actual.flatten_all().unwrap().to_vec1::<f32>().unwrap();
-        assert!(actual
-            .iter()
-            .zip(expected)
-            .all(|(actual, expected)| (actual - expected).abs() <= 0.000_01));
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -219,20 +274,17 @@ mod tests {
             .unwrap()
             .broadcast_add(&bias.reshape((1, 3, 1, 1)).unwrap())
             .unwrap();
-        let actual = conv2d(&input, &kernel, Some(&bias), (1, 1), 1).unwrap();
+        let actual = conv2d(&input, &kernel, Some(&bias), (0, 0, 0, 0), (1, 1), 1).unwrap();
         let expected = expected.flatten_all().unwrap().to_vec1::<f32>().unwrap();
         let actual = actual.flatten_all().unwrap().to_vec1::<f32>().unwrap();
 
-        assert!(actual
-            .iter()
-            .zip(expected)
-            .all(|(actual, expected)| (actual - expected).abs() <= 0.000_01));
+        assert_eq!(actual, expected);
     }
 
     #[cfg(feature = "embedded-cuda")]
     #[test]
     #[ignore = "requires an explicit CUDA device"]
-    fn fused_cuda_kernel_matches_the_reviewed_scalar_accumulation() {
+    fn cuda_internal_padding_is_bit_exact_with_explicit_padding() {
         let cpu = Device::Cpu;
         let input = Tensor::from_iter(
             (0..2 * 3 * 8 * 10).map(|value| (value as f32 - 120.0) / 29.0),
@@ -240,10 +292,6 @@ mod tests {
         )
         .unwrap()
         .reshape((2, 3, 8, 10))
-        .unwrap()
-        .pad_with_zeros(2, 1, 1)
-        .unwrap()
-        .pad_with_zeros(3, 1, 1)
         .unwrap();
         let kernel = Tensor::from_iter(
             (0..3 * 3 * 3).map(|value| (value as f32 - 8.0) / 13.0),
@@ -253,18 +301,32 @@ mod tests {
         .reshape((3, 1, 3, 3))
         .unwrap();
         let bias = Tensor::new(&[-0.75_f32, 0.25, 1.5], &cpu).unwrap();
-        let expected = conv2d(&input, &kernel, Some(&bias), (2, 2), 1)
-            .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
 
         let cuda = Device::new_cuda(0).unwrap();
         let input = input.to_device(&cuda).unwrap();
         let kernel = kernel.to_device(&cuda).unwrap();
         let bias = bias.to_device(&cuda).unwrap();
-        let actual = conv2d(&input, &kernel, Some(&bias), (2, 2), 1)
+        let explicitly_padded = input
+            .pad_with_zeros(2, 1, 1)
+            .unwrap()
+            .pad_with_zeros(3, 1, 1)
+            .unwrap();
+        let expected = super::cuda::conv2d(
+            &explicitly_padded,
+            &kernel,
+            Some(&bias),
+            (0, 0, 0, 0),
+            (2, 2),
+            1,
+        )
+        .unwrap()
+        .to_device(&cpu)
+        .unwrap()
+        .flatten_all()
+        .unwrap()
+        .to_vec1::<f32>()
+        .unwrap();
+        let actual = super::cuda::conv2d(&input, &kernel, Some(&bias), (1, 1, 1, 1), (2, 2), 1)
             .unwrap()
             .to_device(&cpu)
             .unwrap()

@@ -34,6 +34,11 @@ name = "a3s-power-speculative-bench"
 path = "src/bin/a3s-power-speculative-bench.rs"
 required-features = ["server"]
 
+[[test]]
+name = "external_graph_probe"
+path = "tests/external_graph_probe.rs"
+required-features = ["embedded-inference"]
+
 [features]
 default = ["server", "mistralrs"]
 server = [
@@ -66,9 +71,15 @@ mistralrs = ["server", "dep:mistralrs"]
 embedded-inference = [
     "dep:candle-core",
     "dep:candle-nn",
+    "dep:gemm",
+    "dep:rayon",
     "dep:safetensors",
     "dep:windows-sys",
 ]
+embedded-cpu-optimized = ["embedded-inference", "dep:onednn-src"]
+# Experimental graph-internal BF16 execution keeps the public tensor boundary
+# in F32. Model owners must still prove task-level parity before enabling it.
+embedded-cpu-bf16-experimental = ["embedded-cpu-optimized"]
 embedded-cuda = ["embedded-inference", "candle-core/cuda", "candle-nn/cuda"]
 embedded-metal = ["embedded-inference", "candle-core/metal", "candle-nn/metal"]
 tls = ["server", "dep:axum-server", "dep:rcgen", "dep:time"]
@@ -195,7 +206,9 @@ mistralrs = { version = "0.7", optional = true }
 # residency, integrity, and tensor primitives; model crates own architectures.
 candle-core = { version = "0.10.2", default-features = false, optional = true }
 candle-nn = { version = "0.10.2", default-features = false, optional = true }
+gemm = { version = "0.19.0", optional = true, features = ["x86-v4"] }
 safetensors = { version = "0.7", optional = true }
+onednn-src = { version = "=0.1.16", default-features = false, features = ["inference"], optional = true }
 
 # picolm backend — pure Rust layer-streaming GGUF inference (optional, picolm feature)
 # Memory-mapped file access for layer-streaming (zero-copy GGUF reads)
@@ -217,6 +230,7 @@ tokio-vsock = { version = "0.7", optional = true }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"], optional = true }
 
 [build-dependencies]
+cc = "1"
 cudaforge = "0.1.6"
 
 [dev-dependencies]

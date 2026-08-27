@@ -8,11 +8,12 @@ use crate::error::{PowerError, Result};
 use super::super::plan::{GraphNode, GraphOp};
 use super::super::value::GraphValue;
 
+mod cpu;
 #[cfg(feature = "embedded-cuda")]
 mod cuda;
 
 /// Executes an exact Div-to-Erf-to-Add-to-Mul-to-Mul error-function activation
-/// in one CUDA kernel while preserving every original f32 rounding boundary.
+/// in one device-local pass while preserving every original f32 rounding boundary.
 pub(super) fn try_execute(
     nodes: &[GraphNode],
     values: &HashMap<String, GraphValue>,
@@ -33,21 +34,32 @@ pub(super) fn try_execute(
         return Ok(None);
     };
     if input.dtype() != DType::F32
-        || !input.device().is_cuda()
         || input.elem_count() == 0
         || u32::try_from(input.elem_count()).is_err()
         || !input.is_contiguous()
     {
         return Ok(None);
     }
+    if _cancellation.is_cancelled() {
+        return Err(PowerError::InferenceFailed(
+            "static graph execution was cancelled".to_string(),
+        ));
+    }
+    if input.device().is_cpu() {
+        let output = cpu::execute(input, _divisor, _offset, _scale).map_err(|error| {
+            PowerError::InferenceFailed(format!(
+                "static graph nodes '{}' through '{}' fused CPU error-function activation failed: {error}",
+                nodes[0].name, nodes[4].name
+            ))
+        })?;
+        return Ok(Some(GraphValue::Tensor(output)));
+    }
+    if !input.device().is_cuda() {
+        return Ok(None);
+    }
 
     #[cfg(feature = "embedded-cuda")]
     {
-        if _cancellation.is_cancelled() {
-            return Err(PowerError::InferenceFailed(
-                "static graph execution was cancelled".to_string(),
-            ));
-        }
         let output = cuda::execute(input, _divisor, _offset, _scale).map_err(|error| {
             PowerError::InferenceFailed(format!(
                 "static graph nodes '{}' through '{}' fused error-function activation failed: {error}",

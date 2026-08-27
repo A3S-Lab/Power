@@ -243,9 +243,109 @@ only digest-verified files without replacement. Power never persists the
 benefits, plan, destination, or a mirror receipt automatically. It never
 downloads a model, starts another process, or opens a listener.
 
+Each CUDA model-session `RuntimeDevice` owns one cuBLAS handle/stream and one
+lifetime-bound, 256-byte-aligned user workspace. General CUDA runtimes retain
+the vendor default pool. Power allocates the CUDA 12.6 recommended
+32 MiB on Hopper (compute capability 9.x) and 4 MiB on other supported
+architectures, then fails device construction if allocation, alignment, or
+binding fails. This replaces process-global workspace configuration and keeps
+concurrent model-session replicas independently reproducible without inspecting
+a model, graph, tensor geometry, input, or timing. The fixed allocation is made
+before later native-memory snapshots, and Power never reassigns the handle's
+stream during execution because cuBLAS would reset the workspace. At teardown,
+Power synchronizes that same stream and deliberately resets the handle to its
+default pool before freeing the buffer, so an independently retained Candle
+device cannot inherit a dangling workspace pointer. Two independent 64-page
+downstream OCR processes now reproduce the static-session control
+exactly after removing only the declared elapsed field; guarded throughput is a
+separate downstream gate.
+
 Static-graph execution releases eager intermediate tensors immediately after
 their last declared consumer while retaining constants and the declared graph
-output. On CUDA, multiplier-one F32 depthwise `Conv` nodes execute one fused
+output. After full graph validation and private-`Identity` elision, executor
+construction also resolves a private `Reshape` once when both inputs are
+constants, its tensor is contiguous and nonempty, its output is not published,
+and the result stays inside the declared tensor-element bound. A supported
+reshape is metadata-only and preserves scalar-constant identity; dynamic,
+published, non-contiguous, malformed, or oversized forms remain executable
+nodes with the existing runtime behavior. This topology-only rewrite can expose
+an adjacent generic convolution channel-bias window without inspecting model,
+node, source, value, corpus, or measured-shape identity.
+
+On the current reviewed layout graph, an opt-in trace reduces executed
+`Reshape` nodes from 28 to 12 and sends exactly 16 following channel-bias adds
+through the existing convolution fusion. Generic CPU/CUDA tests and the full
+64-page Parser corpus retain exact current output, reconstruction, table-cell,
+and seal-position evidence. The first full-corpus timing comparison used
+unequal tracing, and the first strict trace-free cohort stopped before launching
+either binary when unrelated compilers appeared. The work removal is therefore
+retained without a stable throughput claim; Parser's canonical negative-result
+ledger records both invalid attempts and the pre-existing strict text golden
+that still fails identically on the frozen baseline.
+
+Power also privately lowers exact CUDA F32 sigmoid products. Two adjacent
+private Sigmoids with equal contiguous shapes and their terminal Mul may execute
+in one pass. More generally, a private full-shape `Sigmoid -> Mul` edge may
+execute in one pass while reusing an already materialized multiplier with the
+same shape, an NCHW per-channel `[N, C, 1, 1]` shape, or an NCHW per-spatial
+`[N, 1, H, W]` shape. The broadcast form deliberately retains the smaller
+gate's earlier Sigmoid instead of recomputing its exponential across channels.
+Admission uses only topology, use counts, dtype, device, contiguity, tensor
+geometry, cancellation, and declared element bounds; unsupported forms keep
+ordinary node execution.
+
+Generic CUDA tests are byte-exact across unrelated shapes, both product operand
+orders, and nonzero storage offsets. The current PicoDet-L trace consumes four
+active `Sigmoid -> Mul` pairs per graph call, changing Sigmoid accounting from
+`12 executions / 12 nodes` to `12 / 16` and Mul accounting from `14 / 18` to
+`10 / 14`. Parser validation retained exact normalized caches for five PDFs and
+64 distinct pages, then reproduced all 74 A3S Office reconstruction artifacts
+byte-for-byte, including `68/68` positioned merged-table cells and `10/10`
+positioned rider seals. A guarded throughput comparison has not yet admitted a
+clean sample, so this is deterministic work removal without a speed claim.
+
+The follow-up lowers one exact private `BatchNormalization -> Sigmoid` edge in
+the normalization output pass. Swish is matched first and remains a distinct
+three-node formula; the Sigmoid-only path requires exactly one normalized-value
+consumer and does not extend or reorder CUDA pointwise convolution. CPU and CUDA
+formula tests are byte-exact, and the complete graph suites pass. On the same
+official Layout graph, BatchNormalization accounts for `52 / 152`
+executions/source nodes, Sigmoid falls to `8 / 12`, and Mul remains `10 / 14`,
+removing four more execution boundaries per call. The combined 64-page cache and all 74
+Office files remain exact. Its unguarded 10.665-pages/s diagnostic is not a
+throughput claim; the following strict snapshot exceeded the GPU-idleness gate
+before either frozen binary ran.
+
+BatchNormalization now prepares each static channel's exact
+`sqrt(variance + epsilon)` once when the graph executor is created. CPU
+preparation retains Rust's existing F32 expression; CUDA uses the same
+round-to-nearest add and `sqrtf` operations that previously ran for every output
+element. Ordinary BatchNormalization and its depthwise and spatial convolution
+post-operations then preserve the existing `sub -> div -> mul -> add` sequence.
+Focused real-GPU tests are byte-exact, both complete graph suites retain their
+prior counts, all five normalized 64-page Parser caches match the preceding
+candidate, and all 74 Office artifacts match by SHA-256. The unguarded
+correctness run reported 9.741 pages/s, which is excluded from performance
+attribution; the fixed-order quiet-host comparison remains open.
+
+An experiment let an exact private, bias-free CUDA F32 pointwise `Conv ->
+BatchNormalization` edge normalize the freshly allocated GEMM result in place.
+The low-level kernel uses one mutable values pointer so cudarc records a write
+for a consumer on another stream. A dedicated two-stream regression, all five
+real-CUDA BatchNormalization cases, and the complete CPU/CUDA suites pass. The
+frozen downstream Parser executable, SHA-256
+`4377c5edcf09b7095e7f300761e21e6f087bfd75ed0dff149c31728eb56345ab`,
+also retained the exact normalized 64-page cache and all 74 A3S Office files.
+After two fully discarded compiler-contaminated attempts, a 300-second
+quiet-qualified fixed-order eight-run A/B measured control/candidate means of
+6,185.25/6,213.5 ms, medians of 6,146.5/6,268.5 ms, and two candidate wins in
+four adjacent pairs. The experiment failed every promotion condition, so graph
+execution does not select this in-place pointwise post-operation. The mutable
+argument/event-ordering implementation remains covered as correctness
+infrastructure; production keeps the ordinary two-output path for every model
+and geometry.
+
+On CUDA, multiplier-one F32 depthwise `Conv` nodes execute one fused
 kernel per node instead of materializing one device-wide multiply and add for
 every kernel position. The kernel supports independent spatial strides,
 dilation, arbitrary NCHW storage strides, and optional fused bias. Explicit
@@ -263,7 +363,14 @@ initializers are likewise lowered to one CUDA kernel. Scalar initializer values
 are captured once while the reviewed weights are loaded; explicit
 round-to-nearest division, addition, and both multiplication stages retain the
 five-node result byte-for-byte while avoiding four intermediate buffers and
-four launches per matched chain. When a two-input `Conv` feeds an exact
+four launches per matched chain. When the same exact private activation chain
+consumes a contiguous F32 `BatchNormalization` result, CPU and CUDA execution
+can apply the activation in the normalization output pass. The matcher requires
+the normalized value's exact two uses inside the GELU formula, finite scalar
+initializers, constant channel parameters, and no retained or shared
+intermediate. This removes the normalization-to-activation buffer and one
+launch while preserving every normalization and activation rounding boundary.
+When a two-input `Conv` feeds an exact
 `[1, C, 1, 1]` channel-bias `Add` through at most two private identities into
 ReLU, the reviewed error-function activation, or a gated HardSigmoid multiply,
 the executor keeps the convolution on its ordinary backend and folds the bias
@@ -279,6 +386,45 @@ Both mean reductions, centering, and squaring stay on the ordinary graph path,
 so reduction order is unchanged. Explicit round-to-nearest arithmetic retains
 all five pointwise rounding boundaries byte-for-byte while removing four
 intermediate buffers and four launches per matched tail.
+On CPU, contiguous F32 group-one pointwise and spatial convolutions use direct
+NCHW kernels, and multiplier-one depthwise convolution partitions fresh output
+by batch/channel while retaining kernel-row/kernel-column FMA order. Exact
+private pointwise or spatial `Conv -> channel bias -> ReLU/GELU` windows apply
+their post-operation in the convolution output buffer. If a graph job is
+already executing on a Rayon worker, pointwise GEMM and its post pass stay
+inside that job instead of requesting the full pool again; standalone calls
+retain internal parallelism. A bitwise test compares both execution contexts.
+An exact private `Conv -> BatchNormalization` edge can likewise normalize the
+direct pointwise, spatial, or depthwise output in that buffer, optionally
+followed by the existing private HardSwish form. Constant contiguous F32
+parameters must match the output-channel count, convolution bias remains before
+normalization, and every subtraction, square root, division, multiplication,
+addition, clamp, and final multiplication keeps its graph order. Shared edges,
+retained intermediate outputs, unsupported layouts, dtypes, devices, or direct
+convolution forms keep node-by-node execution.
+An exact private `Conv -> channel bias` edge without an activation now uses the
+same convolution bias path for grouped and group-one convolution. A group-one
+pointwise window may additionally consume one private identity chain and one
+exact-output-shaped F32 residual add in the convolution output buffer. Channel
+bias must be `[C]` or `[1,C,1,1]`; residual broadcasting, shared values,
+non-contiguous layouts, and non-pointwise forms retain ordinary execution. The
+addition order remains `(convolution + channel bias) + residual`.
+The `gemm` dependency includes its x86-v4 microkernels, selected only by its
+runtime CPUID dispatch. AVX-512F hosts can therefore use the wider reviewed
+kernel while all other x86 and non-x86 hosts retain the existing FMA, SIMD, or
+scalar implementation; the crate is not compiled for the build host with
+`target-cpu=native`.
+The depthwise path also relies on the output allocation's existing zero state
+instead of clearing each untouched interior segment a second time. On x86 and
+x86-64, a contiguous stride-one interior row uses AVX2/FMA when the host exposes
+both instructions and the row contains at least one eight-lane hardware vector.
+Each lane retains the scalar kernel-row/kernel-column FMA sequence, the scalar
+tail is unchanged, and an optional channel bias is added only after the complete
+accumulation chain before the final store. Other strides, shorter interiors,
+architectures, and instruction sets retain the scalar path. The eight-value
+boundary is the ISA width, not a measured model or corpus threshold. These
+choices use only device, execution-context, topology, dtype, layout, and tensor
+geometry facts; no model label, input value, or caller identity participates.
 Other devices, dtypes, and convolution layouts retain the existing Candle path.
 Unsupported gated-activation shapes and layouts likewise retain ordinary
 node-by-node execution. Unsupported error-function chains, constants, devices,
@@ -286,6 +432,158 @@ dtypes, layouts, graph outputs, channel biases, identity depths, LayerNorm
 broadcast shapes, and shared intermediates do the same. CPU fallback, full
 graph execution on an RTX 4090, and byte-exact CUDA comparisons cover the
 reviewed fused forms.
+
+On the Xeon w5-2445, bidirectional retained-binary A/B runs kept exact OCR
+evidence while x86-v4 reduced 21-page Text full-source latency by 9.9--13.6%
+and window latency by 4.6--14.9%. The six-page Text-plus-Table gate fell from
+6.040/6.287 seconds to 5.485/5.547 seconds, and the 29-page Text-plus-Seal
+diagnostic fell from 40.016/41.492 seconds to 36.247/36.891 seconds. This is
+same-host development evidence, not a cross-machine throughput claim.
+For the later private Conv-BatchNorm slice, four alternating-order 29-page
+Seal-only runs measured 6.696--7.214 seconds for the candidate and
+7.755--9.006 seconds for its retained baseline; the first two adjacent pairs
+reduced latency by 13.4--13.7%. A traced pair moved the timed stage from 7.652
+to 6.575 seconds and summed graph time from 14.044 to 12.310 seconds, with no
+independent BatchNormalization execution left in the matched graph. Two
+opposite-order Text-only pairs measured 30.533 versus 31.280 seconds and
+31.809 versus 32.559 seconds, a 2.3--2.4% reduction. Bitwise operator tests,
+the exact six-page cross-page-table gate, the 29-page reviewed seal-position
+gate, and the independent 35-page seal-precision gate passed. The existing
+full rider Text fingerprint remains outside its reviewed golden set, but the
+candidate and retained baseline produce the same fingerprint; the golden was
+not relaxed. These are same-host development measurements, not a complete
+document-throughput or cross-machine claim.
+
+For the later private `BatchNormalization -> erf-GELU` slice, an alternating
+retained-binary 29-page full-stage A/B run measured a 3,232.997 ms baseline
+mean and a 3,156.856 ms candidate mean, a 2.36% reduction. A recognition-graph
+profile measured the fused normalization/activation work about 37.5% faster,
+saving 182--192 microseconds in the reviewed batch-128 graph. Both binaries
+produced 2,518 text blocks, text SHA-256
+`8e5a458d896ffee83f46e775e9fcd9f07c179d6b17aec2cf90b9845c3c22dbf8`, and
+semantic SHA-256
+`49efe252b380179b4385eb114adf1897a9cbe7f1b949a7e9b6037958158cd1ff`.
+These are same-host development measurements under variable shared-GPU load,
+not a stable 10-page/s or cross-machine throughput claim.
+
+A subsequent model-neutral CUDA layout path lets an exact rank-three F32
+last-two-axis transpose view feed a contiguous rank-two right-hand matrix
+directly through cuBLAS strided GEMM. The gate checks only device identity,
+dtype, rank, contiguity, nonzero compatible dimensions, and the exact
+transpose stride; every other layout still materializes through the reviewed
+fallback. A recognition probe reduced 386 matching transpose kernels totaling
+989.750 microseconds to zero and remained bit-exact across three unrelated
+matrix geometries. Two precommitted interleaved 29-page cohorts also retained
+2,518 blocks and the text/semantic SHA-256 values above. The three-sample-per-
+side cohort moved from a 3,014.101 ms baseline mean to 2,981.494 ms (1.08%),
+while the later six-sample-per-side cohort under heavier shared-GPU load moved
+from 3,549.776 to 3,540.427 ms (0.26%). Across all nine samples per side, means
+were 3,371.218 and 3,354.116 ms (0.51%) and medians were 3,412.336 and
+3,373.865 ms (1.13%). This is a small same-host work-elimination result under
+variable contention, not a stable throughput or cross-machine claim. The
+strict downstream rider gate still rejects the shared semantic fingerprint
+against an older reviewed golden; no expectation was relaxed for performance.
+
+A further model-neutral lowering combines an exact private
+`Add(last-axis bias) -> Sigmoid -> Mul` formula into one contiguous CUDA F32
+pass. Matching depends only on normalized topology, use counts, rank, exact
+last-axis geometry, device, dtype, layout, cancellation, and the declared
+element bound; every unsupported form retains ordinary graph execution. An OCR
+inventory gate locks two source windows without passing model or node identity
+into Power. A launch-blocked full-stage trace observed 142 dynamic matches and
+removed all 142 standalone Sigmoid launches plus 142 of the 284 Mul launches.
+Two precommitted interleaved 29-page A/B cohorts improved independently. Six
+samples per binary moved from a 3,081.185 ms baseline mean to 2,932.748 ms,
+and a reverse-order four samples per binary moved from 3,162.325 to 3,037.512
+ms. Across all ten samples per binary, mean latency fell from 3,113.641 to
+2,974.654 ms (4.46%), median latency from 3,045.915 to 2,950.303 ms (3.14%),
+and mean throughput rose from 9.337 to 9.757 pages/s. Every run retained 2,518
+blocks and the text/semantic SHA-256 values above. Individual samples crossed
+10 pages/s, but this is not stable 10-page/s or cross-machine evidence; the
+older downstream semantic golden remains unchanged.
+
+The current follow-up begins that post-operation at an exact private `MatMul`
+boundary and reuses the GEMM output. Admission uses normalized topology,
+liveness, F32 rank/layout/geometry, same-device CUDA facts, cancellation, and
+declared bounds only. It accepts arbitrary nonempty left prefixes with a
+rank-two right matrix and an exact rank-one output-column bias, and it composes
+the already-retained Swish formula when that exact private tail follows. The
+OCR inventory locks nine source `MatMul -> Add` windows; its existing terminal
+classifier projection still owns one, so six internal bias windows and two
+internal bias-plus-Swish windows remove eight allocation/free pairs per graph.
+The kernel count and explicit F32 rounding sequence are unchanged from the
+preceding biased-Swish baseline. Rank-two through rank-four and nonzero-offset
+CUDA tests are byte-exact.
+
+The first six-sample-per-binary full-stage cohort improved 2.35% by mean and
+3.95% by median. A reverse-order four-sample cohort improved only 0.34% by mean
+and regressed 0.66% by median. Combined means moved from 3,024.159 to 2,976.892
+ms (1.56%), medians from 2,999.025 to 2,885.866 ms (3.77%), and mean throughput
+from 9.589 to 9.742 pages/s; seven of ten interleaved pairs favored the
+candidate and every run retained 2,518 blocks plus both hashes above. A noisy
+20-sample-per-binary isolated-graph comparison improved mean and 10% trimmed
+mean by 3.94% and 1.77%, but regressed median from 9.634 to 10.128 ms. The
+generic allocation removal is retained with this mixed evidence; it is not a
+stable 10-pages/s claim. The preceding standalone MatMul-bias attempt was not
+timed or promoted because it intercepted the Add nodes and re-exposed two
+Sigmoid and two Mul executions per graph. Parser's negative-result ledger
+records that failed composition and all other known unpromoted attempts; Power
+does not recover any of them with a model, node, document, value, fingerprint,
+corpus, or measured-shape selector.
+
+Large leading-axis CUDA graph calls exposed a separate numerical boundary: one
+unpartitioned batch-128 launch changed earlier F32 convolution values relative
+to batches of at most 32, despite identical logical rows. The first generic
+drift appeared at a spatial convolution; batch 33 remained exact, while batch
+34 and larger did not. Power therefore applies a fixed 32-item leading-axis
+reduction quantum to direct pointwise GEMM and the GEMM phase of direct spatial
+convolution. Spatial lowering still runs once, and every reduction partition
+writes directly into one final allocation. The quantum is an executor
+reproducibility and workspace bound selected from tensor shape only; it is not
+an OCR, model, document, content, or measured-shape dispatch rule. A complete
+481-node batch-128 recognition probe compared all four partitions and found
+zero differing bits across 95,795,200 F32 values.
+
+The throughput evidence remains mixed. One direct-output 29-page pair moved
+from 3,042.835 ms at batch 32 to 2,995.660 ms at batch 128, or 9.531 to 9.681
+pages/s, while a one-pass batch `64..256` sweep was non-monotonic and fell as
+low as 7.061 pages/s at batch 160. All 41 available explicit cuBLAS algorithm
+choices failed to reproduce the at-most-32 result for a generic pointwise
+case, each changing 8,104 F32 words. A four-lane follow-up retained exact OCR
+hashes but regressed to 9.190 pages/s at batch 32 and 8.848 pages/s at batch
+128, so it was reverted. OCR's public batch default remains unchanged; these
+results do not establish stable 10 pages/s.
+
+For the later channel-bias/residual slice, a content-free linear-input
+recognition-graph probe on the same Xeon reduced the retained small-profile
+`[16,3,48,320]` median from 370.671 ms to 323.096 ms across the recorded
+before/after runs. The graph trace no longer contains 13 standalone channel-bias
+adds or 11 exact-shape convolution residual adds, and its bounded output kept
+SHA-256 `61bccf1df2c55a8809f32f93a1ac1349efeaa449f04281f4ad6ee15789ce2aea`.
+The tiny-profile diagnostic moved from about 103.430 ms to 84.539 ms at the
+same geometry. These are model-executor diagnostics with mathematical inputs,
+not OCR accuracy, document throughput, or support evidence.
+
+Downstream one-variable diagnostics also removed direct spatial convolution,
+terminal output projection, outer OCR graph-job parallelism, and CPU
+convolution-bias activation separately. Every build retained the same
+unreviewed rider Text fingerprint; serializing the outer jobs instead regressed
+29-page latency to 74.554 seconds. The historical reviewed CPU fingerprint was
+produced under a different OCR width-planning identity, and restoring that
+planner allowance on the current stack did not reproduce it. Power therefore
+does not add model-, document-, value-, or fingerprint-driven dispatch to chase
+an OCR corpus result. Accuracy ownership remains with the digest-bound OCR model,
+planner, and independent reconstruction gates.
+A worker-occupancy pointwise candidate reduced one content-free batch geometry
+from 1.654--2.076 ms to 0.885 ms and passed the bitwise pointwise suite, but the
+29-page Text stage took 31.071 seconds between retained baseline runs of 30.670
+and 30.874 seconds. It was reverted without adding a batch-count or
+measured-shape exception.
+On the same host, a temporary content-free CPU matrix probe covered four broad
+geometries: F32 took 0.693--0.957 ms, F16 took 1.421--1.774 ms, and the active
+backend did not support BF16 matrix multiplication. The probe was removed.
+Power therefore retains the declared F32 graph boundary; host ISA support alone
+does not authorize implicit conversion or document-dependent precision.
 Canonical F32-tensor and token-ID receipt payloads hash their contiguous
 read-only bytes directly on little-endian hosts; big-endian hosts retain the
 same v1 little-endian byte protocol through bounded staging. Both paths preserve
@@ -296,9 +594,55 @@ copied to the host. The model must bind that arithmetic into its execution
 identity; Power still enforces the original permit and cancellation boundary,
 rejects a device change, and applies the normal tensor, dtype, and finite-value
 checks to the projected result.
-These executor choices do not alter graph topology, model-owned preprocessing,
-or execution-receipt semantics, and tensor-limit failures report both the
-observed and configured element counts.
+For a row-coalesced terminal classifier window, Power now materializes the
+already contiguous `[total_rows, projected_width]` result on the host once and
+then partitions the validated values into the original leading shapes and
+order. The former path materialized every device slice independently. This
+removes `window_outputs - 1` device-to-host materializations and possible
+synchronization boundaries without changing projection arithmetic, model or
+scheduler authority, or the returned F32 values. Same-tensor CPU and CUDA tests
+are bit-exact, the complete graph suites pass `121/0/9` and `125/0/42`, all five
+normalized 64-page Parser cache wires match the preceding candidate, and all 74
+A3S Office artifacts match byte-for-byte. The unguarded correctness run emitted
+about 10.347 pages/s; it is not a throughput claim, and the frozen fixed-order
+comparison remains pending because the latest preflight found unrelated
+compiler activity.
+The corresponding CUDA input boundary now performs one bounded upload for a
+multi-input execution window. After aggregate element and byte validation,
+Power concatenates the already owned finite F32 values, uploads one flat
+tensor, and restores every original shape and order as a contiguous read-only
+view. Single-input, CPU, Metal, and empty-value behavior retain their existing
+paths. This removes `window_inputs - 1` CUDA allocations and host-to-device
+upload-return synchronization opportunities without changing graph execution.
+An explicit CUDA test locks exact shapes, values, and nonzero storage offsets;
+an independent terminal-classifier window matches individually uploaded calls
+bit-for-bit. Complete graph suites pass `121/0/9` and `125/0/43`; all five
+normalized 64-page Parser caches and all 74 Office artifacts remain exact. The
+unguarded OCR diagnostic was about 10.435 pages/s, not promotion evidence. The
+frozen Parser candidate has SHA-256
+`945ee546912f5afa26f54e1beee8d1e9bc136aecec86cdb38555ce4d7e1ee653`;
+its first strict preflight admitted zero samples because unrelated compilers
+were active.
+The graph planner also composes consecutive private `Transpose` permutations
+when both are explicit complete same-rank permutations, the intermediate has
+one consumer, and no retained output owns it. Fanout, retained values, default
+or invalid permutations keep the ordinary path; the planner never assumes
+runtime rank. An inverse pair becomes one identity-permutation node, then
+returns the input as a zero-copy view only after executor rank/permutation
+validation. Six generic planner tests and the complete CPU/CUDA graph suites
+pass (`129/0/9` and `133/0/43`). The current recognition trace changes from
+three `Transpose` plan executions to two; deterministic CPU output, all five
+normalized 64-page OCR
+caches, and all 74 Office artifacts remain exact. The frozen Parser candidate
+is SHA-256
+`681e2f60981b205a3832bccdd800410808dd521435e71f26bc7bc8669d29cb57`.
+Its unguarded 10.511-pages/s diagnostic is not promotion evidence; the strict
+immediate one-upload-versus-folded A/B remains pending because unrelated
+compiler processes are active.
+The preceding transfer choices do not alter graph topology or model-owned
+preprocessing. Neither transfer nor planning changes execution-receipt
+semantics, and tensor-limit failures report both the observed and configured
+element counts.
 
 Embedded scheduling uses the same runtime admission primitive at two bounded
 levels. `InferenceLimits::max_queued_requests` caps each model runtime's async
@@ -309,6 +653,18 @@ callers initialize one exact model/execution/resource declaration once, while
 cancellation or future drop releases an unfinished pool slot. Ready entries are
 retained until the pool is dropped; Power does not add eviction, persistence,
 networking, or model semantics.
+
+Each CUDA-backed pool entry owns one Candle device identity and one execution
+stream, and its public tensor boundary remains host-owned. Power therefore
+omits cudarc's per-activation cross-stream event tracking only for these
+isolated model-session lanes. Ordinary `RuntimeDevice` users and accelerator
+meshes retain event tracking. This changes scheduling overhead, not graph
+operators or arithmetic. In a downstream 29-page RTX 4090
+Orientation+Text+Table+Seal gate, six interleaved cold-process samples per side
+reduced the median from 4,030.936 to 3,672.701 ms (7.194 to 7.896 pages/s) and
+the p90 from 4,161.525 to 3,895.917 ms, while exact text and non-receipt
+semantic SHA-256 values were unchanged. This is decoded-raster integration
+evidence, not complete PDF parsing or reconstruction throughput.
 
 `plan_microbatches` accepts model-owned digest identities and explicit per-slot
 input, state, host-peak, and device-peak resource declarations. It groups
@@ -498,6 +854,18 @@ Power does not embed PP-OCR, Unlimited-OCR, or any other product model.
 ```bash
 cargo build --no-default-features --features embedded-inference
 ```
+
+Static-graph timing is opt-in diagnostic output. Set
+`A3S_POWER_TRACE_GRAPH_TIMINGS=1` for host-side submission intervals or
+`A3S_POWER_TRACE_GRAPH_TOTALS=1` for host totals only. An `embedded-cuda`
+build additionally accepts `A3S_POWER_TRACE_CUDA_GRAPH_TIMINGS=1`; it records
+timing-enabled CUDA events on each model session's owning stream and reports
+only input geometry, operator geometry, execution/node counts, host submission
+time, attributed stream intervals, and unattributed stream intervals. It fails
+closed on a non-CUDA device. CUDA event mode synchronizes each completed graph
+and adds boundary events, so it is for bottleneck attribution only and must be
+disabled for throughput comparisons. None of these values selects graph,
+model, request, or parsing behavior.
 
 That feature does not enable Power's `server` feature. Its normal dependency
 closure excludes Axum, Hyper, Tower, HTTP clients, ONNX Runtime, and browser

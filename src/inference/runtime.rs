@@ -9,7 +9,7 @@ use crate::error::{PowerError, Result};
 use super::RuntimeDeviceKind;
 use super::{
     AcceleratorExecutionEvidence, DevicePreference, ExecutionDigest, ExecutionReceipt,
-    HardwareMemorySnapshot, InferenceLimits, ModelIdentity, ResidencyBudgetPlan,
+    HardwareMemorySnapshot, InferenceLimits, InputUploadPool, ModelIdentity, ResidencyBudgetPlan,
     ResidencyBudgetPolicy, ResidencyPolicy, RuntimeDevice, RuntimeIdentity,
 };
 
@@ -244,6 +244,7 @@ impl EmbeddedRuntime {
         ExecutionPermit {
             inner: Arc::new(PermitInner {
                 runtime: Arc::clone(&self.inner),
+                input_upload_pool: InputUploadPool::new(self.inner.limits.max_input_bytes),
                 _admission: admission,
                 _device_admission: device_admission,
             }),
@@ -270,11 +271,16 @@ pub struct ExecutionPermit {
 
 struct PermitInner {
     runtime: Arc<RuntimeInner>,
+    input_upload_pool: InputUploadPool,
     _admission: AdmissionPermit,
     _device_admission: Option<AdmissionPermit>,
 }
 
 impl ExecutionPermit {
+    pub(crate) fn input_upload_pool(&self) -> &InputUploadPool {
+        &self.inner.input_upload_pool
+    }
+
     pub(crate) fn belongs_to(&self, runtime: &EmbeddedRuntime) -> bool {
         Arc::ptr_eq(&self.inner.runtime, &runtime.inner)
     }
