@@ -132,6 +132,14 @@ impl PowerConfig {
                 self.prompt_cache_ttl_seconds
             )));
         }
+        if self.worker_observation_ttl_seconds == 0
+            || self.worker_observation_ttl_seconds > MAX_WORKER_OBSERVATION_TTL_SECONDS
+        {
+            return Err(PowerError::Config(format!(
+                "worker_observation_ttl_seconds must be between 1 and {MAX_WORKER_OBSERVATION_TTL_SECONDS}, got {}",
+                self.worker_observation_ttl_seconds
+            )));
+        }
 
         if !is_valid_spec_mode(&self.spec_mode) {
             return Err(PowerError::Config(format!(

@@ -24,6 +24,8 @@ pub mod runtime_service;
 pub mod sae;
 #[cfg(feature = "server")]
 pub mod server;
+#[cfg(feature = "server")]
+pub mod serving;
 pub mod speculative;
 pub mod tee;
 #[cfg(feature = "server")]

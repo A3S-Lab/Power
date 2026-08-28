@@ -20,6 +20,7 @@ fn test_render_prompt_cache_metrics() {
             evaluated_tokens: 128,
             evictions: 1,
             entries: 1,
+            capacity: 4,
         },
     )]);
     assert!(output.contains("power_prompt_cache_hits_total{backend=\"llama.cpp\"} 2"));

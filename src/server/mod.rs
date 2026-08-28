@@ -14,6 +14,7 @@ pub use builder::PowerServerBuilder;
     all(feature = "vsock", test)
 ))]
 pub(crate) mod vsock;
+mod worker_observation;
 
 use std::path::Path;
 use std::sync::Arc;

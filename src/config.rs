@@ -24,6 +24,12 @@ pub const MAX_PROMPT_CACHE_ENTRIES: usize = 1024;
 /// Hard operational bound for an idle prompt-cache lifetime.
 pub const MAX_PROMPT_CACHE_TTL_SECONDS: u64 = 86_400;
 
+/// Default lifetime of one public worker observation.
+pub const DEFAULT_WORKER_OBSERVATION_TTL_SECONDS: u64 = 15;
+
+/// Hard upper bound for a public worker observation lifetime.
+pub const MAX_WORKER_OBSERVATION_TTL_SECONDS: u64 = 300;
+
 /// Maximum number of exact tensor names that may be forced onto CPU memory.
 pub const MAX_CPU_TENSOR_OVERRIDES: usize = 256;
 
@@ -344,6 +350,10 @@ pub struct PowerConfig {
     /// Idle lifetime of a resident prompt-prefix KV context, in seconds.
     #[serde(default = "default_prompt_cache_ttl_seconds")]
     pub prompt_cache_ttl_seconds: u64,
+
+    /// Lifetime of one `/health` worker observation, in seconds.
+    #[serde(default = "default_worker_observation_ttl_seconds")]
+    pub worker_observation_ttl_seconds: u64,
 
     /// GPU acceleration settings
     #[serde(default)]
@@ -729,6 +739,10 @@ fn default_max_loaded_models() -> usize {
     1
 }
 
+const fn default_worker_observation_ttl_seconds() -> u64 {
+    DEFAULT_WORKER_OBSERVATION_TTL_SECONDS
+}
+
 pub(crate) const fn default_prompt_cache_max_entries() -> usize {
     DEFAULT_PROMPT_CACHE_MAX_ENTRIES
 }
@@ -762,6 +776,7 @@ impl Default for PowerConfig {
             max_loaded_models: default_max_loaded_models(),
             prompt_cache_max_entries: default_prompt_cache_max_entries(),
             prompt_cache_ttl_seconds: default_prompt_cache_ttl_seconds(),
+            worker_observation_ttl_seconds: default_worker_observation_ttl_seconds(),
             gpu: GpuConfig::default(),
             gpu_attestation: GpuAttestationConfig::default(),
             spec_mode: default_spec_mode(),

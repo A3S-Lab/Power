@@ -281,6 +281,7 @@ port = 11434
 max_loaded_models = 1
 prompt_cache_max_entries = 1
 prompt_cache_ttl_seconds = 300
+worker_observation_ttl_seconds = 15
 keep_alive = "5m"
 
 flash_attention = true
@@ -301,7 +302,7 @@ verification.
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Readiness, loaded models, capabilities, and TEE status |
+| `GET` | `/health` | Readiness, loaded models, TEE status, and the versioned worker observation |
 | `POST` | `/v1/chat/completions` | Chat, tools, structured output, vision, and SSE |
 | `POST` | `/v1/completions` | Text completion and SSE |
 | `POST` | `/v1/embeddings` | Embedding inference |
@@ -387,6 +388,7 @@ The repository also keeps the detailed contracts close to the code:
 - [Model-neutral session replicas](docs/session-replicas.md)
 - [Device-resident reviewed graph chains](docs/device-resident-graphs.md)
 - [Keyed prompt-prefix cache](docs/prompt-prefix-cache.md)
+- [Distributed-serving worker observation](docs/distributed-serving-observation.md)
 - [Model-neutral speculative decoding](docs/speculative-decoding.md)
 - [Supply-chain audit](docs/supply-chain.md)
 - [Storage benchmark](docs/storage-benchmark.md)

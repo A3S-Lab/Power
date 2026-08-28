@@ -7,6 +7,10 @@ fn test_default_config() {
     assert_eq!(config.host, "127.0.0.1");
     assert_eq!(config.port, 11434);
     assert_eq!(config.max_loaded_models, 1);
+    assert_eq!(
+        config.worker_observation_ttl_seconds,
+        DEFAULT_WORKER_OBSERVATION_TTL_SECONDS
+    );
     assert!(!config.tee_mode);
     assert_eq!(config.tee_policy_mode, TeePolicyMode::Strict);
     assert!(!config.redact_logs);
@@ -54,6 +58,7 @@ fn test_config_roundtrip() {
         max_loaded_models: 5,
         prompt_cache_max_entries: 3,
         prompt_cache_ttl_seconds: 600,
+        worker_observation_ttl_seconds: 30,
         gpu: GpuConfig {
             gpu_tensors: vec!["token_embd.weight".to_string()],
             ..Default::default()
@@ -111,6 +116,7 @@ fn test_config_roundtrip() {
     assert_eq!(loaded.max_loaded_models, 5);
     assert_eq!(loaded.prompt_cache_max_entries, 3);
     assert_eq!(loaded.prompt_cache_ttl_seconds, 600);
+    assert_eq!(loaded.worker_observation_ttl_seconds, 30);
     assert_eq!(loaded.num_parallel, 4);
     assert_eq!(loaded.spec_mtp_fr_vocab_size, Some(8192));
     assert!(!loaded.spec_mtp_recurrent_chain);

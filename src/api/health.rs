@@ -101,6 +101,9 @@ pub struct HealthResponse {
     pub inference: InferenceStatus,
     #[serde(default)]
     pub prompt_cache: PromptCacheStatus,
+    /// Additive, versioned worker capability and pressure observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<crate::serving::WorkerObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tee: Option<TeeStatus>,
 }
@@ -164,6 +167,7 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
             authenticated_namespace: true,
             supported_backends: prompt_cache_backends,
         },
+        worker: Some(state.worker_observation()),
         tee,
     };
     (StatusCode::OK, Json(resp))
@@ -245,6 +249,17 @@ mod tests {
         assert!(!health.prompt_cache.enabled);
         assert_eq!(health.prompt_cache.request_field, "prompt_cache_key");
         assert_eq!(health.prompt_cache.max_entries_per_model, 1);
+        let worker = health.worker.expect("worker observation");
+        assert_eq!(worker.schema, crate::serving::WORKER_OBSERVATION_SCHEMA);
+        assert_eq!(worker.observation_generation, 1);
+        assert_eq!(
+            worker.expires_at - worker.observed_at,
+            chrono::Duration::seconds(crate::config::DEFAULT_WORKER_OBSERVATION_TTL_SECONDS as i64)
+        );
+        assert_eq!(
+            worker.ready_phases,
+            [crate::serving::ServingPhase::Aggregated]
+        );
     }
 
     #[tokio::test]
@@ -257,8 +272,9 @@ mod tests {
             ..Default::default()
         });
         let state = AppState::new(Arc::new(ModelRegistry::new()), Arc::new(backends), config);
+        state.mark_loaded("model-a");
 
-        let response = handler(State(state)).await.into_response();
+        let response = handler(State(state.clone())).await.into_response();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -268,6 +284,38 @@ mod tests {
         assert_eq!(health.prompt_cache.max_entries_per_model, 4);
         assert_eq!(health.prompt_cache.ttl_seconds, 900);
         assert!(health.prompt_cache.authenticated_namespace);
+        let worker = health.worker.expect("worker observation");
+        assert!(worker.capabilities.prompt_cache);
+        assert!(worker.prompt_cache.supported);
+        // The mock advertises the capability but owns no live model cache.
+        assert_eq!(worker.prompt_cache.capacity, 0);
+        assert_eq!(worker.prompt_cache.entries, 0);
+        assert_eq!(worker.prompt_cache.pressure_basis_points, 0);
+    }
+
+    #[tokio::test]
+    async fn worker_observation_generation_is_monotonic_within_one_process_epoch() {
+        let state = test_state();
+
+        let first = handler(State(state.clone())).await.into_response();
+        let first = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first: HealthResponse = serde_json::from_slice(&first).unwrap();
+        let second = handler(State(state)).await.into_response();
+        let second = axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let second: HealthResponse = serde_json::from_slice(&second).unwrap();
+        let first = first.worker.unwrap();
+        let second = second.worker.unwrap();
+
+        assert_eq!(first.worker_epoch, second.worker_epoch);
+        assert_eq!(
+            second.observation_generation,
+            first.observation_generation + 1
+        );
+        assert!(second.observed_at >= first.observed_at);
     }
 
     #[tokio::test]
@@ -390,6 +438,7 @@ mod tests {
             },
             inference: inference_status(),
             prompt_cache: PromptCacheStatus::default(),
+            worker: None,
             tee: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
@@ -426,6 +475,7 @@ mod tests {
             },
             inference: inference_status(),
             prompt_cache: PromptCacheStatus::default(),
+            worker: None,
             tee: Some(TeeStatus {
                 enabled: true,
                 tee_type: TeeType::Simulated,

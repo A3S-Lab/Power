@@ -32,6 +32,8 @@ pub struct PromptCacheMetricsSnapshot {
     pub evaluated_tokens: u64,
     pub evictions: u64,
     pub entries: u64,
+    /// Sum of configured entry bounds for currently live model caches.
+    pub capacity: u64,
 }
 
 /// Lock-free counters shared by all loaded models of one backend.
@@ -45,6 +47,7 @@ pub(crate) struct PromptCacheTelemetry {
     evaluated_tokens: AtomicU64,
     evictions: AtomicU64,
     entries: AtomicU64,
+    capacity: AtomicU64,
 }
 
 #[cfg_attr(not(feature = "llamacpp"), allow(dead_code))]
@@ -75,6 +78,19 @@ impl PromptCacheTelemetry {
             });
     }
 
+    fn add_capacity(&self, count: usize) {
+        self.capacity.fetch_add(count as u64, Ordering::Relaxed);
+    }
+
+    fn remove_capacity(&self, count: usize) {
+        let count = count as u64;
+        let _ = self
+            .capacity
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |capacity| {
+                Some(capacity.saturating_sub(count))
+            });
+    }
+
     fn record_evictions(&self, count: usize) {
         self.evictions.fetch_add(count as u64, Ordering::Relaxed);
     }
@@ -88,6 +104,7 @@ impl PromptCacheTelemetry {
             evaluated_tokens: self.evaluated_tokens.load(Ordering::Relaxed),
             evictions: self.evictions.load(Ordering::Relaxed),
             entries: self.entries.load(Ordering::Relaxed),
+            capacity: self.capacity.load(Ordering::Relaxed),
         }
     }
 }
@@ -116,6 +133,7 @@ impl<T> BoundedPromptCache<T> {
         ttl: Duration,
         telemetry: Arc<PromptCacheTelemetry>,
     ) -> Self {
+        telemetry.add_capacity(max_entries);
         Self {
             entries: HashMap::new(),
             max_entries,
@@ -190,6 +208,7 @@ impl<T> BoundedPromptCache<T> {
 impl<T> Drop for BoundedPromptCache<T> {
     fn drop(&mut self) {
         self.telemetry.remove_entries(self.entries.len());
+        self.telemetry.remove_capacity(self.max_entries);
     }
 }
 
@@ -242,7 +261,23 @@ mod tests {
                 evaluated_tokens: 48,
                 evictions: 0,
                 entries: 0,
+                capacity: 0,
             }
         );
+    }
+
+    #[test]
+    fn telemetry_tracks_live_cache_capacity() {
+        let telemetry = Arc::new(PromptCacheTelemetry::default());
+        let first = BoundedPromptCache::<u8>::new(2, Duration::from_secs(60), telemetry.clone());
+        assert_eq!(telemetry.snapshot().capacity, 2);
+        {
+            let _second =
+                BoundedPromptCache::<u8>::new(3, Duration::from_secs(60), telemetry.clone());
+            assert_eq!(telemetry.snapshot().capacity, 5);
+        }
+        assert_eq!(telemetry.snapshot().capacity, 2);
+        drop(first);
+        assert_eq!(telemetry.snapshot().capacity, 0);
     }
 }

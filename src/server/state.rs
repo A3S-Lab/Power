@@ -12,6 +12,7 @@ use crate::server::auth::AuthProvider;
 use crate::server::lock::{mutex_lock, read_lock, write_lock};
 use crate::server::log_stream::LogBuffer;
 use crate::server::metrics::Metrics;
+use crate::server::worker_observation::WorkerObservationSource;
 use crate::tee::attestation::TeeProvider;
 use crate::tee::encrypted_model::DecryptedModel;
 use crate::tee::gpu::GpuEvidenceProvider;
@@ -62,6 +63,7 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     /// Admission control: bounds concurrent in-flight inference requests.
     pub limiter: Arc<crate::server::limiter::ConcurrencyLimiter>,
+    worker_observations: WorkerObservationSource,
     pub log_buffer: LogBuffer,
     pub tee_provider: Option<Arc<dyn TeeProvider>>,
     pub gpu_evidence_provider: Option<Arc<dyn GpuEvidenceProvider>>,
@@ -115,6 +117,7 @@ impl AppState {
             default_keep_alive,
             metrics,
             limiter,
+            worker_observations: WorkerObservationSource::new(),
             log_buffer,
             tee_provider: None,
             gpu_evidence_provider: None,
@@ -184,6 +187,11 @@ impl AppState {
     /// How long this server has been running.
     pub fn uptime(&self) -> Duration {
         self.start_time.elapsed()
+    }
+
+    /// Capture one bounded, content-free distributed-serving observation.
+    pub fn worker_observation(&self) -> crate::serving::WorkerObservation {
+        self.worker_observations.observe(self, chrono::Utc::now())
     }
 
     /// Whether the given model is currently loaded.

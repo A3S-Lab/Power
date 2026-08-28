@@ -216,33 +216,33 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
       deterministic outputs, and offline comparison. Keep DFlash2 opt-in until
       representative complete-output parity and cross-model evidence pass.
 
-### P6 — Distributed serving execution boundary (planned)
+### P6 — Distributed serving execution boundary (in progress)
 
 This milestone preserves the useful execution-side outcomes of distributed
 inference systems without making Power a router, deployment controller, or
 model-semantics owner.
 
-- Publish one versioned, model-neutral worker capability and observation
+- [x] Publish one versioned, model-neutral worker capability and observation
   contract over the existing Service health/metrics boundary. It covers phase
   readiness, admission queue depth, active execution, prompt-cache
   occupancy/pressure, transfer health, observation generation and age without
   exposing prompts, tokens, KV bytes, tenant identity, or unbounded labels.
-- Accept an immutable `aggregated` or `prefill-decode` execution profile only
+- [ ] Accept an immutable `aggregated` or `prefill-decode` execution profile only
   through closed A3S ACL. Power validates the exact model, backend, device,
   layout, peer, generation, byte, time, cancellation, privacy and attestation
   bindings before a phase or state-transfer operation.
-- Reuse the existing bounded admission, session replicas, weight hierarchy,
+- [ ] Reuse the existing bounded admission, session replicas, weight hierarchy,
   sealed-state envelope, telemetry and receipt mechanisms. Device/host/local
   storage and peer tiers must not create a second cache or persistence format.
-- Keep tokenization, KV/recurrent layout, serialization, phase arithmetic and
+- [ ] Keep tokenization, KV/recurrent layout, serialization, phase arithmetic and
   semantic parity in the owning model/backend adapter. Power moves only opaque,
   bounded authenticated state and never claims a cache hit or successful
   decode from transport completion alone.
-- Report a typed recompute, retryable-unavailable, or terminal-failure outcome
+- [ ] Report a typed recompute, retryable-unavailable, or terminal-failure outcome
   before response generation. Endpoint choice, flow control, request replay,
   desired replicas, placement, rollout and autoscaling remain Gateway or Cloud
   responsibilities.
-- Require real high-speed-network, cancellation, peer loss, stale generation,
+- [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support.
 

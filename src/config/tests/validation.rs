@@ -416,6 +416,18 @@ fn test_validate_rejects_unbounded_prompt_cache_settings() {
 }
 
 #[test]
+fn test_validate_rejects_unbounded_worker_observation_ttl() {
+    for ttl in [0, MAX_WORKER_OBSERVATION_TTL_SECONDS + 1] {
+        let config = PowerConfig {
+            worker_observation_ttl_seconds: ttl,
+            ..Default::default()
+        };
+        let error = config.validate().unwrap_err();
+        assert!(error.to_string().contains("worker_observation_ttl_seconds"));
+    }
+}
+
+#[test]
 fn test_validate_accepts_model_neutral_dspark_strategy() {
     let config = PowerConfig {
         spec_mode: "dspark".to_string(),

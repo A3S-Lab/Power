@@ -146,7 +146,7 @@ tower-http = { version = "0.5", features = ["cors", "trace"], optional = true }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 
 # UUID for request IDs
-uuid = { version = "1", features = ["v4"], optional = true }
+uuid = { version = "1", features = ["serde", "v4"], optional = true }
 
 # Ed25519 signatures for model integrity verification
 ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
