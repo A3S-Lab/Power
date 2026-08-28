@@ -6,7 +6,7 @@ use uuid::Uuid;
 pub const WORKER_OBSERVATION_SCHEMA: &str = "a3s.power.worker-observation.v1";
 
 /// Execution phases a Power worker can own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServingPhase {
     /// One worker owns prompt evaluation and token generation.

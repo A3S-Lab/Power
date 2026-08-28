@@ -4,6 +4,7 @@ use crate::backend::{Backend, BackendRegistry};
 use crate::config::PowerConfig;
 use crate::error::Result;
 use crate::model::manifest::ModelManifest;
+use crate::serving::StateTransferService;
 
 use super::log_stream::LogBuffer;
 
@@ -21,6 +22,7 @@ pub(super) struct PowerServerOptions {
     pub(super) log_buffer: Option<LogBuffer>,
     pub(super) backends: BackendRegistry,
     pub(super) model_manifests: Vec<ModelManifest>,
+    pub(super) state_transfer_service: Option<Arc<dyn StateTransferService>>,
     pub(super) include_default_backends: bool,
 }
 
@@ -32,6 +34,7 @@ impl PowerServerBuilder {
                 log_buffer: None,
                 backends: BackendRegistry::new(),
                 model_manifests: Vec::new(),
+                state_transfer_service: None,
                 include_default_backends: true,
             },
         }
@@ -68,6 +71,17 @@ impl PowerServerBuilder {
         self
     }
 
+    /// Install the model-state transfer data path used by disaggregated
+    /// prefill/decode adapters.
+    ///
+    /// The service owns registered memory and transport-specific metadata.
+    /// Power exposes only its typed, bounded capabilities and never forwards
+    /// model-state bytes through the control or request-routing planes.
+    pub fn with_state_transfer_service(mut self, service: Arc<dyn StateTransferService>) -> Self {
+        self.options.state_transfer_service = Some(service);
+        self
+    }
+
     /// Start with only caller-injected backends.
     pub fn without_default_backends(mut self) -> Self {
         self.options.include_default_backends = false;
@@ -85,14 +99,69 @@ impl PowerServerBuilder {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use std::path::PathBuf;
     use std::sync::Arc;
 
     use crate::backend::test_utils::MockBackend;
     use crate::config::PowerConfig;
     use crate::model::manifest::{ModelFormat, ModelManifest};
+    use crate::serving::{
+        AbortStateTransfer, ConsumeStateTransfer, PrepareStateTransfer, PublishStateTransfer,
+        ServingPhase, StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
+        StateTransferService, StateTransferSource, StateTransferTarget, TransferHealth,
+    };
 
     use super::PowerServerBuilder;
+
+    struct TestStateTransferService;
+
+    #[async_trait]
+    impl StateTransferService for TestStateTransferService {
+        fn capabilities(&self) -> StateTransferCapabilities {
+            StateTransferCapabilities {
+                phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
+                protocols: vec![StateTransferProtocol::BufferedHostMemoryPullV1],
+                max_transfer_bytes: 1024,
+                max_inflight_transfers: 1,
+            }
+        }
+
+        fn health(&self) -> TransferHealth {
+            TransferHealth::Ready
+        }
+
+        async fn prepare_destination(
+            &self,
+            _command: PrepareStateTransfer,
+        ) -> crate::error::Result<StateTransferTarget> {
+            Err(crate::error::PowerError::BackendNotAvailable(
+                "test adapter".to_string(),
+            ))
+        }
+
+        async fn publish_source(
+            &self,
+            _command: PublishStateTransfer,
+        ) -> crate::error::Result<StateTransferSource> {
+            Err(crate::error::PowerError::BackendNotAvailable(
+                "test adapter".to_string(),
+            ))
+        }
+
+        async fn consume_source(
+            &self,
+            _command: ConsumeStateTransfer,
+        ) -> crate::error::Result<StateTransferReceipt> {
+            Err(crate::error::PowerError::BackendNotAvailable(
+                "test adapter".to_string(),
+            ))
+        }
+
+        async fn abort(&self, _command: AbortStateTransfer) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn injected_backends_are_typed_and_keep_registration_order() {
@@ -117,6 +186,19 @@ mod tests {
 
         assert!(!options.include_default_backends);
         assert!(options.backends.list_names().is_empty());
+    }
+
+    #[test]
+    fn state_transfer_service_is_a_typed_optional_extension() {
+        let options = PowerServerBuilder::new(PowerConfig::default())
+            .with_state_transfer_service(Arc::new(TestStateTransferService))
+            .into_options();
+
+        let service = options
+            .state_transfer_service
+            .expect("state-transfer service");
+        assert_eq!(service.health(), TransferHealth::Ready);
+        service.capabilities().validate().unwrap();
     }
 
     #[test]

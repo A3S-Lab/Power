@@ -13,6 +13,7 @@ use crate::server::lock::{mutex_lock, read_lock, write_lock};
 use crate::server::log_stream::LogBuffer;
 use crate::server::metrics::Metrics;
 use crate::server::worker_observation::WorkerObservationSource;
+use crate::serving::StateTransferService;
 use crate::tee::attestation::TeeProvider;
 use crate::tee::encrypted_model::DecryptedModel;
 use crate::tee::gpu::GpuEvidenceProvider;
@@ -64,6 +65,7 @@ pub struct AppState {
     /// Admission control: bounds concurrent in-flight inference requests.
     pub limiter: Arc<crate::server::limiter::ConcurrencyLimiter>,
     worker_observations: WorkerObservationSource,
+    pub(crate) state_transfer_service: Option<Arc<dyn StateTransferService>>,
     pub log_buffer: LogBuffer,
     pub tee_provider: Option<Arc<dyn TeeProvider>>,
     pub gpu_evidence_provider: Option<Arc<dyn GpuEvidenceProvider>>,
@@ -118,6 +120,7 @@ impl AppState {
             metrics,
             limiter,
             worker_observations: WorkerObservationSource::new(),
+            state_transfer_service: None,
             log_buffer,
             tee_provider: None,
             gpu_evidence_provider: None,
@@ -153,6 +156,13 @@ impl AppState {
     /// Set the authentication provider for API key validation.
     pub fn with_auth(mut self, provider: Arc<dyn AuthProvider>) -> Self {
         self.auth = Some(provider);
+        self
+    }
+
+    /// Install the process-local state-transfer data path selected by the
+    /// composition root.
+    pub fn with_state_transfer_service(mut self, service: Arc<dyn StateTransferService>) -> Self {
+        self.state_transfer_service = Some(service);
         self
     }
 
@@ -192,6 +202,12 @@ impl AppState {
     /// Capture one bounded, content-free distributed-serving observation.
     pub fn worker_observation(&self) -> crate::serving::WorkerObservation {
         self.worker_observations.observe(self, chrono::Utc::now())
+    }
+
+    /// Stable random identity shared by observations and transfer commands for
+    /// this process lifetime.
+    pub fn worker_epoch(&self) -> uuid::Uuid {
+        self.worker_observations.worker_epoch()
     }
 
     /// Whether the given model is currently loaded.

@@ -208,6 +208,7 @@ measurement, fallback, and receipt identity.
 | Tensor movement | Deterministic microbatching, execution batches, device-resident graph chains, and one final materialization | Incompatible devices never trigger a hidden cross-device copy. |
 | Speculative decoding | Prompt lookup, n-gram, draft model, MTP, DFlash, DFlash2, or DSpark with exact target verification | Only accepted tokens commit; unsupported explicit strategies fail closed. |
 | Prefix reuse | Tenant-, endpoint-, and model-scoped KV/recurrent contexts with bounded LRU and TTL | `prompt_cache_key` is explicit; unsupported backends return an error instead of ignoring it. |
+| Distributed state transfer | Typed prepare/publish/consume/abort port with exact model, execution, layout, epoch, size, protocol, expiry, and receipt binding | The default server advertises no P/D capability; a reviewed injected adapter must own registered memory, transport integrity, and cleanup. |
 | Scheduling | Shared device admission, bounded queues, cancellation, deadlines, session replicas, and host controls | Replica declarations reserve their full resident budget before loading. |
 | Weights and storage | Content-addressed artifacts, mmap/mlock policy, verified mirrors, prefetch, and bounded residency | Fallback returns to the original artifact without changing tensor identity. |
 | Rollout | Two-order A/B runs, output hashes, representative quality gates, hardware receipts, and offline replay | A faster profile does not become the default until its acceptance policy passes. |

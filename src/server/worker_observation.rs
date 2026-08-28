@@ -62,6 +62,7 @@ impl WorkerObservationSource {
         let ttl = chrono::Duration::seconds(
             i64::try_from(state.config.worker_observation_ttl_seconds).unwrap_or(i64::MAX),
         );
+        let (state_transfer, transfer_health) = state_transfer_observation(state);
 
         WorkerObservation {
             schema: WORKER_OBSERVATION_SCHEMA.to_string(),
@@ -72,7 +73,7 @@ impl WorkerObservationSource {
             capabilities: WorkerCapabilities {
                 phases: vec![ServingPhase::Aggregated],
                 prompt_cache: prompt_cache_supported,
-                state_transfer: false,
+                state_transfer,
             },
             ready_phases: vec![ServingPhase::Aggregated],
             admission: AdmissionObservation {
@@ -87,9 +88,25 @@ impl WorkerObservationSource {
                 capacity,
                 pressure_basis_points,
             },
-            transfer_health: TransferHealth::Unsupported,
+            transfer_health,
         }
     }
+
+    pub(super) fn worker_epoch(&self) -> Uuid {
+        self.inner.worker_epoch
+    }
+}
+
+fn state_transfer_observation(state: &AppState) -> (bool, TransferHealth) {
+    let Some(service) = state.state_transfer_service.as_ref() else {
+        return (false, TransferHealth::Unsupported);
+    };
+    let capabilities = service.capabilities();
+    let health = service.health();
+    if capabilities.validate().is_err() || matches!(health, TransferHealth::Unsupported) {
+        return (false, TransferHealth::Unsupported);
+    }
+    (true, health)
 }
 
 fn cache_pressure_basis_points(entries: u64, capacity: u64) -> u16 {
@@ -106,7 +123,80 @@ fn cache_pressure_basis_points(entries: u64, capacity: u64) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::cache_pressure_basis_points;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+
+    use crate::backend::BackendRegistry;
+    use crate::config::PowerConfig;
+    use crate::error::{PowerError, Result};
+    use crate::model::registry::ModelRegistry;
+    use crate::serving::{
+        AbortStateTransfer, ConsumeStateTransfer, PrepareStateTransfer, PublishStateTransfer,
+        StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
+        StateTransferService, StateTransferSource, StateTransferTarget,
+    };
+
+    use super::{cache_pressure_basis_points, AppState, ServingPhase, TransferHealth};
+
+    struct TestStateTransferService {
+        health: TransferHealth,
+        capabilities: StateTransferCapabilities,
+    }
+
+    #[async_trait]
+    impl StateTransferService for TestStateTransferService {
+        fn capabilities(&self) -> StateTransferCapabilities {
+            self.capabilities.clone()
+        }
+
+        fn health(&self) -> TransferHealth {
+            self.health
+        }
+
+        async fn prepare_destination(
+            &self,
+            _command: PrepareStateTransfer,
+        ) -> Result<StateTransferTarget> {
+            Err(PowerError::BackendNotAvailable("test adapter".to_string()))
+        }
+
+        async fn publish_source(
+            &self,
+            _command: PublishStateTransfer,
+        ) -> Result<StateTransferSource> {
+            Err(PowerError::BackendNotAvailable("test adapter".to_string()))
+        }
+
+        async fn consume_source(
+            &self,
+            _command: ConsumeStateTransfer,
+        ) -> Result<StateTransferReceipt> {
+            Err(PowerError::BackendNotAvailable("test adapter".to_string()))
+        }
+
+        async fn abort(&self, _command: AbortStateTransfer) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn state_with_transfer(health: TransferHealth) -> AppState {
+        let service = TestStateTransferService {
+            health,
+            capabilities: StateTransferCapabilities {
+                phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
+                protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
+                max_transfer_bytes: 1024,
+                max_inflight_transfers: 2,
+            },
+        };
+        AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        )
+        .with_state_transfer_service(Arc::new(service))
+    }
 
     #[test]
     fn cache_pressure_is_bounded_and_handles_zero_capacity() {
@@ -114,5 +204,49 @@ mod tests {
         assert_eq!(cache_pressure_basis_points(1, 0), 10_000);
         assert_eq!(cache_pressure_basis_points(1, 4), 2_500);
         assert_eq!(cache_pressure_basis_points(8, 4), 10_000);
+    }
+
+    #[test]
+    fn ready_transfer_service_projects_transport_without_claiming_phase_execution() {
+        let state = state_with_transfer(TransferHealth::Ready);
+        let observation = state.worker_observation();
+
+        assert_eq!(observation.worker_epoch, state.worker_epoch());
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Aggregated]);
+        assert_eq!(observation.ready_phases, [ServingPhase::Aggregated]);
+        assert!(observation.capabilities.state_transfer);
+        assert_eq!(observation.transfer_health, TransferHealth::Ready);
+    }
+
+    #[test]
+    fn unavailable_transfer_service_keeps_transport_capability() {
+        let observation = state_with_transfer(TransferHealth::Unavailable).worker_observation();
+
+        assert!(observation.capabilities.state_transfer);
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Aggregated]);
+        assert_eq!(observation.ready_phases, [ServingPhase::Aggregated]);
+        assert_eq!(observation.transfer_health, TransferHealth::Unavailable);
+    }
+
+    #[test]
+    fn invalid_or_unsupported_adapter_fails_closed_in_observation() {
+        let mut state = state_with_transfer(TransferHealth::Unsupported);
+        let observation = state.worker_observation();
+        assert!(!observation.capabilities.state_transfer);
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Aggregated]);
+        assert_eq!(observation.transfer_health, TransferHealth::Unsupported);
+
+        state.state_transfer_service = Some(Arc::new(TestStateTransferService {
+            health: TransferHealth::Ready,
+            capabilities: StateTransferCapabilities {
+                phases: vec![ServingPhase::Decode, ServingPhase::Prefill],
+                protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
+                max_transfer_bytes: 1024,
+                max_inflight_transfers: 2,
+            },
+        }));
+        let observation = state.worker_observation();
+        assert!(!observation.capabilities.state_transfer);
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Aggregated]);
     }
 }

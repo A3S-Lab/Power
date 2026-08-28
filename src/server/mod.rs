@@ -62,9 +62,21 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         log_buffer,
         mut backends,
         model_manifests,
+        state_transfer_service,
         include_default_backends,
     } = options;
     config.validate()?;
+    if let Some(service) = state_transfer_service.as_ref() {
+        service.capabilities().validate()?;
+        if matches!(
+            service.health(),
+            crate::serving::TransferHealth::Unsupported
+        ) {
+            return Err(PowerError::Config(
+                "an injected state-transfer service cannot report unsupported health".to_string(),
+            ));
+        }
+    }
 
     // Ensure storage directories exist
     dirs::ensure_dirs()?;
@@ -194,6 +206,9 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         Some(buf) => state::AppState::with_log_buffer(registry, backends, config.clone(), buf),
         None => state::AppState::new(registry, backends, config.clone()),
     };
+    if let Some(service) = state_transfer_service {
+        app_state = app_state.with_state_transfer_service(service);
+    }
     if let Some(provider) = tee_provider {
         app_state = app_state.with_tee_provider(provider);
     }
