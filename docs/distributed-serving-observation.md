@@ -36,13 +36,28 @@ Targets, sources, and receipts bind one transfer ID, both process epochs, model,
 execution and state-layout SHA-256 identities, state kind, token count, byte
 count, protocol, and a maximum five-minute expiry. Adapter-owned connection
 metadata is carried only in a trimmed, control-free, 16 KiB ticket. Local model
-state handles are not serializable and redact their debug representation.
+state handles are not serializable, and both local handles and wire tickets
+redact their debug representation.
+
+Server composition wraps every injected data path in
+`BoundedStateTransferService`. The wrapper projects only the configured local
+role and ACL limits even when the underlying transport supports more. It binds
+commands to the current random worker epoch, admits no more than the configured
+in-flight count, makes identical prepare/publish retries idempotent, retains
+registered leases until consume or compensating abort, and reaps them at their
+monotonic deadline without requiring another request. Operation drop, timeout,
+explicit abort, and invalid adapter output all trigger abort under the separate
+cancellation timeout. An unconfirmed cleanup marks the wrapper unavailable for
+the rest of the process generation. Its snapshot contains only bounded,
+content-free counters.
 
 The protocol distinguishes direct device-memory pull from buffered host-memory
 pull without making the Power core depend on NIXL, UCX, libfabric, or another
 transport library. A concrete adapter owns memory registration, transport
-timeouts, integrity, and cleanup. Gateway selects and orchestrates workers;
-Cloud certifies compatible deployment generations. Neither receives KV bytes.
+integrity, and driver cleanup. The Power wrapper owns the common admission,
+deadline, lease, and cleanup-verification policy. Gateway selects and
+orchestrates workers; Cloud certifies compatible deployment generations.
+Neither receives KV bytes.
 
 This port does not by itself activate request-level P/D execution. The default
 Power backends inject neither service, and Gateway must continue to reject P/D

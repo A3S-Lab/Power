@@ -119,6 +119,17 @@ fn target_and_source_are_closed_short_lived_and_exactly_bound() {
 }
 
 #[test]
+fn wire_descriptor_debug_never_exposes_adapter_tickets() {
+    let target_debug = format!("{:?}", target());
+    let source_debug = format!("{:?}", source());
+
+    assert!(target_debug.contains("REDACTED"));
+    assert!(source_debug.contains("REDACTED"));
+    assert!(!target_debug.contains("decode-adapter-ticket"));
+    assert!(!source_debug.contains("prefill-adapter-ticket"));
+}
+
+#[test]
 fn receipt_proves_exact_source_identity_size_and_integrity() {
     let source = source();
     let receipt = StateTransferReceipt {

@@ -312,6 +312,11 @@ must inject an exact profile-bound `StateTransferService` and
 startup error. Power publishes the configured P/D role only when both contracts
 match, and suppresses readiness whenever transfer or phase execution cannot
 accept work. Transport completion alone never counts as successful decode.
+Every injected transfer adapter is wrapped by `BoundedStateTransferService`,
+which narrows advertised capabilities to the immutable local role and enforces
+the process epoch, fail-fast transfer capacity, idempotent leases, monotonic
+deadlines, expiry reaping, bounded abort, and fail-closed cleanup health. The
+wrapped adapter still owns registered memory and the real data path.
 
 ## API surface
 

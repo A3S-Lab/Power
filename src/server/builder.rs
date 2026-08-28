@@ -77,6 +77,7 @@ impl PowerServerBuilder {
     /// prefill/decode adapters.
     ///
     /// The service owns registered memory and transport-specific metadata.
+    /// Server startup wraps it in a profile- and process-bound lifecycle.
     /// Power exposes only its typed, bounded capabilities and never forwards
     /// model-state bytes through the control or request-routing planes.
     pub fn with_state_transfer_service(mut self, service: Arc<dyn StateTransferService>) -> Self {

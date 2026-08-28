@@ -27,6 +27,7 @@ use crate::error::{PowerError, Result};
 use crate::model::manifest::ModelFormat;
 use crate::model::registry::ModelRegistry;
 use crate::server::log_stream::LogBuffer;
+use crate::serving::BoundedStateTransferService;
 use crate::tee;
 use crate::tee::attestation::{TeeProvider, TeeType};
 use crate::tee::gpu::{normalize_nras_rest_endpoint, provider_from_config, GpuEvidenceProvider};
@@ -203,7 +204,12 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         None => state::AppState::new(registry, backends, config.clone()),
     };
     if let Some(service) = state_transfer_service {
-        app_state = app_state.with_state_transfer_service(service);
+        let service = BoundedStateTransferService::new(
+            config.serving_execution.clone(),
+            app_state.worker_epoch(),
+            service,
+        )?;
+        app_state = app_state.with_state_transfer_service(Arc::new(service));
     }
     if let Some(executor) = phase_executor {
         app_state = app_state.with_phase_executor(executor);

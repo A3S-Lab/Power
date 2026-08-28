@@ -237,6 +237,10 @@ model-semantics owner.
 - [ ] Reuse the existing bounded admission, session replicas, weight hierarchy,
   sealed-state envelope, telemetry and receipt mechanisms. Device/host/local
   storage and peer tiers must not create a second cache or persistence format.
+  A process-bound transfer lifecycle now enforces fail-fast capacity,
+  idempotent leases, content-free counters, monotonic expiry, bounded abort and
+  fail-closed cleanup health around every injected data-path adapter; backend
+  memory ownership and cross-process evidence remain open.
 - [ ] Keep tokenization, KV/recurrent layout, serialization, phase arithmetic and
   semantic parity in the owning model/backend adapter. Power moves only opaque,
   bounded authenticated state and never claims a cache hit or successful

@@ -1,3 +1,5 @@
+use std::fmt;
+
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -126,7 +128,7 @@ impl StateTransferCapabilities {
 }
 
 /// Decode-side destination preparation returned to the request orchestrator.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateTransferTarget {
     pub schema: String,
@@ -137,6 +139,22 @@ pub struct StateTransferTarget {
     pub prepared_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub ticket: String,
+}
+
+impl fmt::Debug for StateTransferTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StateTransferTarget")
+            .field("schema", &self.schema)
+            .field("transfer_id", &self.transfer_id)
+            .field("destination_worker_epoch", &self.destination_worker_epoch)
+            .field("binding", &self.binding)
+            .field("protocol", &self.protocol)
+            .field("prepared_at", &self.prepared_at)
+            .field("expires_at", &self.expires_at)
+            .field("ticket", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl StateTransferTarget {
@@ -164,7 +182,7 @@ impl StateTransferTarget {
 }
 
 /// Prefill-side source publication consumed by the selected decode worker.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateTransferSource {
     pub schema: String,
@@ -176,6 +194,23 @@ pub struct StateTransferSource {
     pub published_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub ticket: String,
+}
+
+impl fmt::Debug for StateTransferSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StateTransferSource")
+            .field("schema", &self.schema)
+            .field("transfer_id", &self.transfer_id)
+            .field("source_worker_epoch", &self.source_worker_epoch)
+            .field("destination_worker_epoch", &self.destination_worker_epoch)
+            .field("binding", &self.binding)
+            .field("protocol", &self.protocol)
+            .field("published_at", &self.published_at)
+            .field("expires_at", &self.expires_at)
+            .field("ticket", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl StateTransferSource {
