@@ -70,9 +70,10 @@ explicit abort all trigger compensating phase and transfer cleanup. An
 unconfirmed cleanup permanently suppresses new work for that process epoch.
 
 The default Power backends inject neither port, and this repository does not yet
-ship a concrete distributed backend/transport pair or a Gateway-facing P/D
-orchestration endpoint. Gateway must therefore continue to reject P/D dispatch
-until a selected deployment truthfully supplies and exposes that complete path.
+ship a concrete distributed backend/transport pair. The internal request-flow
+endpoint is present but fails closed without a matching composed runtime.
+Gateway must therefore continue to reject P/D dispatch until a selected
+deployment truthfully supplies that complete path.
 
 ## Immutable execution profile
 
@@ -90,6 +91,8 @@ adapter must report that digest in `execution_profile_sha256`, and the same
 profile digest is included in Power's canonical inference-execution policy.
 
 ~~~acl
+api_keys = ["<Gateway service-key SHA-256>"]
+
 serving_execution {
   profile = "prefill-decode"
   role = "decode"
@@ -149,6 +152,50 @@ Phase abort accepts either an in-progress preparation without a backend handle
 or a completed reservation with its opaque handle. Prepared phase lifetimes
 must exactly equal the caller-bound execution lifetime; an adapter cannot
 silently shorten or extend a distributed request lease.
+
+## Internal request-flow protocol
+
+Gateway calls the service-to-service boundary under
+`/internal/v1/distributed-serving`. It is not a public OpenAI API and receives
+no permissive CORS policy or public request-rate bucket. All four operations
+require `Authorization: Bearer <key>` backed by `api_keys`; a
+`prefill-decode` configuration with no keys is rejected at startup, and the
+middleware still fails closed when a state is assembled manually without an
+authentication provider.
+
+The request schema is `a3s.power.distributed-serving.v1` and exposes four
+`POST` operations:
+
+- `/decode/prepare` reserves decode execution and returns a bounded opaque
+  `StateTransferTarget`;
+- `/prefill/execute` runs the selected model-owned prefill phase against that
+  exact target and returns a bounded opaque `StateTransferSource`;
+- `/decode/execute` consumes the source and produces
+  `application/x-ndjson`; and
+- `/abort` idempotently reclaims phase and transfer ownership.
+
+Every document binds one non-nil execution ID, the selected process epoch, and
+the exact execution-profile SHA-256. Schema mismatch, stale process identity,
+profile mismatch, malformed JSON, missing runtime, and runtime failures use
+closed, content-free error codes and messages. Bodies are capped at 8 MiB.
+The request payload carries a closed chat-completions or completions envelope;
+the presentation layer validates the supported OpenAI fields and translates it
+into the existing process-local `PhaseRequest`. Neither serializable domain
+commands nor a second inference request type are introduced.
+If prefix reuse is requested, Gateway must replace the caller's cache key with
+`a3s-gw-pcache-v1:<64 lowercase hex characters>` after domain-separating its
+tenant/authentication identity, endpoint, model, and caller key. Power rejects
+raw or malformed cache keys at this boundary so one Gateway service credential
+cannot collapse multiple tenant cache domains.
+
+Decode output uses `a3s.power.distributed-serving-stream.v1`. The first frame is
+`ready`, followed by monotonically sequenced response chunks and exactly one
+`completed` or `failed` terminal frame. The HTTP body polls the backend-owned
+stream directly, preserving backpressure. Client disconnect drops the guarded
+stream and triggers the same bounded compensating cleanup as local
+cancellation. Wire DTO debug output redacts prompts, generated content, and
+adapter tickets; golden fixtures under `tests/fixtures/distributed-serving-v1`
+pin the JSON shape consumed by Gateway.
 
 ## Ownership boundary
 

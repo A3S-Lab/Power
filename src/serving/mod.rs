@@ -44,7 +44,7 @@ pub use state_transfer_service::{
 #[cfg(test)]
 mod bounded_state_transfer_tests;
 #[cfg(test)]
-mod distributed_serving_tests;
+pub(crate) mod distributed_serving_tests;
 #[cfg(test)]
 mod execution_profile_tests;
 #[cfg(test)]

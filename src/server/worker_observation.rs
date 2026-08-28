@@ -124,7 +124,7 @@ fn serving_observation(state: &AppState) -> ServingObservation {
     }
 
     let phase = profile.phase();
-    let ready_phases = if runtime.accepts_work() {
+    let ready_phases = if state.auth.is_some() && runtime.accepts_work() {
         vec![phase]
     } else {
         Vec::new()
@@ -168,6 +168,7 @@ mod tests {
     use crate::config::PowerConfig;
     use crate::error::{PowerError, Result};
     use crate::model::registry::ModelRegistry;
+    use crate::server::auth::ApiKeyAuth;
     use crate::serving::{
         AbortPhaseExecution, AbortStateTransfer, BoundedStateTransferService, ConsumeStateTransfer,
         DisaggregatedServingRole, DistributedServingRuntime, ExecutePhaseExecution, PhaseDecision,
@@ -329,7 +330,9 @@ mod tests {
         let runtime =
             DistributedServingRuntime::new(profile, Arc::new(transfer), Arc::new(executor))
                 .unwrap();
-        state.with_distributed_serving(Arc::new(runtime))
+        state
+            .with_distributed_serving(Arc::new(runtime))
+            .with_auth(Arc::new(ApiKeyAuth::new(&["service-key".to_string()])))
     }
 
     #[test]
@@ -373,6 +376,17 @@ mod tests {
         assert!(observation.capabilities.state_transfer);
         assert_eq!(observation.capabilities.phases, [ServingPhase::Decode]);
         assert!(observation.ready_phases.is_empty());
+    }
+
+    #[test]
+    fn missing_service_authentication_suppresses_distributed_readiness() {
+        let mut state = state_with_services(TransferHealth::Ready, PhaseExecutorHealth::Ready);
+        state.auth = None;
+
+        let observation = state.worker_observation();
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Decode]);
+        assert!(observation.ready_phases.is_empty());
+        assert!(observation.capabilities.state_transfer);
     }
 
     #[test]

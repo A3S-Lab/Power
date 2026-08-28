@@ -322,9 +322,10 @@ wrapped adapter still owns registered memory and the real data path.
 The runtime prepares decode destinations before transfer, publishes prefill
 state only after phase execution, consumes verified state before starting
 decode, and retains stream cancellation ownership until termination. The
-repository still ships no concrete distributed backend/transport pair or
-Gateway-facing P/D orchestration endpoint, so this is not an end-to-end llm-d
-deployment claim.
+authenticated internal request-flow API exposes those operations to Gateway,
+binding every call to the current worker epoch and execution-profile digest.
+The repository still ships no concrete distributed backend/transport pair, so
+this is not an end-to-end llm-d deployment claim.
 
 ## API surface
 
@@ -334,6 +335,10 @@ deployment claim.
 | `POST` | `/v1/chat/completions` | Chat, tools, structured output, vision, and SSE |
 | `POST` | `/v1/completions` | Text completion and SSE |
 | `POST` | `/v1/embeddings` | Embedding inference |
+| `POST` | `/internal/v1/distributed-serving/decode/prepare` | Prepare a profile-bound decode destination |
+| `POST` | `/internal/v1/distributed-serving/prefill/execute` | Execute prefill and publish opaque model state |
+| `POST` | `/internal/v1/distributed-serving/decode/execute` | Consume state and return versioned NDJSON decode output |
+| `POST` | `/internal/v1/distributed-serving/abort` | Idempotently reclaim one distributed execution |
 | `GET` | `/v1/models` | Registered models |
 | `POST` | `/v1/models` | Register weights and typed auxiliary artifacts |
 | `POST` | `/v1/models/pull` | Resumable ModelScope or Hugging Face pull |

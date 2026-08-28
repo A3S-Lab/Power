@@ -227,6 +227,11 @@ model-semantics owner.
   readiness, admission queue depth, active execution, prompt-cache
   occupancy/pressure, transfer health, observation generation and age without
   exposing prompts, tokens, KV bytes, tenant identity, or unbounded labels.
+- [x] Publish one fail-closed, service-authenticated internal request-flow
+  protocol for decode preparation, prefill execution, decode execution, and
+  idempotent abort. Bind every call and stream frame to the process epoch and
+  immutable execution profile, preserve backpressure through versioned NDJSON,
+  and pin the closed JSON shapes with golden fixtures.
 - [x] Accept an immutable `aggregated` or `prefill-decode` execution profile only
   through closed A3S ACL. Power validates the exact model, backend, device,
   layout, peer, generation, byte, time, cancellation, privacy and attestation
@@ -251,9 +256,9 @@ model-semantics owner.
   before response generation. Endpoint choice, flow control, request replay,
   desired replicas, placement, rollout and autoscaling remain Gateway or Cloud
   responsibilities.
-  The closed pre-response decision contract is implemented; concrete backend
-  adapters, a Gateway-facing Power orchestration endpoint, and cross-process
-  orchestration evidence remain open.
+  The closed pre-response decision contract and Gateway-facing Power endpoint
+  are implemented; concrete backend adapters and cross-process orchestration
+  evidence remain open.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support.

@@ -498,8 +498,10 @@ pub struct PowerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vsock_port: Option<u32>,
 
-    /// API keys for authentication. When non-empty, all /v1/* endpoints
-    /// require a valid `Authorization: Bearer <key>` header.
+    /// API keys for authentication. When non-empty, all `/v1/*` endpoints
+    /// require a valid `Authorization: Bearer <key>` header. Internal
+    /// distributed-serving routes always require one of these keys, and a
+    /// `prefill-decode` profile is invalid when this list is empty.
     /// Keys are SHA-256 hashes of the actual tokens for secure storage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub api_keys: Vec<String>,

@@ -94,37 +94,44 @@ async fn rate_limit_middleware(
 pub fn build(state: AppState) -> Router {
     let rate_limit_rps = state.config.rate_limit_rps;
 
-    // Apply auth middleware only to /v1/* routes
+    // Public OpenAI routes retain their opt-in authentication behavior.
     let v1_routes = api::openai::routes().layer(middleware::from_fn_with_state(
         state.clone(),
         auth::middleware,
     ));
 
-    let mut router = Router::new()
+    // Browser-facing routes receive CORS headers. The internal distributed
+    // protocol is service-to-service only and deliberately has no CORS layer.
+    let mut public_routes = Router::new()
         .route("/health", get(api::health::handler))
         .route("/metrics", get(metrics::handler))
         .nest("/v1", v1_routes)
-        .layer(CorsLayer::permissive())
+        .layer(CorsLayer::permissive());
+
+    // The public rate is expressed in end-user requests. One distributed
+    // request intentionally expands into several internal phase calls, which
+    // are bounded by DistributedServingRuntime instead of this token bucket.
+    if rate_limit_rps > 0 {
+        let limiter = RateLimiter::new(rate_limit_rps);
+        public_routes = public_routes.layer(middleware::from_fn_with_state(
+            limiter,
+            rate_limit_middleware,
+        ));
+    }
+
+    let distributed_routes = api::distributed_serving::routes().layer(
+        middleware::from_fn_with_state(state.clone(), auth::required_middleware),
+    );
+
+    public_routes
+        .nest("/internal/v1/distributed-serving", distributed_routes)
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             metrics::middleware,
         ))
         .layer(middleware::from_fn(request_id_middleware))
-        .with_state(state);
-
-    // Apply per-second rate limiting as outermost middleware when configured.
-    // Concurrency is bounded by the ConcurrencyLimiter inside the inference
-    // handlers (see AppState::limiter), which spans the streamed response body.
-    if rate_limit_rps > 0 {
-        let limiter = RateLimiter::new(rate_limit_rps);
-        router = router.layer(middleware::from_fn_with_state(
-            limiter,
-            rate_limit_middleware,
-        ));
-    }
-
-    router
+        .with_state(state)
 }
 
 /// Middleware that ensures every request has an `X-Request-ID`.

@@ -1,4 +1,4 @@
-mod support;
+pub(crate) mod support;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

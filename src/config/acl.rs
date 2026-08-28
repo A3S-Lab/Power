@@ -711,6 +711,7 @@ mod tests {
         .unwrap();
         let config = PowerConfig {
             serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
             ..PowerConfig::default()
         };
 

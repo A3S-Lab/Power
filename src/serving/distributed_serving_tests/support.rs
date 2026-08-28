@@ -13,7 +13,7 @@ fn digest(character: char) -> String {
     character.to_string().repeat(64)
 }
 
-pub(super) fn profile(role: DisaggregatedServingRole, timeout_ms: u64) -> ServingExecutionProfile {
+pub(crate) fn profile(role: DisaggregatedServingRole, timeout_ms: u64) -> ServingExecutionProfile {
     ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
         role,
         model: "internal/model-v1".to_string(),
@@ -38,7 +38,7 @@ pub(super) fn profile(role: DisaggregatedServingRole, timeout_ms: u64) -> Servin
     .unwrap()
 }
 
-pub(super) fn binding() -> StateTransferBinding {
+pub(crate) fn binding() -> StateTransferBinding {
     StateTransferBinding {
         model_sha256: digest('1'),
         execution_sha256: digest('3'),
@@ -49,7 +49,7 @@ pub(super) fn binding() -> StateTransferBinding {
     }
 }
 
-pub(super) fn request() -> PhaseRequest {
+pub(crate) fn request() -> PhaseRequest {
     PhaseRequest::Completion(
         serde_json::from_value::<CompletionRequest>(serde_json::json!({
             "prompt": "private prompt",
@@ -60,10 +60,10 @@ pub(super) fn request() -> PhaseRequest {
 }
 
 #[derive(Default)]
-pub(super) struct Calls {
+pub(crate) struct Calls {
     values: Mutex<Vec<&'static str>>,
-    pub(super) phase_aborts: AtomicUsize,
-    pub(super) transfer_aborts: AtomicUsize,
+    pub(crate) phase_aborts: AtomicUsize,
+    pub(crate) transfer_aborts: AtomicUsize,
 }
 
 impl Calls {
@@ -71,7 +71,7 @@ impl Calls {
         self.values.lock().unwrap().push(value);
     }
 
-    pub(super) fn values(&self) -> Vec<&'static str> {
+    pub(crate) fn values(&self) -> Vec<&'static str> {
         self.values.lock().unwrap().clone()
     }
 }
@@ -253,7 +253,7 @@ impl ServingPhaseExecutor for TestPhaseExecutor {
     }
 }
 
-pub(super) fn runtime(
+pub(crate) fn runtime(
     profile: &ServingExecutionProfile,
     epoch: Uuid,
     calls: Arc<Calls>,
@@ -261,7 +261,7 @@ pub(super) fn runtime(
     runtime_with_expiry_delta(profile, epoch, calls, Duration::zero())
 }
 
-pub(super) fn runtime_with_expiry_delta(
+pub(crate) fn runtime_with_expiry_delta(
     profile: &ServingExecutionProfile,
     epoch: Uuid,
     calls: Arc<Calls>,
@@ -278,7 +278,7 @@ pub(super) fn runtime_with_expiry_delta(
     )
 }
 
-pub(super) fn runtime_with_behavior(
+pub(crate) fn runtime_with_behavior(
     profile: &ServingExecutionProfile,
     epoch: Uuid,
     calls: Arc<Calls>,
@@ -322,7 +322,7 @@ pub(super) fn runtime_with_behavior(
     .unwrap()
 }
 
-pub(super) async fn start_decode(
+pub(crate) async fn start_decode(
     runtime: &DistributedServingRuntime,
     epoch: Uuid,
     execution_id: Uuid,
@@ -358,7 +358,7 @@ pub(super) async fn start_decode(
     }
 }
 
-pub(super) async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
+pub(crate) async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while counter.load(Ordering::SeqCst) != expected {
             tokio::task::yield_now().await;

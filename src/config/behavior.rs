@@ -116,6 +116,12 @@ impl PowerConfig {
     pub fn validate(&self) -> Result<()> {
         self.gpu.validate()?;
         self.serving_execution.validate()?;
+        if !self.serving_execution.is_aggregated() && self.api_keys.is_empty() {
+            return Err(PowerError::Config(
+                "prefill-decode serving requires api_keys for authenticated internal phase routes"
+                    .to_string(),
+            ));
+        }
 
         if self.prompt_cache_max_entries == 0
             || self.prompt_cache_max_entries > MAX_PROMPT_CACHE_ENTRIES

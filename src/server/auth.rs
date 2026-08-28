@@ -157,12 +157,43 @@ fn extract_bearer(header_value: &str) -> Option<&str> {
 /// not configured (`None`), all requests pass through.
 pub async fn middleware(
     State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if state.auth.is_none() {
+        return next.run(request).await;
+    }
+
+    authenticate_request(&state, request, next).await
+}
+
+/// Axum middleware for machine-to-machine routes that must never fail open.
+///
+/// Unlike [`middleware`], this rejects the request when no authentication
+/// provider is installed. Distributed phase APIs move opaque model state and
+/// therefore require service authentication in every deployment mode.
+pub async fn required_middleware(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if state.auth.is_none() {
+        record_auth_failure(&state, "service authentication is not configured");
+        return unauthorized_response("Service authentication is not configured");
+    }
+
+    authenticate_request(&state, request, next).await
+}
+
+async fn authenticate_request(
+    state: &AppState,
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
-    let auth = match &state.auth {
-        Some(auth) => auth,
-        None => return next.run(request).await,
+    let Some(auth) = state.auth.as_ref() else {
+        // Callers establish whether an absent provider is allowed before
+        // entering this shared path.
+        return unauthorized_response("Service authentication is not configured");
     };
 
     let token = request
@@ -180,34 +211,29 @@ pub async fn middleware(
                 }
                 next.run(request).await
             } else {
-                state.metrics.increment_auth_failure();
-                if let Some(ref audit) = state.audit {
-                    audit.log(&AuditEvent::failure(
-                        uuid::Uuid::new_v4().to_string(),
-                        None,
-                        "auth_failure",
-                        None,
-                        "invalid API key",
-                    ));
-                }
+                record_auth_failure(state, "invalid API key");
                 unauthorized_response("Invalid API key")
             }
         }
         None => {
-            state.metrics.increment_auth_failure();
-            if let Some(ref audit) = state.audit {
-                audit.log(&AuditEvent::failure(
-                    uuid::Uuid::new_v4().to_string(),
-                    None,
-                    "auth_failure",
-                    None,
-                    "missing Authorization header",
-                ));
-            }
+            record_auth_failure(state, "missing Authorization header");
             unauthorized_response(
                 "Missing or invalid Authorization header. Expected: Bearer <token>",
             )
         }
+    }
+}
+
+fn record_auth_failure(state: &AppState, reason: &str) {
+    state.metrics.increment_auth_failure();
+    if let Some(ref audit) = state.audit {
+        audit.log(&AuditEvent::failure(
+            uuid::Uuid::new_v4().to_string(),
+            None,
+            "auth_failure",
+            None,
+            reason,
+        ));
     }
 }
 

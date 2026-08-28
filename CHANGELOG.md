@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the authenticated `a3s.power.distributed-serving.v1` internal HTTP
+  boundary for decode preparation, prefill execution, decode execution, and
+  idempotent abort. Every call binds the process epoch and immutable execution
+  profile; decode output uses a versioned backpressure-preserving NDJSON stream,
+  and dropping that stream retains the runtime's compensating cleanup behavior.
+  Distributed profiles now require configured service API keys at startup.
 - Added a bounded `DistributedServingRuntime` that composes injected phase and
   state-transfer ports under one execution identity. It enforces decode
   prepare/consume/execute ordering, prefill execute/publish ordering, exact

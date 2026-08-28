@@ -1,4 +1,5 @@
 pub mod autoload;
+pub mod distributed_serving;
 pub mod health;
 pub mod openai;
 pub mod prompt_cache;
@@ -47,3 +48,7 @@ mod tests {
         assert!(!ts.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "distributed_serving_tests.rs"]
+mod distributed_serving_tests;

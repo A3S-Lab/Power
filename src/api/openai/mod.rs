@@ -134,7 +134,7 @@ fn local_backend_response_format(format: &ResponseFormat) -> serde_json::Value {
     }
 }
 
-fn openai_wire_response_format(format: &ResponseFormat) -> serde_json::Value {
+pub(crate) fn openai_wire_response_format(format: &ResponseFormat) -> serde_json::Value {
     let mut value = serde_json::Map::new();
     value.insert("type".to_string(), format.r#type.clone().into());
     if let Some(json_schema) = &format.json_schema {
