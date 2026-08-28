@@ -13,7 +13,7 @@ use crate::server::lock::{mutex_lock, read_lock, write_lock};
 use crate::server::log_stream::LogBuffer;
 use crate::server::metrics::Metrics;
 use crate::server::worker_observation::WorkerObservationSource;
-use crate::serving::StateTransferService;
+use crate::serving::{ServingPhaseExecutor, StateTransferService};
 use crate::tee::attestation::TeeProvider;
 use crate::tee::encrypted_model::DecryptedModel;
 use crate::tee::gpu::GpuEvidenceProvider;
@@ -66,6 +66,7 @@ pub struct AppState {
     pub limiter: Arc<crate::server::limiter::ConcurrencyLimiter>,
     worker_observations: WorkerObservationSource,
     pub(crate) state_transfer_service: Option<Arc<dyn StateTransferService>>,
+    pub(crate) phase_executor: Option<Arc<dyn ServingPhaseExecutor>>,
     pub log_buffer: LogBuffer,
     pub tee_provider: Option<Arc<dyn TeeProvider>>,
     pub gpu_evidence_provider: Option<Arc<dyn GpuEvidenceProvider>>,
@@ -121,6 +122,7 @@ impl AppState {
             limiter,
             worker_observations: WorkerObservationSource::new(),
             state_transfer_service: None,
+            phase_executor: None,
             log_buffer,
             tee_provider: None,
             gpu_evidence_provider: None,
@@ -163,6 +165,12 @@ impl AppState {
     /// composition root.
     pub fn with_state_transfer_service(mut self, service: Arc<dyn StateTransferService>) -> Self {
         self.state_transfer_service = Some(service);
+        self
+    }
+
+    /// Install the backend-owned executor for this process's distributed role.
+    pub fn with_phase_executor(mut self, executor: Arc<dyn ServingPhaseExecutor>) -> Self {
+        self.phase_executor = Some(executor);
         self
     }
 

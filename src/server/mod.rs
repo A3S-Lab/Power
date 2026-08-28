@@ -64,10 +64,15 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         mut backends,
         model_manifests,
         state_transfer_service,
+        phase_executor,
         include_default_backends,
     } = options;
     config.validate()?;
-    serving_composition::validate(&config, state_transfer_service.as_deref())?;
+    serving_composition::validate(
+        &config,
+        state_transfer_service.as_deref(),
+        phase_executor.as_deref(),
+    )?;
 
     // Ensure storage directories exist
     dirs::ensure_dirs()?;
@@ -199,6 +204,9 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
     };
     if let Some(service) = state_transfer_service {
         app_state = app_state.with_state_transfer_service(service);
+    }
+    if let Some(executor) = phase_executor {
+        app_state = app_state.with_phase_executor(executor);
     }
     if let Some(provider) = tee_provider {
         app_state = app_state.with_tee_provider(provider);

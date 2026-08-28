@@ -5,7 +5,8 @@ use crate::error::{PowerError, Result};
 
 use super::state_transfer::{MAX_INFLIGHT_TRANSFERS, MAX_TRANSFER_BYTES};
 use super::{
-    ServingPhase, StateKind, StateTransferBinding, StateTransferCapabilities, StateTransferProtocol,
+    PhaseExecutorCapabilities, ServingPhase, StateKind, StateTransferBinding,
+    StateTransferCapabilities, StateTransferProtocol,
 };
 
 const MAX_MODEL_NAME_BYTES: usize = 256;
@@ -247,6 +248,28 @@ impl ServingExecutionProfile {
         {
             return Err(PowerError::Config(
                 "state-transfer adapter does not satisfy the immutable serving profile".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate a backend-owned phase executor before server startup.
+    pub fn validate_phase_executor_capabilities(
+        &self,
+        capabilities: &PhaseExecutorCapabilities,
+    ) -> Result<()> {
+        self.validate()?;
+        capabilities.validate()?;
+        let Self::PrefillDecode { execution } = self else {
+            return Err(PowerError::Config(
+                "aggregated serving cannot install a distributed phase executor".to_string(),
+            ));
+        };
+        if capabilities.execution_profile_sha256 != self.sha256()?
+            || capabilities.phase != ServingPhase::from(execution.role)
+        {
+            return Err(PowerError::Config(
+                "phase executor does not satisfy the immutable serving profile".to_string(),
             ));
         }
         Ok(())

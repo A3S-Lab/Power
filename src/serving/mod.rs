@@ -5,6 +5,7 @@
 
 mod execution_profile;
 mod observation;
+mod phase_executor;
 mod state_transfer;
 mod state_transfer_service;
 
@@ -15,6 +16,13 @@ pub use execution_profile::{
 pub use observation::{
     AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,
     WorkerObservation, WORKER_OBSERVATION_SCHEMA,
+};
+pub use phase_executor::{
+    AbortPhaseExecution, ExecutePhaseExecution, ImportedModelState, PhaseDecision,
+    PhaseExecutionHandle, PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth,
+    PhaseRequest, PhaseResponseChunk, PhaseResponseStream, PreparePhaseExecution,
+    PreparedDecodePhase, PreparedPhaseExecution, PreparedPrefillPhase, ProducedModelState,
+    RecomputeReason, RetryableUnavailableReason, ServingPhaseExecutor, TerminalFailureReason,
 };
 pub use state_transfer::{
     StateKind, StateTransferBinding, StateTransferCapabilities, StateTransferIntegrity,
@@ -28,5 +36,7 @@ pub use state_transfer_service::{
 
 #[cfg(test)]
 mod execution_profile_tests;
+#[cfg(test)]
+mod phase_executor_tests;
 #[cfg(test)]
 mod state_transfer_tests;

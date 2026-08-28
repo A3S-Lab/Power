@@ -14,12 +14,14 @@ closed JSON object containing:
 - aggregate prompt-cache support, occupancy, capacity, and bounded pressure;
 - state-transfer capability and health.
 
-The default server advertises only the `aggregated` phase. A composition root
-may inject a typed `StateTransferService`; a valid adapter projects its
-state-transfer capability and current health, while a missing, invalid, or
-`unsupported` adapter fails closed. Transfer readiness does not add `prefill`
-or `decode` to the execution phase set: those phases require a separate,
-verified phase executor.
+The default server advertises only the `aggregated` phase. A disaggregated
+composition root must inject both a typed `StateTransferService` and a typed
+`ServingPhaseExecutor`, and both must bind the exact execution-profile digest
+and configured role. Only that complete pair projects `prefill` or `decode` as
+a capability. The phase is ready only while both services can accept work. A
+missing, mismatched, invalid, or unsupported member fails closed without
+falling back to an aggregated capability that the process was not configured
+to execute.
 
 ## State-transfer port
 
@@ -43,9 +45,9 @@ timeouts, integrity, and cleanup. Gateway selects and orchestrates workers;
 Cloud certifies compatible deployment generations. Neither receives KV bytes.
 
 This port does not by itself activate request-level P/D execution. The default
-Power backends do not inject a transfer service yet, and Gateway must continue
-to reject P/D scheduling until the selected deployment truthfully reports a
-compatible, ready adapter and the corresponding phase executor is installed.
+Power backends inject neither service, and Gateway must continue to reject P/D
+scheduling until the selected deployment truthfully reports a compatible,
+ready pair.
 
 ## Immutable execution profile
 
@@ -90,6 +92,33 @@ serving_execution {
 Static profile parsing and attestation binding do not make the phase runnable.
 Startup remains fail-closed until the composition root supplies both an exact
 profile-bound transfer adapter and a verified phase executor.
+
+## Phase-executor port
+
+`ServingPhaseExecutor` is the backend-owned boundary for one configured
+`prefill` or `decode` role. It receives the existing local Power chat or text
+request, but request values and process-local execution handles are not
+serializable and their debug representation is redacted. The backend adapter,
+not Power, owns tokenization, KV or recurrent layout, phase arithmetic,
+reservation state, response generation, and cleanup.
+
+The lifecycle separates preparation from execution. Preparation validates the
+model, process epoch, profile digest, role, and an expiry no longer than the ACL
+transfer timeout before any response bytes can be generated. A prefill
+execution produces only an opaque local state handle plus the exact bounded
+state binding; it is not transferable until the independent transfer adapter
+publishes it. A decode preparation names the exact destination handle and
+binding. `ImportedModelState` can be constructed only after the consume command
+and receipt prove the same destination process, source, binding, protocol,
+byte count, integrity result, and completion within the current local attempt.
+Power bounds consumption by the profile timeout and invokes adapter abort under
+the separately bound cancellation timeout before reporting a timeout.
+
+Every pre-response operation returns one closed `PhaseDecision`: `ready`,
+`recompute`, `retryable-unavailable` with an optional bounded delay, or
+`terminal-failure`. Recompute and failure reasons are closed enums rather than
+backend text. A transfer receipt proves state movement only; decode succeeds
+only when the backend executor subsequently returns a response stream.
 
 ## Ownership boundary
 

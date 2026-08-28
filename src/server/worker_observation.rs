@@ -62,7 +62,7 @@ impl WorkerObservationSource {
         let ttl = chrono::Duration::seconds(
             i64::try_from(state.config.worker_observation_ttl_seconds).unwrap_or(i64::MAX),
         );
-        let (state_transfer, transfer_health) = state_transfer_observation(state);
+        let serving = serving_observation(state);
 
         WorkerObservation {
             schema: WORKER_OBSERVATION_SCHEMA.to_string(),
@@ -71,11 +71,11 @@ impl WorkerObservationSource {
             observed_at,
             expires_at: observed_at + ttl,
             capabilities: WorkerCapabilities {
-                phases: vec![ServingPhase::Aggregated],
+                phases: serving.phases,
                 prompt_cache: prompt_cache_supported,
-                state_transfer,
+                state_transfer: serving.state_transfer,
             },
-            ready_phases: vec![ServingPhase::Aggregated],
+            ready_phases: serving.ready_phases,
             admission: AdmissionObservation {
                 active_limit: (state.config.max_concurrent_requests > 0)
                     .then_some(state.config.max_concurrent_requests),
@@ -88,7 +88,7 @@ impl WorkerObservationSource {
                 capacity,
                 pressure_basis_points,
             },
-            transfer_health,
+            transfer_health: serving.transfer_health,
         }
     }
 
@@ -97,22 +97,69 @@ impl WorkerObservationSource {
     }
 }
 
-fn state_transfer_observation(state: &AppState) -> (bool, TransferHealth) {
-    let Some(service) = state.state_transfer_service.as_ref() else {
-        return (false, TransferHealth::Unsupported);
-    };
-    let capabilities = service.capabilities();
-    let health = service.health();
-    if state
-        .config
-        .serving_execution
-        .validate_state_transfer_capabilities(&capabilities)
-        .is_err()
-        || matches!(health, TransferHealth::Unsupported)
-    {
-        return (false, TransferHealth::Unsupported);
+struct ServingObservation {
+    phases: Vec<ServingPhase>,
+    ready_phases: Vec<ServingPhase>,
+    state_transfer: bool,
+    transfer_health: TransferHealth,
+}
+
+fn serving_observation(state: &AppState) -> ServingObservation {
+    let profile = &state.config.serving_execution;
+    if profile.is_aggregated() {
+        return ServingObservation {
+            phases: vec![ServingPhase::Aggregated],
+            ready_phases: vec![ServingPhase::Aggregated],
+            state_transfer: false,
+            transfer_health: TransferHealth::Unsupported,
+        };
     }
-    (true, health)
+
+    let (Some(state_transfer), Some(phase_executor)) = (
+        state.state_transfer_service.as_ref(),
+        state.phase_executor.as_ref(),
+    ) else {
+        return unsupported_distributed_observation();
+    };
+    let transfer_capabilities = state_transfer.capabilities();
+    let executor_capabilities = phase_executor.capabilities();
+    let transfer_health = state_transfer.health();
+    if profile
+        .validate_state_transfer_capabilities(&transfer_capabilities)
+        .is_err()
+        || profile
+            .validate_phase_executor_capabilities(&executor_capabilities)
+            .is_err()
+        || matches!(transfer_health, TransferHealth::Unsupported)
+    {
+        return unsupported_distributed_observation();
+    }
+
+    let phase = profile.phase();
+    let transfer_ready = matches!(
+        transfer_health,
+        TransferHealth::Ready | TransferHealth::Degraded
+    );
+    let ready_phases = if transfer_ready && phase_executor.health().accepts_work() {
+        vec![phase]
+    } else {
+        Vec::new()
+    };
+    ServingObservation {
+        phases: vec![phase],
+        ready_phases,
+        state_transfer: true,
+        transfer_health,
+    }
+}
+
+fn unsupported_distributed_observation() -> ServingObservation {
+    ServingObservation {
+        phases: Vec::new(),
+        ready_phases: Vec::new(),
+        state_transfer: false,
+        transfer_health: TransferHealth::Unsupported,
+    }
 }
 
 fn cache_pressure_basis_points(entries: u64, capacity: u64) -> u16 {
@@ -138,11 +185,13 @@ mod tests {
     use crate::error::{PowerError, Result};
     use crate::model::registry::ModelRegistry;
     use crate::serving::{
-        AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole,
-        PrefillDecodeExecutionProfile, PrepareStateTransfer, PublishStateTransfer,
-        ServingExecutionProfile, ServingPrivacyMode, StateKind, StateTransferCapabilities,
-        StateTransferProtocol, StateTransferReceipt, StateTransferService, StateTransferSource,
-        StateTransferTarget,
+        AbortPhaseExecution, AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole,
+        ExecutePhaseExecution, PhaseDecision, PhaseExecutionOutput, PhaseExecutorCapabilities,
+        PhaseExecutorHealth, PrefillDecodeExecutionProfile, PreparePhaseExecution,
+        PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
+        ServingExecutionProfile, ServingPhaseExecutor, ServingPrivacyMode, StateKind,
+        StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
+        StateTransferService, StateTransferSource, StateTransferTarget,
     };
 
     use super::{cache_pressure_basis_points, AppState, ServingPhase, TransferHealth};
@@ -150,6 +199,11 @@ mod tests {
     struct TestStateTransferService {
         health: TransferHealth,
         capabilities: StateTransferCapabilities,
+    }
+
+    struct TestPhaseExecutor {
+        health: PhaseExecutorHealth,
+        capabilities: PhaseExecutorCapabilities,
     }
 
     fn execution_profile() -> ServingExecutionProfile {
@@ -213,16 +267,59 @@ mod tests {
         }
     }
 
-    fn state_with_transfer(health: TransferHealth) -> AppState {
+    #[async_trait]
+    impl ServingPhaseExecutor for TestPhaseExecutor {
+        fn capabilities(&self) -> PhaseExecutorCapabilities {
+            self.capabilities.clone()
+        }
+
+        fn health(&self) -> PhaseExecutorHealth {
+            self.health
+        }
+
+        async fn prepare(
+            &self,
+            _command: PreparePhaseExecution,
+        ) -> Result<PhaseDecision<PreparedPhaseExecution>> {
+            Err(PowerError::BackendNotAvailable(
+                "test phase executor".to_string(),
+            ))
+        }
+
+        async fn execute(
+            &self,
+            _command: ExecutePhaseExecution,
+        ) -> Result<PhaseDecision<PhaseExecutionOutput>> {
+            Err(PowerError::BackendNotAvailable(
+                "test phase executor".to_string(),
+            ))
+        }
+
+        async fn abort(&self, _command: AbortPhaseExecution) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn state_with_services(
+        transfer_health: TransferHealth,
+        executor_health: PhaseExecutorHealth,
+    ) -> AppState {
         let profile = execution_profile();
         let service = TestStateTransferService {
-            health,
+            health: transfer_health,
             capabilities: StateTransferCapabilities {
                 execution_profile_sha256: profile.sha256().unwrap(),
                 phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
                 protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
                 max_transfer_bytes: 1024,
                 max_inflight_transfers: 2,
+            },
+        };
+        let executor = TestPhaseExecutor {
+            health: executor_health,
+            capabilities: PhaseExecutorCapabilities {
+                execution_profile_sha256: profile.sha256().unwrap(),
+                phase: profile.phase(),
             },
         };
         let config = PowerConfig {
@@ -235,6 +332,7 @@ mod tests {
             Arc::new(config),
         )
         .with_state_transfer_service(Arc::new(service))
+        .with_phase_executor(Arc::new(executor))
     }
 
     #[test]
@@ -246,25 +344,38 @@ mod tests {
     }
 
     #[test]
-    fn ready_transfer_service_projects_transport_without_claiming_phase_execution() {
-        let state = state_with_transfer(TransferHealth::Ready);
+    fn ready_composed_services_project_the_exact_decode_phase() {
+        let state = state_with_services(TransferHealth::Ready, PhaseExecutorHealth::Ready);
         let observation = state.worker_observation();
 
         assert_eq!(observation.worker_epoch, state.worker_epoch());
-        assert_eq!(observation.capabilities.phases, [ServingPhase::Aggregated]);
-        assert_eq!(observation.ready_phases, [ServingPhase::Aggregated]);
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Decode]);
+        assert_eq!(observation.ready_phases, [ServingPhase::Decode]);
         assert!(observation.capabilities.state_transfer);
         assert_eq!(observation.transfer_health, TransferHealth::Ready);
     }
 
     #[test]
     fn unavailable_transfer_service_keeps_transport_capability() {
-        let observation = state_with_transfer(TransferHealth::Unavailable).worker_observation();
+        let observation =
+            state_with_services(TransferHealth::Unavailable, PhaseExecutorHealth::Ready)
+                .worker_observation();
 
         assert!(observation.capabilities.state_transfer);
-        assert_eq!(observation.capabilities.phases, [ServingPhase::Aggregated]);
-        assert_eq!(observation.ready_phases, [ServingPhase::Aggregated]);
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Decode]);
+        assert!(observation.ready_phases.is_empty());
         assert_eq!(observation.transfer_health, TransferHealth::Unavailable);
+    }
+
+    #[test]
+    fn unavailable_phase_executor_keeps_capability_but_suppresses_readiness() {
+        let observation =
+            state_with_services(TransferHealth::Ready, PhaseExecutorHealth::Unavailable)
+                .worker_observation();
+
+        assert!(observation.capabilities.state_transfer);
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Decode]);
+        assert!(observation.ready_phases.is_empty());
     }
 
     #[test]
@@ -284,6 +395,13 @@ mod tests {
                 max_transfer_bytes: 1024,
                 max_inflight_transfers: 2,
             },
+        }))
+        .with_phase_executor(Arc::new(TestPhaseExecutor {
+            health: PhaseExecutorHealth::Ready,
+            capabilities: PhaseExecutorCapabilities {
+                execution_profile_sha256: profile.sha256().unwrap(),
+                phase: ServingPhase::Decode,
+            },
         }));
 
         let observation = state.worker_observation();
@@ -293,10 +411,12 @@ mod tests {
 
     #[test]
     fn invalid_or_unsupported_adapter_fails_closed_in_observation() {
-        let mut state = state_with_transfer(TransferHealth::Unsupported);
+        let mut state =
+            state_with_services(TransferHealth::Unsupported, PhaseExecutorHealth::Ready);
         let observation = state.worker_observation();
         assert!(!observation.capabilities.state_transfer);
-        assert_eq!(observation.capabilities.phases, [ServingPhase::Aggregated]);
+        assert!(observation.capabilities.phases.is_empty());
+        assert!(observation.ready_phases.is_empty());
         assert_eq!(observation.transfer_health, TransferHealth::Unsupported);
 
         state.state_transfer_service = Some(Arc::new(TestStateTransferService {
@@ -311,6 +431,29 @@ mod tests {
         }));
         let observation = state.worker_observation();
         assert!(!observation.capabilities.state_transfer);
-        assert_eq!(observation.capabilities.phases, [ServingPhase::Aggregated]);
+        assert!(observation.capabilities.phases.is_empty());
+        assert!(observation.ready_phases.is_empty());
+    }
+
+    #[test]
+    fn missing_or_mismatched_phase_executor_fails_closed_in_observation() {
+        let mut state = state_with_services(TransferHealth::Ready, PhaseExecutorHealth::Ready);
+        state.phase_executor = None;
+        let observation = state.worker_observation();
+        assert!(observation.capabilities.phases.is_empty());
+        assert!(observation.ready_phases.is_empty());
+        assert!(!observation.capabilities.state_transfer);
+
+        let profile_sha256 = state.config.serving_execution.sha256().unwrap();
+        state.phase_executor = Some(Arc::new(TestPhaseExecutor {
+            health: PhaseExecutorHealth::Ready,
+            capabilities: PhaseExecutorCapabilities {
+                execution_profile_sha256: profile_sha256,
+                phase: ServingPhase::Prefill,
+            },
+        }));
+        let observation = state.worker_observation();
+        assert!(observation.capabilities.phases.is_empty());
+        assert!(observation.ready_phases.is_empty());
     }
 }

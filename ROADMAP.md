@@ -227,12 +227,13 @@ model-semantics owner.
   readiness, admission queue depth, active execution, prompt-cache
   occupancy/pressure, transfer health, observation generation and age without
   exposing prompts, tokens, KV bytes, tenant identity, or unbounded labels.
-- [ ] Accept an immutable `aggregated` or `prefill-decode` execution profile only
+- [x] Accept an immutable `aggregated` or `prefill-decode` execution profile only
   through closed A3S ACL. Power validates the exact model, backend, device,
   layout, peer, generation, byte, time, cancellation, privacy and attestation
   bindings before a phase or state-transfer operation.
-  The closed static profile, canonical digest, adapter binding, and fail-closed
-  startup gate are implemented; phase-executor composition remains open.
+  The closed static profile, canonical digest, transfer and phase-executor
+  bindings, fail-closed startup gate, and health-gated observation projection
+  are implemented.
 - [ ] Reuse the existing bounded admission, session replicas, weight hierarchy,
   sealed-state envelope, telemetry and receipt mechanisms. Device/host/local
   storage and peer tiers must not create a second cache or persistence format.
@@ -244,6 +245,8 @@ model-semantics owner.
   before response generation. Endpoint choice, flow control, request replay,
   desired replicas, placement, rollout and autoscaling remain Gateway or Cloud
   responsibilities.
+  The closed pre-response decision contract is implemented; concrete backend
+  adapters and cross-process orchestration evidence remain open.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support.

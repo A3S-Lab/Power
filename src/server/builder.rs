@@ -4,7 +4,7 @@ use crate::backend::{Backend, BackendRegistry};
 use crate::config::PowerConfig;
 use crate::error::Result;
 use crate::model::manifest::ModelManifest;
-use crate::serving::StateTransferService;
+use crate::serving::{ServingPhaseExecutor, StateTransferService};
 
 use super::log_stream::LogBuffer;
 
@@ -23,6 +23,7 @@ pub(super) struct PowerServerOptions {
     pub(super) backends: BackendRegistry,
     pub(super) model_manifests: Vec<ModelManifest>,
     pub(super) state_transfer_service: Option<Arc<dyn StateTransferService>>,
+    pub(super) phase_executor: Option<Arc<dyn ServingPhaseExecutor>>,
     pub(super) include_default_backends: bool,
 }
 
@@ -35,6 +36,7 @@ impl PowerServerBuilder {
                 backends: BackendRegistry::new(),
                 model_manifests: Vec::new(),
                 state_transfer_service: None,
+                phase_executor: None,
                 include_default_backends: true,
             },
         }
@@ -82,6 +84,13 @@ impl PowerServerBuilder {
         self
     }
 
+    /// Install the backend-owned executor for the configured prefill or decode
+    /// process role.
+    pub fn with_phase_executor(mut self, executor: Arc<dyn ServingPhaseExecutor>) -> Self {
+        self.options.phase_executor = Some(executor);
+        self
+    }
+
     /// Start with only caller-injected backends.
     pub fn without_default_backends(mut self) -> Self {
         self.options.include_default_backends = false;
@@ -107,14 +116,18 @@ mod tests {
     use crate::config::PowerConfig;
     use crate::model::manifest::{ModelFormat, ModelManifest};
     use crate::serving::{
-        AbortStateTransfer, ConsumeStateTransfer, PrepareStateTransfer, PublishStateTransfer,
-        ServingPhase, StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
-        StateTransferService, StateTransferSource, StateTransferTarget, TransferHealth,
+        AbortPhaseExecution, AbortStateTransfer, ConsumeStateTransfer, ExecutePhaseExecution,
+        PhaseDecision, PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth,
+        PreparePhaseExecution, PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
+        ServingPhase, ServingPhaseExecutor, StateTransferCapabilities, StateTransferProtocol,
+        StateTransferReceipt, StateTransferService, StateTransferSource, StateTransferTarget,
+        TransferHealth,
     };
 
     use super::PowerServerBuilder;
 
     struct TestStateTransferService;
+    struct TestPhaseExecutor;
 
     #[async_trait]
     impl StateTransferService for TestStateTransferService {
@@ -164,6 +177,42 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl ServingPhaseExecutor for TestPhaseExecutor {
+        fn capabilities(&self) -> PhaseExecutorCapabilities {
+            PhaseExecutorCapabilities {
+                execution_profile_sha256: "8".repeat(64),
+                phase: ServingPhase::Decode,
+            }
+        }
+
+        fn health(&self) -> PhaseExecutorHealth {
+            PhaseExecutorHealth::Ready
+        }
+
+        async fn prepare(
+            &self,
+            _command: PreparePhaseExecution,
+        ) -> crate::error::Result<PhaseDecision<PreparedPhaseExecution>> {
+            Err(crate::error::PowerError::BackendNotAvailable(
+                "test phase executor".to_string(),
+            ))
+        }
+
+        async fn execute(
+            &self,
+            _command: ExecutePhaseExecution,
+        ) -> crate::error::Result<PhaseDecision<PhaseExecutionOutput>> {
+            Err(crate::error::PowerError::BackendNotAvailable(
+                "test phase executor".to_string(),
+            ))
+        }
+
+        async fn abort(&self, _command: AbortPhaseExecution) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn injected_backends_are_typed_and_keep_registration_order() {
         let options = PowerServerBuilder::new(PowerConfig::default())
@@ -200,6 +249,17 @@ mod tests {
             .expect("state-transfer service");
         assert_eq!(service.health(), TransferHealth::Ready);
         service.capabilities().validate().unwrap();
+    }
+
+    #[test]
+    fn phase_executor_is_a_typed_optional_extension() {
+        let options = PowerServerBuilder::new(PowerConfig::default())
+            .with_phase_executor(Arc::new(TestPhaseExecutor))
+            .into_options();
+
+        let executor = options.phase_executor.expect("phase executor");
+        assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
+        executor.capabilities().validate().unwrap();
     }
 
     #[test]

@@ -306,6 +306,13 @@ used by attestation. TEE deployments add verifier-owned model hashes,
 measurements, and strict policy; simulated attestation never passes strict
 verification.
 
+The built-in composition remains aggregated. A downstream disaggregated build
+must inject an exact profile-bound `StateTransferService` and
+`ServingPhaseExecutor` through `PowerServerBuilder`; either service alone is a
+startup error. Power publishes the configured P/D role only when both contracts
+match, and suppresses readiness whenever transfer or phase execution cannot
+accept work. Transport completion alone never counts as successful decode.
+
 ## API surface
 
 | Method | Endpoint | Purpose |
