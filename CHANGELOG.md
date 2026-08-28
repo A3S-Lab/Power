@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a bounded `DistributedServingRuntime` that composes injected phase and
+  state-transfer ports under one execution identity. It enforces decode
+  prepare/consume/execute ordering, prefill execute/publish ordering, exact
+  reservation lifetimes, stream cancellation, expiry and compensating cleanup;
+  unconfirmed cleanup suppresses readiness for the process epoch. Server
+  composition and worker observation now retain this runtime as the single
+  distributed-serving readiness source.
+
 ## [1.0.0] - 2026-08-24
 
 ### Added

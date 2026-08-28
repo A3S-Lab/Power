@@ -82,6 +82,10 @@ impl PreparedPrefillPhase {
     pub fn execution(&self) -> &PhaseExecutionHandle {
         &self.execution
     }
+
+    pub fn expires_at(&self) -> DateTime<Utc> {
+        self.expires_at
+    }
 }
 
 /// Decode reservation and the exact local destination that receives state.
@@ -165,6 +169,10 @@ impl PreparedDecodePhase {
 
     pub fn binding(&self) -> &StateTransferBinding {
         &self.binding
+    }
+
+    pub fn expires_at(&self) -> DateTime<Utc> {
+        self.expires_at
     }
 }
 
@@ -463,18 +471,5 @@ impl PhaseExecutionOutput {
             Self::Prefill(_) => ServingPhase::Prefill,
             Self::Decode(_) => ServingPhase::Decode,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AbortPhaseExecution {
-    pub execution_id: Uuid,
-    pub local_worker_epoch: Uuid,
-    pub execution: PhaseExecutionHandle,
-}
-
-impl AbortPhaseExecution {
-    pub fn validate(&self) -> Result<()> {
-        validate_command_identity(self.execution_id, self.local_worker_epoch)
     }
 }

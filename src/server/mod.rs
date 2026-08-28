@@ -27,7 +27,7 @@ use crate::error::{PowerError, Result};
 use crate::model::manifest::ModelFormat;
 use crate::model::registry::ModelRegistry;
 use crate::server::log_stream::LogBuffer;
-use crate::serving::BoundedStateTransferService;
+use crate::serving::{BoundedStateTransferService, DistributedServingRuntime};
 use crate::tee;
 use crate::tee::attestation::{TeeProvider, TeeType};
 use crate::tee::gpu::{normalize_nras_rest_endpoint, provider_from_config, GpuEvidenceProvider};
@@ -203,16 +203,26 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         Some(buf) => state::AppState::with_log_buffer(registry, backends, config.clone(), buf),
         None => state::AppState::new(registry, backends, config.clone()),
     };
-    if let Some(service) = state_transfer_service {
-        let service = BoundedStateTransferService::new(
-            config.serving_execution.clone(),
-            app_state.worker_epoch(),
-            service,
-        )?;
-        app_state = app_state.with_state_transfer_service(Arc::new(service));
-    }
-    if let Some(executor) = phase_executor {
-        app_state = app_state.with_phase_executor(executor);
+    match (state_transfer_service, phase_executor) {
+        (Some(service), Some(executor)) => {
+            let transfer = Arc::new(BoundedStateTransferService::new(
+                config.serving_execution.clone(),
+                app_state.worker_epoch(),
+                service,
+            )?);
+            let runtime = DistributedServingRuntime::new(
+                config.serving_execution.clone(),
+                transfer,
+                executor,
+            )?;
+            app_state = app_state.with_distributed_serving(Arc::new(runtime));
+        }
+        (None, None) => {}
+        _ => {
+            return Err(PowerError::Config(
+                "distributed serving composition changed after validation".to_string(),
+            ));
+        }
     }
     if let Some(provider) = tee_provider {
         app_state = app_state.with_tee_provider(provider);

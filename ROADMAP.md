@@ -240,7 +240,9 @@ model-semantics owner.
   A process-bound transfer lifecycle now enforces fail-fast capacity,
   idempotent leases, content-free counters, monotonic expiry, bounded abort and
   fail-closed cleanup health around every injected data-path adapter; backend
-  memory ownership and cross-process evidence remain open.
+  memory ownership and cross-process evidence remain open. A request-level
+  runtime now composes that lifecycle with phase execution under one bounded
+  execution lease and is the server's single source of distributed readiness.
 - [ ] Keep tokenization, KV/recurrent layout, serialization, phase arithmetic and
   semantic parity in the owning model/backend adapter. Power moves only opaque,
   bounded authenticated state and never claims a cache hit or successful
@@ -250,7 +252,8 @@ model-semantics owner.
   desired replicas, placement, rollout and autoscaling remain Gateway or Cloud
   responsibilities.
   The closed pre-response decision contract is implemented; concrete backend
-  adapters and cross-process orchestration evidence remain open.
+  adapters, a Gateway-facing Power orchestration endpoint, and cross-process
+  orchestration evidence remain open.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support.

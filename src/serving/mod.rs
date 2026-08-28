@@ -4,6 +4,7 @@
 //! do not choose endpoints, create replicas, or define model-owned KV layouts.
 
 mod bounded_state_transfer;
+mod distributed_serving;
 mod execution_profile;
 mod observation;
 mod phase_executor;
@@ -11,6 +12,10 @@ mod state_transfer;
 mod state_transfer_service;
 
 pub use bounded_state_transfer::{BoundedStateTransferService, StateTransferRuntimeSnapshot};
+pub use distributed_serving::{
+    DecodePhaseRequest, DistributedServingRuntime, PrefillPhaseRequest, PreparedDecodeTransfer,
+    PublishedPrefillState,
+};
 pub use execution_profile::{
     DisaggregatedServingRole, PrefillDecodeExecutionProfile, ServingExecutionProfile,
     ServingPrivacyMode,
@@ -38,6 +43,8 @@ pub use state_transfer_service::{
 
 #[cfg(test)]
 mod bounded_state_transfer_tests;
+#[cfg(test)]
+mod distributed_serving_tests;
 #[cfg(test)]
 mod execution_profile_tests;
 #[cfg(test)]

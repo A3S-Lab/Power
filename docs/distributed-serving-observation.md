@@ -59,10 +59,20 @@ deadline, lease, and cleanup-verification policy. Gateway selects and
 orchestrates workers; Cloud certifies compatible deployment generations.
 Neither receives KV bytes.
 
-This port does not by itself activate request-level P/D execution. The default
-Power backends inject neither service, and Gateway must continue to reject P/D
-scheduling until the selected deployment truthfully reports a compatible,
-ready pair.
+When both ports are injected, the composition root assembles one
+`DistributedServingRuntime`; AppState and worker observation retain that runtime
+as the single source of distributed readiness. It reserves one bounded local
+lease per execution ID, prepares a decode destination before state movement,
+publishes prefill state only after phase execution, consumes verified state
+before decode execution, and owns cancellation until the returned stream ends.
+Expiry, caller cancellation, non-ready decisions, invalid adapter output, and
+explicit abort all trigger compensating phase and transfer cleanup. An
+unconfirmed cleanup permanently suppresses new work for that process epoch.
+
+The default Power backends inject neither port, and this repository does not yet
+ship a concrete distributed backend/transport pair or a Gateway-facing P/D
+orchestration endpoint. Gateway must therefore continue to reject P/D dispatch
+until a selected deployment truthfully supplies and exposes that complete path.
 
 ## Immutable execution profile
 
@@ -134,6 +144,11 @@ Every pre-response operation returns one closed `PhaseDecision`: `ready`,
 `terminal-failure`. Recompute and failure reasons are closed enums rather than
 backend text. A transfer receipt proves state movement only; decode succeeds
 only when the backend executor subsequently returns a response stream.
+
+Phase abort accepts either an in-progress preparation without a backend handle
+or a completed reservation with its opaque handle. Prepared phase lifetimes
+must exactly equal the caller-bound execution lifetime; an adapter cannot
+silently shorten or extend a distributed request lease.
 
 ## Ownership boundary
 

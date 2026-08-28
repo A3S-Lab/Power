@@ -115,32 +115,16 @@ fn serving_observation(state: &AppState) -> ServingObservation {
         };
     }
 
-    let (Some(state_transfer), Some(phase_executor)) = (
-        state.state_transfer_service.as_ref(),
-        state.phase_executor.as_ref(),
-    ) else {
+    let Some(runtime) = state.distributed_serving.as_ref() else {
         return unsupported_distributed_observation();
     };
-    let transfer_capabilities = state_transfer.capabilities();
-    let executor_capabilities = phase_executor.capabilities();
-    let transfer_health = state_transfer.health();
-    if profile
-        .validate_state_transfer_capabilities(&transfer_capabilities)
-        .is_err()
-        || profile
-            .validate_phase_executor_capabilities(&executor_capabilities)
-            .is_err()
-        || matches!(transfer_health, TransferHealth::Unsupported)
-    {
+    let transfer_health = runtime.transfer_health();
+    if runtime.profile() != profile || matches!(transfer_health, TransferHealth::Unsupported) {
         return unsupported_distributed_observation();
     }
 
     let phase = profile.phase();
-    let transfer_ready = matches!(
-        transfer_health,
-        TransferHealth::Ready | TransferHealth::Degraded
-    );
-    let ready_phases = if transfer_ready && phase_executor.health().accepts_work() {
+    let ready_phases = if runtime.accepts_work() {
         vec![phase]
     } else {
         Vec::new()
@@ -185,13 +169,14 @@ mod tests {
     use crate::error::{PowerError, Result};
     use crate::model::registry::ModelRegistry;
     use crate::serving::{
-        AbortPhaseExecution, AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole,
-        ExecutePhaseExecution, PhaseDecision, PhaseExecutionOutput, PhaseExecutorCapabilities,
-        PhaseExecutorHealth, PrefillDecodeExecutionProfile, PreparePhaseExecution,
-        PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
-        ServingExecutionProfile, ServingPhaseExecutor, ServingPrivacyMode, StateKind,
-        StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
-        StateTransferService, StateTransferSource, StateTransferTarget,
+        AbortPhaseExecution, AbortStateTransfer, BoundedStateTransferService, ConsumeStateTransfer,
+        DisaggregatedServingRole, DistributedServingRuntime, ExecutePhaseExecution, PhaseDecision,
+        PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth,
+        PrefillDecodeExecutionProfile, PreparePhaseExecution, PrepareStateTransfer,
+        PreparedPhaseExecution, PublishStateTransfer, ServingExecutionProfile,
+        ServingPhaseExecutor, ServingPrivacyMode, StateKind, StateTransferCapabilities,
+        StateTransferProtocol, StateTransferReceipt, StateTransferService, StateTransferSource,
+        StateTransferTarget,
     };
 
     use super::{cache_pressure_basis_points, AppState, ServingPhase, TransferHealth};
@@ -207,6 +192,10 @@ mod tests {
     }
 
     fn execution_profile() -> ServingExecutionProfile {
+        execution_profile_with_generation(7)
+    }
+
+    fn execution_profile_with_generation(generation: u64) -> ServingExecutionProfile {
         ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
             role: DisaggregatedServingRole::Decode,
             model: "internal/model-v1".to_string(),
@@ -217,7 +206,7 @@ mod tests {
             device_sha256: "4".repeat(64),
             layout_sha256: "5".repeat(64),
             peer_set_sha256: "6".repeat(64),
-            generation: 7,
+            generation,
             protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
             state_kind: StateKind::KvCache,
             max_state_bytes: 1024,
@@ -323,16 +312,24 @@ mod tests {
             },
         };
         let config = PowerConfig {
-            serving_execution: profile,
+            serving_execution: profile.clone(),
             ..PowerConfig::default()
         };
-        AppState::new(
+        let state = AppState::new(
             Arc::new(ModelRegistry::new()),
             Arc::new(BackendRegistry::new()),
             Arc::new(config),
+        );
+        let transfer = BoundedStateTransferService::new(
+            profile.clone(),
+            state.worker_epoch(),
+            Arc::new(service),
         )
-        .with_state_transfer_service(Arc::new(service))
-        .with_phase_executor(Arc::new(executor))
+        .unwrap();
+        let runtime =
+            DistributedServingRuntime::new(profile, Arc::new(transfer), Arc::new(executor))
+                .unwrap();
+        state.with_distributed_serving(Arc::new(runtime))
     }
 
     #[test]
@@ -379,30 +376,15 @@ mod tests {
     }
 
     #[test]
-    fn aggregated_profile_never_projects_an_injected_transport() {
-        let profile = execution_profile();
+    fn aggregated_profile_never_projects_an_injected_distributed_runtime() {
+        let distributed = state_with_services(TransferHealth::Ready, PhaseExecutorHealth::Ready);
+        let runtime = distributed.distributed_serving.unwrap();
         let state = AppState::new(
             Arc::new(ModelRegistry::new()),
             Arc::new(BackendRegistry::new()),
             Arc::new(PowerConfig::default()),
         )
-        .with_state_transfer_service(Arc::new(TestStateTransferService {
-            health: TransferHealth::Ready,
-            capabilities: StateTransferCapabilities {
-                execution_profile_sha256: profile.sha256().unwrap(),
-                phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
-                protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
-                max_transfer_bytes: 1024,
-                max_inflight_transfers: 2,
-            },
-        }))
-        .with_phase_executor(Arc::new(TestPhaseExecutor {
-            health: PhaseExecutorHealth::Ready,
-            capabilities: PhaseExecutorCapabilities {
-                execution_profile_sha256: profile.sha256().unwrap(),
-                phase: ServingPhase::Decode,
-            },
-        }));
+        .with_distributed_serving(runtime);
 
         let observation = state.worker_observation();
         assert!(!observation.capabilities.state_transfer);
@@ -410,50 +392,35 @@ mod tests {
     }
 
     #[test]
-    fn invalid_or_unsupported_adapter_fails_closed_in_observation() {
-        let mut state =
-            state_with_services(TransferHealth::Unsupported, PhaseExecutorHealth::Ready);
-        let observation = state.worker_observation();
-        assert!(!observation.capabilities.state_transfer);
-        assert!(observation.capabilities.phases.is_empty());
-        assert!(observation.ready_phases.is_empty());
-        assert_eq!(observation.transfer_health, TransferHealth::Unsupported);
-
-        state.state_transfer_service = Some(Arc::new(TestStateTransferService {
-            health: TransferHealth::Ready,
-            capabilities: StateTransferCapabilities {
-                execution_profile_sha256: state.config.serving_execution.sha256().unwrap(),
-                phases: vec![ServingPhase::Decode, ServingPhase::Prefill],
-                protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
-                max_transfer_bytes: 1024,
-                max_inflight_transfers: 2,
-            },
-        }));
-        let observation = state.worker_observation();
-        assert!(!observation.capabilities.state_transfer);
-        assert!(observation.capabilities.phases.is_empty());
-        assert!(observation.ready_phases.is_empty());
-    }
-
-    #[test]
-    fn missing_or_mismatched_phase_executor_fails_closed_in_observation() {
-        let mut state = state_with_services(TransferHealth::Ready, PhaseExecutorHealth::Ready);
-        state.phase_executor = None;
+    fn missing_or_mismatched_runtime_fails_closed_in_observation() {
+        let profile = execution_profile();
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig {
+                serving_execution: profile,
+                ..PowerConfig::default()
+            }),
+        );
         let observation = state.worker_observation();
         assert!(observation.capabilities.phases.is_empty());
         assert!(observation.ready_phases.is_empty());
         assert!(!observation.capabilities.state_transfer);
 
-        let profile_sha256 = state.config.serving_execution.sha256().unwrap();
-        state.phase_executor = Some(Arc::new(TestPhaseExecutor {
-            health: PhaseExecutorHealth::Ready,
-            capabilities: PhaseExecutorCapabilities {
-                execution_profile_sha256: profile_sha256,
-                phase: ServingPhase::Prefill,
-            },
-        }));
+        let distributed = state_with_services(TransferHealth::Ready, PhaseExecutorHealth::Ready);
+        let runtime = distributed.distributed_serving.unwrap();
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig {
+                serving_execution: execution_profile_with_generation(8),
+                ..PowerConfig::default()
+            }),
+        )
+        .with_distributed_serving(runtime);
         let observation = state.worker_observation();
         assert!(observation.capabilities.phases.is_empty());
         assert!(observation.ready_phases.is_empty());
+        assert!(!observation.capabilities.state_transfer);
     }
 }

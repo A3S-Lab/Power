@@ -219,6 +219,27 @@ fn operational_decisions_are_closed_and_retry_delay_is_bounded() {
     .is_err());
 }
 
+#[test]
+fn phase_abort_covers_preparation_and_redacts_prepared_handles() {
+    let execution_id = Uuid::new_v4();
+    let worker_epoch = Uuid::new_v4();
+    let preparing = AbortPhaseExecution::preparing(execution_id, worker_epoch).unwrap();
+    preparing.validate().unwrap();
+    assert!(preparing.execution().is_none());
+
+    let prepared = AbortPhaseExecution::prepared(
+        execution_id,
+        worker_epoch,
+        PhaseExecutionHandle::new("private-adapter-handle").unwrap(),
+    )
+    .unwrap();
+    prepared.validate().unwrap();
+    assert!(prepared.execution().is_some());
+    let rendered = format!("{prepared:?}");
+    assert!(rendered.contains("REDACTED"));
+    assert!(!rendered.contains("private-adapter-handle"));
+}
+
 #[tokio::test]
 async fn decode_can_run_only_with_state_consumed_into_its_prepared_destination() {
     let now = Utc::now();

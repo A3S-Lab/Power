@@ -10,12 +10,14 @@ use crate::error::{PowerError, Result};
 
 use super::{ServingExecutionProfile, ServingPhase};
 
+mod abort;
 mod lifecycle;
 
+pub use abort::AbortPhaseExecution;
 pub use lifecycle::{
-    AbortPhaseExecution, ExecutePhaseExecution, ImportedModelState, PhaseExecutionOutput,
-    PhaseResponseChunk, PhaseResponseStream, PreparedDecodePhase, PreparedPhaseExecution,
-    PreparedPrefillPhase, ProducedModelState,
+    ExecutePhaseExecution, ImportedModelState, PhaseExecutionOutput, PhaseResponseChunk,
+    PhaseResponseStream, PreparedDecodePhase, PreparedPhaseExecution, PreparedPrefillPhase,
+    ProducedModelState,
 };
 
 const MAX_LOCAL_HANDLE_BYTES: usize = 512;
