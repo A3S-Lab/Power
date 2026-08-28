@@ -7,6 +7,7 @@ pub mod log_stream;
 pub mod metrics;
 pub mod request_context;
 pub mod router;
+mod serving_composition;
 pub mod state;
 pub use builder::PowerServerBuilder;
 #[cfg(any(
@@ -66,17 +67,7 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         include_default_backends,
     } = options;
     config.validate()?;
-    if let Some(service) = state_transfer_service.as_ref() {
-        service.capabilities().validate()?;
-        if matches!(
-            service.health(),
-            crate::serving::TransferHealth::Unsupported
-        ) {
-            return Err(PowerError::Config(
-                "an injected state-transfer service cannot report unsupported health".to_string(),
-            ));
-        }
-    }
+    serving_composition::validate(&config, state_transfer_service.as_deref())?;
 
     // Ensure storage directories exist
     dirs::ensure_dirs()?;

@@ -143,11 +143,12 @@ pub fn canonical_gpu_execution_digest(gpu: &GpuConfig) -> Result<Vec<u8>> {
 
 /// Return the SHA-256 digest of Power's canonical server-side inference policy.
 ///
-/// This binds the configured speculative-decoding, prompt-cache, memory-load,
-/// threading, Flash Attention, and request-slot settings. Request-specific
-/// overrides remain bound by inference receipts. `spec_mode = "auto"` is
-/// intentionally distinct from every explicit strategy; callers that need to
-/// prove one exact decoder must configure and pin that explicit mode.
+/// This binds the configured serving-execution profile, speculative decoding,
+/// prompt cache, memory load, threading, Flash Attention, and request-slot
+/// settings. Request-specific overrides remain bound by inference receipts.
+/// `spec_mode = "auto"` is intentionally distinct from every explicit
+/// strategy; callers that need to prove one exact decoder must configure and
+/// pin that explicit mode.
 pub fn canonical_inference_execution_digest(config: &PowerConfig) -> Result<Vec<u8>> {
     let spec_mode = SpeculativeStrategy::parse(&config.spec_mode).ok_or_else(|| {
         PowerError::Config(format!("unsupported spec_mode '{}'", config.spec_mode))
@@ -156,6 +157,7 @@ pub fn canonical_inference_execution_digest(config: &PowerConfig) -> Result<Vec<
     let keep_alive_seconds = crate::config::parse_keep_alive(&config.keep_alive)
         .map_err(PowerError::Config)?
         .as_secs();
+    let serving_execution_profile_sha256 = config.serving_execution.sha256()?;
 
     let canonical = serde_json::json!({
         "flash_attention": config.flash_attention,
@@ -173,12 +175,13 @@ pub fn canonical_inference_execution_digest(config: &PowerConfig) -> Result<Vec<
         "spec_mtp_fr_vocab_size": config.spec_mtp_fr_vocab_size,
         "spec_mtp_recurrent_chain": config.spec_mtp_recurrent_chain,
         "spec_mtp_recurrent_snapshots": config.spec_mtp_recurrent_snapshots,
+        "serving_execution_profile_sha256": serving_execution_profile_sha256,
         "use_mlock": config.use_mlock,
         "use_mmap": config.use_mmap,
     });
     let bytes = serde_json::to_vec(&canonical)?;
     let mut hasher = Sha256::new();
-    hasher.update(b"a3s.power.inference-execution.v1\0");
+    hasher.update(b"a3s.power.inference-execution.v2\0");
     hasher.update(bytes);
     Ok(hasher.finalize().to_vec())
 }
@@ -301,6 +304,10 @@ mod tests {
 
     use super::*;
     use crate::model::manifest::{ManifestMessage, ModelManifest};
+    use crate::serving::{
+        DisaggregatedServingRole, PrefillDecodeExecutionProfile, ServingExecutionProfile,
+        ServingPrivacyMode, StateKind, StateTransferProtocol,
+    };
 
     fn manifest() -> ModelManifest {
         ModelManifest {
@@ -476,6 +483,43 @@ mod tests {
         assert_ne!(
             canonical_inference_execution_digest(&baseline).unwrap(),
             canonical_inference_execution_digest(&tuned).unwrap()
+        );
+    }
+
+    #[test]
+    fn inference_execution_digest_binds_serving_execution_profile() {
+        let baseline = PowerConfig::default();
+        let distributed = PowerConfig {
+            serving_execution: ServingExecutionProfile::prefill_decode(
+                PrefillDecodeExecutionProfile {
+                    role: DisaggregatedServingRole::Prefill,
+                    model: "internal/model-v1".to_string(),
+                    model_sha256: "1".repeat(64),
+                    backend: "llama.cpp".to_string(),
+                    backend_sha256: "2".repeat(64),
+                    execution_sha256: "3".repeat(64),
+                    device_sha256: "4".repeat(64),
+                    layout_sha256: "5".repeat(64),
+                    peer_set_sha256: "6".repeat(64),
+                    generation: 7,
+                    protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
+                    state_kind: StateKind::KvCache,
+                    max_state_bytes: 8 * 1024 * 1024 * 1024,
+                    max_inflight_transfers: 32,
+                    transfer_timeout_ms: 30_000,
+                    cancellation_timeout_ms: 5_000,
+                    privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+                    privacy_policy_sha256: "7".repeat(64),
+                    attestation_policy_sha256: Some("8".repeat(64)),
+                },
+            )
+            .unwrap(),
+            ..baseline.clone()
+        };
+
+        assert_ne!(
+            canonical_inference_execution_digest(&baseline).unwrap(),
+            canonical_inference_execution_digest(&distributed).unwrap()
         );
     }
 

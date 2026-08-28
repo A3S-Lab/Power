@@ -117,6 +117,11 @@ pub(super) fn serialize(config: &PowerConfig) -> Result<String> {
         .ok_or_else(|| PowerError::Config("serialized Power configuration omitted gpu".into()))?;
     blocks.push(json_object_block("gpu", gpu)?);
 
+    let serving_execution = current.remove("serving_execution").ok_or_else(|| {
+        PowerError::Config("serialized Power configuration omitted serving_execution".into())
+    })?;
+    blocks.push(json_object_block("serving_execution", serving_execution)?);
+
     let gpu_attestation = current.remove("gpu_attestation").ok_or_else(|| {
         PowerError::Config("serialized Power configuration omitted gpu_attestation".into())
     })?;
@@ -242,6 +247,10 @@ fn power_schema() -> Schema {
     schema
         .block("gpu", optional_singleton_block(gpu_schema()))
         .block(
+            "serving_execution",
+            optional_singleton_block(serving_execution_schema()),
+        )
+        .block(
             "gpu_attestation",
             optional_singleton_block(gpu_attestation_schema()),
         )
@@ -262,6 +271,39 @@ fn power_schema() -> Schema {
         .block("model_hash", labeled_string_map_block("digest"))
         .block("expected_measurement", labeled_string_map_block("digest"))
         .block("proxy_upstream", labeled_string_map_block("url"))
+}
+
+fn serving_execution_schema() -> Schema {
+    let mut schema =
+        Schema::new().attribute("profile", AttributeSchema::required(ValueSchema::string()));
+    for name in [
+        "role",
+        "model",
+        "model_sha256",
+        "backend",
+        "backend_sha256",
+        "execution_sha256",
+        "device_sha256",
+        "layout_sha256",
+        "peer_set_sha256",
+        "protocol",
+        "state_kind",
+        "privacy",
+        "privacy_policy_sha256",
+        "attestation_policy_sha256",
+    ] {
+        schema = schema.attribute(name, AttributeSchema::optional(ValueSchema::string()));
+    }
+    for name in [
+        "generation",
+        "max_state_bytes",
+        "max_inflight_transfers",
+        "transfer_timeout_ms",
+        "cancellation_timeout_ms",
+    ] {
+        schema = schema.attribute(name, AttributeSchema::optional(ValueSchema::number()));
+    }
+    schema
 }
 
 fn gpu_schema() -> Schema {
@@ -349,7 +391,8 @@ fn document_to_json(document: &Document) -> Result<serde_json::Value> {
         }
 
         match block.name.as_str() {
-            "gpu" | "gpu_attestation" | "model_key_source" | "audit_key_source" => {
+            "gpu" | "gpu_attestation" | "serving_execution" | "model_key_source"
+            | "audit_key_source" => {
                 root.insert(block.name.clone(), block_to_json(block)?);
             }
             "key_rotation_source" => key_rotation_sources.push(block_to_json(block)?),
@@ -635,5 +678,61 @@ mod tests {
         assert_eq!(decoded.host, config.host);
         assert_eq!(decoded.port, config.port);
         assert_eq!(decoded.proxy_upstreams, config.proxy_upstreams);
+    }
+
+    #[test]
+    fn round_trips_closed_prefill_decode_execution_profile() {
+        use crate::serving::{
+            DisaggregatedServingRole, PrefillDecodeExecutionProfile, ServingExecutionProfile,
+            ServingPrivacyMode, StateKind, StateTransferProtocol,
+        };
+
+        let profile = ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".into(),
+            model_sha256: "1".repeat(64),
+            backend: "llama.cpp".into(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 8 * 1024 * 1024 * 1024,
+            max_inflight_transfers: 32,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: Some("8".repeat(64)),
+        })
+        .unwrap();
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            ..PowerConfig::default()
+        };
+
+        let encoded = serialize(&config).unwrap();
+        assert!(encoded.contains("serving_execution"));
+        assert!(encoded.contains("prefill-decode"));
+        let decoded = deserialize(&encoded).unwrap();
+        assert_eq!(decoded.serving_execution, profile);
+        decoded.validate().unwrap();
+    }
+
+    #[test]
+    fn omitted_execution_profile_defaults_to_aggregated() {
+        let decoded = deserialize("host = \"127.0.0.1\"\n").unwrap();
+        assert!(decoded.serving_execution.is_aggregated());
+    }
+
+    #[test]
+    fn execution_profile_rejects_unknown_fields() {
+        let error =
+            deserialize("serving_execution { profile = \"aggregated\" unexpected = true }\n")
+                .unwrap_err();
+        assert!(error.to_string().contains("acl.schema.unknown_attribute"));
     }
 }

@@ -355,6 +355,10 @@ pub struct PowerConfig {
     #[serde(default = "default_worker_observation_ttl_seconds")]
     pub worker_observation_ttl_seconds: u64,
 
+    /// Immutable local execution role and distributed-state trust binding.
+    #[serde(default)]
+    pub serving_execution: crate::serving::ServingExecutionProfile,
+
     /// GPU acceleration settings
     #[serde(default)]
     pub gpu: GpuConfig,
@@ -777,6 +781,7 @@ impl Default for PowerConfig {
             prompt_cache_max_entries: default_prompt_cache_max_entries(),
             prompt_cache_ttl_seconds: default_prompt_cache_ttl_seconds(),
             worker_observation_ttl_seconds: default_worker_observation_ttl_seconds(),
+            serving_execution: crate::serving::ServingExecutionProfile::default(),
             gpu: GpuConfig::default(),
             gpu_attestation: GpuAttestationConfig::default(),
             spec_mode: default_spec_mode(),

@@ -285,6 +285,10 @@ prompt_cache_ttl_seconds = 300
 worker_observation_ttl_seconds = 15
 keep_alive = "5m"
 
+serving_execution {
+  profile = "aggregated"
+}
+
 flash_attention = true
 num_parallel = 1
 
@@ -294,8 +298,11 @@ gpu {
 }
 ~~~
 
-Invalid ACL, ranges, hashes, strategies, or unsupported explicit backends fail
-before inference. TEE deployments add verifier-owned model hashes,
+Invalid ACL, ranges, hashes, strategies, execution profiles, or unsupported
+explicit backends fail before inference. `prefill-decode` is accepted only as
+one closed `serving_execution` block and cannot be overridden by environment
+variables. Its exact profile digest is part of the canonical inference policy
+used by attestation. TEE deployments add verifier-owned model hashes,
 measurements, and strict policy; simulated attestation never passes strict
 verification.
 

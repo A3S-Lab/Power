@@ -120,6 +120,7 @@ mod tests {
     impl StateTransferService for TestStateTransferService {
         fn capabilities(&self) -> StateTransferCapabilities {
             StateTransferCapabilities {
+                execution_profile_sha256: "9".repeat(64),
                 phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
                 protocols: vec![StateTransferProtocol::BufferedHostMemoryPullV1],
                 max_transfer_bytes: 1024,

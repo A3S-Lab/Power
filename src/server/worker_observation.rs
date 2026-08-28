@@ -103,7 +103,13 @@ fn state_transfer_observation(state: &AppState) -> (bool, TransferHealth) {
     };
     let capabilities = service.capabilities();
     let health = service.health();
-    if capabilities.validate().is_err() || matches!(health, TransferHealth::Unsupported) {
+    if state
+        .config
+        .serving_execution
+        .validate_state_transfer_capabilities(&capabilities)
+        .is_err()
+        || matches!(health, TransferHealth::Unsupported)
+    {
         return (false, TransferHealth::Unsupported);
     }
     (true, health)
@@ -132,9 +138,11 @@ mod tests {
     use crate::error::{PowerError, Result};
     use crate::model::registry::ModelRegistry;
     use crate::serving::{
-        AbortStateTransfer, ConsumeStateTransfer, PrepareStateTransfer, PublishStateTransfer,
-        StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
-        StateTransferService, StateTransferSource, StateTransferTarget,
+        AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole,
+        PrefillDecodeExecutionProfile, PrepareStateTransfer, PublishStateTransfer,
+        ServingExecutionProfile, ServingPrivacyMode, StateKind, StateTransferCapabilities,
+        StateTransferProtocol, StateTransferReceipt, StateTransferService, StateTransferSource,
+        StateTransferTarget,
     };
 
     use super::{cache_pressure_basis_points, AppState, ServingPhase, TransferHealth};
@@ -142,6 +150,31 @@ mod tests {
     struct TestStateTransferService {
         health: TransferHealth,
         capabilities: StateTransferCapabilities,
+    }
+
+    fn execution_profile() -> ServingExecutionProfile {
+        ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".to_string(),
+            model_sha256: "1".repeat(64),
+            backend: "llama.cpp".to_string(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+        })
+        .unwrap()
     }
 
     #[async_trait]
@@ -181,19 +214,25 @@ mod tests {
     }
 
     fn state_with_transfer(health: TransferHealth) -> AppState {
+        let profile = execution_profile();
         let service = TestStateTransferService {
             health,
             capabilities: StateTransferCapabilities {
+                execution_profile_sha256: profile.sha256().unwrap(),
                 phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
                 protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
                 max_transfer_bytes: 1024,
                 max_inflight_transfers: 2,
             },
         };
+        let config = PowerConfig {
+            serving_execution: profile,
+            ..PowerConfig::default()
+        };
         AppState::new(
             Arc::new(ModelRegistry::new()),
             Arc::new(BackendRegistry::new()),
-            Arc::new(PowerConfig::default()),
+            Arc::new(config),
         )
         .with_state_transfer_service(Arc::new(service))
     }
@@ -229,6 +268,30 @@ mod tests {
     }
 
     #[test]
+    fn aggregated_profile_never_projects_an_injected_transport() {
+        let profile = execution_profile();
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        )
+        .with_state_transfer_service(Arc::new(TestStateTransferService {
+            health: TransferHealth::Ready,
+            capabilities: StateTransferCapabilities {
+                execution_profile_sha256: profile.sha256().unwrap(),
+                phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
+                protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
+                max_transfer_bytes: 1024,
+                max_inflight_transfers: 2,
+            },
+        }));
+
+        let observation = state.worker_observation();
+        assert!(!observation.capabilities.state_transfer);
+        assert_eq!(observation.transfer_health, TransferHealth::Unsupported);
+    }
+
+    #[test]
     fn invalid_or_unsupported_adapter_fails_closed_in_observation() {
         let mut state = state_with_transfer(TransferHealth::Unsupported);
         let observation = state.worker_observation();
@@ -239,6 +302,7 @@ mod tests {
         state.state_transfer_service = Some(Arc::new(TestStateTransferService {
             health: TransferHealth::Ready,
             capabilities: StateTransferCapabilities {
+                execution_profile_sha256: state.config.serving_execution.sha256().unwrap(),
                 phases: vec![ServingPhase::Decode, ServingPhase::Prefill],
                 protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
                 max_transfer_bytes: 1024,

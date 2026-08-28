@@ -3,10 +3,15 @@
 //! These types describe bounded execution capabilities and observations. They
 //! do not choose endpoints, create replicas, or define model-owned KV layouts.
 
+mod execution_profile;
 mod observation;
 mod state_transfer;
 mod state_transfer_service;
 
+pub use execution_profile::{
+    DisaggregatedServingRole, PrefillDecodeExecutionProfile, ServingExecutionProfile,
+    ServingPrivacyMode,
+};
 pub use observation::{
     AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,
     WorkerObservation, WORKER_OBSERVATION_SCHEMA,
@@ -21,5 +26,7 @@ pub use state_transfer_service::{
     PublishStateTransfer, StateTransferService,
 };
 
+#[cfg(test)]
+mod execution_profile_tests;
 #[cfg(test)]
 mod state_transfer_tests;

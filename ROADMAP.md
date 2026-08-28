@@ -231,6 +231,8 @@ model-semantics owner.
   through closed A3S ACL. Power validates the exact model, backend, device,
   layout, peer, generation, byte, time, cancellation, privacy and attestation
   bindings before a phase or state-transfer operation.
+  The closed static profile, canonical digest, adapter binding, and fail-closed
+  startup gate are implemented; phase-executor composition remains open.
 - [ ] Reuse the existing bounded admission, session replicas, weight hierarchy,
   sealed-state envelope, telemetry and receipt mechanisms. Device/host/local
   storage and peer tiers must not create a second cache or persistence format.

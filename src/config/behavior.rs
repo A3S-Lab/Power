@@ -115,6 +115,7 @@ impl PowerConfig {
     /// settings that would otherwise be silently ignored return an error.
     pub fn validate(&self) -> Result<()> {
         self.gpu.validate()?;
+        self.serving_execution.validate()?;
 
         if self.prompt_cache_max_entries == 0
             || self.prompt_cache_max_entries > MAX_PROMPT_CACHE_ENTRIES

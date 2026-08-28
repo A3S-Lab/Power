@@ -47,6 +47,50 @@ Power backends do not inject a transfer service yet, and Gateway must continue
 to reject P/D scheduling until the selected deployment truthfully reports a
 compatible, ready adapter and the corresponding phase executor is installed.
 
+## Immutable execution profile
+
+Power accepts exactly one `serving_execution` block from A3S ACL. Omitting the
+block is equivalent to the safe `aggregated` default. There is deliberately no
+environment-variable override for this policy-bearing value.
+
+A `prefill-decode` profile selects one local role and binds the exact model,
+backend artifact, backend-owned phase execution contract, device declaration,
+state layout, certified peer set, deployment generation, transfer protocol,
+state kind, byte and concurrency limits, operation and cancellation deadlines,
+privacy policy, and optional attestation policy. All SHA-256 values are
+canonical lowercase hex. The profile has its own stable digest; an injected
+adapter must report that digest in `execution_profile_sha256`, and the same
+profile digest is included in Power's canonical inference-execution policy.
+
+~~~acl
+serving_execution {
+  profile = "prefill-decode"
+  role = "decode"
+  model = "internal/model-v1"
+  model_sha256 = "<64 lowercase hex characters>"
+  backend = "llama.cpp"
+  backend_sha256 = "<64 lowercase hex characters>"
+  execution_sha256 = "<backend-owned phase contract SHA-256>"
+  device_sha256 = "<device declaration SHA-256>"
+  layout_sha256 = "<model-owned state layout SHA-256>"
+  peer_set_sha256 = "<Cloud-certified peer set SHA-256>"
+  generation = 7
+  protocol = "direct-device-memory-pull-v1"
+  state_kind = "kv-cache"
+  max_state_bytes = 8589934592
+  max_inflight_transfers = 32
+  transfer_timeout_ms = 30000
+  cancellation_timeout_ms = 5000
+  privacy = "authenticated-encrypted-transport"
+  privacy_policy_sha256 = "<64 lowercase hex characters>"
+  attestation_policy_sha256 = "<64 lowercase hex characters>"
+}
+~~~
+
+Static profile parsing and attestation binding do not make the phase runnable.
+Startup remains fail-closed until the composition root supplies both an exact
+profile-bound transfer adapter and a verified phase executor.
+
 ## Ownership boundary
 
 The observation contains no target, deployment, replica, tenant, credential,

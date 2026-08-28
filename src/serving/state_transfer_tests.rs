@@ -20,6 +20,7 @@ fn binding() -> StateTransferBinding {
 
 fn capabilities() -> StateTransferCapabilities {
     StateTransferCapabilities {
+        execution_profile_sha256: "9".repeat(64),
         phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
         protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
         max_transfer_bytes: 16 * 1024 * 1024,

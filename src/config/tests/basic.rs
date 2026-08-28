@@ -11,6 +11,7 @@ fn test_default_config() {
         config.worker_observation_ttl_seconds,
         DEFAULT_WORKER_OBSERVATION_TTL_SECONDS
     );
+    assert!(config.serving_execution.is_aggregated());
     assert!(!config.tee_mode);
     assert_eq!(config.tee_policy_mode, TeePolicyMode::Strict);
     assert!(!config.redact_logs);
@@ -43,6 +44,8 @@ fn test_config_serialize_acl() {
     assert!(serialized.contains("host"));
     assert!(serialized.contains("port"));
     assert!(serialized.contains("gpu {"));
+    assert!(serialized.contains("serving_execution {"));
+    assert!(serialized.contains("profile = \"aggregated\""));
 }
 
 #[test]
@@ -59,6 +62,7 @@ fn test_config_roundtrip() {
         prompt_cache_max_entries: 3,
         prompt_cache_ttl_seconds: 600,
         worker_observation_ttl_seconds: 30,
+        serving_execution: crate::serving::ServingExecutionProfile::default(),
         gpu: GpuConfig {
             gpu_tensors: vec!["token_embd.weight".to_string()],
             ..Default::default()

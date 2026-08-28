@@ -13,7 +13,7 @@ pub const STATE_TRANSFER_RECEIPT_SCHEMA: &str = "a3s.power.state-transfer-receip
 const SHA256_HEX_BYTES: usize = 64;
 const MAX_OPAQUE_TICKET_BYTES: usize = 16 * 1024;
 pub(super) const MAX_TRANSFER_BYTES: u64 = 16 * 1024 * 1024 * 1024 * 1024;
-const MAX_INFLIGHT_TRANSFERS: u32 = 65_536;
+pub(super) const MAX_INFLIGHT_TRANSFERS: u32 = 65_536;
 const MAX_TRANSFER_LIFETIME_SECONDS: i64 = 300;
 
 /// Model-owned mutable state kind. Power does not inspect its layout or bytes.
@@ -71,6 +71,8 @@ impl StateTransferBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateTransferCapabilities {
+    /// Digest of the exact immutable serving profile used to compose this adapter.
+    pub execution_profile_sha256: String,
     pub phases: Vec<ServingPhase>,
     pub protocols: Vec<StateTransferProtocol>,
     pub max_transfer_bytes: u64,
@@ -79,6 +81,10 @@ pub struct StateTransferCapabilities {
 
 impl StateTransferCapabilities {
     pub fn validate(&self) -> Result<()> {
+        validate_sha256(
+            &self.execution_profile_sha256,
+            "state-transfer execution profile",
+        )?;
         if self.phases.is_empty()
             || self
                 .phases
@@ -351,7 +357,7 @@ fn validate_sha256(value: &str, label: &str) -> Result<()> {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return Err(PowerError::InvalidRequest(format!(
-            "{label} SHA-256 must contain exactly 64 hexadecimal characters"
+            "{label} SHA-256 must contain exactly 64 lowercase hexadecimal characters"
         )));
     }
     Ok(())
