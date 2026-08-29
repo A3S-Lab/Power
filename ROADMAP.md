@@ -245,9 +245,13 @@ model-semantics owner.
   A process-bound transfer lifecycle now enforces fail-fast capacity,
   idempotent leases, content-free counters, monotonic expiry, bounded abort and
   fail-closed cleanup health around every injected data-path adapter; backend
-  memory ownership and cross-process evidence remain open. A request-level
+  memory ownership and production-adapter evidence remain open. A request-level
   runtime now composes that lifecycle with phase execution under one bounded
   execution lease and is the server's single source of distributed readiness.
+  A deterministic conformance test launches independent prefill and decode
+  Power processes, moves backend-owned fixture state over an authenticated
+  encrypted loopback data path, and verifies the public HTTP lifecycle without
+  making the fixture adapter part of the product surface.
 - [ ] Keep tokenization, KV/recurrent layout, serialization, phase arithmetic and
   semantic parity in the owning model/backend adapter. Power moves only opaque,
   bounded authenticated state and never claims a cache hit or successful
@@ -257,11 +261,14 @@ model-semantics owner.
   desired replicas, placement, rollout and autoscaling remain Gateway or Cloud
   responsibilities.
   The closed pre-response decision contract and Gateway-facing Power endpoint
-  are implemented; concrete backend adapters and cross-process orchestration
-  evidence remain open.
+  are implemented. Cross-process orchestration now has executable success,
+  peer-loss, cleanup, restart and stale-epoch evidence; concrete production
+  backend adapters remain open.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
-  advertising cross-node or prefill/decode support.
+  advertising cross-node or prefill/decode support. The loopback conformance
+  suite covers peer loss, process restart, stale process epochs and graceful
+  cleanup, but it is not high-speed-network or model-semantic evidence.
 
 ## Cross-repository delivery order
 

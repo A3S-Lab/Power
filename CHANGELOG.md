@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unconfirmed cleanup suppresses readiness for the process epoch. Server
   composition and worker observation now retain this runtime as the single
   distributed-serving readiness source.
+- Added a deterministic cross-process distributed-serving conformance suite.
+  Separate prefill and decode Power HTTP processes move backend-owned fixture
+  state over an authenticated AES-GCM loopback channel, stream decode output,
+  clean up explicitly, fail closed after peer loss, and reject a stale process
+  epoch after restart. The adapter remains test-only, so this does not claim a
+  production backend or high-speed transport.
 
 ## [1.0.0] - 2026-08-24
 

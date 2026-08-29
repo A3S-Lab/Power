@@ -75,6 +75,24 @@ endpoint is present but fails closed without a matching composed runtime.
 Gateway must therefore continue to reject P/D dispatch until a selected
 deployment truthfully supplies that complete path.
 
+## Cross-process conformance boundary
+
+`tests/distributed_serving_cross_process.rs` provides executable evidence for
+the process boundary itself. The parent test launches independent prefill and
+decode Power HTTP processes, acts only as the request orchestrator, and passes
+the opaque target and source tickets unchanged. A test-only backend owns the
+fixture state and phase semantics; a test-only buffered-host adapter moves that
+state through an authenticated AES-GCM loopback channel. The suite verifies a
+successful decode stream, explicit cleanup, peer disappearance during transfer,
+process restart, and rejection of the stale worker epoch.
+
+This is conformance evidence for Power's composition and wire contracts. The
+fixture adapter is not exported by the library, is not a high-speed network
+implementation, and supplies no model-semantic parity evidence. A deployment
+must still inject and certify a concrete model/backend adapter and a transport
+that enforces the selected privacy profile before it advertises prefill/decode
+readiness.
+
 ## Immutable execution profile
 
 Power accepts exactly one `serving_execution` block from A3S ACL. Omitting the
