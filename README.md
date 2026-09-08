@@ -4,6 +4,13 @@
   <a href="https://a3s-lab.github.io/Power/"><img src="./site/docs/public/a3s-os-logo.png" width="72" alt="A3S OS"></a>
 </p>
 
+
+<p align="center">
+  <strong>Language / 语言:</strong>
+  <a href="README.md">English</a> ·
+  <a href="README.zh-CN.md">中文</a>
+</p>
+
 <p align="center">
   <img src="./assets/readme/hero.svg" width="100%" alt="A3S Power routes model-owned graphs and hosted API requests through bounded admission, accelerator execution, canonical receipts, and caller-owned verification">
 </p>
