@@ -107,7 +107,13 @@ Prefill/decode profiles also bind `session_pool = shared-session-pool`
 (private-pool identities fail closed) and may pin `session_pool_policy_sha256`;
 with `embedded-inference`, `DistributedServingRuntime::validate_session_pool`
 requires that digest to match the process `ModelSessionPoolPolicy` before a
-pool is accepted. Sealed wire tickets, telemetry/receipt consolidation, and
+pool is accepted. Matching distributed runtimes project the same content-free
+transfer and fail-fast phase-admission counters through Service `GET /metrics`
+as label-free Prometheus series; aggregated profiles omit those series so P/D
+does not invent a second labeled metrics schema. Optional digest-only
+`DistributedOperationEvidence` (`a3s.power.distributed-operation.v1`) may bind a
+validated transfer consume receipt without folding it into microbatch
+receipt-v4. Sealed wire tickets, high-speed transport, production adapters, and
 full session-replica lifecycle reuse under live P/D execution remain open.
 
 The default Power backends inject neither port, and this repository does not yet

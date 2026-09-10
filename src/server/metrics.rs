@@ -8,10 +8,12 @@ use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
+use crate::admission::AdmissionSnapshot;
 use crate::backend::prompt_cache::PromptCacheMetricsSnapshot;
 use crate::backend::SpeculativeMetricsSnapshot;
 use crate::server::lock::{read_lock, write_lock};
 use crate::server::state::AppState;
+use crate::serving::StateTransferRuntimeSnapshot;
 
 /// Maximum number of duration samples to keep per vector.
 /// Prevents unbounded memory growth on long-running servers.
@@ -779,11 +781,118 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
     let speculative = state.backends.speculative_metrics();
     let mut body = state.metrics.render_with_prompt_cache(&prompt_cache);
     append_speculative_metrics(&mut body, &speculative);
+    if let Some(runtime) = state.distributed_serving.as_ref() {
+        // Reuse existing Service /metrics: label-free counters from the same
+        // transfer/phase snapshots worker observation already trusts. Absent
+        // runtime means aggregated profiles do not invent a fake P/D surface.
+        append_distributed_serving_metrics(
+            &mut body,
+            &runtime.transfer_runtime_snapshot(),
+            &runtime.admission_snapshot(),
+        );
+    }
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
         body,
     )
+}
+
+/// Project content-free P/D transfer and phase-admission counters into the
+/// existing Prometheus text format without unbounded label cardinality.
+///
+/// Series are process-scoped gauges/counters only. Transfer ids, execution ids,
+/// tenants, models, and peer identities must never appear as metric labels.
+pub(crate) fn append_distributed_serving_metrics(
+    output: &mut String,
+    transfer: &StateTransferRuntimeSnapshot,
+    phase_admission: &AdmissionSnapshot,
+) {
+    let gauges = [
+        (
+            "power_distributed_transfer_active",
+            "Active state-transfer leases on this worker.",
+            u64::from(transfer.active_transfers),
+        ),
+        (
+            "power_distributed_transfer_inflight_limit",
+            "Configured fail-fast transfer inflight limit.",
+            u64::from(transfer.maximum_inflight_transfers),
+        ),
+        (
+            "power_distributed_transfer_registered_adapter_bytes",
+            "Declared adapter-owned bytes still registered under active leases.",
+            transfer.registered_adapter_bytes,
+        ),
+        (
+            "power_distributed_phase_admission_active",
+            "Active distributed phase leases on this worker.",
+            phase_admission.active as u64,
+        ),
+        (
+            "power_distributed_phase_admission_waiting",
+            "Waiting distributed phase leases (always zero under fail-fast admission).",
+            phase_admission.waiting as u64,
+        ),
+        (
+            "power_distributed_phase_admission_active_limit",
+            "Configured fail-fast phase inflight limit.",
+            phase_admission.active_limit.unwrap_or(0) as u64,
+        ),
+    ];
+    for (name, help, value) in gauges {
+        output.push_str(&format!("# HELP {name} {help}\n"));
+        output.push_str(&format!("# TYPE {name} gauge\n"));
+        output.push_str(&format!("{name} {value}\n"));
+    }
+
+    let counters = [
+        (
+            "power_distributed_transfer_prepared_destinations_total",
+            "Prepared transfer destinations on this worker.",
+            transfer.prepared_destinations,
+        ),
+        (
+            "power_distributed_transfer_published_sources_total",
+            "Published transfer sources on this worker.",
+            transfer.published_sources,
+        ),
+        (
+            "power_distributed_transfer_completed_consumes_total",
+            "Completed transfer consumes on this worker.",
+            transfer.completed_consumes,
+        ),
+        (
+            "power_distributed_transfer_aborted_total",
+            "Aborted transfers on this worker.",
+            transfer.aborted_transfers,
+        ),
+        (
+            "power_distributed_transfer_timeout_expirations_total",
+            "Transfer leases reaped at their monotonic deadline.",
+            transfer.timeout_expirations,
+        ),
+        (
+            "power_distributed_transfer_capacity_rejections_total",
+            "Fail-fast transfer capacity rejections.",
+            transfer.capacity_rejections,
+        ),
+        (
+            "power_distributed_transfer_cleanup_failures_total",
+            "Unconfirmed transfer cleanup failures.",
+            transfer.cleanup_failures,
+        ),
+        (
+            "power_distributed_phase_admission_queue_rejections_total",
+            "Fail-fast phase admission capacity rejections.",
+            phase_admission.queue_rejections,
+        ),
+    ];
+    for (name, help, value) in counters {
+        output.push_str(&format!("# HELP {name} {help}\n"));
+        output.push_str(&format!("# TYPE {name} counter\n"));
+        output.push_str(&format!("{name} {value}\n"));
+    }
 }
 
 /// Axum middleware that records request metrics.

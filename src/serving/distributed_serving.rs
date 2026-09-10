@@ -167,6 +167,11 @@ impl DistributedServingRuntime {
         self.inner.transfer.admission_snapshot()
     }
 
+    /// Content-free transfer lifecycle counters for Service `/metrics` reuse.
+    pub fn transfer_runtime_snapshot(&self) -> crate::serving::StateTransferRuntimeSnapshot {
+        self.inner.transfer.snapshot()
+    }
+
     pub fn phase(&self) -> ServingPhase {
         self.role.into()
     }

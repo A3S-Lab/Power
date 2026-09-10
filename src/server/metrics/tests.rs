@@ -357,3 +357,60 @@ fn test_render_includes_auth_and_request_metrics() {
     assert!(output.contains("# TYPE power_active_requests gauge"));
     assert!(output.contains("power_active_requests 0"));
 }
+
+#[test]
+fn distributed_serving_metrics_are_label_free_and_match_snapshots() {
+    use crate::admission::AdmissionSnapshot;
+    use crate::serving::StateTransferRuntimeSnapshot;
+
+    let transfer = StateTransferRuntimeSnapshot {
+        active_transfers: 1,
+        maximum_inflight_transfers: 4,
+        registered_adapter_bytes: 512,
+        prepared_destinations: 3,
+        published_sources: 2,
+        completed_consumes: 1,
+        aborted_transfers: 0,
+        timeout_expirations: 0,
+        capacity_rejections: 5,
+        cleanup_failures: 0,
+    };
+    let phase = AdmissionSnapshot {
+        active_limit: Some(4),
+        waiting_limit: Some(0),
+        active: 1,
+        waiting: 0,
+        peak_active: 1,
+        peak_waiting: 0,
+        admitted: 7,
+        queue_rejections: 2,
+        cancelled_waiters: 0,
+        deadline_expirations: 0,
+    };
+    let mut output = String::new();
+    append_distributed_serving_metrics(&mut output, &transfer, &phase);
+
+    assert!(output.contains("power_distributed_transfer_active 1\n"));
+    assert!(output.contains("power_distributed_transfer_inflight_limit 4\n"));
+    assert!(output.contains("power_distributed_transfer_registered_adapter_bytes 512\n"));
+    assert!(output.contains("power_distributed_transfer_capacity_rejections_total 5\n"));
+    assert!(output.contains("power_distributed_phase_admission_active 1\n"));
+    assert!(output.contains("power_distributed_phase_admission_active_limit 4\n"));
+    assert!(output.contains("power_distributed_phase_admission_queue_rejections_total 2\n"));
+
+    // Fail closed against a second labeled metrics schema / unbounded cardinality.
+    assert!(!output.contains('{'));
+    assert!(!output.contains("transfer_id"));
+    assert!(!output.contains("execution_id"));
+    assert!(!output.contains("tenant"));
+    assert!(!output.contains("peer"));
+    assert!(!output.contains("model="));
+}
+
+#[test]
+fn aggregated_metrics_do_not_invent_distributed_series() {
+    let metrics = Metrics::new();
+    let output = metrics.render();
+    assert!(!output.contains("power_distributed_transfer_"));
+    assert!(!output.contains("power_distributed_phase_admission_"));
+}

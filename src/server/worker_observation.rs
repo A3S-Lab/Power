@@ -678,4 +678,72 @@ mod tests {
         assert_eq!(after_taint.admission.waiting, 0);
         assert_eq!(after_taint.admission.active, 0);
     }
+
+    #[tokio::test]
+    async fn matching_runtime_projects_label_free_transfer_metrics_on_service_endpoint() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = state_with_services(TransferHealth::Ready, PhaseExecutorHealth::Ready);
+        let snapshot = state
+            .distributed_serving
+            .as_ref()
+            .unwrap()
+            .transfer_runtime_snapshot();
+        let app = crate::server::router::build(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(text.contains(&format!(
+            "power_distributed_transfer_inflight_limit {}\n",
+            snapshot.maximum_inflight_transfers
+        )));
+        assert!(text.contains("power_distributed_transfer_active "));
+        assert!(text.contains("power_distributed_phase_admission_active_limit "));
+        assert!(!text.contains("power_distributed_transfer_active{"));
+        assert!(!text.contains("transfer_id="));
+        assert!(!text.contains("tenant="));
+    }
+
+    #[tokio::test]
+    async fn aggregated_service_metrics_omit_distributed_series() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig::default()),
+        );
+        let app = crate::server::router::build(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!text.contains("power_distributed_transfer_"));
+        assert!(!text.contains("power_distributed_phase_admission_"));
+    }
 }

@@ -274,10 +274,16 @@ model-semantics owner.
   closed) and may pin `session_pool_policy_sha256`. When `embedded-inference` is
   enabled, `validate_session_pool` requires that digest to match
   `ModelSessionPoolPolicy::sha256` before a process pool is accepted, so P/D
-  cannot mint a second session-replica pool. Sealing of wire tickets themselves,
-  telemetry/receipt consolidation, production-adapter / high-speed-transport
-  evidence, and full session-replica lifecycle reuse under live P/D execution
-  remain open. A
+  cannot mint a second session-replica pool. Matching distributed runtimes now
+  project content-free transfer and fail-fast phase-admission counters through
+  the existing Service `GET /metrics` text format as label-free series (no
+  transfer/execution/tenant/model labels); aggregated profiles omit them.
+  Optional digest-only `DistributedOperationEvidence`
+  (`a3s.power.distributed-operation.v1`) domain-separates a validated
+  `StateTransferReceipt` without folding transfer proofs into microbatch
+  receipt-v4. Sealing of wire tickets themselves, production-adapter /
+  high-speed-transport evidence, and full session-replica lifecycle reuse under
+  live P/D execution remain open. A
   request-level runtime now composes that lifecycle with phase execution under
   one bounded execution lease and is the server's single source of distributed
   readiness. A deterministic conformance test launches independent prefill and

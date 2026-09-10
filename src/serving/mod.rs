@@ -4,6 +4,7 @@
 //! do not choose endpoints, create replicas, or define model-owned KV layouts.
 
 mod bounded_state_transfer;
+mod distributed_operation_evidence;
 mod distributed_serving;
 mod execution_profile;
 mod observation;
@@ -14,6 +15,9 @@ mod state_transfer_service;
 mod transfer_host_buffer;
 
 pub use bounded_state_transfer::{BoundedStateTransferService, StateTransferRuntimeSnapshot};
+pub use distributed_operation_evidence::{
+    DistributedOperationEvidence, DistributedOperationKind, DISTRIBUTED_OPERATION_EVIDENCE_SCHEMA,
+};
 pub use distributed_serving::{
     DecodePhaseRequest, DistributedServingRuntime, PrefillPhaseRequest, PreparedDecodeTransfer,
     PublishedPrefillState,
