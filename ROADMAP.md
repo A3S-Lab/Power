@@ -336,7 +336,10 @@ model-semantics owner.
   stays Unavailable; matching `BackendPhaseStateOwnership` becomes Eligible
   after fail-closed layout validation, still without Ready execute.
   `ProfileBoundBackendPhaseStateOwnership` is the interim digest-only bind
-  surface (not a real backend). It does not close that checkbox.
+  surface (not a real backend). ACL `state_ownership = profile-bound` with
+  `phase_executor = backend-owned` installs it at composition (Eligible,
+  never Ready / never advertised). Default Empty ownership remains
+  Unavailable. It does not close that checkbox.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support. The product-pair loopback
@@ -426,13 +429,17 @@ model-semantics owner.
   registration alone is never cache-hit or decode success, and
   `accepts_work` / `ready_phases` never advertise P/D. Import/export hooks on
   the trait are opaque byte↔handle only; this does not invent llama.cpp KV
-  semantics. Power now also ships
+  semantics.   Power now also ships
   [`ProfileBoundBackendPhaseStateOwnership`]: an honest interim product
   surface that mirrors exact closed profile digests (layout, model, closed
   backend artifact, execution) so the backend-owned executor can bind to
-  Eligible without a real KV owner. Opaque import/export on that surface fail
-  closed; it is **not** a llama.cpp / picolm ownership adapter and does not
-  claim model-semantic P/D. This advances the named backend phase product
+  Eligible without a real KV owner. ACL opt-in
+  `state_ownership = "profile-bound"` (with `phase_executor = "backend-owned"`)
+  wires that surface at composition; absent keeps Empty → Unavailable.
+  Opaque import/export on that surface fail closed; it is **not** a
+  llama.cpp / picolm ownership adapter and does not claim model-semantic P/D.
+  Eligible still refuses `accepts_work` and worker `ready_phases` never
+  advertise P/D. This advances the named backend phase product
   port toward real backends; concrete llama.cpp / picolm layout implementors
   and Ready execute remain open.
   The product loopback transfer AAD (v2) now also binds privacy mode,

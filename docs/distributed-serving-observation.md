@@ -101,8 +101,12 @@ byte↔handle only—not llama.cpp KV semantics. Power also ships
 `ProfileBoundBackendPhaseStateOwnership` as an honest interim product
 surface: it mirrors exact closed profile digests (including the closed
 backend artifact digest) so the executor can bind to Eligible without a real
-KV owner. Opaque import/export on that surface fail closed; it is not a
-llama.cpp / picolm adapter and does not claim model-semantic P/D. Wrong
+KV owner. ACL `state_ownership = "profile-bound"` (with
+`phase_executor = "backend-owned"`) wires that surface at composition; default
+Empty ownership stays Unavailable. Opaque import/export on that surface fail
+closed; it is not a llama.cpp / picolm adapter and does not claim
+model-semantic P/D. Eligible still refuses `accepts_work`, so worker
+`ready_phases` never lists prefill/decode while only Eligible. Wrong
 transport is refused and P/D is never advertised. This advances the named
 backend phase product port; model-backend Ready P/D remains open.
 

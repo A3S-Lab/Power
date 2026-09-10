@@ -323,7 +323,10 @@ Unavailable；绑定 `BackendPhaseStateOwnership` 时以不透明 `state_layout_
 适配器存在前仍拒绝 Ready 工作，拒绝错误传输，且从不宣称 P/D——仅布局注册不是
 llama.cpp / picolm 就绪证据。`ProfileBoundBackendPhaseStateOwnership` 是诚实的
 过渡产品面：镜像封闭配置摘要（含封闭 backend 制品摘要）以便进入 Eligible，但不
-拥有 KV；不透明 import/export 失败关闭，且不是真实后端适配器。
+拥有 KV；ACL `state_ownership = "profile-bound"`（配合
+`phase_executor = "backend-owned"`）在组合时安装该面，缺省 Empty 保持 Unavailable。
+不透明 import/export 失败关闭，且不是真实后端适配器。Eligible 仍
+`accepts_work == false`，worker `ready_phases` 在仅 Eligible 时从不列出 P/D。
 组合根将该对包装并组装为单一 `DistributedServingRuntime`，它是唯一的请求级生命周期与就绪源。
 仅当运行时匹配不可变配置且可接受工作时，Power 才发布已配置的 P/D 角色。仅传输完成
 从不计为成功 decode。每个注入的传输适配器由 `BoundedStateTransferService` 包装，

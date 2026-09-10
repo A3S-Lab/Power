@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BackendOwnedPhaseExecutor` can bind to Eligible without a real backend.
   Opaque import/export fail closed; this is **not** llama.cpp / picolm KV
   ownership and does not claim model-semantic P/D or Ready execute.
+  ACL/composition opt-in: `phase_executor = "backend-owned"` with
+  `state_ownership = "profile-bound"` (requires buffered-host-loopback
+  transport). Absent `state_ownership` keeps Empty → Unavailable. Digest
+  mismatch with the immutable profile fails closed at bind time. Eligible
+  still has `accepts_work == false`; worker `ready_phases` never list
+  prefill/decode while only Eligible.
 - Product-surface `BackendOwnedPhaseExecutor` for concrete backend phase work:
   reports `AdapterProvisionState::Injected` under
   `ProductionAdapterContract::REQUIRED`, pairs only with

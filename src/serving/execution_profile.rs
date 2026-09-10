@@ -122,6 +122,29 @@ impl fmt::Display for ServingCompositionPhaseExecutor {
     }
 }
 
+/// Optional honest composition state-ownership surface for backend-owned phase.
+///
+/// Absent (or omitted) keeps default Empty ownership → Unavailable.
+/// `profile-bound` requires `phase_executor = backend-owned` and installs
+/// [`crate::serving::ProfileBoundBackendPhaseStateOwnership`] so the executor
+/// can become Eligible after fail-closed digest validation. Eligible still
+/// refuses Ready execute and never advertises P/D.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServingCompositionStateOwnership {
+    /// Mirror closed profile digests into interim Eligible ownership (not a
+    /// real llama.cpp / picolm KV adapter).
+    ProfileBound,
+}
+
+impl fmt::Display for ServingCompositionStateOwnership {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProfileBound => formatter.write_str("profile-bound"),
+        }
+    }
+}
+
 /// How a prefill/decode worker obtains model weights.
 ///
 /// Only the shared process weight hierarchy / residency path is accepted.
@@ -248,6 +271,14 @@ pub struct PrefillDecodeExecutionProfile {
     /// Ready loopback conformance executor. Never claims model-semantic P/D.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_executor: Option<ServingCompositionPhaseExecutor>,
+    /// Honest composition opt-in for backend-owned phase state ownership.
+    ///
+    /// Absent keeps Empty ownership (Unavailable). `profile-bound` requires
+    /// `phase_executor = backend-owned` and binds
+    /// `ProfileBoundBackendPhaseStateOwnership` → Eligible without Ready.
+    /// Digest mismatch with the immutable profile fails closed at bind time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_ownership: Option<ServingCompositionStateOwnership>,
 }
 
 /// Immutable execution profile for one Power process generation.
@@ -309,6 +340,7 @@ impl ServingExecutionProfile {
             session_pool_policy_sha256,
             transport,
             phase_executor,
+            state_ownership,
             protocol,
             ..
         } = execution.as_ref();
@@ -381,6 +413,20 @@ impl ServingExecutionProfile {
             }
             None => {}
         }
+        match state_ownership {
+            Some(ServingCompositionStateOwnership::ProfileBound) => {
+                if !matches!(
+                    phase_executor,
+                    Some(ServingCompositionPhaseExecutor::BackendOwned)
+                ) {
+                    return Err(PowerError::Config(
+                        "serving_execution.state_ownership = profile-bound requires phase_executor = backend-owned"
+                            .to_string(),
+                    ));
+                }
+            }
+            None => {}
+        }
         if *generation == 0 || *generation > MAX_EXACT_ACL_INTEGER {
             return Err(PowerError::Config(format!(
                 "serving generation must be within 1..={MAX_EXACT_ACL_INTEGER}"
@@ -430,12 +476,21 @@ impl ServingExecutionProfile {
         }
     }
 
+    /// Explicit product-surface composition state ownership, when opted in by ACL.
+    pub fn composition_state_ownership(&self) -> Option<ServingCompositionStateOwnership> {
+        match self {
+            Self::Aggregated {} => None,
+            Self::PrefillDecode { execution } => execution.state_ownership,
+        }
+    }
+
     /// Whether worker observation may list this profile's P/D phase as ready.
     ///
     /// Builder-injected adapters (no composition transport) remain gated only
     /// by provision, contract, and health. Product DirectDeviceMemoryPull and
     /// `phase_executor = backend-owned` never advertise until a real adapter
-    /// exists.
+    /// exists. Eligible-only ownership (`state_ownership = profile-bound`)
+    /// never advertises: `accepts_work` stays false.
     pub fn may_advertise_prefill_decode(&self) -> bool {
         if let Some(phase_executor) = self.composition_phase_executor() {
             if !phase_executor.may_advertise_prefill_decode() {

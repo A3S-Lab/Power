@@ -14,11 +14,13 @@ use crate::serving::{
 ///
 /// `serving_execution.transport` is an honest opt-in that installs a product
 /// pair. Optional `phase_executor = backend-owned` replaces the Ready loopback
-/// conformance executor with Unavailable `BackendOwnedPhaseExecutor` (requires
-/// buffered-host-loopback transport). Silent auto-wire from protocol alone is
-/// refused, as is mixing with builder-injected adapters. Incomplete external
-/// pairs remain a validation error. DirectDeviceMemoryPull installs an
-/// Unavailable HSN port and never claims high-speed evidence.
+/// conformance executor with `BackendOwnedPhaseExecutor` (requires
+/// buffered-host-loopback transport). Optional `state_ownership = profile-bound`
+/// (with backend-owned) binds interim Eligible ownership; default Empty stays
+/// Unavailable. Silent auto-wire from protocol alone is refused, as is mixing
+/// with builder-injected adapters. Incomplete external pairs remain a
+/// validation error. DirectDeviceMemoryPull installs an Unavailable HSN port
+/// and never claims high-speed evidence.
 pub(super) fn resolve(
     config: &PowerConfig,
     state_transfer: Option<Arc<dyn StateTransferService>>,
@@ -257,6 +259,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport: None,
             phase_executor: None,
+            state_ownership: None,
         })
         .unwrap()
     }
@@ -310,6 +313,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport,
             phase_executor: None,
+            state_ownership: None,
         })
         .unwrap()
     }
@@ -530,6 +534,50 @@ mod tests {
     }
 
     #[test]
+    fn backend_owned_profile_bound_state_ownership_wires_eligible_without_ready() {
+        let mut profile =
+            buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
+        if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
+            execution.phase_executor =
+                Some(crate::serving::ServingCompositionPhaseExecutor::BackendOwned);
+            execution.state_ownership =
+                Some(crate::serving::ServingCompositionStateOwnership::ProfileBound);
+        }
+        profile.validate().unwrap();
+        assert!(!profile.may_advertise_prefill_decode());
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) = resolve(&config, None, None).unwrap();
+        validate(&config, transfer.as_deref(), executor.as_deref()).unwrap();
+        let transfer = transfer.expect("profile-bound installs transfer");
+        let executor = executor.expect("profile-bound installs phase executor");
+        assert_eq!(transfer.health(), TransferHealth::Ready);
+        assert_eq!(executor.health(), PhaseExecutorHealth::Eligible);
+        assert!(!executor.health().accepts_work());
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
+                .unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
+        assert!(!runtime.accepts_work());
+    }
+
+    #[test]
+    fn profile_bound_state_ownership_requires_backend_owned_phase_executor() {
+        let mut profile =
+            buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
+        if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
+            execution.state_ownership =
+                Some(crate::serving::ServingCompositionStateOwnership::ProfileBound);
+        }
+        let err = profile.validate().unwrap_err();
+        assert!(err.to_string().contains("phase_executor = backend-owned"));
+    }
+
+    #[test]
     fn backend_owned_phase_refuses_direct_device_memory_pull_transport() {
         let mut profile =
             direct_device_profile(Some(ServingCompositionTransport::DirectDeviceMemoryPull));
@@ -602,6 +650,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport: Some(ServingCompositionTransport::BufferedHostLoopback),
             phase_executor: None,
+            state_ownership: None,
         })
         .unwrap_err();
         assert!(err.to_string().contains("buffered-host-memory-pull-v1"));
@@ -636,6 +685,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport,
             phase_executor: None,
+            state_ownership: None,
         })
         .unwrap()
     }
@@ -720,6 +770,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
             phase_executor: None,
+            state_ownership: None,
         })
         .unwrap_err();
         assert!(err.to_string().contains("direct-device-memory-pull-v1"));

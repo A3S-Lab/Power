@@ -279,6 +279,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport: Some(ServingCompositionTransport::BufferedHostLoopback),
             phase_executor: Some(ServingCompositionPhaseExecutor::BackendOwned),
+            state_ownership: None,
         })
         .unwrap()
     }

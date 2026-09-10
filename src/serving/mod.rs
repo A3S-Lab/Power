@@ -27,8 +27,8 @@ pub use adapter_contract::{
 };
 pub use backend_owned_phase::BackendOwnedPhaseExecutor;
 pub use backend_phase_state_ownership::{
-    bind_backend_phase_state_ownership, BackendPhaseStateOwnership, EmptyBackendPhaseStateOwnership,
-    ProfileBoundBackendPhaseStateOwnership,
+    bind_backend_phase_state_ownership, BackendPhaseStateOwnership,
+    EmptyBackendPhaseStateOwnership, ProfileBoundBackendPhaseStateOwnership,
 };
 pub use bounded_state_transfer::{BoundedStateTransferService, StateTransferRuntimeSnapshot};
 pub use buffered_host_loopback::BufferedHostLoopbackStateTransfer;
@@ -48,8 +48,9 @@ pub use empty_adapters::{
 };
 pub use execution_profile::{
     DisaggregatedServingRole, PhaseSessionPoolMode, PhaseWeightCacheMode,
-    PrefillDecodeExecutionProfile, ServingCompositionPhaseExecutor, ServingCompositionTransport,
-    ServingDeploymentIdentity, ServingExecutionProfile, ServingPrivacyMode,
+    PrefillDecodeExecutionProfile, ServingCompositionPhaseExecutor,
+    ServingCompositionStateOwnership, ServingCompositionTransport, ServingDeploymentIdentity,
+    ServingExecutionProfile, ServingPrivacyMode,
 };
 pub use observation::{
     AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,

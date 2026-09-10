@@ -11,7 +11,7 @@
 //! [`BackendPhaseStateOwnership`] validates profile `layout_sha256` (via
 //! `state_layout_sha256`) and related digests fail-closed, then advances
 //! health to [`PhaseExecutorHealth::Eligible`]. Eligible still refuses Ready
-//! prepare/execute until a real execute adapter path exists—matching layout
+//! prepare/execute until a real execute adapter path exists - matching layout
 //! registration alone is not decode success and does not invent model-semantic
 //! P/D.
 //!
@@ -33,14 +33,15 @@ use async_trait::async_trait;
 use crate::error::{PowerError, Result};
 
 use super::backend_phase_state_ownership::{
-    bind_backend_phase_state_ownership, BackendPhaseStateOwnership, EmptyBackendPhaseStateOwnership,
+    bind_backend_phase_state_ownership, BackendPhaseStateOwnership,
+    EmptyBackendPhaseStateOwnership, ProfileBoundBackendPhaseStateOwnership,
 };
 use super::{
     AbortPhaseExecution, AdapterProvisionState, BufferedHostLoopbackStateTransfer,
     ExecutePhaseExecution, PhaseDecision, PhaseExecutionOutput, PhaseExecutorCapabilities,
     PhaseExecutorHealth, PreparePhaseExecution, PreparedPhaseExecution, ProductionAdapterContract,
-    RetryableUnavailableReason, ServingExecutionProfile, ServingPhaseExecutor, ServingPrivacyMode,
-    StateTransferProtocol, StateTransferService,
+    RetryableUnavailableReason, ServingCompositionStateOwnership, ServingExecutionProfile,
+    ServingPhaseExecutor, ServingPrivacyMode, StateTransferProtocol, StateTransferService,
 };
 
 fn unavailable() -> PowerError {
@@ -48,6 +49,22 @@ fn unavailable() -> PowerError {
         "BackendOwnedPhaseExecutor is Unavailable until a real state-layout and KV ownership adapter is bound"
             .to_string(),
     )
+}
+
+/// Resolve ACL/composition ownership for a backend-owned phase profile.
+///
+/// Absent `state_ownership` keeps Empty (Unavailable). `profile-bound`
+/// installs [`ProfileBoundBackendPhaseStateOwnership`] (Eligible after digests
+/// match).
+fn composition_ownership(
+    profile: &ServingExecutionProfile,
+) -> Result<Arc<dyn BackendPhaseStateOwnership>> {
+    match profile.composition_state_ownership() {
+        None => Ok(Arc::new(EmptyBackendPhaseStateOwnership)),
+        Some(ServingCompositionStateOwnership::ProfileBound) => Ok(Arc::new(
+            ProfileBoundBackendPhaseStateOwnership::for_profile(profile)?,
+        )),
+    }
 }
 
 fn ready_blocked() -> PowerError {
@@ -90,7 +107,7 @@ fn require_buffered_host_loopback<'a>(
 ///
 /// Construct with [`Self::pair_with`] against
 /// [`BufferedHostLoopbackStateTransfer`], or [`Self::paired_for_profile`] to
-/// build both ports together (Empty ownership → Unavailable). Bind a concrete
+/// build both ports together (Empty ownership -> Unavailable). Bind a concrete
 /// [`BackendPhaseStateOwnership`] via [`Self::with_state_ownership`] /
 /// [`Self::pair_with_ownership`] to advance to Eligible after fail-closed
 /// layout validation. Ready work stays refused until an execute adapter exists.
@@ -113,17 +130,22 @@ impl fmt::Debug for BackendOwnedPhaseExecutor {
 }
 
 impl BackendOwnedPhaseExecutor {
-    /// Build buffered-host loopback transfer + backend-owned phase with Empty
-    /// ownership (Unavailable).
+    /// Build buffered-host loopback transfer + backend-owned phase.
     ///
-    /// The transfer may become Ready; this executor stays Unavailable until a
-    /// non-Empty ownership surface is bound, and never advertises model-semantic
-    /// P/D readiness from registration alone.
+    /// Honors ACL `state_ownership`: absent -> Empty (Unavailable);
+    /// `profile-bound` -> Eligible after fail-closed digest bind. The transfer
+    /// may become Ready; this executor never advertises model-semantic P/D
+    /// readiness from registration alone.
     pub fn paired_for_profile(
         profile: &ServingExecutionProfile,
     ) -> Result<(Arc<BufferedHostLoopbackStateTransfer>, Arc<Self>)> {
         let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(profile)?);
-        let executor = Arc::new(Self::pair_with(profile, Arc::clone(&transfer))?);
+        let ownership = composition_ownership(profile)?;
+        let executor = Arc::new(Self::pair_with_ownership(
+            profile,
+            Arc::clone(&transfer),
+            ownership,
+        )?);
         Ok((transfer, executor))
     }
 
@@ -137,8 +159,8 @@ impl BackendOwnedPhaseExecutor {
         Self::pair_with_ownership(profile, transfer, Arc::new(EmptyBackendPhaseStateOwnership))
     }
 
-    /// Bind loopback transfer + ownership. Empty ownership → Unavailable;
-    /// matching layout → Eligible; mismatch → fail closed.
+    /// Bind loopback transfer + ownership. Empty ownership -> Unavailable;
+    /// matching layout -> Eligible; mismatch -> fail closed.
     pub fn pair_with_ownership(
         profile: &ServingExecutionProfile,
         transfer: Arc<BufferedHostLoopbackStateTransfer>,
@@ -166,10 +188,10 @@ impl BackendOwnedPhaseExecutor {
         Self::with_state_ownership(profile, ownership)
     }
 
-    /// Bind one backend-owned phase executor to a buffered-host loopback profile
-    /// under Empty ownership without constructing the transfer.
+    /// Bind one backend-owned phase executor for the profile, honoring ACL
+    /// `state_ownership` (Empty when absent).
     pub fn for_profile(profile: &ServingExecutionProfile) -> Result<Self> {
-        Self::with_state_ownership(profile, Arc::new(EmptyBackendPhaseStateOwnership))
+        Self::with_state_ownership(profile, composition_ownership(profile)?)
     }
 
     /// Bind ownership against the immutable profile.
@@ -262,6 +284,14 @@ mod tests {
         transport: Option<ServingCompositionTransport>,
         phase_executor: Option<ServingCompositionPhaseExecutor>,
     ) -> ServingExecutionProfile {
+        buffered_profile_with_ownership(transport, phase_executor, None)
+    }
+
+    fn buffered_profile_with_ownership(
+        transport: Option<ServingCompositionTransport>,
+        phase_executor: Option<ServingCompositionPhaseExecutor>,
+        state_ownership: Option<crate::serving::ServingCompositionStateOwnership>,
+    ) -> ServingExecutionProfile {
         ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
             role: DisaggregatedServingRole::Decode,
             model: "internal/model-v1".to_string(),
@@ -288,6 +318,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport,
             phase_executor,
+            state_ownership,
         })
         .unwrap()
     }
@@ -356,6 +387,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
             phase_executor: None,
+            state_ownership: None,
         })
         .unwrap();
         // DirectDeviceMemoryPull pair constructs; backend-owned must not.
@@ -522,9 +554,8 @@ mod tests {
             Some(ServingCompositionTransport::BufferedHostLoopback),
             Some(ServingCompositionPhaseExecutor::BackendOwned),
         );
-        let ownership: Arc<dyn BackendPhaseStateOwnership> = Arc::new(
-            ProfileBoundBackendPhaseStateOwnership::for_profile(&profile).unwrap(),
-        );
+        let ownership: Arc<dyn BackendPhaseStateOwnership> =
+            Arc::new(ProfileBoundBackendPhaseStateOwnership::for_profile(&profile).unwrap());
         let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
         let executor = BackendOwnedPhaseExecutor::pair_with_ownership(
             &profile,
@@ -583,6 +614,23 @@ mod tests {
         );
         let runtime = DistributedServingRuntime::new(profile, bounded, Arc::new(executor)).unwrap();
         assert!(!runtime.accepts_work());
+    }
+
+    #[test]
+    fn paired_for_profile_honors_profile_bound_state_ownership_acl() {
+        use crate::serving::ServingCompositionStateOwnership;
+
+        let profile = buffered_profile_with_ownership(
+            Some(ServingCompositionTransport::BufferedHostLoopback),
+            Some(ServingCompositionPhaseExecutor::BackendOwned),
+            Some(ServingCompositionStateOwnership::ProfileBound),
+        );
+        let (transfer, executor) = BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();
+        assert_eq!(transfer.health(), crate::serving::TransferHealth::Ready);
+        assert_eq!(executor.health(), PhaseExecutorHealth::Eligible);
+        assert!(!executor.health().accepts_work());
+        assert!(!executor.ownership().is_empty());
+        assert!(!profile.may_advertise_prefill_decode());
     }
 
     #[test]

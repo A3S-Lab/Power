@@ -359,8 +359,11 @@ transport, and never advertises P/D—layout registration alone is not llama.cpp
 / picolm readiness. `ProfileBoundBackendPhaseStateOwnership` is the honest
 interim product surface: it mirrors closed profile digests (including the
 closed backend artifact digest) so composition can reach Eligible without a
-real KV owner; opaque import/export fail closed and it is not a backend
-adapter. The composition root wraps and
+real KV owner via ACL `state_ownership = "profile-bound"` (with
+`phase_executor = "backend-owned"`); absent keeps Empty → Unavailable.
+Opaque import/export fail closed and it is not a backend adapter. Eligible
+still has `accepts_work == false` and worker `ready_phases` never list P/D.
+The composition root wraps and
 assembles injected pairs into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and
 readiness source. Power publishes the configured P/D role only when the runtime

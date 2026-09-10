@@ -260,6 +260,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport: None,
             phase_executor: None,
+            state_ownership: None,
         })
         .unwrap()
     }
@@ -412,6 +413,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport: None,
             phase_executor: None,
+            state_ownership: None,
         })
         .unwrap()
     }
@@ -476,6 +478,7 @@ mod tests {
             session_pool_policy_sha256: None,
             transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
             phase_executor: None,
+            state_ownership: None,
         })
         .unwrap();
         let (transfer, executor) =
@@ -513,6 +516,84 @@ mod tests {
                 .worker_observation();
 
         assert!(observation.capabilities.state_transfer);
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Decode]);
+        assert!(observation.ready_phases.is_empty());
+    }
+
+    #[test]
+    fn eligible_phase_executor_never_lists_ready_phases() {
+        // Gap verification: Eligible (accepts_work false) must not advertise P/D.
+        let observation = state_with_services(TransferHealth::Ready, PhaseExecutorHealth::Eligible)
+            .worker_observation();
+
+        assert!(observation.capabilities.state_transfer);
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Decode]);
+        assert!(observation.ready_phases.is_empty());
+        assert!(!observation
+            .ready_phases
+            .iter()
+            .any(|phase| matches!(phase, ServingPhase::Prefill | ServingPhase::Decode)));
+    }
+
+    #[test]
+    fn backend_owned_profile_bound_composition_suppresses_ready_phases() {
+        use crate::serving::{
+            BackendOwnedPhaseExecutor, ServingCompositionPhaseExecutor,
+            ServingCompositionStateOwnership, ServingCompositionTransport,
+        };
+
+        let profile = ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".to_string(),
+            model_sha256: "1".repeat(64),
+            backend: "backend-owned".to_string(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
+            transport: Some(ServingCompositionTransport::BufferedHostLoopback),
+            phase_executor: Some(ServingCompositionPhaseExecutor::BackendOwned),
+            state_ownership: Some(ServingCompositionStateOwnership::ProfileBound),
+        })
+        .unwrap();
+        let (transfer, executor) = BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();
+        assert_eq!(executor.health(), PhaseExecutorHealth::Eligible);
+        assert!(!executor.health().accepts_work());
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
+                .unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile.clone(), bounded, executor).unwrap();
+        assert!(!runtime.accepts_work());
+
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig {
+                serving_execution: profile,
+                api_keys: vec!["service-key".to_string()],
+                ..PowerConfig::default()
+            }),
+        )
+        .with_auth(Arc::new(ApiKeyAuth::new(&["service-key".to_string()])))
+        .with_distributed_serving(Arc::new(runtime));
+
+        let observation = state.worker_observation();
         assert_eq!(observation.capabilities.phases, [ServingPhase::Decode]);
         assert!(observation.ready_phases.is_empty());
     }
