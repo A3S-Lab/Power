@@ -329,7 +329,13 @@ model-semantics owner.
   and reclaimed leases. Peer publish/consume now also fail closed on stale
   deployment generation or foreign peer set carried by transfer descriptors
   (beyond process-epoch checks). High-speed-network transport and production
-  adapters remain open.
+  adapters remain open. A typed `ProductionAdapterContract` now documents the
+  required adapter memory ownership (`AdapterOwnedRegistration`), transport
+  integrity, and confirmed-reclaim cleanup obligations; Empty/Unavailable
+  `EmptyStateTransferService` / `EmptyServingPhaseExecutor` placeholders refuse
+  work and fail composition until a concrete adapter is injected. That contract
+  strengthens the P6 injection boundary only and is not high-speed-network or
+  production-adapter evidence.
 
 ## Cross-repository delivery order
 

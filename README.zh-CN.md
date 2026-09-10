@@ -295,6 +295,10 @@ gpu {
 
 内置组合仍为聚合式。下游解聚构建必须通过 `PowerServerBuilder` 注入精确配置绑定的
 `StateTransferService` 与 `ServingPhaseExecutor`；单独任一服务都是启动错误。
+Empty/Unavailable 占位（`EmptyStateTransferService` / `EmptyServingPhaseExecutor`）
+在注入具体适配器前同样失败关闭。注入端口声明
+`ProductionAdapterContract::REQUIRED`（适配器拥有的内存注册、适配器拥有的传输完整性、
+确认回收）；该合约是软件所有权边界，而非高速网络或生产就绪证据。
 组合根将该对包装并组装为单一 `DistributedServingRuntime`，它是唯一的请求级生命周期与就绪源。
 仅当运行时匹配不可变配置且可接受工作时，Power 才发布已配置的 P/D 角色。仅传输完成
 从不计为成功 decode。每个注入的传输适配器由 `BoundedStateTransferService` 包装，

@@ -19,9 +19,34 @@ composition root must inject both a typed `StateTransferService` and a typed
 `ServingPhaseExecutor`, and both must bind the exact execution-profile digest
 and configured role. Only that complete pair projects `prefill` or `decode` as
 a capability. The phase is ready only while both services can accept work. A
-missing, mismatched, invalid, or unsupported member fails closed without
-falling back to an aggregated capability that the process was not configured
-to execute.
+missing, mismatched, invalid, unsupported, or Empty placeholder member fails
+closed without falling back to an aggregated capability that the process was
+not configured to execute.
+
+## Production adapter capability contract
+
+Injected transfer and phase-executor ports declare one closed software
+ownership contract (`ProductionAdapterContract::REQUIRED`):
+
+- **Memory ownership** — `AdapterOwnedRegistration`. The adapter registers and
+  frees device/host memory. Power holds only opaque local handles and
+  content-free declared-byte accounting (`registeredAdapterBytes`); it never
+  copies or retains KV payloads.
+- **Transport integrity** — `AdapterOwned`. Authentication, encryption,
+  RDMA/HSN drivers, and ticket bytes stay adapter-owned. Transport completion
+  is never decode success.
+- **Cleanup** — `ConfirmedReclaim`. Abort, timeout, and compensating cleanup
+  must reclaim adapter-owned registration; unconfirmed cleanup taints the
+  process-local transfer wrapper Unavailable for the remainder of the
+  generation.
+
+`EmptyStateTransferService` / `EmptyServingPhaseExecutor` bind the profile
+capability shape but always report Unavailable and refuse work.
+`AdapterProvisionState::Empty` fails composition and runtime construction —
+Empty is the fail-closed default until a concrete adapter is injected. This
+contract documents ownership obligations only; it does not claim high-speed
+network evidence, sealed wire tickets, live replica lifecycle reuse, or
+production readiness.
 
 ## State-transfer port
 

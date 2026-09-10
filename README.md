@@ -316,7 +316,13 @@ verification.
 The built-in composition remains aggregated. A downstream disaggregated build
 must inject an exact profile-bound `StateTransferService` and
 `ServingPhaseExecutor` through `PowerServerBuilder`; either service alone is a
-startup error. The composition root wraps and assembles that pair into one
+startup error. Empty/Unavailable placeholders
+(`EmptyStateTransferService` / `EmptyServingPhaseExecutor`) also fail closed
+until a concrete adapter is injected. Injected ports declare
+`ProductionAdapterContract::REQUIRED` (adapter-owned memory registration,
+adapter-owned transport integrity, confirmed reclaim); that contract is a
+software ownership boundary, not high-speed-network or production-readiness
+evidence. The composition root wraps and assembles that pair into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and
 readiness source. Power publishes the configured P/D role only when the runtime
 matches the immutable profile and can accept work. Transport completion alone

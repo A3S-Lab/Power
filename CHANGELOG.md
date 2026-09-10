@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Production ServingPhaseExecutor / StateTransferService capability contract:
+  closed `ProductionAdapterContract::REQUIRED` documents adapter-owned memory
+  registration, adapter-owned transport integrity, and confirmed-reclaim
+  cleanup. Trait defaults mark concrete injections as
+  `AdapterProvisionState::Injected`. `EmptyStateTransferService` /
+  `EmptyServingPhaseExecutor` bind the immutable profile capability shape but
+  stay Unavailable, refuse every data-path / phase call, and fail composition
+  plus bounded-transfer / distributed-runtime construction until a concrete
+  adapter is injected. Temporarily Unavailable injected adapters still start.
+  This strengthens the P6 adapter ownership boundary only and does not claim
+  high-speed transport, sealed wire tickets, live replica lifecycle reuse, or
+  production readiness.
 - Bound Cloud deployment generation and peer set into state-transfer wire
   descriptors beyond process epoch: `ServingDeploymentIdentity` stamps
   `generation` and `peer_set_sha256` onto `StateTransferTarget` /

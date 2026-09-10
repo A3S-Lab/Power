@@ -7,8 +7,9 @@ use uuid::Uuid;
 use crate::error::{PowerError, Result};
 
 use super::{
-    ServingPhase, StateTransferBinding, StateTransferCapabilities, StateTransferReceipt,
-    StateTransferSource, StateTransferTarget, TransferHealth,
+    AdapterProvisionState, ProductionAdapterContract, ServingPhase, StateTransferBinding,
+    StateTransferCapabilities, StateTransferReceipt, StateTransferSource, StateTransferTarget,
+    TransferHealth,
 };
 
 const MAX_LOCAL_HANDLE_BYTES: usize = 512;
@@ -137,11 +138,24 @@ impl AbortStateTransfer {
 ///
 /// The adapter owns registered memory, connection metadata, timeouts, and
 /// cleanup. Power passes only local opaque handles and bounded wire tickets;
-/// Gateway and Cloud never receive KV bytes.
+/// Gateway and Cloud never receive KV bytes. See
+/// [`ProductionAdapterContract`] for the closed software ownership obligations
+/// and [`crate::serving::EmptyStateTransferService`] for the Unavailable
+/// placeholder until a concrete adapter is injected.
 #[async_trait]
 pub trait StateTransferService: Send + Sync {
     fn capabilities(&self) -> StateTransferCapabilities;
     fn health(&self) -> TransferHealth;
+
+    /// Empty placeholders stay Unavailable until a concrete adapter is injected.
+    fn provision(&self) -> AdapterProvisionState {
+        AdapterProvisionState::Injected
+    }
+
+    /// Closed memory-ownership / transport / cleanup obligations for this port.
+    fn production_contract(&self) -> ProductionAdapterContract {
+        ProductionAdapterContract::REQUIRED
+    }
 
     async fn prepare_destination(
         &self,

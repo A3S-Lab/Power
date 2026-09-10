@@ -14,10 +14,10 @@ use crate::admission::{AdmissionController, AdmissionError, AdmissionPermit, Adm
 use crate::error::{PowerError, Result};
 
 use super::{
-    AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole, PrepareStateTransfer,
-    PublishStateTransfer, ServingExecutionProfile, ServingPhase, StateTransferCapabilities,
-    StateTransferReceipt, StateTransferService, StateTransferSource, StateTransferTarget,
-    TransferHealth,
+    AbortStateTransfer, AdapterProvisionState, ConsumeStateTransfer, DisaggregatedServingRole,
+    PrepareStateTransfer, ProductionAdapterContract, PublishStateTransfer, ServingExecutionProfile,
+    ServingPhase, StateTransferCapabilities, StateTransferReceipt, StateTransferService,
+    StateTransferSource, StateTransferTarget, TransferHealth,
 };
 
 mod lifecycle;
@@ -128,6 +128,13 @@ impl BoundedStateTransferService {
         ensure_fail_fast_inflight_admission(&profile, &admission)?;
         let delegate_capabilities = delegate.capabilities();
         profile.validate_state_transfer_capabilities(&delegate_capabilities)?;
+        if delegate.provision().is_empty() {
+            return Err(PowerError::Config(
+                "state-transfer runtime cannot wrap an Empty placeholder; inject a concrete adapter"
+                    .to_string(),
+            ));
+        }
+        delegate.production_contract().validate()?;
         if matches!(delegate.health(), TransferHealth::Unsupported) {
             return Err(PowerError::Config(
                 "state-transfer runtime cannot wrap an unsupported adapter".to_string(),
@@ -325,6 +332,14 @@ impl StateTransferService for BoundedStateTransferService {
         } else {
             self.inner.delegate.health()
         }
+    }
+
+    fn provision(&self) -> AdapterProvisionState {
+        self.inner.delegate.provision()
+    }
+
+    fn production_contract(&self) -> ProductionAdapterContract {
+        self.inner.delegate.production_contract()
     }
 
     async fn prepare_destination(

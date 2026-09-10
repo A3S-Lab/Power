@@ -10,11 +10,12 @@ use crate::admission::AdmissionController;
 use crate::error::{PowerError, Result};
 
 use super::{
-    BoundedStateTransferService, ConsumeStateTransfer, DisaggregatedServingRole,
-    ExecutePhaseExecution, ImportedModelState, PhaseDecision, PhaseExecutionOutput, PhaseRequest,
-    PhaseResponseStream, PreparePhaseExecution, PrepareStateTransfer, PreparedPhaseExecution,
-    PublishStateTransfer, ServingExecutionProfile, ServingPhase, ServingPhaseExecutor,
-    StateTransferService, StateTransferSource, StateTransferTarget, TransferHealth,
+    validate_injected_production_adapters, BoundedStateTransferService, ConsumeStateTransfer,
+    DisaggregatedServingRole, ExecutePhaseExecution, ImportedModelState, PhaseDecision,
+    PhaseExecutionOutput, PhaseRequest, PhaseResponseStream, PreparePhaseExecution,
+    PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer, ServingExecutionProfile,
+    ServingPhase, ServingPhaseExecutor, StateTransferService, StateTransferSource,
+    StateTransferTarget, TransferHealth,
 };
 
 mod lifecycle;
@@ -116,6 +117,7 @@ impl DistributedServingRuntime {
             ));
         };
         profile.validate_state_transfer_capabilities(&transfer.capabilities())?;
+        validate_injected_production_adapters(transfer.as_ref(), executor.as_ref())?;
         // Phase and transfer leases are separate domains, but both must bind the
         // same ACL fail-fast inflight limit through AdmissionController. Refuse
         // a waiting queue or mismatched active limit as a second policy.

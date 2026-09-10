@@ -1,6 +1,9 @@
 use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
-use crate::serving::{ServingPhaseExecutor, StateTransferService, TransferHealth};
+use crate::serving::{
+    validate_injected_production_adapters, ServingPhaseExecutor, StateTransferService,
+    TransferHealth,
+};
 
 /// Validate the process-local serving composition before listeners or model
 /// resources are created.
@@ -27,6 +30,7 @@ pub(super) fn validate(
         PowerError::Config("prefill-decode serving requires a phase executor".to_string())
     })?;
 
+    validate_injected_production_adapters(state_transfer, phase_executor)?;
     profile.validate_state_transfer_capabilities(&state_transfer.capabilities())?;
     profile.validate_phase_executor_capabilities(&phase_executor.capabilities())?;
     if matches!(state_transfer.health(), TransferHealth::Unsupported) {
@@ -43,12 +47,13 @@ mod tests {
 
     use crate::serving::{
         AbortPhaseExecution, AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole,
-        ExecutePhaseExecution, PhaseDecision, PhaseExecutionOutput, PhaseExecutorCapabilities,
-        PhaseExecutorHealth, PhaseSessionPoolMode, PhaseWeightCacheMode,
-        PrefillDecodeExecutionProfile, PreparePhaseExecution, PrepareStateTransfer,
-        PreparedPhaseExecution, PublishStateTransfer, ServingExecutionProfile, ServingPhase,
-        ServingPhaseExecutor, ServingPrivacyMode, StateKind, StateTransferCapabilities,
-        StateTransferProtocol, StateTransferReceipt, StateTransferSource, StateTransferTarget,
+        EmptyServingPhaseExecutor, EmptyStateTransferService, ExecutePhaseExecution, PhaseDecision,
+        PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth, PhaseSessionPoolMode,
+        PhaseWeightCacheMode, PrefillDecodeExecutionProfile, PreparePhaseExecution,
+        PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
+        ServingExecutionProfile, ServingPhase, ServingPhaseExecutor, ServingPrivacyMode, StateKind,
+        StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
+        StateTransferSource, StateTransferTarget,
     };
 
     use super::*;
@@ -249,5 +254,32 @@ mod tests {
         executor.health = PhaseExecutorHealth::Unavailable;
 
         validate(&config, Some(&service), Some(&executor)).unwrap();
+    }
+
+    #[test]
+    fn empty_placeholders_fail_closed_until_injected() {
+        let profile = profile();
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            ..PowerConfig::default()
+        };
+        let empty_transfer = EmptyStateTransferService::for_profile(&profile).unwrap();
+        let empty_executor = EmptyServingPhaseExecutor::for_profile(&profile).unwrap();
+        let err = validate(&config, Some(&empty_transfer), Some(&empty_executor)).unwrap_err();
+        assert!(err.to_string().contains("Empty placeholders"));
+
+        assert!(
+            validate(&config, Some(&empty_transfer), Some(&executor(&profile)))
+                .unwrap_err()
+                .to_string()
+                .contains("Empty placeholders")
+        );
+
+        assert!(
+            validate(&config, Some(&service(&profile)), Some(&empty_executor))
+                .unwrap_err()
+                .to_string()
+                .contains("Empty placeholders")
+        );
     }
 }

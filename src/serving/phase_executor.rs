@@ -8,7 +8,9 @@ use uuid::Uuid;
 use crate::backend::types::{ChatRequest, CompletionRequest};
 use crate::error::{PowerError, Result};
 
-use super::{ServingExecutionProfile, ServingPhase};
+use super::{
+    AdapterProvisionState, ProductionAdapterContract, ServingExecutionProfile, ServingPhase,
+};
 
 mod abort;
 mod lifecycle;
@@ -288,11 +290,23 @@ impl<T> PhaseDecision<T> {
 /// Implementations own tokenization, state layout, phase arithmetic, request
 /// reservations, response generation, and cleanup. Power validates the
 /// lifecycle and moves only opaque state handles through the separate transfer
-/// port.
+/// port. See [`ProductionAdapterContract`] for the closed software ownership
+/// obligations and [`crate::serving::EmptyServingPhaseExecutor`] for the
+/// Unavailable placeholder until a concrete adapter is injected.
 #[async_trait]
 pub trait ServingPhaseExecutor: Send + Sync {
     fn capabilities(&self) -> PhaseExecutorCapabilities;
     fn health(&self) -> PhaseExecutorHealth;
+
+    /// Empty placeholders stay Unavailable until a concrete adapter is injected.
+    fn provision(&self) -> AdapterProvisionState {
+        AdapterProvisionState::Injected
+    }
+
+    /// Closed memory-ownership / transport / cleanup obligations for this port.
+    fn production_contract(&self) -> ProductionAdapterContract {
+        ProductionAdapterContract::REQUIRED
+    }
 
     async fn prepare(
         &self,
