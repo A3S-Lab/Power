@@ -20,7 +20,11 @@ deployment boundary, not a restriction to LLMs or to a particular model family.
    vision, OCR, embedding, audio, multimodal, and custom reviewed graphs without
    family dispatch in the core
 
-### Current State (v1.0.0 release-candidate line)
+### Current State (v1.0.0 source freeze; production tag pending evidence)
+- Changelog `[1.0.0] - 2026-09-10` is frozen with an empty `[Unreleased]`
+  section; package version remains `1.0.0`. Production release still requires
+  the exact-parent evidence-only child (CPU, CUDA, Metal, SEV-SNP
+  confidential GPU) and a GitHub-verified annotated tag.
 - 3 backends (mistralrs, llamacpp, picolm) — all functional
 - TEE runtime stack (attestation collection, encrypted models, RA-TLS, privacy,
   audit); production verifier coverage is qualified below

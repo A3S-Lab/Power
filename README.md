@@ -47,11 +47,13 @@ layer-streaming TEE profile. The runtime core does not dispatch on Qwen or any
 other model family.
 
 > [!IMPORTANT]
-> `main` contains the v1.0.0 source candidate. The latest published crate and
-> API documentation are still
-> [v0.9.0](https://crates.io/crates/a3s-power/0.9.0); use the source-based
-> commands below for current v1 APIs. A v1 tag is not published until the
-> strict four-platform evidence bundle and verified annotated tag both pass.
+> `main` carries the frozen v1.0.0 source line (`Cargo.toml` `1.0.0`, dated
+> changelog `[1.0.0]`). The latest **published** crate and API docs remain
+> [v0.9.0](https://crates.io/crates/a3s-power/0.9.0). A production `v1.0.0`
+> tag exists only after the exact-parent four-platform evidence child
+> (CPU, CUDA, Metal, SEV-SNP confidential GPU) and a GitHub-verified
+> annotated tag both pass. Local Windows CPU/CUDA capture alone is not
+> production release.
 
 ## Measured, not promised
 

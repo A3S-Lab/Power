@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-10
+
 ### Fixed
 
 - Cross-process product-pair fixture fail-closes on
@@ -438,11 +440,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clean up explicitly, fail closed after peer loss, and reject a stale process
   epoch after restart. The adapter remains test-only, so this does not claim a
   production backend or high-speed transport.
-
-## [1.0.0] - 2026-08-24
-
-### Added
-
 - Added a typed native DFlash2 external-draft backend for the pinned
   llama-cpp-rs/llama.cpp source. Registration and load reject DFlash v1/DFlash2
   mismatches and malformed selector/convolution metadata; the patch installer

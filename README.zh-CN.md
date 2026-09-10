@@ -42,10 +42,12 @@ A3S Power 是面向推理的模型无关 Rust 执行层。模型 crate 保留其
 以及最小的层流式 TEE 配置。运行时核心不对 Qwen 或任何其他模型族做分发。
 
 > [!IMPORTANT]
-> `main` 包含 v1.0.0 源码候选。最新已发布的 crate 与 API 文档仍为
-> [v0.9.0](https://crates.io/crates/a3s-power/0.9.0)；请使用下方基于源码的命令
-> 以使用当前 v1 API。在严格的四平台证据包与已验证的附注标签均通过之前，
-> 不会发布 v1 标签。
+> `main` 承载已冻结的 v1.0.0 源码线（`Cargo.toml` `1.0.0`、带日期的
+> changelog `[1.0.0]`）。最新**已发布**的 crate 与 API 文档仍为
+> [v0.9.0](https://crates.io/crates/a3s-power/0.9.0)。生产 `v1.0.0` 标签仅在
+> exact-parent 四平台证据子提交（CPU、CUDA、Metal、SEV-SNP confidential GPU）
+> 与 GitHub 已验证附注标签均通过后才存在。仅有本机 Windows CPU/CUDA
+> capture 不等于生产发布。
 
 ## 实测而非承诺
 
