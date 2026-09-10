@@ -96,7 +96,10 @@ oversized / control-bearing payloads that could smuggle KV bytes. Host-buffered
 opaque transfer state reuses `SealedStateEnvelope` / `SealedStateStore` through
 `seal_transfer_host_buffer` / `open_transfer_host_buffer` (when
 `embedded-inference` is enabled) so Power does not invent a second peer-tier
-ciphertext format. Wire tickets are intentionally **not** force-sealed with
+ciphertext format. The sealed identity (`transfer-host-buffer.v2`) binds
+privacy mode, `privacy_policy_sha256`, and optional `attestation_policy_sha256`
+alongside transfer identity and generation so a privacy/attestation mismatch
+fails closed on open. Wire tickets are intentionally **not** force-sealed with
 `SealedStateEnvelope`: host buffers seal; tickets stay opaque adapter connection
 metadata. Wire transport encryption remains adapter-owned.
 

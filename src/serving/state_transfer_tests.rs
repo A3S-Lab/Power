@@ -383,8 +383,8 @@ fn sealed_host_buffer_persistence_bytes_never_validate_as_wire_tickets() {
         SealedStateStore,
     };
     use crate::serving::{
-        seal_transfer_host_buffer, sealed_binding_for_transfer_host_buffer, StateTransferBinding,
-        TransferHostBufferIdentity,
+        seal_transfer_host_buffer, sealed_binding_for_transfer_host_buffer, ServingPrivacyMode,
+        StateTransferBinding, TransferHostBufferIdentity,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -403,6 +403,9 @@ fn sealed_host_buffer_persistence_bytes_never_validate_as_wire_tickets() {
         destination_worker_epoch: Uuid::from_u128(33),
         binding: small_binding.clone(),
         generation: 7,
+        privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+        privacy_policy_sha256: "7".repeat(64),
+        attestation_policy_sha256: None,
     };
     let limits = InferenceLimits {
         max_state_bytes: 1_024,

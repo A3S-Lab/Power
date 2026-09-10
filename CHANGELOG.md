@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail closed on consume (AES-GCM authentication). This closes the product-pair
   privacy/attestation wire binding only and does not claim HSN, attested
   fabric readiness, or production adapters.
+- Transfer host-buffer sealed identity v2 binds the same privacy mode,
+  `privacy_policy_sha256`, and optional `attestation_policy_sha256` into the
+  `SealedStateEnvelope` state-id digest (domain `transfer-host-buffer.v2`).
+  Open fails closed on privacy/attestation drift even when model / execution /
+  layout / generation still match. This closes sealed host-buffer privacy
+  binding only and does not claim HSN, attested fabric, or TEE-export readiness.
 - Documented and expanded the intentional wire-ticket fail-closed property:
   tickets remain opaque adapter connection metadata and are **not**
   force-sealed with `SealedStateEnvelope` (host buffers seal; tickets do not).

@@ -332,7 +332,10 @@ evidence. For profiles that pin `BufferedHostMemoryPullV1` and
 loopback TCP and verifies opaque conformance bytes before Ready decode.
 Transfer AAD v2 binds privacy mode, `privacy_policy_sha256`, and optional
 `attestation_policy_sha256` so mismatched peer privacy fails closed even when
-model/layout bindings match. Transfer receipt alone is never decode success;
+model/layout bindings match. When `embedded-inference` is enabled, sealed
+host-buffer identity v2 binds those same digests into the
+`SealedStateEnvelope` state-id so reopen with privacy/attestation drift fails
+closed. Transfer receipt alone is never decode success;
 incomplete pairs and Empty placeholders still fail closed. This is not HSN,
 llama.cpp P/D, or model-backend evidence. The composition root wraps and
 assembles that pair into one

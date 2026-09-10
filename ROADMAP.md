@@ -257,10 +257,11 @@ model-semantics owner.
   observation projects that same fail-fast phase admission snapshot rather than
   inventing a second capacity story from the HTTP `max_concurrent_requests`
   limiter; generation stays monotonic after cancel/taint while readiness
-  clears. When `embedded-inference` is enabled,
+  clears.   When `embedded-inference` is enabled,
   host-buffered transfer payloads reuse `SealedStateEnvelope` via
   `seal_transfer_host_buffer` / `open_transfer_host_buffer` (domain-separated
-  binding over transfer identity and profile generation). Wire tickets remain
+  binding over transfer identity, profile generation, and privacy /
+  attestation policy digests — `transfer-host-buffer.v2`). Wire tickets remain
   opaque adapter metadata by design and are intentionally not force-sealed with
   `SealedStateEnvelope` (host buffers seal; tickets do not). Descriptor
   validation fail-closes if tickets carry sealed-model-state schema or envelope
@@ -393,7 +394,10 @@ model-semantics owner.
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
   policies fail closed on consume; this is product-pair wire binding, not HSN
-  or attested-fabric readiness.
+  or attested-fabric readiness. The sealed host-buffer helper
+  (`transfer-host-buffer.v2`) binds the same privacy/attestation digests into
+  the `SealedStateEnvelope` state-id so reopen with a drifted policy fails
+  closed without claiming attested fabric or TEE-export readiness.
 
 ## Cross-repository delivery order
 
