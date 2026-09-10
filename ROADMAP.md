@@ -439,7 +439,19 @@ model-semantics owner.
   Opaque import/export on that surface fail closed; it is **not** a
   llama.cpp / picolm ownership adapter and does not claim model-semantic P/D.
   Eligible still refuses `accepts_work` and worker `ready_phases` never
-  advertise P/D. Power now also ships product-surface
+  advertise P/D. Power now also ships
+  [`LlamaCppBackendPhaseStateOwnership`]: layout identity from
+  [`LlamaCppLayoutFacts`] (or matching profile digests via ACL
+  `state_ownership = "llamacpp"`) and opaque snapshot import/export that
+  capture/restore through the pinned llama.cpp APIs
+  (`llama_get_state_size` / `llama_copy_state_data` / `llama_set_state_data`)
+  via [`LlamaCppContextStatePort`] (production wraps `LlamaContext`; tests
+  use a fixture port without a GGUF). `probe_llamacpp_state_transfer_api`
+  documents the required symbols on pin
+  `dfd12e4d334846367e4284a2a7763fe92c1bf676`. This advances the opaque-state
+  product port but does **not** close the exit checkbox: live P/D still needs
+  a concrete `BackendPhaseExecution` and must not advertise via
+  `may_advertise_prefill_decode`. Power now also ships product-surface
   [`BackendPhaseExecution`]: default [`EmptyBackendPhaseExecution`] keeps
   Eligible refusing Ready. ACL opt-in `phase_execution = "pending"` (with
   `phase_executor = backend-owned`) installs
@@ -449,7 +461,7 @@ model-semantics owner.
   model-semantic decode. Backend-owned composition continues to suppress
   worker `ready_phases` via `may_advertise_prefill_decode`. This advances
   the named backend phase product port toward real backends; concrete
-  llama.cpp / picolm layout + execute implementors remain open.
+  llama.cpp / picolm **execute** implementors remain open.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
@@ -464,6 +476,10 @@ model-semantics owner.
 Each open checkbox closes only when its evidence below exists. Interim
 product ports (`profile-bound`, `phase_execution = pending`, Unavailable
 HSN, AAD/host-buffer attestation digests) never close a checkbox alone.
+`LlamaCppBackendPhaseStateOwnership` + ACL `state_ownership = llamacpp`
+advances opaque-state wiring and documents the pin's snapshot APIs, but
+does **not** close the opaque-state checkbox until live P/D import/export
+runs under a concrete `BackendPhaseExecution` with transfer evidence.
 
 **Reuse (admission / replicas / weight hierarchy / sealed envelopes /
 telemetry / receipts):** closes when a concrete llama.cpp or picolm
@@ -474,10 +490,16 @@ is already bound; live executor lifecycle evidence is not.
 
 **Opaque state (tokenization / KV / layout stay model-owned):** closes
 when a real `BackendPhaseStateOwnership` implementor imports/exports
-opaque adapter-owned state bytes for llama.cpp or picolm (layout digest
-match + byte hooks only in Power). `ProfileBoundBackendPhaseStateOwnership`
-mirrors closed profile digests to Eligible without KV and does **not**
-close this checkbox. Power must not invent a second KV format.
+opaque adapter-owned state bytes for llama.cpp or picolm **on a live P/D
+path** (layout digest match + byte hooks only in Power). Progress note:
+[`LlamaCppBackendPhaseStateOwnership`] binds layout facts / profile
+digests and moves opaque snapshots through the pinned
+`llama_get_state_size` / `llama_copy_state_data` / `llama_set_state_data`
+surface (fixture-proven without a huge GGUF). That is necessary but not
+sufficient—live executor + transfer evidence is still required.
+`ProfileBoundBackendPhaseStateOwnership` mirrors closed profile digests to
+Eligible without KV and does **not** close this checkbox. Power must not
+invent a second KV format.
 
 **Typed outcomes (recompute / retryable-unavailable / terminal-failure
 before response generation):** closes when that same concrete

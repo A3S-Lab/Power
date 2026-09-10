@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Product-surface `LlamaCppBackendPhaseStateOwnership` for backend-owned
+  phase composition: layout identity from `LlamaCppLayoutFacts` (or matching
+  profile digests) and opaque snapshot import/export via a
+  `LlamaCppContextStatePort` that mirrors the pinned llama.cpp APIs
+  `llama_get_state_size` / `llama_copy_state_data` / `llama_set_state_data`
+  (production wraps `LlamaContext` under the `llamacpp` feature; unit tests
+  use `FixtureLlamaCppContextStatePort` without a GGUF). ACL/composition
+  opt-in `state_ownership = "llamacpp"` (requires
+  `phase_executor = backend-owned`) wires Eligible ownership; empty snapshots
+  and unknown handles fail closed. `probe_llamacpp_state_transfer_api`
+  documents the required symbols on pin
+  `dfd12e4d334846367e4284a2a7763fe92c1bf676`. Does **not** invent KV layout,
+  claim Ready execute, advertise P/D, or close ROADMAP opaque-state exit
+  criteria (live `BackendPhaseExecution` still open).
 - P6 open-checkbox exit criteria in `ROADMAP.md`: each remaining reuse /
   opaque-state / typed-outcome / HSN / attestation checkbox names the
   concrete evidence that closes it; interim `profile-bound` /

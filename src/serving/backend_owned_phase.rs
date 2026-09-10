@@ -26,6 +26,13 @@
 //! Opaque import/export on that surface fail closed. It is not a real
 //! llama.cpp / picolm adapter.
 //!
+//! [`super::LlamaCppBackendPhaseStateOwnership`] is the concrete llama.cpp
+//! ownership surface: layout identity from model/session facts (or matching
+//! profile digests) and opaque snapshot bytes via the pinned
+//! `llama_get_state_size` / `llama_copy_state_data` / `llama_set_state_data`
+//! APIs (or a fixture port). ACL `state_ownership = llamacpp`. This does not
+//! invent KV semantics or claim Ready execute / P/D advertisement.
+//!
 //! Pairs only with [`BufferedHostLoopbackStateTransfer`] (or refuses wrong
 //! transport). Transfer completion alone never yields cache-hit or decode
 //! success.
@@ -45,6 +52,7 @@ use super::backend_phase_state_ownership::{
     bind_backend_phase_state_ownership, BackendPhaseStateOwnership,
     EmptyBackendPhaseStateOwnership, ProfileBoundBackendPhaseStateOwnership,
 };
+use super::llamacpp_phase_state_ownership::LlamaCppBackendPhaseStateOwnership;
 use super::{
     AbortPhaseExecution, AdapterProvisionState, BufferedHostLoopbackStateTransfer,
     ExecutePhaseExecution, PhaseDecision, PhaseExecutionOutput, PhaseExecutorCapabilities,
@@ -65,7 +73,9 @@ fn unavailable() -> PowerError {
 ///
 /// Absent `state_ownership` keeps Empty (Unavailable). `profile-bound`
 /// installs [`ProfileBoundBackendPhaseStateOwnership`] (Eligible after digests
-/// match).
+/// match). `llamacpp` installs [`LlamaCppBackendPhaseStateOwnership`]
+/// (Eligible after digests match; opaque snapshots use llama.cpp state APIs
+/// or a fixture port ? not Ready execute).
 fn composition_ownership(
     profile: &ServingExecutionProfile,
 ) -> Result<Arc<dyn BackendPhaseStateOwnership>> {
@@ -73,6 +83,9 @@ fn composition_ownership(
         None => Ok(Arc::new(EmptyBackendPhaseStateOwnership)),
         Some(ServingCompositionStateOwnership::ProfileBound) => Ok(Arc::new(
             ProfileBoundBackendPhaseStateOwnership::for_profile(profile)?,
+        )),
+        Some(ServingCompositionStateOwnership::LlamaCpp) => Ok(Arc::new(
+            LlamaCppBackendPhaseStateOwnership::for_profile(profile)?,
         )),
     }
 }
@@ -753,6 +766,35 @@ mod tests {
         assert!(!executor.ownership().is_empty());
         assert!(executor.execution().is_empty());
         assert!(!profile.may_advertise_prefill_decode());
+    }
+
+    #[test]
+    fn paired_for_profile_honors_llamacpp_state_ownership_acl() {
+        use crate::serving::ServingCompositionStateOwnership;
+
+        let profile = buffered_profile_with_options(
+            Some(ServingCompositionTransport::BufferedHostLoopback),
+            Some(ServingCompositionPhaseExecutor::BackendOwned),
+            Some(ServingCompositionStateOwnership::LlamaCpp),
+            None,
+        );
+        let (transfer, executor) = BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();
+        assert_eq!(transfer.health(), crate::serving::TransferHealth::Ready);
+        assert_eq!(executor.health(), PhaseExecutorHealth::Eligible);
+        assert!(!executor.health().accepts_work());
+        assert!(!executor.ownership().is_empty());
+        assert_eq!(
+            executor.ownership().state_layout_sha256(),
+            Some(digest('5').as_str())
+        );
+        assert!(executor.execution().is_empty());
+        assert!(!profile.may_advertise_prefill_decode());
+
+        let import_err = executor
+            .ownership()
+            .import_opaque_state(&[])
+            .expect_err("empty llama.cpp snapshot must fail closed");
+        assert!(import_err.to_string().contains("empty opaque import"));
     }
 
     #[test]

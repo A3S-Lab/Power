@@ -127,8 +127,11 @@ impl fmt::Display for ServingCompositionPhaseExecutor {
 /// Absent (or omitted) keeps default Empty ownership → Unavailable.
 /// `profile-bound` requires `phase_executor = backend-owned` and installs
 /// [`crate::serving::ProfileBoundBackendPhaseStateOwnership`] so the executor
-/// can become Eligible after fail-closed digest validation. Eligible still
-/// refuses Ready execute unless a Ready-capable
+/// can become Eligible after fail-closed digest validation. `llamacpp`
+/// requires `phase_executor = backend-owned` and installs
+/// [`crate::serving::LlamaCppBackendPhaseStateOwnership`] (layout identity +
+/// opaque snapshot import/export via the pinned llama.cpp state APIs or a
+/// fixture port). Eligible still refuses Ready execute unless a Ready-capable
 /// [`crate::serving::BackendPhaseExecution`] is also bound, and never
 /// advertises P/D from ownership alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,12 +140,15 @@ pub enum ServingCompositionStateOwnership {
     /// Mirror closed profile digests into interim Eligible ownership (not a
     /// real llama.cpp / picolm KV adapter).
     ProfileBound,
+    /// Real llama.cpp ownership adapter (opaque `llama_*_state_*` snapshots).
+    LlamaCpp,
 }
 
 impl fmt::Display for ServingCompositionStateOwnership {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ProfileBound => formatter.write_str("profile-bound"),
+            Self::LlamaCpp => formatter.write_str("llamacpp"),
         }
     }
 }
@@ -303,8 +309,11 @@ pub struct PrefillDecodeExecutionProfile {
     /// Absent keeps Empty ownership (Unavailable). `profile-bound` requires
     /// `phase_executor = backend-owned` and binds
     /// `ProfileBoundBackendPhaseStateOwnership` → Eligible without Ready unless
-    /// a Ready-capable `phase_execution` is also bound.
-    /// Digest mismatch with the immutable profile fails closed at bind time.
+    /// a Ready-capable `phase_execution` is also bound. `llamacpp` requires
+    /// `phase_executor = backend-owned` and binds
+    /// `LlamaCppBackendPhaseStateOwnership` (layout facts / opaque snapshots
+    /// via pinned llama.cpp state APIs). Digest mismatch with the immutable
+    /// profile fails closed at bind time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_ownership: Option<ServingCompositionStateOwnership>,
     /// Honest composition opt-in for backend-owned phase prepare/execute.
@@ -467,7 +476,22 @@ impl ServingExecutionProfile {
                         .to_string(),
                 ));
             }
-            Some(ServingCompositionStateOwnership::ProfileBound) | None => {}
+            Some(ServingCompositionStateOwnership::LlamaCpp)
+                if !matches!(
+                    phase_executor,
+                    Some(ServingCompositionPhaseExecutor::BackendOwned)
+                ) =>
+            {
+                return Err(PowerError::Config(
+                    "serving_execution.state_ownership = llamacpp requires phase_executor = backend-owned"
+                        .to_string(),
+                ));
+            }
+            Some(
+                ServingCompositionStateOwnership::ProfileBound
+                | ServingCompositionStateOwnership::LlamaCpp,
+            )
+            | None => {}
         }
         match phase_execution {
             Some(ServingCompositionPhaseExecution::Pending)
@@ -553,10 +577,11 @@ impl ServingExecutionProfile {
     /// Builder-injected adapters (no composition transport) remain gated only
     /// by provision, contract, and health. Product DirectDeviceMemoryPull and
     /// `phase_executor = backend-owned` never advertise until a real adapter
-    /// exists. Eligible-only ownership (`state_ownership = profile-bound`) and
-    /// pending Ready-unlock (`phase_execution = pending`) never advertise:
-    /// backend-owned keeps `may_advertise_prefill_decode` false so worker
-    /// `ready_phases` stay empty until a real model-semantic adapter exists.
+    /// exists. Eligible-only ownership (`state_ownership = profile-bound` or
+    /// `llamacpp`) and pending Ready-unlock (`phase_execution = pending`) never
+    /// advertise: backend-owned keeps `may_advertise_prefill_decode` false so
+    /// worker `ready_phases` stay empty until a real model-semantic execute
+    /// adapter exists.
     pub fn may_advertise_prefill_decode(&self) -> bool {
         if let Some(phase_executor) = self.composition_phase_executor() {
             if !phase_executor.may_advertise_prefill_decode() {
