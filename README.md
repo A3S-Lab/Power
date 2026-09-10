@@ -26,6 +26,7 @@
 </p>
 
 <p align="center">
+  <a href="#release-status-2026-09-10">Release status</a> &middot;
   <a href="#measured-not-promised">Evidence</a> &middot;
   <a href="#choose-the-boundary">Surfaces</a> &middot;
   <a href="#quick-start">Quick start</a> &middot;
@@ -47,13 +48,33 @@ layer-streaming TEE profile. The runtime core does not dispatch on Qwen or any
 other model family.
 
 > [!IMPORTANT]
-> `main` carries the frozen v1.0.0 source line (`Cargo.toml` `1.0.0`, dated
-> changelog `[1.0.0]`). The latest **published** crate and API docs remain
-> [v0.9.0](https://crates.io/crates/a3s-power/0.9.0). A production `v1.0.0`
-> tag exists only after the exact-parent four-platform evidence child
-> (CPU, CUDA, Metal, SEV-SNP confidential GPU) and a GitHub-verified
-> annotated tag both pass. Local Windows CPU/CUDA capture alone is not
-> production release.
+> **v1.0.0 is not a production release yet.** `main` carries the frozen source
+> line only. The latest **published** crate and API docs remain
+> [v0.9.0](https://crates.io/crates/a3s-power/0.9.0).
+
+## Release status (2026-09-10)
+
+| Item | Status |
+| --- | --- |
+| Package / changelog | `Cargo.toml` `1.0.0`; dated `[1.0.0]`; `[Unreleased]` empty at freeze |
+| Frozen source parent `S` | `514031dc74edd72da7c3bfee40144a38d2d91434` |
+| Development / ROADMAP P0–P6 | Complete on `main` (software plan exit) |
+| Exact-parent CPU + CUDA contract captures | Checked in under [release-contract-windows-20260910](docs/benchmarks/release-contract-windows-20260910/README.md) |
+| Capture / assemble operator scripts | [tools/release-capture](tools/release-capture/README.md) |
+| Exact-parent Metal capture | **Missing** (needs real Apple Silicon) |
+| Exact-parent SEV-SNP confidential-GPU capture | **Missing** (needs confidential hardware + NRAS promotion) |
+| `release/v1.0.0/` evidence child on `main` | **Absent** |
+| Annotated production tag `v1.0.0` | **Not published** |
+| crates.io / docs.rs | Still **v0.9.0** |
+
+A production `v1.0.0` tag exists only when an evidence-only child of `S` adds
+exactly `release/v1.0.0/release-evidence.{json,sha256}` for all four platforms
+and a GitHub-verified annotated tag points at that child. Partial Windows
+CPU/CUDA evidence does not authorize the tag.
+
+See [v1 support matrix](docs/v1-support-matrix.md) and
+[production release gate](docs/release-evidence-gate.md).
+
 
 ## Measured, not promised
 
@@ -100,7 +121,8 @@ Pick the narrowest surface that fits the product.
 
 ### Run the current hosted service
 
-Install directly from `main` while v1 remains a release candidate:
+Install directly from `main` for the frozen v1.0.0 **source** line (not a
+production tag):
 
 ~~~bash
 cargo install --git https://github.com/A3S-Lab/Power.git --locked a3s-power
@@ -484,6 +506,13 @@ GPU. The tag must point to an evidence-only child of the frozen source, and it
 must be an annotated signature that GitHub verifies. Hosted or virtual Metal,
 local CUDA relabeled as confidential, mixed source/evidence commits, and
 lightweight or unverified tags all fail closed.
+
+**Current gap:** same-parent Metal and confidential-GPU captures for
+`514031dc74edd72da7c3bfee40144a38d2d91434` are still missing, so there is no
+production `v1.0.0` tag. Use [tools/release-capture](tools/release-capture/README.md)
+on the external hosts, then
+[`assemble-evidence-child.sh`](tools/release-capture/assemble-evidence-child.sh)
+from a clean checkout of `S`.
 
 [Production release gate](docs/release-evidence-gate.md) ·
 [v1 support matrix](docs/v1-support-matrix.md) ·

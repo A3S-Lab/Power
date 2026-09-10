@@ -25,6 +25,7 @@
 </p>
 
 <p align="center">
+  <a href="#发布状态2026-09-10">发布状态</a> &middot;
   <a href="#实测而非承诺">证据</a> &middot;
   <a href="#选择边界">表面</a> &middot;
   <a href="#快速开始">快速开始</a> &middot;
@@ -42,12 +43,30 @@ A3S Power 是面向推理的模型无关 Rust 执行层。模型 crate 保留其
 以及最小的层流式 TEE 配置。运行时核心不对 Qwen 或任何其他模型族做分发。
 
 > [!IMPORTANT]
-> `main` 承载已冻结的 v1.0.0 源码线（`Cargo.toml` `1.0.0`、带日期的
-> changelog `[1.0.0]`）。最新**已发布**的 crate 与 API 文档仍为
-> [v0.9.0](https://crates.io/crates/a3s-power/0.9.0)。生产 `v1.0.0` 标签仅在
-> exact-parent 四平台证据子提交（CPU、CUDA、Metal、SEV-SNP confidential GPU）
-> 与 GitHub 已验证附注标签均通过后才存在。仅有本机 Windows CPU/CUDA
-> capture 不等于生产发布。
+> **v1.0.0 尚未生产发布。** `main` 仅承载冻结源码线。最新**已发布**的 crate
+> 与 API 文档仍为 [v0.9.0](https://crates.io/crates/a3s-power/0.9.0)。
+
+## 发布状态（2026-09-10）
+
+| 项 | 状态 |
+| --- | --- |
+| 包版本 / 变更日志 | `Cargo.toml` `1.0.0`；带日期的 `[1.0.0]`；冻结时 `[Unreleased]` 为空 |
+| 冻结源码父提交 `S` | `514031dc74edd72da7c3bfee40144a38d2d91434` |
+| 开发 / ROADMAP P0–P6 | `main` 上已完成（软件计划出口） |
+| Exact-parent CPU + CUDA 契约捕获 | 已检入 [release-contract-windows-20260910](docs/benchmarks/release-contract-windows-20260910/README.md) |
+| 捕获 / 组装操作脚本 | [tools/release-capture](tools/release-capture/README.md) |
+| Exact-parent Metal 捕获 | **缺失**（需真实 Apple Silicon） |
+| Exact-parent SEV-SNP confidential-GPU 捕获 | **缺失**（需机密硬件 + NRAS 晋升） |
+| `main` 上的 `release/v1.0.0/` 证据子提交 | **不存在** |
+| 附注生产标签 `v1.0.0` | **未发布** |
+| crates.io / docs.rs | 仍为 **v0.9.0** |
+
+生产 `v1.0.0` 标签仅在 `S` 的证据子提交恰好新增
+`release/v1.0.0/release-evidence.{json,sha256}`（四平台齐全），且 GitHub
+已验证附注标签指向该子提交时才存在。仅有 Windows CPU/CUDA 部分证据不能授权标签。
+
+见 [v1 支持矩阵](docs/v1-support-matrix.md) 与
+[生产发布门](docs/release-evidence-gate.md)。
 
 ## 实测而非承诺
 
@@ -91,7 +110,7 @@ Q4 文件仅在说明处作为辅助 proposer 出现。
 
 ### 运行当前托管服务
 
-在 v1 仍为发布候选期间，直接从 `main` 安装：
+从 `main` 安装冻结的 v1.0.0 **源码**线（不是生产标签）：
 
 ~~~bash
 cargo install --git https://github.com/A3S-Lab/Power.git --locked a3s-power
@@ -409,6 +428,12 @@ Intel TDX 当前发出本地 TDREPORT，但在经审阅的 DCAP Quote/QVL 路径
 以及经证明提升的 SEV-SNP/NVIDIA 机密 GPU。标签必须指向冻结源的仅证据子提交，
 且必须是 GitHub 验证的附注签名。托管或虚拟 Metal、将本地 CUDA 重新标注为机密、
 混合源/证据提交，以及轻量或未验证标签均失败关闭。
+
+**当前缺口：** 相对 `514031dc74edd72da7c3bfee40144a38d2d91434` 的同父
+Metal 与 confidential-GPU 捕获仍缺失，因此尚无生产 `v1.0.0` 标签。请在外部主机上使用
+[tools/release-capture](tools/release-capture/README.md)，再在干净的 `S`
+检出上运行
+[`assemble-evidence-child.sh`](tools/release-capture/assemble-evidence-child.sh)。
 
 [生产发布门](docs/release-evidence-gate.md) ·
 [v1 支持矩阵](docs/v1-support-matrix.md) ·
