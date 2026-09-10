@@ -30,8 +30,13 @@
 //!   `state_ownership = llamacpp` + `phase_execution = llamacpp` +
 //!   `transport = buffered-host-loopback`, prefill capture → buffered-host
 //!   publish/consume → decode restore is fixture-proven; Ready decode is
-//!   proven only when a decode-token adapter is bound. Live GGUF evidence
-//!   remains required before ROADMAP opaque-state / typed-outcome close.
+//!   proven only when a decode-token adapter is bound. Env-gated live GGUF
+//!   evidence (`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`) now drives capture →
+//!   buffered-host publish/consume → restore on a real `LlamaContext`, plus
+//!   Ready decode when a live hook materializes logits (this pin omits
+//!   them) via llama.cpp decode at the next M-RoPE position and greedy-
+//!   samples. That still does not close ROADMAP opaque-state / typed-outcome
+//!   checkboxes (no P/D advertisement, no HTTP boundary).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -129,8 +134,7 @@ impl LlamaCppDecodeTokenPort for ControlledLlamaCppDecodeTokenPort {
 /// [`super::LlamaCppContextStateApi`]. The hook must not invent tokens from
 /// opaque snapshot bytes.
 #[cfg(feature = "llamacpp")]
-pub type LlamaCppLiveDecodeHook =
-    Arc<dyn Fn() -> Result<PhaseResponseStream> + Send + Sync>;
+pub type LlamaCppLiveDecodeHook = Arc<dyn Fn() -> Result<PhaseResponseStream> + Send + Sync>;
 
 /// Feature-gated adapter that defers token generation to a live session hook.
 #[cfg(feature = "llamacpp")]
@@ -151,6 +155,33 @@ impl LlamaCppDecodeTokenPort for LlamaCppLiveDecodeTokenPort {
     fn decode_stream_after_restore(&self) -> Result<PhaseResponseStream> {
         (self.hook)()
     }
+}
+
+/// One greedy token from a restored live context via llama.cpp sampling.
+///
+/// Call only after `set_state_from` applied transferred opaque bytes. The
+/// token id comes from `LlamaSampler::greedy` on the restored logits — never
+/// from snapshot bytes. Piece text is omitted so this hook does not need a
+/// shared `LlamaModel` across the decode-token port.
+#[cfg(feature = "llamacpp")]
+pub fn live_greedy_decode_chunk_after_restore(
+    port: &super::SharedLlamaCppContextStateApi,
+) -> Result<CompletionResponseChunk> {
+    port.with_context_mut(|ctx| {
+        let mut sampler = llama_cpp_2::sampling::LlamaSampler::chain(
+            vec![llama_cpp_2::sampling::LlamaSampler::greedy()],
+            false,
+        );
+        let token = sampler.sample(ctx, -1);
+        Ok(CompletionResponseChunk {
+            text: String::new(),
+            done: true,
+            prompt_tokens: Some(1),
+            done_reason: Some("stop".to_string()),
+            prompt_eval_duration_ns: None,
+            token_id: Some(token.0 as u32),
+        })
+    })
 }
 
 /// Default reserved token_count for prepare bindings when no live session
@@ -281,6 +312,15 @@ impl LlamaCppBackendPhaseExecution {
     /// Install or replace the decode-token adapter after construction.
     pub fn bind_decode_tokens(&mut self, decode_tokens: Arc<dyn LlamaCppDecodeTokenPort>) {
         self.decode_tokens = Some(decode_tokens);
+    }
+
+    /// Pin the expected opaque snapshot size (decode reservations / live capture).
+    ///
+    /// Decode prepare must bind the incoming transfer size, not a virgin
+    /// context's `get_state_size`, which can differ after prefill.
+    pub fn with_captured_state_bytes(mut self, state_bytes: u64) -> Result<Self> {
+        self.binding_template = self.binding_for_captured(state_bytes)?;
+        Ok(self)
     }
 
     fn build(
@@ -449,13 +489,7 @@ impl BackendPhaseExecution for LlamaCppBackendPhaseExecution {
                     ModelStateHandle::new(format!("destination:{}", command.execution_id))?;
                 self.leases
                     .insert(command.execution_id, destination.clone())?;
-                let state_bytes = self
-                    .lock_port()?
-                    .as_ref()
-                    .map(|p| p.state_byte_len() as u64)
-                    .filter(|n| *n > 0)
-                    .unwrap_or(self.binding_template.state_bytes);
-                let binding = self.binding_for_captured(state_bytes)?;
+                let binding = self.binding_template.clone();
                 PreparedPhaseExecution::Decode(PreparedDecodePhase::new(
                     command.execution_id,
                     command.local_worker_epoch,

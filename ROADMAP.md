@@ -476,9 +476,16 @@ model-semantics owner.
   llamacpp execution surface; fixture-proven evidence shows prefill capture
   -> buffered-host publish/consume -> decode `set_state_data` restore ->
   fail-closed without a decode-token port, or Ready decode when a
-  controlled decode adapter is bound. Live GGUF P/D evidence remains open —
-  fixture / controlled-adapter paths do **not** close the
-  opaque-state or typed-outcome checkboxes.
+  controlled decode adapter is bound. Env-gated live GGUF evidence
+  (`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`,
+  `tests/llamacpp_phase_state_live.rs`) now runs capture → buffered-host →
+  restore on a real `LlamaContext` (local Qwen3.5-0.8B Q4_0) and Ready
+  decode via `LlamaCppLiveDecodeTokenPort`. This pin's snapshot omits
+  logits (`n_outputs=0`) and Qwen3.5 M-RoPE requires the next decode
+  position `Y > X`, so the live hook decodes one caller-owned token at the
+  next slot then greedy-samples. Token ids come from llama.cpp, not
+  transfer bytes. That is live opaque-state progress, not checkbox close:
+  no P/D advertisement, no authenticated HTTP boundary.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
@@ -497,16 +504,19 @@ attestation digests) never close a checkbox alone.
 `LlamaCppBackendPhaseStateOwnership` + ACL `state_ownership = llamacpp`
 advances opaque-state wiring and documents the pin's snapshot APIs, but
 does **not** close the opaque-state checkbox until live P/D import/export
-runs with transfer evidence on a full decode-token path (fixture-only
-capture/publish/consume/restore evidence is necessary progress, not
-sufficient to close).
+runs with transfer evidence on a full decode-token path that may advertise.
+Fixture capture/publish/consume/restore is necessary; env-gated live GGUF
+(`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`) now adds real-`LlamaContext`
+capture → buffered-host → restore (and optional live greedy decode after
+restore). That is still not sufficient to close: no HTTP boundary, no
+`may_advertise_prefill_decode`.
 `LlamaCppBackendPhaseExecution` + ACL `phase_execution = llamacpp` advances
 typed prepare / prefill-execute Ready via those same state APIs (fixture-
-proven without a huge GGUF) but does **not** close typed-outcome or reuse
-checkboxes: Ready decode after restore requires a bound
-`LlamaCppDecodeTokenPort` (controlled adapter proves the gate without
-inventing tokens from transfer bytes; live GGUF + session completion hook
-still required for checkbox close), and
+proven without a huge GGUF; live GGUF restore now also runs locally) but
+does **not** close typed-outcome or reuse checkboxes: Ready decode after
+restore requires a bound `LlamaCppDecodeTokenPort` (controlled adapter
+proves the gate without inventing tokens from transfer bytes; live greedy
+sample after restore is progress, not HTTP-boundary close), and
 `may_advertise_prefill_decode` stays false.
 
 **Reuse (admission / replicas / weight hierarchy / sealed envelopes /
@@ -523,12 +533,14 @@ path** (layout digest match + byte hooks only in Power). Progress note:
 [`LlamaCppBackendPhaseStateOwnership`] binds layout facts / profile
 digests and moves opaque snapshots through the pinned
 `llama_get_state_size` / `llama_copy_state_data` / `llama_set_state_data`
-surface. Fixture-proven composition under `BackendOwnedPhaseExecutor`
-(`state_ownership = llamacpp` + `phase_execution = llamacpp` +
-`transport = buffered-host-loopback`) now shows ownership capture ->
-buffered-host publish/consume -> decode restore. That is necessary but
-**not** sufficient — live GGUF executor evidence is still required before
-this checkbox closes. `ProfileBoundBackendPhaseStateOwnership` mirrors
+  surface. Fixture-proven composition under `BackendOwnedPhaseExecutor`
+  (`state_ownership = llamacpp` + `phase_execution = llamacpp` +
+  `transport = buffered-host-loopback`) now shows ownership capture ->
+  buffered-host publish/consume -> decode restore. Env-gated live GGUF
+  evidence (`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`) repeats that path on a
+  real `LlamaContext` (local 0.8B Q4_0). That is necessary progress but
+  **not** sufficient — HTTP-boundary P/D and advertisement remain open
+  before this checkbox closes. `ProfileBoundBackendPhaseStateOwnership` mirrors
 closed profile digests to Eligible without KV and does **not** close this
 checkbox. Power must not invent a second KV format.
 
@@ -540,8 +552,9 @@ consume **including Ready decode token streams**. Progress note:
 [`LlamaCppBackendPhaseExecution`] produces Ready prepare and Ready prefill
 execute via pinned state APIs / fixture port; decode execute restores
 opaque bytes then Ready only with a bound [`LlamaCppDecodeTokenPort`]
-(fixture + controlled adapter evidence exists; live GGUF session
-completion still required before this checkbox closes). `EmptyBackendPhaseExecution`
+  (fixture + controlled adapter evidence exists; live GGUF restore + greedy
+  sample after restore is local progress, not authenticated-HTTP close).
+  `EmptyBackendPhaseExecution`
 keeps Eligible from Ready; `PendingBackendPhaseExecution` unlocks Ready
 health only and fails closed on prepare/execute—neither closes this
 checkbox. Gateway/Cloud retain placement and autoscaling.

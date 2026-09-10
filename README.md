@@ -367,6 +367,13 @@ Opaque import/export fail closed and it is not a backend adapter. Eligible
 still has `accepts_work == false` and worker `ready_phases` never list P/D.
 Pending Ready-unlock still suppresses worker advertising via backend-owned
 `may_advertise_prefill_decode`.
+`state_ownership = "llamacpp"` + `phase_execution = "llamacpp"` binds live
+`LlamaContext` snapshot APIs (`SharedLlamaCppContextStateApi`). Set
+`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL` to a GGUF to run
+`tests/llamacpp_phase_state_live.rs` (fails if the path is missing). That
+proves capture → buffered-host → restore on a real context and optional
+Ready decode via live greedy sample after restore. It does not advertise
+P/D or close the ROADMAP opaque-state / typed-outcome checkboxes.
 The composition root wraps and
 assembles injected pairs into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and

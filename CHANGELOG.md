@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Live llama.cpp opaque-state phase evidence (`llamacpp` feature,
+  `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`): `SharedLlamaCppContextStateApi`
+  boxes a real `LlamaContext` through `LlamaCppContextStateApi` get/copy/set.
+  Env-gated `tests/llamacpp_phase_state_live.rs` fails closed if the env var
+  is set but the GGUF is missing, then proves capture → buffered-host
+  publish/consume → restore on live contexts. Ready decode uses
+  `LlamaCppLiveDecodeTokenPort` + a post-restore llama.cpp decode at the
+  next M-RoPE position (this pin's snapshot leaves `n_outputs=0`) then
+  greedy sample (token id from llama.cpp, never from transfer bytes). Does
+  **not** close ROADMAP opaque-state / typed-outcome checkboxes (no P/D
+  advertisement, no HTTP boundary).
 - Decode Ready path for `LlamaCppBackendPhaseExecution` after opaque restore:
   bind a distinct `LlamaCppDecodeTokenPort` (production:
   `LlamaCppLiveDecodeTokenPort` under `llamacpp` wrapping existing completion /

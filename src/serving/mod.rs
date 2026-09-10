@@ -59,19 +59,21 @@ pub use execution_profile::{
     ServingCompositionPhaseExecutor, ServingCompositionStateOwnership, ServingCompositionTransport,
     ServingDeploymentIdentity, ServingExecutionProfile, ServingPrivacyMode,
 };
+#[cfg(feature = "llamacpp")]
+pub use llamacpp_phase_execution::{
+    live_greedy_decode_chunk_after_restore, LlamaCppLiveDecodeHook, LlamaCppLiveDecodeTokenPort,
+};
 pub use llamacpp_phase_execution::{
     ControlledLlamaCppDecodeTokenPort, LlamaCppBackendPhaseExecution, LlamaCppDecodeTokenPort,
 };
-#[cfg(feature = "llamacpp")]
-pub use llamacpp_phase_execution::{LlamaCppLiveDecodeHook, LlamaCppLiveDecodeTokenPort};
-#[cfg(feature = "llamacpp")]
-pub use llamacpp_phase_state_ownership::LlamaCppContextStateApi;
 pub use llamacpp_phase_state_ownership::{
     probe_llamacpp_state_transfer_api, FixtureLlamaCppContextStatePort,
     LlamaCppBackendPhaseStateOwnership, LlamaCppContextStatePort, LlamaCppLayoutFacts,
     LlamaCppStateTransferApiProbe, SharedFixtureLlamaCppContextStatePort,
     LLAMACPP_STATE_LAYOUT_DOMAIN, LLAMACPP_STATE_TRANSFER_API_SYMBOLS,
 };
+#[cfg(feature = "llamacpp")]
+pub use llamacpp_phase_state_ownership::{LlamaCppContextStateApi, SharedLlamaCppContextStateApi};
 pub use observation::{
     AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,
     WorkerObservation, WORKER_OBSERVATION_SCHEMA,

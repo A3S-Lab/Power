@@ -431,6 +431,141 @@ impl<'a, 'b> LlamaCppContextStateApi<'a, 'b> {
     }
 }
 
+// SAFETY: LlamaContext is a C pointer. Sequential access matches CachedContext
+// in the llamacpp backend. Callers must not alias one API across threads
+// without external synchronization (SharedLlamaCppContextStateApi uses a Mutex).
+#[cfg(feature = "llamacpp")]
+unsafe impl Send for LlamaCppContextStateApi<'_, '_> {}
+#[cfg(feature = "llamacpp")]
+unsafe impl Sync for LlamaCppContextStateApi<'_, '_> {}
+
+/// Shared live llama.cpp context port that can be boxed into phase execution.
+///
+/// Owns a `'static` context so [`super::LlamaCppBackendPhaseExecution`] can
+/// hold it. Get/copy/set always go through [`LlamaCppContextStateApi`]. The
+/// model and `LlamaBackend` used to create the context must outlive this port.
+#[cfg(feature = "llamacpp")]
+#[derive(Clone)]
+pub struct SharedLlamaCppContextStateApi {
+    context: std::sync::Arc<Mutex<SendableLlamaContext>>,
+}
+
+#[cfg(feature = "llamacpp")]
+struct SendableLlamaContext(llama_cpp_2::context::LlamaContext<'static>);
+
+// SAFETY: LlamaContext is a C pointer. Sequential Mutex access matches
+// `CachedContext` in the llamacpp backend: one thread at a time.
+#[cfg(feature = "llamacpp")]
+unsafe impl Send for SendableLlamaContext {}
+
+#[cfg(feature = "llamacpp")]
+impl SharedLlamaCppContextStateApi {
+    /// Take ownership of a live context and expose it as a shared state port.
+    ///
+    /// # Safety contract
+    /// The `LlamaModel` / `LlamaBackend` that created `context` must remain
+    /// alive for the lifetime of the returned port (and any clones).
+    #[must_use]
+    pub fn from_context(context: llama_cpp_2::context::LlamaContext<'_>) -> Self {
+        let context: llama_cpp_2::context::LlamaContext<'static> =
+            unsafe { std::mem::transmute(context) };
+        Self {
+            context: std::sync::Arc::new(Mutex::new(SendableLlamaContext(context))),
+        }
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, SendableLlamaContext>> {
+        self.context.lock().map_err(|_| {
+            PowerError::InferenceFailed(
+                "SharedLlamaCppContextStateApi context lock poisoned".to_string(),
+            )
+        })
+    }
+
+    /// Borrow the live context for prompt prefill / decode after restore.
+    pub fn with_context_mut<T>(
+        &self,
+        f: impl FnOnce(&mut llama_cpp_2::context::LlamaContext<'static>) -> Result<T>,
+    ) -> Result<T> {
+        let mut guard = self.lock()?;
+        f(&mut guard.0)
+    }
+
+    /// Evaluate prompt tokens on this live context (logits on the last token).
+    pub fn decode_prompt_tokens(&self, tokens: &[llama_cpp_2::token::LlamaToken]) -> Result<()> {
+        if tokens.is_empty() {
+            return Err(PowerError::InvalidRequest(
+                "SharedLlamaCppContextStateApi refuses empty prompt prefill".to_string(),
+            ));
+        }
+        self.with_context_mut(|ctx| {
+            let mut batch = llama_cpp_2::llama_batch::LlamaBatch::new(tokens.len().max(1), 1);
+            for (index, &token) in tokens.iter().enumerate() {
+                let position = i32::try_from(index).map_err(|_| {
+                    PowerError::InferenceFailed(
+                        "live llama.cpp prompt position exceeds i32".to_string(),
+                    )
+                })?;
+                if batch
+                    .add(token, position, &[0], index + 1 == tokens.len())
+                    .is_err()
+                {
+                    return Err(PowerError::InferenceFailed(
+                        "Failed to add token to live llama.cpp prompt batch".to_string(),
+                    ));
+                }
+            }
+            ctx.decode(&mut batch).map_err(|error| {
+                PowerError::InferenceFailed(format!("live llama.cpp prompt decode failed: {error}"))
+            })
+        })
+    }
+
+    /// Re-evaluate one token so logits exist after `set_state_data`.
+    ///
+    /// This pin's snapshot restore does not materialize the output buffer
+    /// (`n_outputs=0`). Ready decode must call existing llama.cpp decode
+    /// before sampling — never invent tokens from snapshot bytes.
+    pub fn decode_token_at(
+        &self,
+        token: llama_cpp_2::token::LlamaToken,
+        position: i32,
+    ) -> Result<()> {
+        self.with_context_mut(|ctx| {
+            let mut batch = llama_cpp_2::llama_batch::LlamaBatch::new(1, 1);
+            if batch.add(token, position, &[0], true).is_err() {
+                return Err(PowerError::InferenceFailed(
+                    "Failed to add token to live llama.cpp logits batch".to_string(),
+                ));
+            }
+            ctx.decode(&mut batch).map_err(|error| {
+                PowerError::InferenceFailed(format!(
+                    "live llama.cpp logits decode after restore failed: {error}"
+                ))
+            })
+        })
+    }
+}
+
+#[cfg(feature = "llamacpp")]
+impl LlamaCppContextStatePort for SharedLlamaCppContextStateApi {
+    fn state_byte_len(&self) -> usize {
+        self.lock()
+            .map(|mut guard| LlamaCppContextStateApi::new(&mut guard.0).state_byte_len())
+            .unwrap_or(0)
+    }
+
+    fn copy_state_into(&self, dest: &mut [u8]) -> Result<usize> {
+        let mut guard = self.lock()?;
+        LlamaCppContextStateApi::new(&mut guard.0).copy_state_into(dest)
+    }
+
+    fn set_state_from(&mut self, src: &[u8]) -> Result<usize> {
+        let mut guard = self.lock()?;
+        LlamaCppContextStateApi::new(&mut guard.0).set_state_from(src)
+    }
+}
+
 #[cfg(feature = "llamacpp")]
 impl LlamaCppContextStatePort for LlamaCppContextStateApi<'_, '_> {
     fn state_byte_len(&self) -> usize {
