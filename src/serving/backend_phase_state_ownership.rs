@@ -280,6 +280,7 @@ mod tests {
             transport: Some(ServingCompositionTransport::BufferedHostLoopback),
             phase_executor: Some(ServingCompositionPhaseExecutor::BackendOwned),
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap()
     }

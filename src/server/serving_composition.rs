@@ -9,6 +9,11 @@ use crate::serving::{
     StateTransferService, TransferHealth,
 };
 
+type ResolvedServingAdapters = (
+    Option<Arc<dyn StateTransferService>>,
+    Option<Arc<dyn ServingPhaseExecutor>>,
+);
+
 /// Resolve ACL composition transport / phase-executor into injectable adapters
 /// before startup validation.
 ///
@@ -17,18 +22,17 @@ use crate::serving::{
 /// conformance executor with `BackendOwnedPhaseExecutor` (requires
 /// buffered-host-loopback transport). Optional `state_ownership = profile-bound`
 /// (with backend-owned) binds interim Eligible ownership; default Empty stays
-/// Unavailable. Silent auto-wire from protocol alone is refused, as is mixing
-/// with builder-injected adapters. Incomplete external pairs remain a
-/// validation error. DirectDeviceMemoryPull installs an Unavailable HSN port
-/// and never claims high-speed evidence.
+/// Unavailable. Optional `phase_execution = pending` (with backend-owned) binds
+/// interim Ready-capable execution so Eligible ownership can advance to Ready
+/// health; pending prepare/execute still fail closed. Silent auto-wire from
+/// protocol alone is refused, as is mixing with builder-injected adapters.
+/// Incomplete external pairs remain a validation error. DirectDeviceMemoryPull
+/// installs an Unavailable HSN port and never claims high-speed evidence.
 pub(super) fn resolve(
     config: &PowerConfig,
     state_transfer: Option<Arc<dyn StateTransferService>>,
     phase_executor: Option<Arc<dyn ServingPhaseExecutor>>,
-) -> Result<(
-    Option<Arc<dyn StateTransferService>>,
-    Option<Arc<dyn ServingPhaseExecutor>>,
-)> {
+) -> Result<ResolvedServingAdapters> {
     match config.serving_execution.composition_transport() {
         None => {
             if config
@@ -260,6 +264,7 @@ mod tests {
             transport: None,
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap()
     }
@@ -314,6 +319,7 @@ mod tests {
             transport,
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap()
     }
@@ -566,6 +572,53 @@ mod tests {
     }
 
     #[test]
+    fn backend_owned_pending_phase_execution_wires_ready_without_advertising() {
+        let mut profile =
+            buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
+        if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
+            execution.phase_executor =
+                Some(crate::serving::ServingCompositionPhaseExecutor::BackendOwned);
+            execution.state_ownership =
+                Some(crate::serving::ServingCompositionStateOwnership::ProfileBound);
+            execution.phase_execution =
+                Some(crate::serving::ServingCompositionPhaseExecution::Pending);
+        }
+        profile.validate().unwrap();
+        assert!(!profile.may_advertise_prefill_decode());
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) = resolve(&config, None, None).unwrap();
+        validate(&config, transfer.as_deref(), executor.as_deref()).unwrap();
+        let transfer = transfer.expect("pending installs transfer");
+        let executor = executor.expect("pending installs phase executor");
+        assert_eq!(transfer.health(), TransferHealth::Ready);
+        assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
+        assert!(executor.health().accepts_work());
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
+                .unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
+        // may_advertise stays false for backend-owned, so accepts_work remains false.
+        assert!(!runtime.accepts_work());
+    }
+
+    #[test]
+    fn pending_phase_execution_requires_backend_owned_phase_executor() {
+        let mut profile =
+            buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
+        if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
+            execution.phase_execution =
+                Some(crate::serving::ServingCompositionPhaseExecution::Pending);
+        }
+        let err = profile.validate().unwrap_err();
+        assert!(err.to_string().contains("phase_executor = backend-owned"));
+    }
+
+    #[test]
     fn profile_bound_state_ownership_requires_backend_owned_phase_executor() {
         let mut profile =
             buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
@@ -651,6 +704,7 @@ mod tests {
             transport: Some(ServingCompositionTransport::BufferedHostLoopback),
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap_err();
         assert!(err.to_string().contains("buffered-host-memory-pull-v1"));
@@ -686,6 +740,7 @@ mod tests {
             transport,
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap()
     }
@@ -771,6 +826,7 @@ mod tests {
             transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap_err();
         assert!(err.to_string().contains("direct-device-memory-pull-v1"));

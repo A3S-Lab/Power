@@ -128,7 +128,9 @@ impl fmt::Display for ServingCompositionPhaseExecutor {
 /// `profile-bound` requires `phase_executor = backend-owned` and installs
 /// [`crate::serving::ProfileBoundBackendPhaseStateOwnership`] so the executor
 /// can become Eligible after fail-closed digest validation. Eligible still
-/// refuses Ready execute and never advertises P/D.
+/// refuses Ready execute unless a Ready-capable
+/// [`crate::serving::BackendPhaseExecution`] is also bound, and never
+/// advertises P/D from ownership alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServingCompositionStateOwnership {
@@ -141,6 +143,31 @@ impl fmt::Display for ServingCompositionStateOwnership {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ProfileBound => formatter.write_str("profile-bound"),
+        }
+    }
+}
+
+/// Optional honest composition phase-execution surface for backend-owned phase.
+///
+/// Absent keeps default Empty execution → Eligible ownership still refuses
+/// Ready. `pending` requires `phase_executor = backend-owned` and installs
+/// [`crate::serving::PendingBackendPhaseExecution`] so Eligible ownership can
+/// advance to Ready health. Pending unlocks the Ready gate only; prepare /
+/// execute / abort fail closed until a concrete backend implementor exists.
+/// Worker `ready_phases` stay suppressed via backend-owned
+/// `may_advertise_prefill_decode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServingCompositionPhaseExecution {
+    /// Bind interim Ready-capable execution (not a real llama.cpp / picolm
+    /// prepare/execute adapter).
+    Pending,
+}
+
+impl fmt::Display for ServingCompositionPhaseExecution {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => formatter.write_str("pending"),
         }
     }
 }
@@ -275,10 +302,20 @@ pub struct PrefillDecodeExecutionProfile {
     ///
     /// Absent keeps Empty ownership (Unavailable). `profile-bound` requires
     /// `phase_executor = backend-owned` and binds
-    /// `ProfileBoundBackendPhaseStateOwnership` → Eligible without Ready.
+    /// `ProfileBoundBackendPhaseStateOwnership` → Eligible without Ready unless
+    /// a Ready-capable `phase_execution` is also bound.
     /// Digest mismatch with the immutable profile fails closed at bind time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_ownership: Option<ServingCompositionStateOwnership>,
+    /// Honest composition opt-in for backend-owned phase prepare/execute.
+    ///
+    /// Absent keeps Empty execution (Eligible still refuses Ready). `pending`
+    /// requires `phase_executor = backend-owned` and binds
+    /// `PendingBackendPhaseExecution` so Eligible ownership can advance to
+    /// Ready health. Pending prepare/execute fail closed; this is not
+    /// model-semantic P/D.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_execution: Option<ServingCompositionPhaseExecution>,
 }
 
 /// Immutable execution profile for one Power process generation.
@@ -341,6 +378,7 @@ impl ServingExecutionProfile {
             transport,
             phase_executor,
             state_ownership,
+            phase_execution,
             protocol,
             ..
         } = execution.as_ref();
@@ -375,57 +413,75 @@ impl ServingExecutionProfile {
             ));
         }
         match transport {
-            Some(ServingCompositionTransport::BufferedHostLoopback) => {
-                if !matches!(protocol, StateTransferProtocol::BufferedHostMemoryPullV1) {
-                    return Err(PowerError::Config(
-                        "serving_execution.transport = buffered-host-loopback requires protocol = buffered-host-memory-pull-v1"
-                            .to_string(),
-                    ));
-                }
-                if !matches!(privacy, ServingPrivacyMode::AuthenticatedEncryptedTransport) {
-                    return Err(PowerError::Config(
-                        "serving_execution.transport = buffered-host-loopback requires privacy = authenticated-encrypted-transport"
-                            .to_string(),
-                    ));
-                }
+            Some(ServingCompositionTransport::BufferedHostLoopback)
+                if !matches!(protocol, StateTransferProtocol::BufferedHostMemoryPullV1) =>
+            {
+                return Err(PowerError::Config(
+                    "serving_execution.transport = buffered-host-loopback requires protocol = buffered-host-memory-pull-v1"
+                        .to_string(),
+                ));
             }
-            Some(ServingCompositionTransport::DirectDeviceMemoryPull) => {
-                if !matches!(protocol, StateTransferProtocol::DirectDeviceMemoryPullV1) {
-                    return Err(PowerError::Config(
-                        "serving_execution.transport = direct-device-memory-pull requires protocol = direct-device-memory-pull-v1"
-                            .to_string(),
-                    ));
-                }
+            Some(ServingCompositionTransport::BufferedHostLoopback)
+                if !matches!(privacy, ServingPrivacyMode::AuthenticatedEncryptedTransport) =>
+            {
+                return Err(PowerError::Config(
+                    "serving_execution.transport = buffered-host-loopback requires privacy = authenticated-encrypted-transport"
+                        .to_string(),
+                ));
             }
+            Some(ServingCompositionTransport::BufferedHostLoopback) => {}
+            Some(ServingCompositionTransport::DirectDeviceMemoryPull)
+                if !matches!(protocol, StateTransferProtocol::DirectDeviceMemoryPullV1) =>
+            {
+                return Err(PowerError::Config(
+                    "serving_execution.transport = direct-device-memory-pull requires protocol = direct-device-memory-pull-v1"
+                        .to_string(),
+                ));
+            }
+            Some(ServingCompositionTransport::DirectDeviceMemoryPull) => {}
             None => {}
         }
         match phase_executor {
-            Some(ServingCompositionPhaseExecutor::BackendOwned) => {
+            Some(ServingCompositionPhaseExecutor::BackendOwned)
                 if !matches!(
                     transport,
                     Some(ServingCompositionTransport::BufferedHostLoopback)
-                ) {
-                    return Err(PowerError::Config(
-                        "serving_execution.phase_executor = backend-owned requires transport = buffered-host-loopback"
-                            .to_string(),
-                    ));
-                }
+                ) =>
+            {
+                return Err(PowerError::Config(
+                    "serving_execution.phase_executor = backend-owned requires transport = buffered-host-loopback"
+                        .to_string(),
+                ));
             }
-            None => {}
+            Some(ServingCompositionPhaseExecutor::BackendOwned) | None => {}
         }
         match state_ownership {
-            Some(ServingCompositionStateOwnership::ProfileBound) => {
+            Some(ServingCompositionStateOwnership::ProfileBound)
                 if !matches!(
                     phase_executor,
                     Some(ServingCompositionPhaseExecutor::BackendOwned)
-                ) {
-                    return Err(PowerError::Config(
-                        "serving_execution.state_ownership = profile-bound requires phase_executor = backend-owned"
-                            .to_string(),
-                    ));
-                }
+                ) =>
+            {
+                return Err(PowerError::Config(
+                    "serving_execution.state_ownership = profile-bound requires phase_executor = backend-owned"
+                        .to_string(),
+                ));
             }
-            None => {}
+            Some(ServingCompositionStateOwnership::ProfileBound) | None => {}
+        }
+        match phase_execution {
+            Some(ServingCompositionPhaseExecution::Pending)
+                if !matches!(
+                    phase_executor,
+                    Some(ServingCompositionPhaseExecutor::BackendOwned)
+                ) =>
+            {
+                return Err(PowerError::Config(
+                    "serving_execution.phase_execution = pending requires phase_executor = backend-owned"
+                        .to_string(),
+                ));
+            }
+            Some(ServingCompositionPhaseExecution::Pending) | None => {}
         }
         if *generation == 0 || *generation > MAX_EXACT_ACL_INTEGER {
             return Err(PowerError::Config(format!(
@@ -484,13 +540,23 @@ impl ServingExecutionProfile {
         }
     }
 
+    /// Explicit product-surface composition phase execution, when opted in by ACL.
+    pub fn composition_phase_execution(&self) -> Option<ServingCompositionPhaseExecution> {
+        match self {
+            Self::Aggregated {} => None,
+            Self::PrefillDecode { execution } => execution.phase_execution,
+        }
+    }
+
     /// Whether worker observation may list this profile's P/D phase as ready.
     ///
     /// Builder-injected adapters (no composition transport) remain gated only
     /// by provision, contract, and health. Product DirectDeviceMemoryPull and
     /// `phase_executor = backend-owned` never advertise until a real adapter
-    /// exists. Eligible-only ownership (`state_ownership = profile-bound`)
-    /// never advertises: `accepts_work` stays false.
+    /// exists. Eligible-only ownership (`state_ownership = profile-bound`) and
+    /// pending Ready-unlock (`phase_execution = pending`) never advertise:
+    /// backend-owned keeps `may_advertise_prefill_decode` false so worker
+    /// `ready_phases` stay empty until a real model-semantic adapter exists.
     pub fn may_advertise_prefill_decode(&self) -> bool {
         if let Some(phase_executor) = self.composition_phase_executor() {
             if !phase_executor.may_advertise_prefill_decode() {

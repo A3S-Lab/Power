@@ -10,10 +10,15 @@
 //! [`PhaseExecutorHealth::Unavailable`]. Binding a non-Empty
 //! [`BackendPhaseStateOwnership`] validates profile `layout_sha256` (via
 //! `state_layout_sha256`) and related digests fail-closed, then advances
-//! health to [`PhaseExecutorHealth::Eligible`]. Eligible still refuses Ready
-//! prepare/execute until a real execute adapter path exists - matching layout
-//! registration alone is not decode success and does not invent model-semantic
-//! P/D.
+//! health to [`PhaseExecutorHealth::Eligible`]. Default
+//! [`EmptyBackendPhaseExecution`] keeps Eligible from becoming Ready.
+//! Binding a Ready-capable [`BackendPhaseExecution`] (ACL
+//! `phase_execution = pending` ? [`PendingBackendPhaseExecution`], or a
+//! concrete backend) advances Eligible to [`PhaseExecutorHealth::Ready`] and
+//! delegates prepare/execute. Pending unlocks Ready health only;
+//! prepare/execute still fail closed until a real backend implementor exists.
+//! Matching layout registration alone is not decode success and does not
+//! invent model-semantic P/D.
 //!
 //! [`super::ProfileBoundBackendPhaseStateOwnership`] is the honest interim
 //! product surface: it mirrors closed profile digests (including the closed
@@ -32,6 +37,10 @@ use async_trait::async_trait;
 
 use crate::error::{PowerError, Result};
 
+use super::backend_phase_execution::{
+    bind_backend_phase_execution, BackendPhaseExecution, EmptyBackendPhaseExecution,
+    PendingBackendPhaseExecution,
+};
 use super::backend_phase_state_ownership::{
     bind_backend_phase_state_ownership, BackendPhaseStateOwnership,
     EmptyBackendPhaseStateOwnership, ProfileBoundBackendPhaseStateOwnership,
@@ -40,8 +49,9 @@ use super::{
     AbortPhaseExecution, AdapterProvisionState, BufferedHostLoopbackStateTransfer,
     ExecutePhaseExecution, PhaseDecision, PhaseExecutionOutput, PhaseExecutorCapabilities,
     PhaseExecutorHealth, PreparePhaseExecution, PreparedPhaseExecution, ProductionAdapterContract,
-    RetryableUnavailableReason, ServingCompositionStateOwnership, ServingExecutionProfile,
-    ServingPhaseExecutor, ServingPrivacyMode, StateTransferProtocol, StateTransferService,
+    RetryableUnavailableReason, ServingCompositionPhaseExecution, ServingCompositionStateOwnership,
+    ServingExecutionProfile, ServingPhaseExecutor, ServingPrivacyMode, StateTransferProtocol,
+    StateTransferService,
 };
 
 fn unavailable() -> PowerError {
@@ -67,16 +77,32 @@ fn composition_ownership(
     }
 }
 
+/// Resolve ACL/composition phase execution for a backend-owned phase profile.
+///
+/// Absent `phase_execution` keeps Empty (Eligible refuses Ready). `pending`
+/// installs [`PendingBackendPhaseExecution`] (Eligible ? Ready health; work
+/// still fail-closed).
+fn composition_execution(
+    profile: &ServingExecutionProfile,
+) -> Result<Arc<dyn BackendPhaseExecution>> {
+    match profile.composition_phase_execution() {
+        None => Ok(Arc::new(EmptyBackendPhaseExecution)),
+        Some(ServingCompositionPhaseExecution::Pending) => {
+            Ok(Arc::new(PendingBackendPhaseExecution))
+        }
+    }
+}
+
 fn ready_blocked() -> PowerError {
     PowerError::BackendNotAvailable(
-        "BackendOwnedPhaseExecutor is Eligible after state-layout binding but Ready prepare/execute remains blocked until a real execute adapter path exists"
+        "BackendOwnedPhaseExecutor is Eligible after state-layout binding but Ready prepare/execute remains blocked until a Ready-capable execute adapter is bound"
             .to_string(),
     )
 }
 
-fn require_buffered_host_loopback<'a>(
-    profile: &'a ServingExecutionProfile,
-) -> Result<&'a super::PrefillDecodeExecutionProfile> {
+fn require_buffered_host_loopback(
+    profile: &ServingExecutionProfile,
+) -> Result<&super::PrefillDecodeExecutionProfile> {
     let ServingExecutionProfile::PrefillDecode { execution } = profile else {
         return Err(PowerError::Config(
             "backend-owned phase executor requires a prefill-decode serving profile".to_string(),
@@ -107,14 +133,17 @@ fn require_buffered_host_loopback<'a>(
 ///
 /// Construct with [`Self::pair_with`] against
 /// [`BufferedHostLoopbackStateTransfer`], or [`Self::paired_for_profile`] to
-/// build both ports together (Empty ownership -> Unavailable). Bind a concrete
+/// build both ports together (Empty ownership ? Unavailable). Bind a concrete
 /// [`BackendPhaseStateOwnership`] via [`Self::with_state_ownership`] /
 /// [`Self::pair_with_ownership`] to advance to Eligible after fail-closed
-/// layout validation. Ready work stays refused until an execute adapter exists.
+/// layout validation. Bind a Ready-capable [`BackendPhaseExecution`] (or ACL
+/// `phase_execution = pending`) to advance Eligible to Ready and delegate
+/// prepare/execute. Empty execution keeps Eligible refusing Ready work.
 #[derive(Clone)]
 pub struct BackendOwnedPhaseExecutor {
     capabilities: PhaseExecutorCapabilities,
     ownership: Arc<dyn BackendPhaseStateOwnership>,
+    execution: Arc<dyn BackendPhaseExecution>,
     health: PhaseExecutorHealth,
 }
 
@@ -125,6 +154,11 @@ impl fmt::Debug for BackendOwnedPhaseExecutor {
             .field("capabilities", &self.capabilities)
             .field("health", &self.health)
             .field("ownership_empty", &self.ownership.is_empty())
+            .field("execution_empty", &self.execution.is_empty())
+            .field(
+                "execution_can_produce_ready",
+                &self.execution.can_produce_ready(),
+            )
             .finish()
     }
 }
@@ -132,39 +166,69 @@ impl fmt::Debug for BackendOwnedPhaseExecutor {
 impl BackendOwnedPhaseExecutor {
     /// Build buffered-host loopback transfer + backend-owned phase.
     ///
-    /// Honors ACL `state_ownership`: absent -> Empty (Unavailable);
-    /// `profile-bound` -> Eligible after fail-closed digest bind. The transfer
-    /// may become Ready; this executor never advertises model-semantic P/D
-    /// readiness from registration alone.
+    /// Honors ACL `state_ownership`: absent ? Empty (Unavailable);
+    /// `profile-bound` ? Eligible after fail-closed digest bind. Honors ACL
+    /// `phase_execution`: absent ? Empty (Eligible refuses Ready);
+    /// `pending` ? Ready health after Eligible. The transfer may become Ready;
+    /// this executor never advertises model-semantic P/D readiness from
+    /// registration or pending unlock alone.
     pub fn paired_for_profile(
         profile: &ServingExecutionProfile,
     ) -> Result<(Arc<BufferedHostLoopbackStateTransfer>, Arc<Self>)> {
         let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(profile)?);
         let ownership = composition_ownership(profile)?;
-        let executor = Arc::new(Self::pair_with_ownership(
+        let execution = composition_execution(profile)?;
+        let executor = Arc::new(Self::pair_with_ownership_and_execution(
             profile,
             Arc::clone(&transfer),
             ownership,
+            execution,
         )?);
         Ok((transfer, executor))
     }
 
     /// Bind one backend-owned phase executor to an already-constructed loopback
-    /// transfer under Empty ownership. Refuses a transfer bound to a different
-    /// profile digest.
+    /// transfer under Empty ownership and Empty execution. Refuses a transfer
+    /// bound to a different profile digest.
     pub fn pair_with(
         profile: &ServingExecutionProfile,
         transfer: Arc<BufferedHostLoopbackStateTransfer>,
     ) -> Result<Self> {
-        Self::pair_with_ownership(profile, transfer, Arc::new(EmptyBackendPhaseStateOwnership))
+        Self::pair_with_ownership_and_execution(
+            profile,
+            transfer,
+            Arc::new(EmptyBackendPhaseStateOwnership),
+            Arc::new(EmptyBackendPhaseExecution),
+        )
     }
 
-    /// Bind loopback transfer + ownership. Empty ownership -> Unavailable;
-    /// matching layout -> Eligible; mismatch -> fail closed.
+    /// Bind loopback transfer + ownership under Empty execution.
+    /// Empty ownership ? Unavailable; matching layout ? Eligible; mismatch ?
+    /// fail closed. Eligible still refuses Ready without a Ready-capable
+    /// execution adapter.
     pub fn pair_with_ownership(
         profile: &ServingExecutionProfile,
         transfer: Arc<BufferedHostLoopbackStateTransfer>,
         ownership: Arc<dyn BackendPhaseStateOwnership>,
+    ) -> Result<Self> {
+        Self::pair_with_ownership_and_execution(
+            profile,
+            transfer,
+            ownership,
+            Arc::new(EmptyBackendPhaseExecution),
+        )
+    }
+
+    /// Bind loopback transfer + ownership + execution.
+    ///
+    /// Health is Unavailable (Empty ownership), Eligible (matching ownership,
+    /// Empty/non-producing execution), or Ready (Eligible ownership +
+    /// `can_produce_ready` execution).
+    pub fn pair_with_ownership_and_execution(
+        profile: &ServingExecutionProfile,
+        transfer: Arc<BufferedHostLoopbackStateTransfer>,
+        ownership: Arc<dyn BackendPhaseStateOwnership>,
+        execution: Arc<dyn BackendPhaseExecution>,
     ) -> Result<Self> {
         require_buffered_host_loopback(profile)?;
         let transfer_caps = transfer.capabilities();
@@ -185,29 +249,49 @@ impl BackendOwnedPhaseExecutor {
                     .to_string(),
             ));
         }
-        Self::with_state_ownership(profile, ownership)
+        Self::with_state_ownership_and_execution(profile, ownership, execution)
     }
 
     /// Bind one backend-owned phase executor for the profile, honoring ACL
-    /// `state_ownership` (Empty when absent).
+    /// `state_ownership` and `phase_execution` (Empty when absent).
     pub fn for_profile(profile: &ServingExecutionProfile) -> Result<Self> {
-        Self::with_state_ownership(profile, composition_ownership(profile)?)
+        Self::with_state_ownership_and_execution(
+            profile,
+            composition_ownership(profile)?,
+            composition_execution(profile)?,
+        )
     }
 
-    /// Bind ownership against the immutable profile.
+    /// Bind ownership against the immutable profile under Empty execution.
     ///
     /// Validates `state_layout_sha256` (and optional related digests) fail-closed
     /// before becoming Eligible. Empty ownership stays Unavailable. Eligible
-    /// still blocks Ready prepare/execute.
+    /// still blocks Ready prepare/execute without a Ready-capable execution
+    /// adapter.
     pub fn with_state_ownership(
         profile: &ServingExecutionProfile,
         ownership: Arc<dyn BackendPhaseStateOwnership>,
     ) -> Result<Self> {
+        Self::with_state_ownership_and_execution(
+            profile,
+            ownership,
+            Arc::new(EmptyBackendPhaseExecution),
+        )
+    }
+
+    /// Bind ownership + execution against the immutable profile.
+    pub fn with_state_ownership_and_execution(
+        profile: &ServingExecutionProfile,
+        ownership: Arc<dyn BackendPhaseStateOwnership>,
+        execution: Arc<dyn BackendPhaseExecution>,
+    ) -> Result<Self> {
         require_buffered_host_loopback(profile)?;
-        let health = bind_backend_phase_state_ownership(ownership.as_ref(), profile)?;
+        let ownership_health = bind_backend_phase_state_ownership(ownership.as_ref(), profile)?;
+        let health = bind_backend_phase_execution(ownership_health, execution.as_ref());
         Ok(Self {
             capabilities: PhaseExecutorCapabilities::for_profile(profile)?,
             ownership,
+            execution,
             health,
         })
     }
@@ -215,6 +299,11 @@ impl BackendOwnedPhaseExecutor {
     /// Opaque ownership surface currently bound to this executor.
     pub fn ownership(&self) -> &dyn BackendPhaseStateOwnership {
         self.ownership.as_ref()
+    }
+
+    /// Prepare/execute surface currently bound to this executor.
+    pub fn execution(&self) -> &dyn BackendPhaseExecution {
+        self.execution.as_ref()
     }
 }
 
@@ -238,27 +327,55 @@ impl ServingPhaseExecutor for BackendOwnedPhaseExecutor {
 
     async fn prepare(
         &self,
-        _command: PreparePhaseExecution,
+        command: PreparePhaseExecution,
     ) -> Result<PhaseDecision<PreparedPhaseExecution>> {
-        // Layout registration (Eligible) and transport success must never become
-        // a Ready reservation without a real execute adapter path.
-        PhaseDecision::retryable_unavailable(RetryableUnavailableReason::ExecutorUnavailable, None)
+        match self.health {
+            PhaseExecutorHealth::Unavailable => PhaseDecision::retryable_unavailable(
+                RetryableUnavailableReason::ExecutorUnavailable,
+                None,
+            ),
+            PhaseExecutorHealth::Eligible => {
+                // Layout registration alone must never become a Ready reservation.
+                PhaseDecision::retryable_unavailable(
+                    RetryableUnavailableReason::ExecutorUnavailable,
+                    None,
+                )
+            }
+            PhaseExecutorHealth::Ready | PhaseExecutorHealth::Degraded => {
+                self.execution.prepare(command).await
+            }
+        }
     }
 
     async fn execute(
         &self,
-        _command: ExecutePhaseExecution,
+        command: ExecutePhaseExecution,
     ) -> Result<PhaseDecision<PhaseExecutionOutput>> {
-        // Never claim cache hit or decode success from layout binding alone.
-        PhaseDecision::retryable_unavailable(RetryableUnavailableReason::ExecutorUnavailable, None)
+        match self.health {
+            PhaseExecutorHealth::Unavailable => PhaseDecision::retryable_unavailable(
+                RetryableUnavailableReason::ExecutorUnavailable,
+                None,
+            ),
+            PhaseExecutorHealth::Eligible => {
+                // Never claim cache hit or decode success from layout binding alone.
+                PhaseDecision::retryable_unavailable(
+                    RetryableUnavailableReason::ExecutorUnavailable,
+                    None,
+                )
+            }
+            PhaseExecutorHealth::Ready | PhaseExecutorHealth::Degraded => {
+                self.execution.execute(command).await
+            }
+        }
     }
 
-    async fn abort(&self, _command: AbortPhaseExecution) -> Result<()> {
+    async fn abort(&self, command: AbortPhaseExecution) -> Result<()> {
         match self.health {
             PhaseExecutorHealth::Unavailable => Err(unavailable()),
-            PhaseExecutorHealth::Eligible
-            | PhaseExecutorHealth::Ready
-            | PhaseExecutorHealth::Degraded => Err(ready_blocked()),
+            PhaseExecutorHealth::Eligible => Err(ready_blocked()),
+            PhaseExecutorHealth::Ready | PhaseExecutorHealth::Degraded => {
+                self.execution.abort(command).await
+            }
         }
     }
 }
@@ -284,13 +401,14 @@ mod tests {
         transport: Option<ServingCompositionTransport>,
         phase_executor: Option<ServingCompositionPhaseExecutor>,
     ) -> ServingExecutionProfile {
-        buffered_profile_with_ownership(transport, phase_executor, None)
+        buffered_profile_with_options(transport, phase_executor, None, None)
     }
 
-    fn buffered_profile_with_ownership(
+    fn buffered_profile_with_options(
         transport: Option<ServingCompositionTransport>,
         phase_executor: Option<ServingCompositionPhaseExecutor>,
         state_ownership: Option<crate::serving::ServingCompositionStateOwnership>,
+        phase_execution: Option<ServingCompositionPhaseExecution>,
     ) -> ServingExecutionProfile {
         ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
             role: DisaggregatedServingRole::Decode,
@@ -319,6 +437,7 @@ mod tests {
             transport,
             phase_executor,
             state_ownership,
+            phase_execution,
         })
         .unwrap()
     }
@@ -388,6 +507,7 @@ mod tests {
             transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap();
         // DirectDeviceMemoryPull pair constructs; backend-owned must not.
@@ -620,17 +740,200 @@ mod tests {
     fn paired_for_profile_honors_profile_bound_state_ownership_acl() {
         use crate::serving::ServingCompositionStateOwnership;
 
-        let profile = buffered_profile_with_ownership(
+        let profile = buffered_profile_with_options(
             Some(ServingCompositionTransport::BufferedHostLoopback),
             Some(ServingCompositionPhaseExecutor::BackendOwned),
             Some(ServingCompositionStateOwnership::ProfileBound),
+            None,
         );
         let (transfer, executor) = BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();
         assert_eq!(transfer.health(), crate::serving::TransferHealth::Ready);
         assert_eq!(executor.health(), PhaseExecutorHealth::Eligible);
         assert!(!executor.health().accepts_work());
         assert!(!executor.ownership().is_empty());
+        assert!(executor.execution().is_empty());
         assert!(!profile.may_advertise_prefill_decode());
+    }
+
+    #[test]
+    fn paired_for_profile_honors_pending_phase_execution_acl() {
+        use crate::serving::ServingCompositionStateOwnership;
+
+        let profile = buffered_profile_with_options(
+            Some(ServingCompositionTransport::BufferedHostLoopback),
+            Some(ServingCompositionPhaseExecutor::BackendOwned),
+            Some(ServingCompositionStateOwnership::ProfileBound),
+            Some(ServingCompositionPhaseExecution::Pending),
+        );
+        let (transfer, executor) = BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();
+        assert_eq!(transfer.health(), crate::serving::TransferHealth::Ready);
+        assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
+        assert!(executor.health().accepts_work());
+        assert!(executor.execution().can_produce_ready());
+        // Backend-owned composition still suppresses worker P/D advertising.
+        assert!(!profile.may_advertise_prefill_decode());
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
+                .unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
+        assert!(!runtime.accepts_work());
+    }
+
+    #[tokio::test]
+    async fn pending_execution_unlocks_ready_health_but_work_fails_closed() {
+        let profile = buffered_profile(
+            Some(ServingCompositionTransport::BufferedHostLoopback),
+            Some(ServingCompositionPhaseExecutor::BackendOwned),
+        );
+        let ownership: Arc<dyn BackendPhaseStateOwnership> = Arc::new(MatchingOwnership {
+            layout: digest('5'),
+        });
+        let execution: Arc<dyn BackendPhaseExecution> = Arc::new(PendingBackendPhaseExecution);
+        let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
+        let executor = BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+            &profile,
+            Arc::clone(&transfer),
+            ownership,
+            execution,
+        )
+        .unwrap();
+
+        assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
+        assert!(executor.health().accepts_work());
+        assert!(!executor.execution().is_empty());
+
+        let err = match executor
+            .prepare(PreparePhaseExecution {
+                execution_id: uuid::Uuid::new_v4(),
+                local_worker_epoch: uuid::Uuid::new_v4(),
+                model: "internal/model-v1".to_string(),
+                expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+                request: PhaseRequest::Completion(
+                    serde_json::from_value(serde_json::json!({ "prompt": "unused" })).unwrap(),
+                ),
+            })
+            .await
+        {
+            Ok(_) => panic!("pending prepare must fail closed after Ready unlock"),
+            Err(error) => error,
+        };
+        assert!(err.to_string().contains("PendingBackendPhaseExecution"));
+        assert!(err.to_string().contains("unlocks Ready health only"));
+
+        // Pending without Eligible ownership stays Unavailable.
+        let unavailable = BackendOwnedPhaseExecutor::with_state_ownership_and_execution(
+            &profile,
+            Arc::new(EmptyBackendPhaseStateOwnership),
+            Arc::new(PendingBackendPhaseExecution),
+        )
+        .unwrap();
+        assert_eq!(unavailable.health(), PhaseExecutorHealth::Unavailable);
+        assert!(!unavailable.health().accepts_work());
+    }
+
+    #[tokio::test]
+    async fn ready_capable_execution_can_emit_ready_prepare_decision() {
+        struct ReadyProbeExecution {
+            profile_sha256: String,
+        }
+
+        #[async_trait]
+        impl BackendPhaseExecution for ReadyProbeExecution {
+            fn can_produce_ready(&self) -> bool {
+                true
+            }
+
+            async fn prepare(
+                &self,
+                command: PreparePhaseExecution,
+            ) -> Result<PhaseDecision<PreparedPhaseExecution>> {
+                let execution = crate::serving::PhaseExecutionHandle::new(format!(
+                    "ready-probe:{}",
+                    command.execution_id
+                ))?;
+                let prepared = crate::serving::PreparedDecodePhase::new(
+                    command.execution_id,
+                    command.local_worker_epoch,
+                    self.profile_sha256.clone(),
+                    execution,
+                    ModelStateHandle::new(format!("destination:{}", command.execution_id))?,
+                    crate::serving::StateTransferBinding {
+                        model_sha256: digest('1'),
+                        execution_sha256: digest('3'),
+                        layout_sha256: digest('5'),
+                        state_kind: StateKind::KvCache,
+                        token_count: 1,
+                        state_bytes: 8,
+                    },
+                    command.expires_at,
+                )?;
+                Ok(PhaseDecision::ready(PreparedPhaseExecution::Decode(
+                    prepared,
+                )))
+            }
+
+            async fn execute(
+                &self,
+                _command: ExecutePhaseExecution,
+            ) -> Result<PhaseDecision<PhaseExecutionOutput>> {
+                PhaseDecision::retryable_unavailable(
+                    RetryableUnavailableReason::ExecutorUnavailable,
+                    None,
+                )
+            }
+
+            async fn abort(&self, _command: AbortPhaseExecution) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let profile = buffered_profile(
+            Some(ServingCompositionTransport::BufferedHostLoopback),
+            Some(ServingCompositionPhaseExecutor::BackendOwned),
+        );
+        let ownership: Arc<dyn BackendPhaseStateOwnership> = Arc::new(MatchingOwnership {
+            layout: digest('5'),
+        });
+        let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
+        let executor = BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+            &profile,
+            transfer,
+            ownership,
+            Arc::new(ReadyProbeExecution {
+                profile_sha256: profile.sha256().unwrap(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
+
+        let decision = executor
+            .prepare(PreparePhaseExecution {
+                execution_id: uuid::Uuid::new_v4(),
+                local_worker_epoch: uuid::Uuid::new_v4(),
+                model: "internal/model-v1".to_string(),
+                expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+                request: PhaseRequest::Completion(
+                    serde_json::from_value(serde_json::json!({ "prompt": "unused" })).unwrap(),
+                ),
+            })
+            .await
+            .unwrap();
+        match decision {
+            PhaseDecision::Ready(PreparedPhaseExecution::Decode(_)) => {}
+            PhaseDecision::Ready(_) => {
+                panic!("expected Ready decode reservation from bound execution")
+            }
+            PhaseDecision::Recompute { .. } => {
+                panic!("expected Ready decode, got Recompute")
+            }
+            PhaseDecision::RetryableUnavailable { .. } => {
+                panic!("expected Ready decode, got RetryableUnavailable")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected Ready decode, got TerminalFailure")
+            }
+        }
     }
 
     #[test]

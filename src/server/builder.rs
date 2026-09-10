@@ -141,9 +141,11 @@ impl PowerServerBuilder {
     /// Prefer ACL `transport = "buffered-host-loopback"` with
     /// `phase_executor = "backend-owned"`. Optional ACL
     /// `state_ownership = "profile-bound"` binds interim Eligible ownership;
-    /// default Empty stays Unavailable. Ready prepare/execute stays blocked
-    /// until a real execute adapter exists. Transfer alone never yields Ready
-    /// decode.
+    /// default Empty stays Unavailable. Optional ACL
+    /// `phase_execution = "pending"` binds interim Ready-capable execution so
+    /// Eligible ownership can advance to Ready health; pending prepare/execute
+    /// still fail closed. Absent execution keeps Eligible refusing Ready work.
+    /// Transfer alone never yields Ready decode.
     pub fn with_backend_owned_phase_on_buffered_host_loopback(mut self) -> Result<Self> {
         if self.options.state_transfer_service.is_some() || self.options.phase_executor.is_some() {
             return Err(crate::error::PowerError::Config(

@@ -42,6 +42,7 @@ pub(crate) fn profile(role: DisaggregatedServingRole, timeout_ms: u64) -> Servin
         transport: None,
         phase_executor: None,
         state_ownership: None,
+        phase_execution: None,
     })
     .unwrap()
 }

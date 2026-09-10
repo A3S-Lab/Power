@@ -439,9 +439,17 @@ model-semantics owner.
   Opaque import/export on that surface fail closed; it is **not** a
   llama.cpp / picolm ownership adapter and does not claim model-semantic P/D.
   Eligible still refuses `accepts_work` and worker `ready_phases` never
-  advertise P/D. This advances the named backend phase product
-  port toward real backends; concrete llama.cpp / picolm layout implementors
-  and Ready execute remain open.
+  advertise P/D. Power now also ships product-surface
+  [`BackendPhaseExecution`]: default [`EmptyBackendPhaseExecution`] keeps
+  Eligible refusing Ready. ACL opt-in `phase_execution = "pending"` (with
+  `phase_executor = backend-owned`) installs
+  [`PendingBackendPhaseExecution`] so Eligible ownership can advance to Ready
+  health and delegate prepare/execute. Pending unlocks Ready health only;
+  prepare/execute/abort still fail closed and do not invent KV or claim
+  model-semantic decode. Backend-owned composition continues to suppress
+  worker `ready_phases` via `may_advertise_prefill_decode`. This advances
+  the named backend phase product port toward real backends; concrete
+  llama.cpp / picolm layout + execute implementors remain open.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
@@ -461,9 +469,11 @@ Remaining before any open P6 checkbox can close (not claimed here):
   `ProfileBoundBackendPhaseStateOwnership` only mirrors closed profile
   digests (Eligible without KV)—it is not that implementor.
   `BackendOwnedPhaseExecutor` Eligible after matching registration still
-  lacks Ready execute.
+  lacks a concrete Ready execute implementor: `phase_execution = pending`
+  unlocks Ready health only and fails closed on prepare/execute.
 - Typed outcomes: production phase execute path bound to that ownership;
-  Eligible is not Ready, and Empty ownership remains Unavailable.
+  Empty execution keeps Eligible from becoming Ready; Pending is not a
+  model-semantic executor.
 - HSN: a real DirectDeviceMemoryPull adapter with high-speed-path evidence
   (cancellation, peer loss, stale generation, corrupt state, pressure,
   restart, cleanup). The named Unavailable product port is not that evidence.

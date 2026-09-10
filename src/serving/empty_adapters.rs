@@ -12,11 +12,11 @@ use crate::error::{PowerError, Result};
 use super::{
     AbortPhaseExecution, AbortStateTransfer, AdapterProvisionState, ConsumeStateTransfer,
     ExecutePhaseExecution, PhaseDecision, PhaseExecutionOutput, PhaseExecutorCapabilities,
-    PhaseExecutorHealth, PhaseRequest, PreparePhaseExecution, PrepareStateTransfer,
-    PreparedPhaseExecution, ProductionAdapterContract, PublishStateTransfer,
-    RetryableUnavailableReason, ServingExecutionProfile, ServingPhase, ServingPhaseExecutor,
-    StateTransferCapabilities, StateTransferReceipt, StateTransferService, StateTransferSource,
-    StateTransferTarget, TransferHealth,
+    PhaseExecutorHealth, PreparePhaseExecution, PrepareStateTransfer, PreparedPhaseExecution,
+    ProductionAdapterContract, PublishStateTransfer, RetryableUnavailableReason,
+    ServingExecutionProfile, ServingPhase, ServingPhaseExecutor, StateTransferCapabilities,
+    StateTransferReceipt, StateTransferService, StateTransferSource, StateTransferTarget,
+    TransferHealth,
 };
 
 /// Reject Empty placeholders and non-required contracts before listeners start.
@@ -174,7 +174,7 @@ mod tests {
     use super::*;
     use crate::serving::{
         DisaggregatedServingRole, EmptyServingPhaseExecutor, EmptyStateTransferService,
-        PhaseSessionPoolMode, PhaseWeightCacheMode, PrefillDecodeExecutionProfile,
+        PhaseRequest, PhaseSessionPoolMode, PhaseWeightCacheMode, PrefillDecodeExecutionProfile,
         ServingPrivacyMode, StateKind, StateTransferProtocol,
     };
 
@@ -206,6 +206,7 @@ mod tests {
             transport: None,
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap()
     }

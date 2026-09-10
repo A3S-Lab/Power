@@ -298,6 +298,7 @@ fn serving_execution_schema() -> Schema {
         "transport",
         "phase_executor",
         "state_ownership",
+        "phase_execution",
     ] {
         schema = schema.attribute(name, AttributeSchema::optional(ValueSchema::string()));
     }
@@ -722,6 +723,7 @@ mod tests {
             transport: None,
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap();
         let config = PowerConfig {
@@ -773,6 +775,7 @@ mod tests {
             transport: Some(ServingCompositionTransport::BufferedHostLoopback),
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap();
         let config = PowerConfig {
@@ -828,6 +831,7 @@ mod tests {
             transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap();
         let config = PowerConfig {
@@ -883,6 +887,7 @@ mod tests {
             transport: Some(ServingCompositionTransport::BufferedHostLoopback),
             phase_executor: Some(ServingCompositionPhaseExecutor::BackendOwned),
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap();
         let config = PowerConfig {
@@ -939,6 +944,7 @@ mod tests {
             transport: Some(ServingCompositionTransport::BufferedHostLoopback),
             phase_executor: Some(ServingCompositionPhaseExecutor::BackendOwned),
             state_ownership: Some(ServingCompositionStateOwnership::ProfileBound),
+            phase_execution: None,
         })
         .unwrap();
         let config = PowerConfig {
@@ -955,6 +961,64 @@ mod tests {
         assert_eq!(
             decoded.serving_execution.composition_state_ownership(),
             Some(ServingCompositionStateOwnership::ProfileBound)
+        );
+        assert!(!decoded.serving_execution.may_advertise_prefill_decode());
+        decoded.validate().unwrap();
+    }
+
+    #[test]
+    fn round_trips_pending_phase_execution_opt_in() {
+        use crate::serving::{
+            PrefillDecodeExecutionProfile, ServingCompositionPhaseExecution,
+            ServingCompositionPhaseExecutor, ServingCompositionStateOwnership,
+            ServingCompositionTransport, ServingExecutionProfile, ServingPrivacyMode, StateKind,
+            StateTransferProtocol,
+        };
+
+        let profile = ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: crate::serving::DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".into(),
+            model_sha256: "1".repeat(64),
+            backend: "backend-owned".into(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+            weight_cache: Default::default(),
+            residency_policy_sha256: None,
+            session_pool: Default::default(),
+            session_pool_policy_sha256: None,
+            transport: Some(ServingCompositionTransport::BufferedHostLoopback),
+            phase_executor: Some(ServingCompositionPhaseExecutor::BackendOwned),
+            state_ownership: Some(ServingCompositionStateOwnership::ProfileBound),
+            phase_execution: Some(ServingCompositionPhaseExecution::Pending),
+        })
+        .unwrap();
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+
+        let encoded = serialize(&config).unwrap();
+        assert!(encoded.contains("pending"));
+        assert!(encoded.contains("phase_execution"));
+        let decoded = deserialize(&encoded).unwrap();
+        assert_eq!(decoded.serving_execution, profile);
+        assert_eq!(
+            decoded.serving_execution.composition_phase_execution(),
+            Some(ServingCompositionPhaseExecution::Pending)
         );
         assert!(!decoded.serving_execution.may_advertise_prefill_decode());
         decoded.validate().unwrap();

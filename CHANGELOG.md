@@ -9,15 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Product-surface `BackendPhaseExecution` for backend-owned prepare/execute:
+  default `EmptyBackendPhaseExecution` keeps Eligible ownership from becoming
+  Ready. Binding a Ready-capable adapter (`can_produce_ready`) advances
+  Eligible to `PhaseExecutorHealth::Ready` and delegates prepare/execute.
+  Interim ACL/composition opt-in `phase_execution = "pending"` (requires
+  `phase_executor = backend-owned`) installs `PendingBackendPhaseExecution`:
+  unlocks Ready health after Eligible ownership, but prepare/execute/abort
+  fail closed until a concrete backend implementor exists. Pending alone
+  cannot skip Empty ownership (stays Unavailable). Does not invent llama.cpp
+  KV semantics; backend-owned composition still suppresses worker
+  `ready_phases` via `may_advertise_prefill_decode`.
 - Fail-closed state-layout binding for `BackendOwnedPhaseExecutor`: trait
   `BackendPhaseStateOwnership` (opaque `state_layout_sha256` + optional related
   model/backend/execution digests + opaque import/export hooks) with default
   `EmptyBackendPhaseStateOwnership` staying Unavailable. Matching registration
   advances health to `PhaseExecutorHealth::Eligible` only after profile
   `layout_sha256` validation; mismatched digests fail closed at bind time.
-  Eligible still refuses Ready prepare/execute and never advertises P/D—
-  layout registration alone is not decode success and does not invent
-  llama.cpp KV semantics. Ready execute adapter path remains open.
+  Eligible still refuses Ready prepare/execute without a Ready-capable
+  `BackendPhaseExecution` and never advertises P/D—layout registration alone
+  is not decode success and does not invent llama.cpp KV semantics.
 - Interim product-surface `ProfileBoundBackendPhaseStateOwnership`: mirrors
   exact closed serving-profile digests (`layout_sha256`, `model_sha256`,
   closed `backend_sha256` artifact, `execution_sha256`) so

@@ -94,10 +94,10 @@ For the open concrete backend phase path, Power ships
 defaults to Empty `BackendPhaseStateOwnership` (Unavailable). Binding a
 non-Empty ownership surface validates opaque `state_layout_sha256` against
 profile `layout_sha256` (plus optional related digests) fail-closed, then
-advances to Eligible. Eligible still refuses Ready prepare/execute until a real
-execute adapter exists; transfer alone and matching layout registration alone
-are never decode success. The trait's import/export hooks are opaque
-byte↔handle only—not llama.cpp KV semantics. Power also ships
+advances to Eligible. Eligible still refuses Ready prepare/execute until a
+Ready-capable `BackendPhaseExecution` is bound; transfer alone and matching
+layout registration alone are never decode success. The trait's import/export
+hooks are opaque byte↔handle only—not llama.cpp KV semantics. Power also ships
 `ProfileBoundBackendPhaseStateOwnership` as an honest interim product
 surface: it mirrors exact closed profile digests (including the closed
 backend artifact digest) so the executor can bind to Eligible without a real
@@ -106,9 +106,13 @@ KV owner. ACL `state_ownership = "profile-bound"` (with
 Empty ownership stays Unavailable. Opaque import/export on that surface fail
 closed; it is not a llama.cpp / picolm adapter and does not claim
 model-semantic P/D. Eligible still refuses `accepts_work`, so worker
-`ready_phases` never lists prefill/decode while only Eligible. Wrong
-transport is refused and P/D is never advertised. This advances the named
-backend phase product port; model-backend Ready P/D remains open.
+`ready_phases` never lists prefill/decode while only Eligible. ACL
+`phase_execution = "pending"` installs `PendingBackendPhaseExecution` so
+Eligible ownership can advance to Ready health and delegate prepare/execute;
+pending unlocks Ready health only and still fails closed on work. Backend-owned
+composition continues to suppress worker advertising. Wrong transport is
+refused and P/D is never advertised. This advances the named backend phase
+product port; model-backend Ready P/D remains open.
 
 ## State-transfer port
 

@@ -261,6 +261,7 @@ mod tests {
             transport: None,
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap()
     }
@@ -414,6 +415,7 @@ mod tests {
             transport: None,
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap()
     }
@@ -479,6 +481,7 @@ mod tests {
             transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap();
         let (transfer, executor) =
@@ -569,6 +572,7 @@ mod tests {
             transport: Some(ServingCompositionTransport::BufferedHostLoopback),
             phase_executor: Some(ServingCompositionPhaseExecutor::BackendOwned),
             state_ownership: Some(ServingCompositionStateOwnership::ProfileBound),
+            phase_execution: None,
         })
         .unwrap();
         let (transfer, executor) = BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();

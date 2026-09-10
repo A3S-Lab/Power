@@ -5,6 +5,7 @@
 
 mod adapter_contract;
 mod backend_owned_phase;
+mod backend_phase_execution;
 mod backend_phase_state_ownership;
 mod bounded_state_transfer;
 mod buffered_host_loopback;
@@ -26,6 +27,10 @@ pub use adapter_contract::{
     AdapterTransportIntegrity, ProductionAdapterContract,
 };
 pub use backend_owned_phase::BackendOwnedPhaseExecutor;
+pub use backend_phase_execution::{
+    bind_backend_phase_execution, BackendPhaseExecution, EmptyBackendPhaseExecution,
+    PendingBackendPhaseExecution,
+};
 pub use backend_phase_state_ownership::{
     bind_backend_phase_state_ownership, BackendPhaseStateOwnership,
     EmptyBackendPhaseStateOwnership, ProfileBoundBackendPhaseStateOwnership,
@@ -48,9 +53,9 @@ pub use empty_adapters::{
 };
 pub use execution_profile::{
     DisaggregatedServingRole, PhaseSessionPoolMode, PhaseWeightCacheMode,
-    PrefillDecodeExecutionProfile, ServingCompositionPhaseExecutor,
-    ServingCompositionStateOwnership, ServingCompositionTransport, ServingDeploymentIdentity,
-    ServingExecutionProfile, ServingPrivacyMode,
+    PrefillDecodeExecutionProfile, ServingCompositionPhaseExecution,
+    ServingCompositionPhaseExecutor, ServingCompositionStateOwnership, ServingCompositionTransport,
+    ServingDeploymentIdentity, ServingExecutionProfile, ServingPrivacyMode,
 };
 pub use observation::{
     AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,

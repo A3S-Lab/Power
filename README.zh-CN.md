@@ -319,14 +319,18 @@ decode 成功；不完整配对与 Empty 占位仍失败关闭。这不是 HSN�
 `with_backend_owned_phase_on_buffered_host_loopback`）安装 Ready 缓冲主机回环
 传输与 `BackendOwnedPhaseExecutor`（Injected + 必需合约）。默认 Empty 所有权保持
 Unavailable；绑定 `BackendPhaseStateOwnership` 时以不透明 `state_layout_sha256`
-对照配置 `layout_sha256` 失败关闭校验后可进入 Eligible。Eligible 在真实 execute
-适配器存在前仍拒绝 Ready 工作，拒绝错误传输，且从不宣称 P/D——仅布局注册不是
-llama.cpp / picolm 就绪证据。`ProfileBoundBackendPhaseStateOwnership` 是诚实的
+对照配置 `layout_sha256` 失败关闭校验后可进入 Eligible。Eligible 在绑定可产生
+Ready 的 `BackendPhaseExecution` 前仍拒绝 Ready 工作（ACL
+`phase_execution = "pending"` 仅解锁 Ready 健康度，prepare/execute 仍失败关闭），
+拒绝错误传输，且从不宣称 P/D——仅布局注册不是 llama.cpp / picolm 就绪证据。
+`ProfileBoundBackendPhaseStateOwnership` 是诚实的
 过渡产品面：镜像封闭配置摘要（含封闭 backend 制品摘要）以便进入 Eligible，但不
 拥有 KV；ACL `state_ownership = "profile-bound"`（配合
 `phase_executor = "backend-owned"`）在组合时安装该面，缺省 Empty 保持 Unavailable。
 不透明 import/export 失败关闭，且不是真实后端适配器。Eligible 仍
 `accepts_work == false`，worker `ready_phases` 在仅 Eligible 时从不列出 P/D。
+Pending Ready 解锁仍通过 backend-owned 的 `may_advertise_prefill_decode` 抑制
+worker 宣称。
 组合根将该对包装并组装为单一 `DistributedServingRuntime`，它是唯一的请求级生命周期与就绪源。
 仅当运行时匹配不可变配置且可接受工作时，Power 才发布已配置的 P/D 角色。仅传输完成
 从不计为成功 decode。每个注入的传输适配器由 `BoundedStateTransferService` 包装，

@@ -20,12 +20,12 @@ use crate::error::{PowerError, Result};
 
 use super::{
     AbortPhaseExecution, AdapterProvisionState, BufferedHostLoopbackStateTransfer,
-    ExecutePhaseExecution, ImportedModelState, ModelStateHandle, PhaseDecision,
-    PhaseExecutionHandle, PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth,
-    PhaseResponseChunk, PreparePhaseExecution, PreparedDecodePhase, PreparedPhaseExecution,
-    PreparedPrefillPhase, ProducedModelState, ProductionAdapterContract, RecomputeReason,
-    ServingExecutionProfile, ServingPhase, ServingPhaseExecutor, ServingPrivacyMode, StateKind,
-    StateTransferBinding, StateTransferProtocol, StateTransferService,
+    ExecutePhaseExecution, ModelStateHandle, PhaseDecision, PhaseExecutionHandle,
+    PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth, PhaseResponseChunk,
+    PreparePhaseExecution, PreparedDecodePhase, PreparedPhaseExecution, PreparedPrefillPhase,
+    ProducedModelState, ProductionAdapterContract, RecomputeReason, ServingExecutionProfile,
+    ServingPhase, ServingPhaseExecutor, ServingPrivacyMode, StateKind, StateTransferBinding,
+    StateTransferProtocol, StateTransferService,
 };
 
 /// Fixed opaque payload size for loopback conformance (not KV layout meaning).
@@ -336,9 +336,9 @@ mod tests {
     use super::*;
     use crate::serving::{
         validate_injected_production_adapters, AbortStateTransfer, ConsumeStateTransfer,
-        DisaggregatedServingRole, EmptyServingPhaseExecutor, PhaseRequest, PhaseSessionPoolMode,
-        PhaseWeightCacheMode, PrefillDecodeExecutionProfile, PrepareStateTransfer,
-        PublishStateTransfer, StateTransferService,
+        DisaggregatedServingRole, EmptyServingPhaseExecutor, ImportedModelState, PhaseRequest,
+        PhaseSessionPoolMode, PhaseWeightCacheMode, PrefillDecodeExecutionProfile,
+        PrepareStateTransfer, PublishStateTransfer, StateTransferService,
     };
 
     fn digest(character: char) -> String {
@@ -373,6 +373,7 @@ mod tests {
             transport: None,
             phase_executor: None,
             state_ownership: None,
+            phase_execution: None,
         })
         .unwrap()
     }

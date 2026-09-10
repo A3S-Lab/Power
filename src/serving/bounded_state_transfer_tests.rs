@@ -45,6 +45,7 @@ fn profile(
         transport: None,
         phase_executor: None,
         state_ownership: None,
+        phase_execution: None,
     })
     .unwrap()
 }
