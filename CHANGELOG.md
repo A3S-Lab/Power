@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Product-surface `LlamaCppBackendPhaseExecution` for backend-owned
+  prepare/execute: ACL/composition opt-in `phase_execution = "llamacpp"`
+  (requires `phase_executor = backend-owned`) unlocks Ready health after
+  Eligible ownership. Honest subset: `prepare` returns Ready reservations;
+  prefill `execute` returns Ready via the pinned llama.cpp state snapshot
+  APIs (or `FixtureLlamaCppContextStatePort` without a GGUF) paired with
+  `LlamaCppBackendPhaseStateOwnership`; decode `execute` may restore via
+  `llama_set_state_data` then fail-closes — transfer completion alone never
+  yields Ready decode tokens. Backend-owned composition still suppresses
+  `may_advertise_prefill_decode` / runtime `accepts_work` / worker
+  `ready_phases`. Does **not** invent KV layout, claim live P/D evidence, or
+  close ROADMAP typed-outcome / opaque-state exit checkboxes.
 - Product-surface `LlamaCppBackendPhaseStateOwnership` for backend-owned
   phase composition: layout identity from `LlamaCppLayoutFacts` (or matching
   profile digests) and opaque snapshot import/export via a
@@ -22,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   documents the required symbols on pin
   `dfd12e4d334846367e4284a2a7763fe92c1bf676`. Does **not** invent KV layout,
   claim Ready execute, advertise P/D, or close ROADMAP opaque-state exit
-  criteria (live `BackendPhaseExecution` still open).
+  criteria (live P/D still needs transfer evidence under a concrete execute
+  path).
 - P6 open-checkbox exit criteria in `ROADMAP.md`: each remaining reuse /
   opaque-state / typed-outcome / HSN / attestation checkbox names the
   concrete evidence that closes it; interim `profile-bound` /

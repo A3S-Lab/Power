@@ -160,20 +160,27 @@ impl fmt::Display for ServingCompositionStateOwnership {
 /// [`crate::serving::PendingBackendPhaseExecution`] so Eligible ownership can
 /// advance to Ready health. Pending unlocks the Ready gate only; prepare /
 /// execute / abort fail closed until a concrete backend implementor exists.
-/// Worker `ready_phases` stay suppressed via backend-owned
-/// `may_advertise_prefill_decode`.
+/// `llamacpp` requires `phase_executor = backend-owned` and installs
+/// [`crate::serving::LlamaCppBackendPhaseExecution`] (prepare Ready; prefill
+/// execute Ready via pinned state snapshot APIs / fixture port; decode execute
+/// fail-closed until token generation is owned). Worker `ready_phases` stay
+/// suppressed via backend-owned `may_advertise_prefill_decode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServingCompositionPhaseExecution {
     /// Bind interim Ready-capable execution (not a real llama.cpp / picolm
     /// prepare/execute adapter).
     Pending,
+    /// Real llama.cpp prepare/execute adapter (opaque session state APIs;
+    /// decode tokens still fail closed).
+    LlamaCpp,
 }
 
 impl fmt::Display for ServingCompositionPhaseExecution {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Pending => formatter.write_str("pending"),
+            Self::LlamaCpp => formatter.write_str("llamacpp"),
         }
     }
 }
@@ -322,7 +329,10 @@ pub struct PrefillDecodeExecutionProfile {
     /// requires `phase_executor = backend-owned` and binds
     /// `PendingBackendPhaseExecution` so Eligible ownership can advance to
     /// Ready health. Pending prepare/execute fail closed; this is not
-    /// model-semantic P/D.
+    /// model-semantic P/D. `llamacpp` requires `phase_executor = backend-owned`
+    /// and binds `LlamaCppBackendPhaseExecution` (prepare Ready; prefill
+    /// execute via pinned llama.cpp state APIs / fixture port; decode execute
+    /// fail-closed until tokens are owned).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_execution: Option<ServingCompositionPhaseExecution>,
 }
@@ -505,7 +515,22 @@ impl ServingExecutionProfile {
                         .to_string(),
                 ));
             }
-            Some(ServingCompositionPhaseExecution::Pending) | None => {}
+            Some(ServingCompositionPhaseExecution::LlamaCpp)
+                if !matches!(
+                    phase_executor,
+                    Some(ServingCompositionPhaseExecutor::BackendOwned)
+                ) =>
+            {
+                return Err(PowerError::Config(
+                    "serving_execution.phase_execution = llamacpp requires phase_executor = backend-owned"
+                        .to_string(),
+                ));
+            }
+            Some(
+                ServingCompositionPhaseExecution::Pending
+                | ServingCompositionPhaseExecution::LlamaCpp,
+            )
+            | None => {}
         }
         if *generation == 0 || *generation > MAX_EXACT_ACL_INTEGER {
             return Err(PowerError::Config(format!(
@@ -578,10 +603,10 @@ impl ServingExecutionProfile {
     /// by provision, contract, and health. Product DirectDeviceMemoryPull and
     /// `phase_executor = backend-owned` never advertise until a real adapter
     /// exists. Eligible-only ownership (`state_ownership = profile-bound` or
-    /// `llamacpp`) and pending Ready-unlock (`phase_execution = pending`) never
-    /// advertise: backend-owned keeps `may_advertise_prefill_decode` false so
-    /// worker `ready_phases` stay empty until a real model-semantic execute
-    /// adapter exists.
+    /// `llamacpp`) and Ready-unlock surfaces (`phase_execution = pending` or
+    /// `llamacpp`) never advertise: backend-owned keeps
+    /// `may_advertise_prefill_decode` false so worker `ready_phases` stay empty
+    /// until live HSN / model-semantic P/D evidence exists.
     pub fn may_advertise_prefill_decode(&self) -> bool {
         if let Some(phase_executor) = self.composition_phase_executor() {
             if !phase_executor.may_advertise_prefill_decode() {

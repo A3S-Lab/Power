@@ -15,6 +15,7 @@ mod distributed_operation_evidence;
 mod distributed_serving;
 mod empty_adapters;
 mod execution_profile;
+mod llamacpp_phase_execution;
 mod llamacpp_phase_state_ownership;
 mod observation;
 mod phase_executor;
@@ -58,14 +59,15 @@ pub use execution_profile::{
     ServingCompositionPhaseExecutor, ServingCompositionStateOwnership, ServingCompositionTransport,
     ServingDeploymentIdentity, ServingExecutionProfile, ServingPrivacyMode,
 };
+pub use llamacpp_phase_execution::LlamaCppBackendPhaseExecution;
+#[cfg(feature = "llamacpp")]
+pub use llamacpp_phase_state_ownership::LlamaCppContextStateApi;
 pub use llamacpp_phase_state_ownership::{
     probe_llamacpp_state_transfer_api, FixtureLlamaCppContextStatePort,
     LlamaCppBackendPhaseStateOwnership, LlamaCppContextStatePort, LlamaCppLayoutFacts,
     LlamaCppStateTransferApiProbe, LLAMACPP_STATE_LAYOUT_DOMAIN,
     LLAMACPP_STATE_TRANSFER_API_SYMBOLS,
 };
-#[cfg(feature = "llamacpp")]
-pub use llamacpp_phase_state_ownership::LlamaCppContextStateApi;
 pub use observation::{
     AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,
     WorkerObservation, WORKER_OBSERVATION_SCHEMA,

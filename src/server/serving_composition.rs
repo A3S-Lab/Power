@@ -22,9 +22,11 @@ type ResolvedServingAdapters = (
 /// conformance executor with `BackendOwnedPhaseExecutor` (requires
 /// buffered-host-loopback transport). Optional `state_ownership = profile-bound`
 /// or `llamacpp` (with backend-owned) binds Eligible ownership; default Empty
-/// stays Unavailable. Optional `phase_execution = pending` (with backend-owned)
-/// binds interim Ready-capable execution so Eligible ownership can advance to
-/// Ready health; pending prepare/execute still fail closed. Silent auto-wire
+/// stays Unavailable. Optional `phase_execution = pending` or `llamacpp` (with
+/// backend-owned) binds Ready-capable execution so Eligible ownership can
+/// advance to Ready health. Pending prepare/execute still fail closed;
+/// `llamacpp` can Ready prepare / prefill-execute via state APIs while decode
+/// execute remains fail-closed until tokens are owned. Silent auto-wire
 /// from protocol alone is refused, as is mixing with builder-injected adapters.
 /// Incomplete external pairs remain a validation error. DirectDeviceMemoryPull
 /// installs an Unavailable HSN port and never claims high-speed evidence.
@@ -635,6 +637,40 @@ mod tests {
         );
         let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
         // may_advertise stays false for backend-owned, so accepts_work remains false.
+        assert!(!runtime.accepts_work());
+    }
+
+    #[test]
+    fn backend_owned_llamacpp_phase_execution_wires_ready_without_advertising() {
+        let mut profile =
+            buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
+        if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
+            execution.phase_executor =
+                Some(crate::serving::ServingCompositionPhaseExecutor::BackendOwned);
+            execution.state_ownership =
+                Some(crate::serving::ServingCompositionStateOwnership::LlamaCpp);
+            execution.phase_execution =
+                Some(crate::serving::ServingCompositionPhaseExecution::LlamaCpp);
+        }
+        profile.validate().unwrap();
+        assert!(!profile.may_advertise_prefill_decode());
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) = resolve(&config, None, None).unwrap();
+        validate(&config, transfer.as_deref(), executor.as_deref()).unwrap();
+        let transfer = transfer.expect("llamacpp execution installs transfer");
+        let executor = executor.expect("llamacpp execution installs phase executor");
+        assert_eq!(transfer.health(), TransferHealth::Ready);
+        assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
+        assert!(executor.health().accepts_work());
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
+                .unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
         assert!(!runtime.accepts_work());
     }
 

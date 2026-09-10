@@ -278,6 +278,37 @@ fn unknown_composition_phase_execution_fails_closed_at_deserialization() {
 }
 
 #[test]
+fn llamacpp_phase_execution_requires_backend_owned_phase() {
+    let mut profile = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.transport = Some(ServingCompositionTransport::BufferedHostLoopback);
+        execution.phase_execution = Some(ServingCompositionPhaseExecution::LlamaCpp);
+    }
+    let err = profile.validate().unwrap_err();
+    assert!(err.to_string().contains("phase_execution = llamacpp"));
+    assert!(err.to_string().contains("phase_executor = backend-owned"));
+}
+
+#[test]
+fn llamacpp_phase_execution_validates_with_backend_owned_and_never_advertises() {
+    let mut profile = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.transport = Some(ServingCompositionTransport::BufferedHostLoopback);
+        execution.phase_executor = Some(ServingCompositionPhaseExecutor::BackendOwned);
+        execution.state_ownership = Some(ServingCompositionStateOwnership::LlamaCpp);
+        execution.phase_execution = Some(ServingCompositionPhaseExecution::LlamaCpp);
+    }
+    profile.validate().unwrap();
+    assert_eq!(
+        profile.composition_phase_execution(),
+        Some(ServingCompositionPhaseExecution::LlamaCpp)
+    );
+    assert!(!profile.may_advertise_prefill_decode());
+}
+
+#[test]
 fn unknown_composition_phase_executor_fails_closed_at_deserialization() {
     let mut document = serde_json::to_value(profile(DisaggregatedServingRole::Decode)).unwrap();
     document["phase_executor"] = serde_json::json!("llama-cpp-ready");

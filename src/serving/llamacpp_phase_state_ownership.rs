@@ -182,7 +182,10 @@ impl std::fmt::Debug for LlamaCppBackendPhaseStateOwnership {
             .field("backend_sha256", &self.backend_sha256)
             .field("execution_sha256", &self.execution_sha256)
             .field("has_layout_facts", &self.layout_facts.is_some())
-            .field("slot_count", &self.slots.lock().map(|g| g.len()).unwrap_or(0))
+            .field(
+                "slot_count",
+                &self.slots.lock().map(|g| g.len()).unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -261,7 +264,8 @@ impl LlamaCppBackendPhaseStateOwnership {
         }
         bytes.truncate(written);
         let handle = ModelStateHandle::new(format!("llamacpp-state:{}", Uuid::new_v4()))?;
-        self.lock_slots()?.insert(handle.as_str().to_string(), bytes);
+        self.lock_slots()?
+            .insert(handle.as_str().to_string(), bytes);
         Ok(handle)
     }
 
@@ -493,15 +497,9 @@ mod tests {
             probe.pin_revision,
             "dfd12e4d334846367e4284a2a7763fe92c1bf676"
         );
-        assert!(probe
-            .required_symbols
-            .contains(&"llama_get_state_size"));
-        assert!(probe
-            .required_symbols
-            .contains(&"llama_copy_state_data"));
-        assert!(probe
-            .required_symbols
-            .contains(&"llama_set_state_data"));
+        assert!(probe.required_symbols.contains(&"llama_get_state_size"));
+        assert!(probe.required_symbols.contains(&"llama_copy_state_data"));
+        assert!(probe.required_symbols.contains(&"llama_set_state_data"));
         assert_eq!(
             probe.linked_with_llamacpp_feature,
             cfg!(feature = "llamacpp")
@@ -528,12 +526,8 @@ mod tests {
     #[test]
     fn fixture_port_capture_restore_round_trips_opaque_bytes() {
         let facts = sample_facts();
-        let ownership = LlamaCppBackendPhaseStateOwnership::from_layout_facts(
-            facts,
-            None,
-            None,
-            None,
-        );
+        let ownership =
+            LlamaCppBackendPhaseStateOwnership::from_layout_facts(facts, None, None, None);
         let port = FixtureLlamaCppContextStatePort::with_snapshot(b"llama-state-fixture".to_vec());
         let handle = ownership.capture_from_port(&port).unwrap();
         let exported = ownership.export_opaque_state(&handle).unwrap();

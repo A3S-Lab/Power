@@ -13,10 +13,13 @@
 //! health to [`PhaseExecutorHealth::Eligible`]. Default
 //! [`EmptyBackendPhaseExecution`] keeps Eligible from becoming Ready.
 //! Binding a Ready-capable [`BackendPhaseExecution`] (ACL
-//! `phase_execution = pending` ? [`PendingBackendPhaseExecution`], or a
-//! concrete backend) advances Eligible to [`PhaseExecutorHealth::Ready`] and
-//! delegates prepare/execute. Pending unlocks Ready health only;
-//! prepare/execute still fail closed until a real backend implementor exists.
+//! `phase_execution = pending` -> [`PendingBackendPhaseExecution`], or
+//! `phase_execution = llamacpp` -> [`super::LlamaCppBackendPhaseExecution`])
+//! advances Eligible to [`PhaseExecutorHealth::Ready`] and delegates
+//! prepare/execute. Pending unlocks Ready health only; prepare/execute still
+//! fail closed. LlamaCpp unlocks Ready health and can Ready prepare / prefill
+//! execute via pinned state APIs; decode execute still fail-closes until
+//! tokens are owned.
 //! Matching layout registration alone is not decode success and does not
 //! invent model-semantic P/D.
 //!
@@ -52,6 +55,7 @@ use super::backend_phase_state_ownership::{
     bind_backend_phase_state_ownership, BackendPhaseStateOwnership,
     EmptyBackendPhaseStateOwnership, ProfileBoundBackendPhaseStateOwnership,
 };
+use super::llamacpp_phase_execution::LlamaCppBackendPhaseExecution;
 use super::llamacpp_phase_state_ownership::LlamaCppBackendPhaseStateOwnership;
 use super::{
     AbortPhaseExecution, AdapterProvisionState, BufferedHostLoopbackStateTransfer,
@@ -94,7 +98,9 @@ fn composition_ownership(
 ///
 /// Absent `phase_execution` keeps Empty (Eligible refuses Ready). `pending`
 /// installs [`PendingBackendPhaseExecution`] (Eligible ? Ready health; work
-/// still fail-closed).
+/// still fail-closed). `llamacpp` installs [`LlamaCppBackendPhaseExecution`]
+/// (Eligible ? Ready; prepare Ready; prefill execute needs a bound state port;
+/// decode execute fail-closes until tokens are owned).
 fn composition_execution(
     profile: &ServingExecutionProfile,
 ) -> Result<Arc<dyn BackendPhaseExecution>> {
@@ -103,6 +109,9 @@ fn composition_execution(
         Some(ServingCompositionPhaseExecution::Pending) => {
             Ok(Arc::new(PendingBackendPhaseExecution))
         }
+        Some(ServingCompositionPhaseExecution::LlamaCpp) => Ok(Arc::new(
+            LlamaCppBackendPhaseExecution::for_profile(profile)?,
+        )),
     }
 }
 
@@ -179,12 +188,12 @@ impl fmt::Debug for BackendOwnedPhaseExecutor {
 impl BackendOwnedPhaseExecutor {
     /// Build buffered-host loopback transfer + backend-owned phase.
     ///
-    /// Honors ACL `state_ownership`: absent ? Empty (Unavailable);
-    /// `profile-bound` ? Eligible after fail-closed digest bind. Honors ACL
-    /// `phase_execution`: absent ? Empty (Eligible refuses Ready);
-    /// `pending` ? Ready health after Eligible. The transfer may become Ready;
-    /// this executor never advertises model-semantic P/D readiness from
-    /// registration or pending unlock alone.
+    /// Honors ACL `state_ownership`: absent -> Empty (Unavailable);
+    /// `profile-bound` / `llamacpp` -> Eligible after fail-closed digest bind.
+    /// Honors ACL `phase_execution`: absent -> Empty (Eligible refuses Ready);
+    /// `pending` / `llamacpp` -> Ready health after Eligible. The transfer may
+    /// become Ready; this executor never advertises model-semantic P/D
+    /// readiness from registration or Ready-unlock alone.
     pub fn paired_for_profile(
         profile: &ServingExecutionProfile,
     ) -> Result<(Arc<BufferedHostLoopbackStateTransfer>, Arc<Self>)> {

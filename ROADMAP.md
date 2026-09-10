@@ -450,7 +450,7 @@ model-semantics owner.
   documents the required symbols on pin
   `dfd12e4d334846367e4284a2a7763fe92c1bf676`. This advances the opaque-state
   product port but does **not** close the exit checkbox: live P/D still needs
-  a concrete `BackendPhaseExecution` and must not advertise via
+  transfer evidence under a concrete execute path and must not advertise via
   `may_advertise_prefill_decode`. Power now also ships product-surface
   [`BackendPhaseExecution`]: default [`EmptyBackendPhaseExecution`] keeps
   Eligible refusing Ready. ACL opt-in `phase_execution = "pending"` (with
@@ -458,10 +458,16 @@ model-semantics owner.
   [`PendingBackendPhaseExecution`] so Eligible ownership can advance to Ready
   health and delegate prepare/execute. Pending unlocks Ready health only;
   prepare/execute/abort still fail closed and do not invent KV or claim
-  model-semantic decode. Backend-owned composition continues to suppress
+  model-semantic decode. ACL opt-in `phase_execution = "llamacpp"` installs
+  [`LlamaCppBackendPhaseExecution`]: Ready health after Eligible ownership;
+  prepare returns Ready reservations; prefill execute returns Ready via the
+  pinned state snapshot APIs / fixture port paired with
+  [`LlamaCppBackendPhaseStateOwnership`]; decode execute may restore via
+  `llama_set_state_data` then fail-closes — transfer completion alone never
+  Ready decode tokens. Backend-owned composition continues to suppress
   worker `ready_phases` via `may_advertise_prefill_decode`. This advances
-  the named backend phase product port toward real backends; concrete
-  llama.cpp / picolm **execute** implementors remain open.
+  the named backend phase product port; live P/D evidence and decode token
+  ownership remain open.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
@@ -474,12 +480,18 @@ model-semantics owner.
 ### P6 open-checkbox exit criteria (not claimed here)
 
 Each open checkbox closes only when its evidence below exists. Interim
-product ports (`profile-bound`, `phase_execution = pending`, Unavailable
-HSN, AAD/host-buffer attestation digests) never close a checkbox alone.
+product ports (`profile-bound`, `phase_execution = pending`,
+`phase_execution = llamacpp` honest subset, Unavailable HSN, AAD/host-buffer
+attestation digests) never close a checkbox alone.
 `LlamaCppBackendPhaseStateOwnership` + ACL `state_ownership = llamacpp`
 advances opaque-state wiring and documents the pin's snapshot APIs, but
 does **not** close the opaque-state checkbox until live P/D import/export
-runs under a concrete `BackendPhaseExecution` with transfer evidence.
+runs with transfer evidence on a full decode-token path.
+`LlamaCppBackendPhaseExecution` + ACL `phase_execution = llamacpp` advances
+typed prepare / prefill-execute Ready via those same state APIs (fixture-
+proven without a huge GGUF) but does **not** close typed-outcome or reuse
+checkboxes: decode token generation remains fail-closed, and
+`may_advertise_prefill_decode` stays false.
 
 **Reuse (admission / replicas / weight hierarchy / sealed envelopes /
 telemetry / receipts):** closes when a concrete llama.cpp or picolm
@@ -505,10 +517,13 @@ invent a second KV format.
 before response generation):** closes when that same concrete
 `BackendPhaseExecution` produces Ready prepare/execute (or typed
 non-Ready decisions) over the authenticated HTTP boundary after transfer
-consume. `EmptyBackendPhaseExecution` keeps Eligible from Ready;
-`PendingBackendPhaseExecution` unlocks Ready health only and fails closed
-on prepare/execute—neither closes this checkbox. Gateway/Cloud retain
-placement and autoscaling.
+consume **including Ready decode token streams**. Progress note:
+[`LlamaCppBackendPhaseExecution`] produces Ready prepare and Ready prefill
+execute via pinned state APIs / fixture port; decode execute fail-closes
+until token generation is owned. `EmptyBackendPhaseExecution` keeps
+Eligible from Ready; `PendingBackendPhaseExecution` unlocks Ready health
+only and fails closed on prepare/execute—neither closes this checkbox.
+Gateway/Cloud retain placement and autoscaling.
 
 **HSN evidence (cross-node / prefill-decode advertisement):** closes when
 a real DirectDeviceMemoryPull adapter on a high-speed path proves
@@ -526,7 +541,8 @@ digest wire binding; mismatched-policy consume rejection alone does not
 close it.
 
 **Composition fail-closed (always required, not a checkbox closer):**
-`phase_execution = pending` + `state_ownership = profile-bound` under
+`phase_execution = pending` or `phase_execution = llamacpp` with
+`state_ownership = profile-bound` / `llamacpp` under
 `phase_executor = backend-owned` may reach executor Ready health, but
 `may_advertise_prefill_decode` stays false, so
 `DistributedServingRuntime::accepts_work` stays false and worker
