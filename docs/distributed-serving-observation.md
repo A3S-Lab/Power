@@ -103,8 +103,12 @@ second session-replica pool or weight hierarchy. Prefill/decode profiles bind
 and may pin `residency_policy_sha256`; with `embedded-inference`,
 `DistributedServingRuntime::validate_weight_hierarchy` requires that digest to
 match the process `ResidencyPolicy` before a hierarchy is accepted.
-Session-replica reuse, sealed wire tickets, and telemetry/receipt consolidation
-remain open.
+Prefill/decode profiles also bind `session_pool = shared-session-pool`
+(private-pool identities fail closed) and may pin `session_pool_policy_sha256`;
+with `embedded-inference`, `DistributedServingRuntime::validate_session_pool`
+requires that digest to match the process `ModelSessionPoolPolicy` before a
+pool is accepted. Sealed wire tickets, telemetry/receipt consolidation, and
+full session-replica lifecycle reuse under live P/D execution remain open.
 
 The default Power backends inject neither port, and this repository does not yet
 ship a concrete distributed backend/transport pair. The internal request-flow

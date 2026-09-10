@@ -44,11 +44,11 @@ mod tests {
     use crate::serving::{
         AbortPhaseExecution, AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole,
         ExecutePhaseExecution, PhaseDecision, PhaseExecutionOutput, PhaseExecutorCapabilities,
-        PhaseExecutorHealth, PhaseWeightCacheMode, PrefillDecodeExecutionProfile,
-        PreparePhaseExecution, PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
-        ServingExecutionProfile, ServingPhase, ServingPhaseExecutor, ServingPrivacyMode, StateKind,
-        StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
-        StateTransferSource, StateTransferTarget,
+        PhaseExecutorHealth, PhaseSessionPoolMode, PhaseWeightCacheMode,
+        PrefillDecodeExecutionProfile, PreparePhaseExecution, PrepareStateTransfer,
+        PreparedPhaseExecution, PublishStateTransfer, ServingExecutionProfile, ServingPhase,
+        ServingPhaseExecutor, ServingPrivacyMode, StateKind, StateTransferCapabilities,
+        StateTransferProtocol, StateTransferReceipt, StateTransferSource, StateTransferTarget,
     };
 
     use super::*;
@@ -155,6 +155,8 @@ mod tests {
             attestation_policy_sha256: None,
             weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
             residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
         })
         .unwrap()
     }

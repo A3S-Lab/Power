@@ -305,8 +305,9 @@ mod tests {
     use super::*;
     use crate::model::manifest::{ManifestMessage, ModelManifest};
     use crate::serving::{
-        DisaggregatedServingRole, PhaseWeightCacheMode, PrefillDecodeExecutionProfile,
-        ServingExecutionProfile, ServingPrivacyMode, StateKind, StateTransferProtocol,
+        DisaggregatedServingRole, PhaseSessionPoolMode, PhaseWeightCacheMode,
+        PrefillDecodeExecutionProfile, ServingExecutionProfile, ServingPrivacyMode, StateKind,
+        StateTransferProtocol,
     };
 
     fn manifest() -> ModelManifest {
@@ -513,6 +514,8 @@ mod tests {
                     attestation_policy_sha256: Some("8".repeat(64)),
                     weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
                     residency_policy_sha256: None,
+                    session_pool: PhaseSessionPoolMode::SharedSessionPool,
+                    session_pool_policy_sha256: None,
                 },
             )
             .unwrap(),

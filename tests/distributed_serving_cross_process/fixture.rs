@@ -12,12 +12,13 @@ use a3s_power::server::router;
 use a3s_power::server::state::AppState;
 use a3s_power::serving::{
     AbortStateTransfer, BoundedStateTransferService, ConsumeStateTransfer,
-    DisaggregatedServingRole, ModelStateHandle, PhaseExecutorCapabilities, PhaseWeightCacheMode,
-    PrefillDecodeExecutionProfile, PrepareStateTransfer, PublishStateTransfer,
-    ServingExecutionProfile, ServingPrivacyMode, StateKind, StateTransferBinding,
-    StateTransferCapabilities, StateTransferIntegrity, StateTransferProtocol, StateTransferReceipt,
-    StateTransferService, StateTransferSource, StateTransferTarget, TransferHealth,
-    STATE_TRANSFER_RECEIPT_SCHEMA, STATE_TRANSFER_SOURCE_SCHEMA, STATE_TRANSFER_TARGET_SCHEMA,
+    DisaggregatedServingRole, ModelStateHandle, PhaseExecutorCapabilities, PhaseSessionPoolMode,
+    PhaseWeightCacheMode, PrefillDecodeExecutionProfile, PrepareStateTransfer,
+    PublishStateTransfer, ServingExecutionProfile, ServingPrivacyMode, StateKind,
+    StateTransferBinding, StateTransferCapabilities, StateTransferIntegrity, StateTransferProtocol,
+    StateTransferReceipt, StateTransferService, StateTransferSource, StateTransferTarget,
+    TransferHealth, STATE_TRANSFER_RECEIPT_SCHEMA, STATE_TRANSFER_SOURCE_SCHEMA,
+    STATE_TRANSFER_TARGET_SCHEMA,
 };
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit};
@@ -73,6 +74,8 @@ pub fn profile(role: DisaggregatedServingRole) -> ServingExecutionProfile {
         attestation_policy_sha256: None,
         weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
         residency_policy_sha256: None,
+        session_pool: PhaseSessionPoolMode::SharedSessionPool,
+        session_pool_policy_sha256: None,
     })
     .expect("the cross-process fixture profile is valid")
 }

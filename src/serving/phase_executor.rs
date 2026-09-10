@@ -39,11 +39,20 @@ pub struct PhaseExecutorCapabilities {
     /// Must match the profile's optional residency-policy digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub residency_policy_sha256: Option<String>,
+    /// Must match the immutable serving profile session-pool binding.
+    #[serde(
+        default,
+        skip_serializing_if = "super::PhaseSessionPoolMode::is_shared_session_pool"
+    )]
+    pub session_pool: super::PhaseSessionPoolMode,
+    /// Must match the profile's optional session-pool-policy digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_pool_policy_sha256: Option<String>,
 }
 
 impl PhaseExecutorCapabilities {
     /// Bind one phase executor to the exact immutable serving profile, including
-    /// the shared weight-hierarchy residency declaration.
+    /// the shared weight-hierarchy and session-pool residency declarations.
     pub fn for_profile(profile: &ServingExecutionProfile) -> Result<Self> {
         let ServingExecutionProfile::PrefillDecode { execution } = profile else {
             return Err(PowerError::Config(
@@ -55,6 +64,8 @@ impl PhaseExecutorCapabilities {
             phase: profile.phase(),
             weight_cache: execution.weight_cache,
             residency_policy_sha256: execution.residency_policy_sha256.clone(),
+            session_pool: execution.session_pool,
+            session_pool_policy_sha256: execution.session_pool_policy_sha256.clone(),
         };
         profile.validate_phase_executor_capabilities(&capabilities)?;
         Ok(capabilities)
@@ -72,6 +83,9 @@ impl PhaseExecutorCapabilities {
         }
         if let Some(policy) = &self.residency_policy_sha256 {
             validate_sha256(policy, "phase-executor residency policy")?;
+        }
+        if let Some(policy) = &self.session_pool_policy_sha256 {
+            validate_sha256(policy, "phase-executor session pool policy")?;
         }
         Ok(())
     }

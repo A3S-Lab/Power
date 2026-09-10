@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Prefill/decode serving now binds a closed `session_pool =
+  shared-session-pool` mode (and optional `session_pool_policy_sha256`) into
+  the immutable execution profile and `PhaseExecutorCapabilities`. Unknown
+  session-pool identities fail closed at deserialization; mismatched pool-policy
+  digests fail composition. When `embedded-inference` is enabled,
+  `DistributedServingRuntime::validate_session_pool` requires a pinned policy
+  digest that matches `ModelSessionPoolPolicy::sha256` so P/D cannot mint a
+  second process-local session-replica pool as valid. Sealed wire tickets,
+  telemetry/receipt consolidation, high-speed transport, production adapters,
+  and full live P/D replica lifecycle reuse remain open.
 - Prefill/decode serving now binds a closed `weight_cache =
   shared-weight-hierarchy` mode (and optional `residency_policy_sha256`) into
   the immutable execution profile and `PhaseExecutorCapabilities`. Unknown

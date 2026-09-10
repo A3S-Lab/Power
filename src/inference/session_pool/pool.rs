@@ -90,6 +90,11 @@ impl<T> ModelSessionPool<T>
 where
     T: Send + Sync + 'static,
 {
+    /// Immutable pool policy used for serving-profile binding digests.
+    pub fn policy(&self) -> &ModelSessionPoolPolicy {
+        &self.inner.policy
+    }
+
     pub fn new(preference: DevicePreference, policy: ModelSessionPoolPolicy) -> Result<Self> {
         policy.validate()?;
         let device = RuntimeDevice::resolve(preference)?;

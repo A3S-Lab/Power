@@ -37,6 +37,8 @@ pub(crate) fn profile(role: DisaggregatedServingRole, timeout_ms: u64) -> Servin
         attestation_policy_sha256: None,
         weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
         residency_policy_sha256: None,
+        session_pool: PhaseSessionPoolMode::SharedSessionPool,
+        session_pool_policy_sha256: None,
     })
     .unwrap()
 }

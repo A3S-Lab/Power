@@ -209,12 +209,12 @@ mod tests {
     use crate::serving::{
         AbortPhaseExecution, AbortStateTransfer, BoundedStateTransferService, ConsumeStateTransfer,
         DisaggregatedServingRole, DistributedServingRuntime, ExecutePhaseExecution, PhaseDecision,
-        PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth, PhaseWeightCacheMode,
-        PrefillDecodeExecutionProfile, PreparePhaseExecution, PrepareStateTransfer,
-        PreparedPhaseExecution, PublishStateTransfer, ServingExecutionProfile,
-        ServingPhaseExecutor, ServingPrivacyMode, StateKind, StateTransferCapabilities,
-        StateTransferProtocol, StateTransferReceipt, StateTransferService, StateTransferSource,
-        StateTransferTarget,
+        PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth, PhaseSessionPoolMode,
+        PhaseWeightCacheMode, PrefillDecodeExecutionProfile, PreparePhaseExecution,
+        PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
+        ServingExecutionProfile, ServingPhaseExecutor, ServingPrivacyMode, StateKind,
+        StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
+        StateTransferService, StateTransferSource, StateTransferTarget,
     };
 
     use super::{cache_pressure_basis_points, AppState, ServingPhase, TransferHealth};
@@ -256,6 +256,8 @@ mod tests {
             attestation_policy_sha256: None,
             weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
             residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
         })
         .unwrap()
     }
@@ -404,6 +406,8 @@ mod tests {
             attestation_policy_sha256: None,
             weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
             residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
         })
         .unwrap()
     }

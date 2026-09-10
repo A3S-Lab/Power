@@ -208,6 +208,40 @@ impl DistributedServingRuntime {
         }
     }
 
+    /// Fail closed unless an installed session pool matches the profile's
+    /// shared-pool binding and optional session-pool-policy digest.
+    ///
+    /// Available when `embedded-inference` is enabled. This binds the existing
+    /// process `ModelSessionPool` into the P/D profile so composition cannot
+    /// mint a second replica pool; it does not claim production adapters.
+    #[cfg(feature = "embedded-inference")]
+    pub fn validate_session_pool<T>(
+        &self,
+        pool: &crate::inference::ModelSessionPool<T>,
+    ) -> Result<()>
+    where
+        T: Send + Sync + 'static,
+    {
+        let ServingExecutionProfile::PrefillDecode { execution } = self.profile() else {
+            return Err(PowerError::Config(
+                "aggregated serving does not bind a distributed session pool".to_string(),
+            ));
+        };
+        // PhaseSessionPoolMode admits only SharedSessionPool; serde rejects
+        // private pool identities before composition.
+        let policy_digest = pool.policy().sha256()?;
+        match &execution.session_pool_policy_sha256 {
+            Some(expected) if expected == &policy_digest => Ok(()),
+            Some(_) => Err(PowerError::Config(
+                "session pool policy does not match the immutable serving profile".to_string(),
+            )),
+            None => Err(PowerError::Config(
+                "serving profile must pin session_pool_policy_sha256 before binding a session pool"
+                    .to_string(),
+            )),
+        }
+    }
+
     /// Current health of the bounded local transfer path.
     pub fn transfer_health(&self) -> TransferHealth {
         self.inner.transfer.health()

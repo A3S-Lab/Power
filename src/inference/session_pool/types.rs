@@ -178,6 +178,17 @@ impl ModelSessionPoolPolicy {
         Ok(self)
     }
 
+    /// Canonical digest used to bind one process session pool into a serving
+    /// execution profile without inventing a second replica-pool identity.
+    pub fn sha256(&self) -> Result<String> {
+        self.validate()?;
+        let document = serde_json::to_vec(self)?;
+        let mut digest = Sha256::new();
+        digest.update(b"a3s.power.model-session-pool-policy.v1\0");
+        digest.update(document);
+        Ok(format!("{:x}", digest.finalize()))
+    }
+
     pub(super) fn validate(&self) -> Result<()> {
         if self.max_sessions == 0
             || self.max_resident_bytes == 0

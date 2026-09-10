@@ -27,6 +27,8 @@ fn profile(role: DisaggregatedServingRole) -> ServingExecutionProfile {
         attestation_policy_sha256: Some(digest('8')),
         weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
         residency_policy_sha256: None,
+        session_pool: PhaseSessionPoolMode::SharedSessionPool,
+        session_pool_policy_sha256: None,
     })
     .unwrap()
 }
@@ -150,6 +152,13 @@ fn private_weight_cache_mode_fails_closed_at_deserialization() {
 }
 
 #[test]
+fn private_session_pool_mode_fails_closed_at_deserialization() {
+    let mut document = serde_json::to_value(profile(DisaggregatedServingRole::Decode)).unwrap();
+    document["session_pool"] = serde_json::json!("private-session-pool");
+    assert!(serde_json::from_value::<ServingExecutionProfile>(document).is_err());
+}
+
+#[test]
 fn phase_executor_must_reuse_shared_weight_hierarchy_binding() {
     let profile = profile(DisaggregatedServingRole::Prefill);
     let matching = PhaseExecutorCapabilities::for_profile(&profile).unwrap();
@@ -174,9 +183,7 @@ fn phase_executor_must_reuse_shared_weight_hierarchy_binding() {
         .validate_phase_executor_capabilities(&pinned_caps)
         .unwrap();
     let stale = PhaseExecutorCapabilities::for_profile(&profile).unwrap();
-    assert!(pinned
-        .validate_phase_executor_capabilities(&stale)
-        .is_err());
+    assert!(pinned.validate_phase_executor_capabilities(&stale).is_err());
 }
 
 #[test]
@@ -185,9 +192,42 @@ fn shared_weight_cache_default_keeps_profile_digest_stable() {
     let mut explicit = serde_json::to_value(&with_defaults).unwrap();
     assert!(explicit.get("weight_cache").is_none());
     assert!(explicit.get("residency_policy_sha256").is_none());
+    assert!(explicit.get("session_pool").is_none());
+    assert!(explicit.get("session_pool_policy_sha256").is_none());
     explicit["weight_cache"] = serde_json::json!("shared-weight-hierarchy");
+    explicit["session_pool"] = serde_json::json!("shared-session-pool");
     let round_trip: ServingExecutionProfile = serde_json::from_value(explicit).unwrap();
-    assert_eq!(with_defaults.sha256().unwrap(), round_trip.sha256().unwrap());
+    assert_eq!(
+        with_defaults.sha256().unwrap(),
+        round_trip.sha256().unwrap()
+    );
+}
+
+#[test]
+fn phase_executor_must_reuse_shared_session_pool_binding() {
+    let profile = profile(DisaggregatedServingRole::Prefill);
+    let matching = PhaseExecutorCapabilities::for_profile(&profile).unwrap();
+    profile
+        .validate_phase_executor_capabilities(&matching)
+        .unwrap();
+
+    let mut mismatched = matching.clone();
+    mismatched.session_pool_policy_sha256 = Some(digest('9'));
+    let error = profile
+        .validate_phase_executor_capabilities(&mismatched)
+        .unwrap_err();
+    assert!(error.to_string().contains("phase executor"));
+
+    let mut pinned = profile.clone();
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut pinned {
+        execution.session_pool_policy_sha256 = Some(digest('c'));
+    }
+    let pinned_caps = PhaseExecutorCapabilities::for_profile(&pinned).unwrap();
+    pinned
+        .validate_phase_executor_capabilities(&pinned_caps)
+        .unwrap();
+    let stale = PhaseExecutorCapabilities::for_profile(&profile).unwrap();
+    assert!(pinned.validate_phase_executor_capabilities(&stale).is_err());
 }
 
 #[test]
@@ -195,4 +235,5 @@ fn execution_profile_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<ServingExecutionProfile>();
     assert_send_sync::<PhaseWeightCacheMode>();
+    assert_send_sync::<PhaseSessionPoolMode>();
 }

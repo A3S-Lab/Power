@@ -186,6 +186,8 @@ mod tests {
                 phase: ServingPhase::Decode,
                 weight_cache: crate::serving::PhaseWeightCacheMode::SharedWeightHierarchy,
                 residency_policy_sha256: None,
+                session_pool: crate::serving::PhaseSessionPoolMode::SharedSessionPool,
+                session_pool_policy_sha256: None,
             }
         }
 

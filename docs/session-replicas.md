@@ -135,6 +135,16 @@ remain compatible and deserialize with one replica.
 when the pool maximum is one. Whichever access style first registers an exact
 identity owns that entry; attempting to use the other style fails explicitly.
 
+## Prefill/decode binding
+
+Disaggregated serving reuses this same process pool. Prefill/decode profiles
+bind `session_pool = shared-session-pool` and may pin
+`session_pool_policy_sha256` to `ModelSessionPoolPolicy::sha256`. With
+`embedded-inference`, `DistributedServingRuntime::validate_session_pool` fails
+closed unless that digest matches; unknown private-pool identities are rejected
+at deserialization. The runtime does not construct a second `ModelSessionPool`.
+Live P/D replica lifecycle reuse under production adapters remains open.
+
 ## Reproduce the contract tests
 
 From the Power repository root:
@@ -146,6 +156,8 @@ cargo test --locked --no-default-features --features embedded-inference \
   --lib inference::session_replica_health_tests
 cargo test --locked --no-default-features --features embedded-inference \
   --lib inference::session_pool_tests
+cargo test --locked --features "server,embedded-inference" --lib \
+  serving::distributed_serving_tests::session_pool_binding
 cargo clippy --locked --no-default-features --features embedded-inference \
   --lib -- -D warnings
 ```
@@ -157,4 +169,4 @@ initialization, monotonic expiry across sequential gates, persistent aggregate
 expiry evidence, ready-slot reuse, safe-boundary retirement, failed and
 cancelled reconstruction, healthy-peer isolation, opaque language/vision/
 embedding/multimodal identities, shared/exclusive isolation, privacy-safe debug
-output, and `Send + Sync` public leases.
+output, `Send + Sync` public leases, and fail-closed P/D shared-pool binding.

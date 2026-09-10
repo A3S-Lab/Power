@@ -777,3 +777,50 @@ mod weight_hierarchy_binding {
         assert!(error.to_string().contains("residency_policy_sha256"));
     }
 }
+
+#[cfg(feature = "embedded-inference")]
+mod session_pool_binding {
+    use std::sync::Arc;
+
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::inference::{DevicePreference, ModelSessionPool, ModelSessionPoolPolicy};
+
+    #[test]
+    fn distributed_runtime_binds_matching_session_pool_policy_digest() {
+        let policy = ModelSessionPoolPolicy::new(2, 64, 1, 1)
+            .unwrap()
+            .with_max_replicas_per_session(2)
+            .unwrap();
+        let policy_digest = policy.sha256().unwrap();
+        let mut serving = profile(DisaggregatedServingRole::Decode, 100);
+        if let ServingExecutionProfile::PrefillDecode { execution } = &mut serving {
+            execution.session_pool_policy_sha256 = Some(policy_digest);
+        }
+        let runtime = runtime(&serving, Uuid::new_v4(), Arc::new(Calls::default()));
+        let pool = ModelSessionPool::<u32>::new(DevicePreference::Cpu, policy).unwrap();
+        runtime.validate_session_pool(&pool).unwrap();
+
+        let foreign = ModelSessionPool::<u32>::new(
+            DevicePreference::Cpu,
+            ModelSessionPoolPolicy::new(1, 32, 1, 1).unwrap(),
+        )
+        .unwrap();
+        let error = runtime.validate_session_pool(&foreign).unwrap_err();
+        assert!(error.to_string().contains("session pool policy"));
+    }
+
+    #[test]
+    fn unpinned_profile_refuses_session_pool_binding_as_second_pool_surface() {
+        let serving = profile(DisaggregatedServingRole::Decode, 100);
+        let runtime = runtime(&serving, Uuid::new_v4(), Arc::new(Calls::default()));
+        let pool = ModelSessionPool::<u32>::new(
+            DevicePreference::Cpu,
+            ModelSessionPoolPolicy::new(1, 32, 1, 1).unwrap(),
+        )
+        .unwrap();
+        let error = runtime.validate_session_pool(&pool).unwrap_err();
+        assert!(error.to_string().contains("session_pool_policy_sha256"));
+    }
+}

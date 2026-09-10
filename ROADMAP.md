@@ -269,9 +269,15 @@ model-semantics owner.
   private-cache identities fail closed) and may pin `residency_policy_sha256`.
   When `embedded-inference` is enabled, `validate_weight_hierarchy` requires
   that digest to match `ResidencyPolicy::sha256` before a process hierarchy is
-  accepted. Session-replica reuse, sealing of wire
-  tickets themselves, telemetry/receipt consolidation, and production-adapter /
-  high-speed-transport evidence remain open. A
+  accepted. Prefill/decode profiles also bind
+  `session_pool = shared-session-pool` (unknown private-pool identities fail
+  closed) and may pin `session_pool_policy_sha256`. When `embedded-inference` is
+  enabled, `validate_session_pool` requires that digest to match
+  `ModelSessionPoolPolicy::sha256` before a process pool is accepted, so P/D
+  cannot mint a second session-replica pool. Sealing of wire tickets themselves,
+  telemetry/receipt consolidation, production-adapter / high-speed-transport
+  evidence, and full session-replica lifecycle reuse under live P/D execution
+  remain open. A
   request-level runtime now composes that lifecycle with phase execution under
   one bounded execution lease and is the server's single source of distributed
   readiness. A deterministic conformance test launches independent prefill and

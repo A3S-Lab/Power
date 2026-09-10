@@ -60,6 +60,22 @@ impl PhaseWeightCacheMode {
     }
 }
 
+/// Unknown serde variants (for example a private phase-local replica pool) fail
+/// closed so P/D composition cannot mint a second session pool.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PhaseSessionPoolMode {
+    /// Reuse Power's process-shared `ModelSessionPool` / replica path.
+    #[default]
+    SharedSessionPool,
+}
+
+impl PhaseSessionPoolMode {
+    pub(crate) fn is_shared_session_pool(&self) -> bool {
+        matches!(self, Self::SharedSessionPool)
+    }
+}
+
 /// Static facts required by a prefill or decode process generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,6 +112,18 @@ pub struct PrefillDecodeExecutionProfile {
     /// document (fixtures / adapters not yet bound).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub residency_policy_sha256: Option<String>,
+    /// Closed session-replica pool binding. Defaults to the shared pool.
+    #[serde(
+        default,
+        skip_serializing_if = "PhaseSessionPoolMode::is_shared_session_pool"
+    )]
+    pub session_pool: PhaseSessionPoolMode,
+    /// Optional digest of the process `ModelSessionPoolPolicy` pinned into this
+    /// profile. When set, an installed session pool must report the same
+    /// digest. Absent means shared-pool mode without a pinned policy document
+    /// (fixtures / adapters not yet bound).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_pool_policy_sha256: Option<String>,
 }
 
 /// Immutable execution profile for one Power process generation.
@@ -147,6 +175,7 @@ impl ServingExecutionProfile {
             privacy_policy_sha256,
             attestation_policy_sha256,
             residency_policy_sha256,
+            session_pool_policy_sha256,
             ..
         } = execution.as_ref();
 
@@ -168,6 +197,9 @@ impl ServingExecutionProfile {
         }
         if let Some(policy) = residency_policy_sha256 {
             validate_sha256(policy, "serving residency policy")?;
+        }
+        if let Some(policy) = session_pool_policy_sha256 {
+            validate_sha256(policy, "serving session pool policy")?;
         }
         if matches!(privacy, ServingPrivacyMode::AttestedPrivateFabric)
             && attestation_policy_sha256.is_none()
@@ -304,6 +336,8 @@ impl ServingExecutionProfile {
             || capabilities.phase != ServingPhase::from(execution.role)
             || capabilities.weight_cache != execution.weight_cache
             || capabilities.residency_policy_sha256 != execution.residency_policy_sha256
+            || capabilities.session_pool != execution.session_pool
+            || capabilities.session_pool_policy_sha256 != execution.session_pool_policy_sha256
         {
             return Err(PowerError::Config(
                 "phase executor does not satisfy the immutable serving profile".to_string(),

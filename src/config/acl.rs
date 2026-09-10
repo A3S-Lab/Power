@@ -293,6 +293,8 @@ fn serving_execution_schema() -> Schema {
         "attestation_policy_sha256",
         "weight_cache",
         "residency_policy_sha256",
+        "session_pool",
+        "session_pool_policy_sha256",
     ] {
         schema = schema.attribute(name, AttributeSchema::optional(ValueSchema::string()));
     }
@@ -685,8 +687,9 @@ mod tests {
     #[test]
     fn round_trips_closed_prefill_decode_execution_profile() {
         use crate::serving::{
-            DisaggregatedServingRole, PhaseWeightCacheMode, PrefillDecodeExecutionProfile,
-            ServingExecutionProfile, ServingPrivacyMode, StateKind, StateTransferProtocol,
+            DisaggregatedServingRole, PhaseSessionPoolMode, PhaseWeightCacheMode,
+            PrefillDecodeExecutionProfile, ServingExecutionProfile, ServingPrivacyMode, StateKind,
+            StateTransferProtocol,
         };
 
         let profile = ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
@@ -711,6 +714,8 @@ mod tests {
             attestation_policy_sha256: Some("8".repeat(64)),
             weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
             residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
         })
         .unwrap();
         let config = PowerConfig {

@@ -303,6 +303,23 @@ fn declarations_are_device_and_limit_bound_without_debug_identity_leaks() {
 }
 
 #[test]
+fn session_pool_policy_digest_is_stable_for_identical_policy() {
+    let left = ModelSessionPoolPolicy::new(2, 64, 1, 1)
+        .unwrap()
+        .with_max_replicas_per_session(2)
+        .unwrap();
+    let right = ModelSessionPoolPolicy::new(2, 64, 1, 1)
+        .unwrap()
+        .with_max_replicas_per_session(2)
+        .unwrap();
+    assert_eq!(left.sha256().unwrap(), right.sha256().unwrap());
+    assert_eq!(left.sha256().unwrap().len(), 64);
+
+    let different = ModelSessionPoolPolicy::new(1, 32, 1, 1).unwrap();
+    assert_ne!(left.sha256().unwrap(), different.sha256().unwrap());
+}
+
+#[test]
 fn session_pool_public_types_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<ModelSessionPool<u32>>();
