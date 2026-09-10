@@ -305,8 +305,8 @@ mod tests {
     use super::*;
     use crate::model::manifest::{ManifestMessage, ModelManifest};
     use crate::serving::{
-        DisaggregatedServingRole, PrefillDecodeExecutionProfile, ServingExecutionProfile,
-        ServingPrivacyMode, StateKind, StateTransferProtocol,
+        DisaggregatedServingRole, PhaseWeightCacheMode, PrefillDecodeExecutionProfile,
+        ServingExecutionProfile, ServingPrivacyMode, StateKind, StateTransferProtocol,
     };
 
     fn manifest() -> ModelManifest {
@@ -511,6 +511,8 @@ mod tests {
                     privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
                     privacy_policy_sha256: "7".repeat(64),
                     attestation_policy_sha256: Some("8".repeat(64)),
+                    weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+                    residency_policy_sha256: None,
                 },
             )
             .unwrap(),

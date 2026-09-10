@@ -38,6 +38,8 @@ fn profile(
         privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
         privacy_policy_sha256: digest('7'),
         attestation_policy_sha256: None,
+        weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+        residency_policy_sha256: None,
     })
     .unwrap()
 }

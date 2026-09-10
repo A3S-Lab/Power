@@ -209,7 +209,7 @@ mod tests {
     use crate::serving::{
         AbortPhaseExecution, AbortStateTransfer, BoundedStateTransferService, ConsumeStateTransfer,
         DisaggregatedServingRole, DistributedServingRuntime, ExecutePhaseExecution, PhaseDecision,
-        PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth,
+        PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth, PhaseWeightCacheMode,
         PrefillDecodeExecutionProfile, PreparePhaseExecution, PrepareStateTransfer,
         PreparedPhaseExecution, PublishStateTransfer, ServingExecutionProfile,
         ServingPhaseExecutor, ServingPrivacyMode, StateKind, StateTransferCapabilities,
@@ -254,6 +254,8 @@ mod tests {
             privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
             privacy_policy_sha256: "7".repeat(64),
             attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
         })
         .unwrap()
     }
@@ -353,10 +355,7 @@ mod tests {
         };
         let executor = TestPhaseExecutor {
             health: executor_health,
-            capabilities: PhaseExecutorCapabilities {
-                execution_profile_sha256: profile.sha256().unwrap(),
-                phase: profile.phase(),
-            },
+            capabilities: PhaseExecutorCapabilities::for_profile(&profile).unwrap(),
         };
         let config = PowerConfig {
             serving_execution: profile.clone(),
@@ -403,6 +402,8 @@ mod tests {
             privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
             privacy_policy_sha256: "7".repeat(64),
             attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
         })
         .unwrap()
     }

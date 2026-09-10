@@ -98,7 +98,13 @@ plus transfer cleanup reclaim the lease. Expiry, caller cancellation, non-ready
 decisions, invalid adapter output, and explicit abort all trigger compensating
 phase and transfer cleanup. An unconfirmed cleanup permanently suppresses new
 work for that process epoch. The runtime and phase-executor port do not invent a
-second session-replica pool or weight hierarchy; those reuse paths remain open.
+second session-replica pool or weight hierarchy. Prefill/decode profiles bind
+`weight_cache = shared-weight-hierarchy` (private-cache identities fail closed)
+and may pin `residency_policy_sha256`; with `embedded-inference`,
+`DistributedServingRuntime::validate_weight_hierarchy` requires that digest to
+match the process `ResidencyPolicy` before a hierarchy is accepted.
+Session-replica reuse, sealed wire tickets, and telemetry/receipt consolidation
+remain open.
 
 The default Power backends inject neither port, and this repository does not yet
 ship a concrete distributed backend/transport pair. The internal request-flow
@@ -134,7 +140,8 @@ A `prefill-decode` profile selects one local role and binds the exact model,
 backend artifact, backend-owned phase execution contract, device declaration,
 state layout, certified peer set, deployment generation, transfer protocol,
 state kind, byte and concurrency limits, operation and cancellation deadlines,
-privacy policy, and optional attestation policy. All SHA-256 values are
+privacy policy, optional attestation policy, shared weight-cache mode, and
+optional residency-policy digest. All SHA-256 values are
 canonical lowercase hex. The profile has its own stable digest; an injected
 adapter must report that digest in `execution_profile_sha256`, and the same
 profile digest is included in Power's canonical inference-execution policy.

@@ -35,6 +35,8 @@ pub(crate) fn profile(role: DisaggregatedServingRole, timeout_ms: u64) -> Servin
         privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
         privacy_policy_sha256: digest('7'),
         attestation_policy_sha256: None,
+        weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+        residency_policy_sha256: None,
     })
     .unwrap()
 }
@@ -422,10 +424,7 @@ pub(crate) fn runtime_with_behavior(
         profile.clone(),
         Arc::new(transfer),
         Arc::new(TestPhaseExecutor {
-            capabilities: PhaseExecutorCapabilities {
-                execution_profile_sha256: profile.sha256().unwrap(),
-                phase: profile.phase(),
-            },
+            capabilities: PhaseExecutorCapabilities::for_profile(profile).unwrap(),
             profile_sha256: profile.sha256().unwrap(),
             behavior,
             calls,

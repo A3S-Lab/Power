@@ -184,6 +184,8 @@ mod tests {
             PhaseExecutorCapabilities {
                 execution_profile_sha256: "8".repeat(64),
                 phase: ServingPhase::Decode,
+                weight_cache: crate::serving::PhaseWeightCacheMode::SharedWeightHierarchy,
+                residency_policy_sha256: None,
             }
         }
 

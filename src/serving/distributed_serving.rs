@@ -176,6 +176,38 @@ impl DistributedServingRuntime {
         &self.inner.profile
     }
 
+    /// Fail closed unless an installed weight hierarchy matches the profile's
+    /// shared-cache binding and optional residency-policy digest.
+    ///
+    /// Available when `embedded-inference` is enabled. This binds the existing
+    /// process hierarchy into the P/D profile; it does not claim production
+    /// adapters or high-speed transport.
+    #[cfg(feature = "embedded-inference")]
+    pub fn validate_weight_hierarchy(
+        &self,
+        hierarchy: &crate::inference::WeightHierarchy,
+    ) -> Result<()> {
+        let ServingExecutionProfile::PrefillDecode { execution } = self.profile() else {
+            return Err(PowerError::Config(
+                "aggregated serving does not bind a distributed weight hierarchy".to_string(),
+            ));
+        };
+        // PhaseWeightCacheMode admits only SharedWeightHierarchy; serde rejects
+        // private cache identities before composition.
+        let policy_digest = hierarchy.policy().sha256()?;
+        match &execution.residency_policy_sha256 {
+            Some(expected) if expected == &policy_digest => Ok(()),
+            Some(_) => Err(PowerError::Config(
+                "weight hierarchy residency policy does not match the immutable serving profile"
+                    .to_string(),
+            )),
+            None => Err(PowerError::Config(
+                "serving profile must pin residency_policy_sha256 before binding a weight hierarchy"
+                    .to_string(),
+            )),
+        }
+    }
+
     /// Current health of the bounded local transfer path.
     pub fn transfer_health(&self) -> TransferHealth {
         self.inner.transfer.health()

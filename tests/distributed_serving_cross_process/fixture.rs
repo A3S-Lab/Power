@@ -12,7 +12,7 @@ use a3s_power::server::router;
 use a3s_power::server::state::AppState;
 use a3s_power::serving::{
     AbortStateTransfer, BoundedStateTransferService, ConsumeStateTransfer,
-    DisaggregatedServingRole, ModelStateHandle, PhaseExecutorCapabilities,
+    DisaggregatedServingRole, ModelStateHandle, PhaseExecutorCapabilities, PhaseWeightCacheMode,
     PrefillDecodeExecutionProfile, PrepareStateTransfer, PublishStateTransfer,
     ServingExecutionProfile, ServingPrivacyMode, StateKind, StateTransferBinding,
     StateTransferCapabilities, StateTransferIntegrity, StateTransferProtocol, StateTransferReceipt,
@@ -71,6 +71,8 @@ pub fn profile(role: DisaggregatedServingRole) -> ServingExecutionProfile {
         privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
         privacy_policy_sha256: digest('7'),
         attestation_policy_sha256: None,
+        weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+        residency_policy_sha256: None,
     })
     .expect("the cross-process fixture profile is valid")
 }
@@ -455,10 +457,7 @@ pub async fn serve_worker(
         Arc::new(FixtureTransferService::new(&profile, Arc::clone(&store))),
     )?);
     let executor = Arc::new(FixturePhaseExecutor {
-        capabilities: PhaseExecutorCapabilities {
-            execution_profile_sha256: profile_sha256.clone(),
-            phase: profile.phase(),
-        },
+        capabilities: PhaseExecutorCapabilities::for_profile(&profile)?,
         profile_sha256: profile_sha256.clone(),
         store,
     });

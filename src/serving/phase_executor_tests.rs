@@ -31,15 +31,14 @@ fn profile(role: DisaggregatedServingRole) -> ServingExecutionProfile {
         privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
         privacy_policy_sha256: digest('7'),
         attestation_policy_sha256: None,
+        weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+        residency_policy_sha256: None,
     })
     .unwrap()
 }
 
 fn executor_capabilities(profile: &ServingExecutionProfile) -> PhaseExecutorCapabilities {
-    PhaseExecutorCapabilities {
-        execution_profile_sha256: profile.sha256().unwrap(),
-        phase: profile.phase(),
-    }
+    PhaseExecutorCapabilities::for_profile(profile).unwrap()
 }
 
 fn transfer_capabilities(profile: &ServingExecutionProfile) -> StateTransferCapabilities {

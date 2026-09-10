@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Prefill/decode serving now binds a closed `weight_cache =
+  shared-weight-hierarchy` mode (and optional `residency_policy_sha256`) into
+  the immutable execution profile and `PhaseExecutorCapabilities`. Unknown
+  weight-cache identities fail closed at deserialization; mismatched residency
+  digests fail composition. When `embedded-inference` is enabled,
+  `DistributedServingRuntime::validate_weight_hierarchy` requires a pinned
+  policy digest that matches `ResidencyPolicy::sha256` so P/D cannot treat a
+  second process-local weight cache as valid. Session-replica reuse, sealed
+  wire tickets, telemetry/receipt consolidation, high-speed transport, and
+  production adapters remain open.
 - Worker observation for a matching `DistributedServingRuntime` now reuses the
   shared fail-fast P/D `AdmissionController` snapshot (`max_inflight_transfers`,
   `waiting_limit == 0`) instead of projecting the HTTP

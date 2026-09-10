@@ -30,9 +30,36 @@ const MAX_MODEL_NAME_BYTES: usize = 256;
 pub struct PhaseExecutorCapabilities {
     pub execution_profile_sha256: String,
     pub phase: ServingPhase,
+    /// Must match the immutable serving profile weight-cache binding.
+    #[serde(
+        default,
+        skip_serializing_if = "super::PhaseWeightCacheMode::is_shared_weight_hierarchy"
+    )]
+    pub weight_cache: super::PhaseWeightCacheMode,
+    /// Must match the profile's optional residency-policy digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residency_policy_sha256: Option<String>,
 }
 
 impl PhaseExecutorCapabilities {
+    /// Bind one phase executor to the exact immutable serving profile, including
+    /// the shared weight-hierarchy residency declaration.
+    pub fn for_profile(profile: &ServingExecutionProfile) -> Result<Self> {
+        let ServingExecutionProfile::PrefillDecode { execution } = profile else {
+            return Err(PowerError::Config(
+                "aggregated serving cannot install a distributed phase executor".to_string(),
+            ));
+        };
+        let capabilities = Self {
+            execution_profile_sha256: profile.sha256()?,
+            phase: profile.phase(),
+            weight_cache: execution.weight_cache,
+            residency_policy_sha256: execution.residency_policy_sha256.clone(),
+        };
+        profile.validate_phase_executor_capabilities(&capabilities)?;
+        Ok(capabilities)
+    }
+
     pub fn validate(&self) -> Result<()> {
         validate_sha256(
             &self.execution_profile_sha256,
@@ -42,6 +69,9 @@ impl PhaseExecutorCapabilities {
             return Err(PowerError::Config(
                 "a distributed phase executor must own exactly prefill or decode".to_string(),
             ));
+        }
+        if let Some(policy) = &self.residency_policy_sha256 {
+            validate_sha256(policy, "phase-executor residency policy")?;
         }
         Ok(())
     }

@@ -25,6 +25,8 @@ fn profile(role: DisaggregatedServingRole) -> ServingExecutionProfile {
         privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
         privacy_policy_sha256: digest('7'),
         attestation_policy_sha256: Some(digest('8')),
+        weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+        residency_policy_sha256: None,
     })
     .unwrap()
 }
@@ -141,7 +143,56 @@ fn adapter_capabilities_must_be_bound_to_the_exact_profile() {
 }
 
 #[test]
+fn private_weight_cache_mode_fails_closed_at_deserialization() {
+    let mut document = serde_json::to_value(profile(DisaggregatedServingRole::Decode)).unwrap();
+    document["weight_cache"] = serde_json::json!("private-weight-cache");
+    assert!(serde_json::from_value::<ServingExecutionProfile>(document).is_err());
+}
+
+#[test]
+fn phase_executor_must_reuse_shared_weight_hierarchy_binding() {
+    let profile = profile(DisaggregatedServingRole::Prefill);
+    let matching = PhaseExecutorCapabilities::for_profile(&profile).unwrap();
+    profile
+        .validate_phase_executor_capabilities(&matching)
+        .unwrap();
+
+    let mut mismatched = matching.clone();
+    mismatched.residency_policy_sha256 = Some(digest('9'));
+    let error = profile
+        .validate_phase_executor_capabilities(&mismatched)
+        .unwrap_err();
+    assert!(error.to_string().contains("phase executor"));
+
+    let mut pinned = profile.clone();
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut pinned {
+        execution.residency_policy_sha256 = Some(digest('b'));
+    }
+    // Profile digest changes when residency policy is pinned, so rebuild caps.
+    let pinned_caps = PhaseExecutorCapabilities::for_profile(&pinned).unwrap();
+    pinned
+        .validate_phase_executor_capabilities(&pinned_caps)
+        .unwrap();
+    let stale = PhaseExecutorCapabilities::for_profile(&profile).unwrap();
+    assert!(pinned
+        .validate_phase_executor_capabilities(&stale)
+        .is_err());
+}
+
+#[test]
+fn shared_weight_cache_default_keeps_profile_digest_stable() {
+    let with_defaults = profile(DisaggregatedServingRole::Decode);
+    let mut explicit = serde_json::to_value(&with_defaults).unwrap();
+    assert!(explicit.get("weight_cache").is_none());
+    assert!(explicit.get("residency_policy_sha256").is_none());
+    explicit["weight_cache"] = serde_json::json!("shared-weight-hierarchy");
+    let round_trip: ServingExecutionProfile = serde_json::from_value(explicit).unwrap();
+    assert_eq!(with_defaults.sha256().unwrap(), round_trip.sha256().unwrap());
+}
+
+#[test]
 fn execution_profile_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<ServingExecutionProfile>();
+    assert_send_sync::<PhaseWeightCacheMode>();
 }

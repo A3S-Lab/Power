@@ -43,6 +43,18 @@ fn new_runtime() -> EmbeddedRuntime {
 }
 
 #[test]
+fn residency_policy_digest_is_stable_for_identical_policy() {
+    let first = ResidencyPolicy::default().sha256().unwrap();
+    let second = ResidencyPolicy::default().sha256().unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first.len(), 64);
+
+    let mut changed = ResidencyPolicy::default();
+    changed.host_cache_bytes = 64;
+    assert_ne!(first, changed.sha256().unwrap());
+}
+
+#[test]
 fn hierarchy_accounts_for_model_owned_fixed_weights() {
     let (_directory, store) = weight_store(Dtype::F32, vec![2], &[0; 8]);
     let limits = InferenceLimits {

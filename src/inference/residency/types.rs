@@ -1,5 +1,6 @@
 use candle_core::Tensor;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
 
 use crate::error::{PowerError, Result};
@@ -142,6 +143,17 @@ impl ResidencyPolicy {
         }
         self.route_coupling.validate()?;
         Ok(())
+    }
+
+    /// Canonical digest used to bind a process weight hierarchy into a serving
+    /// execution profile without inventing a second cache identity.
+    pub fn sha256(&self) -> Result<String> {
+        self.validate()?;
+        let document = serde_json::to_vec(self)?;
+        let mut digest = Sha256::new();
+        digest.update(b"a3s.power.residency-policy.v1\0");
+        digest.update(document);
+        Ok(hex::encode(digest.finalize()))
     }
 
     pub(super) fn background_inflight_bytes(&self) -> u64 {

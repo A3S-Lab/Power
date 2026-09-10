@@ -41,6 +41,25 @@ pub enum ServingPrivacyMode {
     AttestedPrivateFabric,
 }
 
+/// How a prefill/decode worker obtains model weights.
+///
+/// Only the shared process weight hierarchy / residency path is accepted.
+/// Unknown serde variants (for example a private phase-local cache) fail closed
+/// so P/D composition cannot install a second weight cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PhaseWeightCacheMode {
+    /// Reuse Power's process-shared weight hierarchy / residency path.
+    #[default]
+    SharedWeightHierarchy,
+}
+
+impl PhaseWeightCacheMode {
+    pub(crate) fn is_shared_weight_hierarchy(&self) -> bool {
+        matches!(self, Self::SharedWeightHierarchy)
+    }
+}
+
 /// Static facts required by a prefill or decode process generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +84,18 @@ pub struct PrefillDecodeExecutionProfile {
     pub privacy_policy_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_policy_sha256: Option<String>,
+    /// Closed weight-cache binding. Defaults to the shared hierarchy.
+    #[serde(
+        default,
+        skip_serializing_if = "PhaseWeightCacheMode::is_shared_weight_hierarchy"
+    )]
+    pub weight_cache: PhaseWeightCacheMode,
+    /// Optional digest of the process residency policy pinned into this
+    /// profile. When set, an installed weight hierarchy must report the same
+    /// digest. Absent means shared-hierarchy mode without a pinned policy
+    /// document (fixtures / adapters not yet bound).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residency_policy_sha256: Option<String>,
 }
 
 /// Immutable execution profile for one Power process generation.
@@ -115,6 +146,7 @@ impl ServingExecutionProfile {
             privacy,
             privacy_policy_sha256,
             attestation_policy_sha256,
+            residency_policy_sha256,
             ..
         } = execution.as_ref();
 
@@ -133,6 +165,9 @@ impl ServingExecutionProfile {
         }
         if let Some(policy) = attestation_policy_sha256 {
             validate_sha256(policy, "serving attestation policy")?;
+        }
+        if let Some(policy) = residency_policy_sha256 {
+            validate_sha256(policy, "serving residency policy")?;
         }
         if matches!(privacy, ServingPrivacyMode::AttestedPrivateFabric)
             && attestation_policy_sha256.is_none()
@@ -267,6 +302,8 @@ impl ServingExecutionProfile {
         };
         if capabilities.execution_profile_sha256 != self.sha256()?
             || capabilities.phase != ServingPhase::from(execution.role)
+            || capabilities.weight_cache != execution.weight_cache
+            || capabilities.residency_policy_sha256 != execution.residency_policy_sha256
         {
             return Err(PowerError::Config(
                 "phase executor does not satisfy the immutable serving profile".to_string(),

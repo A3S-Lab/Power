@@ -712,3 +712,68 @@ fn runtime_and_transfer_share_one_fail_fast_inflight_admission_policy() {
     assert_eq!(transfer.active_limit, phase.active_limit);
     assert_eq!(transfer.waiting_limit, phase.waiting_limit);
 }
+
+#[cfg(feature = "embedded-inference")]
+mod weight_hierarchy_binding {
+    use std::sync::Arc;
+
+    use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::inference::{
+        DevicePreference, EmbeddedRuntime, InferenceLimits, ResidencyPolicy, WeightHierarchy,
+        WeightStore, WeightStoreConfig,
+    };
+
+    fn make_hierarchy(policy: ResidencyPolicy) -> (tempfile::TempDir, WeightHierarchy) {
+        let directory = tempfile::TempDir::new().unwrap();
+        let view = TensorView::new(Dtype::F32, vec![2], &[0; 8]).unwrap();
+        serialize_to_file(
+            vec![("layer.0.w", view)],
+            None,
+            &directory.path().join("model.safetensors"),
+        )
+        .unwrap();
+        let store = WeightStore::open_config(
+            &WeightStoreConfig::new(directory.path()),
+            &InferenceLimits::default(),
+        )
+        .unwrap();
+        let runtime =
+            EmbeddedRuntime::new(DevicePreference::Cpu, InferenceLimits::default()).unwrap();
+        (
+            directory,
+            WeightHierarchy::new(Arc::new(store), runtime, policy).unwrap(),
+        )
+    }
+
+    #[test]
+    fn distributed_runtime_binds_matching_residency_policy_digest() {
+        let policy = ResidencyPolicy {
+            host_cache_bytes: 8,
+            ..ResidencyPolicy::default()
+        };
+        let policy_digest = policy.sha256().unwrap();
+        let mut serving = profile(DisaggregatedServingRole::Decode, 100);
+        if let ServingExecutionProfile::PrefillDecode { execution } = &mut serving {
+            execution.residency_policy_sha256 = Some(policy_digest);
+        }
+        let runtime = runtime(&serving, Uuid::new_v4(), Arc::new(Calls::default()));
+        let (_dir, hierarchy) = make_hierarchy(policy);
+        runtime.validate_weight_hierarchy(&hierarchy).unwrap();
+
+        let (_dir2, foreign) = make_hierarchy(ResidencyPolicy::default());
+        let error = runtime.validate_weight_hierarchy(&foreign).unwrap_err();
+        assert!(error.to_string().contains("residency policy"));
+    }
+
+    #[test]
+    fn unpinned_profile_refuses_hierarchy_binding_as_second_cache_surface() {
+        let serving = profile(DisaggregatedServingRole::Decode, 100);
+        let runtime = runtime(&serving, Uuid::new_v4(), Arc::new(Calls::default()));
+        let (_dir, hierarchy) = make_hierarchy(ResidencyPolicy::default());
+        let error = runtime.validate_weight_hierarchy(&hierarchy).unwrap_err();
+        assert!(error.to_string().contains("residency_policy_sha256"));
+    }
+}

@@ -44,8 +44,8 @@ mod tests {
     use crate::serving::{
         AbortPhaseExecution, AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole,
         ExecutePhaseExecution, PhaseDecision, PhaseExecutionOutput, PhaseExecutorCapabilities,
-        PhaseExecutorHealth, PrefillDecodeExecutionProfile, PreparePhaseExecution,
-        PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
+        PhaseExecutorHealth, PhaseWeightCacheMode, PrefillDecodeExecutionProfile,
+        PreparePhaseExecution, PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
         ServingExecutionProfile, ServingPhase, ServingPhaseExecutor, ServingPrivacyMode, StateKind,
         StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
         StateTransferSource, StateTransferTarget,
@@ -153,6 +153,8 @@ mod tests {
             privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
             privacy_policy_sha256: "7".repeat(64),
             attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
         })
         .unwrap()
     }
@@ -172,10 +174,7 @@ mod tests {
 
     fn executor(profile: &ServingExecutionProfile) -> TestPhaseExecutor {
         TestPhaseExecutor {
-            capabilities: PhaseExecutorCapabilities {
-                execution_profile_sha256: profile.sha256().unwrap(),
-                phase: profile.phase(),
-            },
+            capabilities: PhaseExecutorCapabilities::for_profile(profile).unwrap(),
             health: PhaseExecutorHealth::Ready,
         }
     }

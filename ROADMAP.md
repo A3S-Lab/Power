@@ -264,7 +264,12 @@ model-semantics owner.
   closed if they carry sealed-model-state schema or envelope magic so tickets
   cannot become a second persistence format. DistributedServingRuntime and the
   phase-executor port do not construct a second session-replica pool or weight
-  hierarchy; session-replica reuse, weight-hierarchy reuse, sealing of wire
+  hierarchy; the immutable prefill/decode profile and phase-executor
+  capabilities now bind `weight_cache = shared-weight-hierarchy` (unknown
+  private-cache identities fail closed) and may pin `residency_policy_sha256`.
+  When `embedded-inference` is enabled, `validate_weight_hierarchy` requires
+  that digest to match `ResidencyPolicy::sha256` before a process hierarchy is
+  accepted. Session-replica reuse, sealing of wire
   tickets themselves, telemetry/receipt consolidation, and production-adapter /
   high-speed-transport evidence remain open. A
   request-level runtime now composes that lifecycle with phase execution under
