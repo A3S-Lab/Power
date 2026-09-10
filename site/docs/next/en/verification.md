@@ -223,6 +223,14 @@ two-commit layout and the four-platform bundle, then builds binaries and the
 crate from the frozen parent. Lightweight, unverified, detached, or
 extra-change tags fail before publication.
 
+The current frozen source parent for checked-in Windows CPU/CUDA partial
+evidence is `514031dc74edd72da7c3bfee40144a38d2d91434`. See
+[release-contract-windows-20260910](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/release-contract-windows-20260910/README.md)
+and the operator scripts under
+[tools/release-capture](https://github.com/A3S-Lab/Power/tree/main/tools/release-capture).
+Native Metal and proof-promoted SEV-SNP confidential-GPU captures for that
+exact parent are still missing, so no production `v1.0.0` tag exists yet.
+
 This split avoids a self-referential commit hash: the bundle authenticates the
 source parent, while the signed child authenticates the bundle. Source code or
 historical benchmark files alone are never sufficient evidence that a release

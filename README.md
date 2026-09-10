@@ -525,10 +525,13 @@ The repository also keeps the detailed contracts close to the code:
 - [Supply-chain audit](docs/supply-chain.md)
 - [Storage benchmark](docs/storage-benchmark.md)
 - [Tensor-batch cost benchmark](docs/tensor-batch-benchmark.md)
+- [Windows 2026-09-10 exact-parent CPU/CUDA release contracts](docs/benchmarks/release-contract-windows-20260910/README.md)
+  (partial; Metal and confidential GPU still required)
+- [Release capture operator scripts](tools/release-capture/README.md)
 - [Roadmap](ROADMAP.md) and [changelog](CHANGELOG.md)
 
-The checked-in `site/docs/v1.0.0` tree is a candidate documentation snapshot,
-not evidence that the v1 tag has already passed the production gate.
+The checked-in `site/docs/v1.0.0` tree is a documentation snapshot for the
+frozen source line. It is not evidence that the v1 production tag has passed.
 
 ## Development
 

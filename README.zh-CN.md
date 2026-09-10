@@ -448,9 +448,12 @@ Intel TDX 当前发出本地 TDREPORT，但在经审阅的 DCAP Quote/QVL 路径
 - [供应链审计](docs/supply-chain.md)
 - [存储基准](docs/storage-benchmark.md)
 - [张量批成本基准](docs/tensor-batch-benchmark.md)
+- [Windows 2026-09-10 exact-parent CPU/CUDA 发布契约](docs/benchmarks/release-contract-windows-20260910/README.md)
+  （部分证据；仍缺 Metal 与 confidential GPU）
+- [发布捕获操作脚本](tools/release-capture/README.md)
 - [路线图](ROADMAP.md) 与 [变更日志](CHANGELOG.md)
 
-检入的 `site/docs/v1.0.0` 树是候选文档快照，并不证明 v1 标签已通过生产门。
+检入的 `site/docs/v1.0.0` 树是冻结源码线的文档快照，并不证明生产 v1 标签已通过门禁。
 
 ## 开发
 

@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Checked in exact-parent Windows CPU/CUDA complete-contract captures for
+  frozen source parent `514031dc74edd72da7c3bfee40144a38d2d91434` under
+  `docs/benchmarks/release-contract-windows-20260910/`, plus
+  `tools/release-capture/` helpers for Windows CPU/CUDA, macOS Metal,
+  confidential-GPU source (not promoted), and fail-closed evidence-child
+  assembly. These are operator tooling and partial evidence only; Metal and
+  SEV-SNP confidential-GPU captures remain required for a production tag.
+
 - Honest v1 production exclusion for attested-private-fabric readiness
   (TDX/HSN OR-pattern): `ServingPrivacyMode::AttestedPrivateFabric` never
   sets `may_advertise_prefill_decode` / worker `ready_phases` /

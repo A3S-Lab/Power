@@ -169,6 +169,14 @@ python3 tools/dspark_quality_followup_evidence.py verify \
 从 v1 开始，硬件捕获绑定一个冻结的源码提交。它的直接子提交只能新增
 `release/v<version>/release-evidence.json` 与对应的 SHA-256 pin。这个证据子提交必须已经位于 `main`，并由一个 GitHub 标记为 Verified 的附注标签直接指向。发布 CI 会验证两提交结构和四平台 bundle，随后从冻结的父提交构建二进制与 crate。轻量标签、未验证标签、脱离 `main` 的标签，或夹带额外改动的标签都会在发布前失败。
 
+当前已检入的 Windows CPU/CUDA 部分证据所绑定的冻结源码父提交是
+`514031dc74edd72da7c3bfee40144a38d2d91434`。见
+[release-contract-windows-20260910](https://github.com/A3S-Lab/Power/blob/main/docs/benchmarks/release-contract-windows-20260910/README.md)
+与
+[tools/release-capture](https://github.com/A3S-Lab/Power/tree/main/tools/release-capture)。
+同一父提交上的原生 Metal 与经 SEV-SNP 证明提升的机密 GPU 捕获仍缺失，因此
+尚不存在生产 `v1.0.0` 标签。
+
 这种拆分消除了提交哈希的自引用：bundle 认证源码父提交，签名子提交再认证 bundle。仅有源码或历史基准文件，不能证明某个版本已经通过生产发布门禁。
 
 创建标签前，先在本地运行与发布 CI 相同的失败关闭预检：
