@@ -345,9 +345,13 @@ llama.cpp P/D, or model-backend evidence. For profiles that pin
 `DirectDeviceMemoryPullPhaseExecutor`—via ACL
 `transport = "direct-device-memory-pull"`. That pair is Injected + required
 contract so composition can start, but health stays Unavailable, data-path
-methods refuse work, and worker `ready_phases` never list prefill/decode until
-a real high-speed adapter is bound. This is the HSN product port, not HSN
-evidence. For the open concrete backend phase path, ACL
+methods refuse work, and worker `ready_phases` never list prefill/decode.
+v1 explicitly excludes DirectDeviceMemoryPull / HSN advertisement from the
+production support matrix (same OR pattern as Intel TDX): this port stays
+Unavailable forever until a real high-speed adapter and evidence suite exist,
+and `DirectDeviceMemoryPullV1` never advertises even via builder injection.
+This is the HSN product port under a fail-closed exclusion, not a claim that
+HSN works. For the concrete backend phase path, ACL
 `transport = "buffered-host-loopback"` with `phase_executor = "backend-owned"`
 (or `with_backend_owned_phase_on_buffered_host_loopback`) installs Ready
 buffered-host loopback transfer plus `BackendOwnedPhaseExecutor`
@@ -381,8 +385,9 @@ Ready NDJSON decode after consume+restore+`ControlledLlamaCppDecodeTokenPort`.
 Worker `ready_phases` may list P/D for that honest product pair when runtime
 is Injected+REQUIRED+Ready and (decode) a decode-token port is bound;
 DirectDeviceMemoryPull and Empty/Pending hollow Ready never advertise.
-Neither leaves HSN DirectDeviceMemoryPull or attested-fabric open claims;
-those ROADMAP checkboxes stay open. Reuse / opaque-state / typed-outcome
+HSN DirectDeviceMemoryPull advertisement is explicitly excluded from the
+v1 production matrix (machine-enforced non-advertise); attested-fabric
+readiness remains open. Reuse / opaque-state / typed-outcome
 are closed by the live session-pool / weight-hierarchy binding evidence and
 HTTP Ready path above (`llamacpp` + `embedded-inference`).
 The composition root wraps and

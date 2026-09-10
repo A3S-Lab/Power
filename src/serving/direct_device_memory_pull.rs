@@ -6,9 +6,15 @@
 //! instead of Empty placeholders, but health stays Unavailable and every
 //! data-path method refuses work until a real high-speed adapter is bound.
 //!
-//! This is **not** high-speed-network evidence, RDMA, NIXL, llama.cpp P/D, or
-//! model-semantic readiness. Worker observation must not list prefill/decode
-//! in `ready_phases` while this port is the composed transport.
+//! **v1 production matrix:** DirectDeviceMemoryPull / HSN cross-node and
+//! prefill/decode advertisement is explicitly unsupported. Machine enforcement
+//! keeps [`TransferHealth::Unavailable`] / [`PhaseExecutorHealth::Unavailable`],
+//! refuses every data-path call, forces
+//! [`ServingPhaseExecutor::may_advertise_ready_phases`] false, and keeps
+//! [`ServingExecutionProfile::may_advertise_prefill_decode`] false for
+//! [`StateTransferProtocol::DirectDeviceMemoryPullV1`] forever until a real
+//! HSN adapter plus evidence suite exists. This is **not** a claim that HSN
+//! works.
 
 use std::sync::Arc;
 
@@ -28,7 +34,7 @@ use super::{
 
 fn unavailable(port: &str) -> PowerError {
     PowerError::BackendNotAvailable(format!(
-        "DirectDeviceMemoryPullV1 {port} is Unavailable until a real high-speed-network adapter is bound"
+        "DirectDeviceMemoryPullV1 {port} is Unavailable and excluded from the v1 production advertisement matrix until a real high-speed-network adapter and evidence suite exist"
     ))
 }
 
@@ -163,7 +169,7 @@ impl ServingPhaseExecutor for DirectDeviceMemoryPullPhaseExecutor {
     }
 
     fn may_advertise_ready_phases(&self) -> bool {
-        // Named HSN product port — never advertise without HSN evidence.
+        // v1 exclusion: DirectDeviceMemoryPull never advertises P/D.
         false
     }
 
@@ -283,8 +289,9 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("Unavailable until"));
+        assert!(err.to_string().contains("Unavailable"));
         assert!(err.to_string().contains("high-speed-network"));
+        assert!(err.to_string().contains("v1 production"));
 
         let decision = executor
             .prepare(PreparePhaseExecution {
@@ -318,14 +325,23 @@ mod tests {
         assert!(!profile.may_advertise_prefill_decode());
         let (transfer, executor) =
             DirectDeviceMemoryPullPhaseExecutor::paired_for_profile(&profile).unwrap();
+        assert!(!executor.may_advertise_ready_phases());
         let bounded = Arc::new(
             BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
                 .unwrap(),
         );
         let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
         assert!(!runtime.accepts_work());
+        assert!(!runtime.execution_admissible());
         assert_eq!(runtime.phase(), ServingPhase::Decode);
         assert_eq!(runtime.transfer_health(), TransferHealth::Unavailable);
+    }
+
+    #[test]
+    fn builder_injected_direct_device_protocol_never_advertises_even_when_ready() {
+        // v1 exclusion is protocol-scoped, not transport-opt-in only.
+        let profile = profile(None);
+        assert!(!profile.may_advertise_prefill_decode());
     }
 
     #[test]

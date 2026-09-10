@@ -281,11 +281,12 @@ impl DistributedServingRuntime {
     pub fn accepts_work(&self) -> bool {
         // Worker ready_phases projection. Requires execution_admissible plus
         // honest profile advertise (buffered-host + llamacpp ownership/execution;
-        // never DirectDeviceMemoryPull without HSN; never Empty/Pending-only)
-        // and executor may_advertise_ready_phases (decode needs a bound
-        // decode-token port). Builder-injected fixtures (transport absent)
-        // still use provision/health via execution_admissible plus a true
-        // may_advertise default.
+        // DirectDeviceMemoryPullV1 never advertises under the v1 exclusion;
+        // never Empty/Pending-only) and executor may_advertise_ready_phases
+        // (decode needs a bound decode-token port). Builder-injected
+        // BufferedHost fixtures (transport absent) still use
+        // provision/health via execution_admissible plus a true
+        // may_advertise default when protocol is not DirectDeviceMemoryPullV1.
         self.execution_admissible()
             && self.inner.profile.may_advertise_prefill_decode()
             && self.inner.executor.may_advertise_ready_phases()

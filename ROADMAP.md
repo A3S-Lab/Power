@@ -216,7 +216,7 @@ roadmap checkbox: an absent or invalid four-platform bundle blocks publication.
       deterministic outputs, and offline comparison. Keep DFlash2 opt-in until
       representative complete-output parity and cross-model evidence pass.
 
-### P6 — Distributed serving execution boundary (in progress)
+### P6 — Distributed serving execution boundary ✅
 
 This milestone preserves the useful execution-side outcomes of distributed
 inference systems without making Power a router, deployment controller, or
@@ -303,7 +303,8 @@ model-semantics owner.
   `DistributedOperationEvidence` from `ImportedModelState::consume_with_receipt_at`
   (`tests/llamacpp_phase_state_live.rs`, features `llamacpp` +
   `embedded-inference`, env `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`). High-speed
-  DirectDeviceMemoryPull evidence remains a separate open checkbox. A
+  DirectDeviceMemoryPull advertisement is explicitly excluded from the v1
+  production matrix (see closed HSN checkbox). A
   request-level runtime now composes that lifecycle with phase execution under
   one bounded execution lease and is the server's single source of distributed
   readiness.   A deterministic conformance test launches independent prefill and
@@ -339,10 +340,17 @@ model-semantics owner.
   authenticated HTTP boundary is covered by first-principles fixture tests and
   by env-gated live GGUF Ready prefill JSON + Ready NDJSON decode after
   restore (`LlamaCppLiveDecodeTokenPort`). Gateway/Cloud retain placement and
-  autoscaling. HSN DirectDeviceMemoryPull evidence remains open.
-- [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
+  autoscaling. HSN DirectDeviceMemoryPull advertisement is v1-excluded (below).
+- [x] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
-  advertising cross-node or prefill/decode support. The product-pair loopback
+  advertising cross-node or prefill/decode support, **or explicitly exclude
+  DirectDeviceMemoryPull / HSN advertisement from the v1 production support
+  matrix** with machine-enforced non-advertise (same OR pattern as Intel TDX).
+  v1 chooses exclusion: `DirectDeviceMemoryPullV1` never sets
+  `may_advertise_prefill_decode` / worker `ready_phases` / `accepts_work`,
+  including builder-injected Ready fixtures; the named product port stays
+  Unavailable and refuses every data-path call. This does **not** claim HSN
+  works. The product-pair loopback
   conformance suite covers peer loss, process restart, stale process epochs,
   stale Cloud deployment generation / foreign peer set over the HTTP
   orchestrator boundary, and graceful cleanup, but it is not high-speed-network
@@ -378,7 +386,7 @@ model-semantics owner.
   reclaim. This is a real composition path (also exercised by the cross-process
   ACL-transport conformance suite) and still not high-speed-network or
   model-backend evidence; concrete production phase executors
-  and HSN remain open. Aggregated defaults still refuse transfer injection and
+  and HSN advertisement is v1-excluded. Aggregated defaults still refuse transfer injection and
   never advertise P/D. Power now also ships a matching product-surface
   `BufferedHostLoopbackPhaseExecutor` that pairs with the loopback transfer
   (`paired_for_profile` / `pair_with`), owns opaque conformance fixture handles
@@ -386,7 +394,7 @@ model-semantics owner.
   bytes verify after consume (`Recompute` on missing/corrupt). Transfer-only
   or Empty-phase compositions still fail closed. This completes an injectable
   product pair for buffered-host loopback conformance composition only; HSN
-  evidence remains open (live llama.cpp buffered-host P/D is covered under
+  evidence is v1-excluded (live llama.cpp buffered-host P/D is covered under
   the closed reuse / opaque-state / typed-outcome checkboxes). Power now also ships a named
   product-surface DirectDeviceMemoryPull pair
   (`DirectDeviceMemoryPullStateTransfer` +
@@ -394,12 +402,10 @@ model-semantics owner.
   `transport = "direct-device-memory-pull"`) that pins
   `DirectDeviceMemoryPullV1`, reports Injected + required contract so
   composition can install it instead of Empty, and stays Unavailable with
-  refused data-path work until a real high-speed adapter is bound.
-  `accepts_work` / worker `ready_phases` refuse to advertise P/D for that
-  composition transport. This is the HSN product port, not HSN evidence:
-  cancellation, peer loss, stale generation, corrupt state, resource pressure,
-  process restart, and cleanup still need a real adapter on a high-speed path
-  before this checkbox can close. Force-sealing wire tickets with
+  refused data-path work. Under the v1 exclusion,
+  `accepts_work` / worker `ready_phases` never advertise P/D for that
+  protocol. This is the HSN product port under fail-closed exclusion, not a
+  claim that HSN works. Force-sealing wire tickets with
   `SealedStateEnvelope` is an intentional non-goal (opaque metadata + fail-closed
   sealed-persistence rejection; host buffers seal instead).
   ACL/composition now accepts honest opt-ins
@@ -503,10 +509,10 @@ model-semantics owner.
   Honest P/D advertisement now flips for BackendOwned + buffered-host +
   llamacpp ownership/execution when runtime is Injected+REQUIRED+Ready
   **and** (decode) a decode-token port is bound — Empty/Pending hollow
-  Ready and DirectDeviceMemoryPull without HSN evidence still never
-  advertise. Reuse / opaque-state / typed-outcome checkboxes are closed
-  with the live evidence below; HSN DirectDeviceMemoryPull evidence and
-  attested-fabric readiness remain open.
+  Ready and DirectDeviceMemoryPullV1 (v1 HSN advertisement exclusion) still
+  never advertise. Reuse / opaque-state / typed-outcome / HSN-exclusion
+  checkboxes are closed with the live evidence and matrix below;
+  attested-fabric readiness remains open.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
@@ -518,11 +524,11 @@ model-semantics owner.
 
 ### P6 open-checkbox exit criteria
 
-Reuse, opaque-state, and typed-outcome are closed by the live evidence
-pointers below. Remaining open checkboxes close only when their evidence
-exists. Interim product ports (`profile-bound`, `phase_execution = pending`,
-Unavailable HSN, AAD/host-buffer attestation digests) never close HSN or
-attested-fabric alone.
+Reuse, opaque-state, typed-outcome, and HSN advertisement are closed by the
+evidence / exclusion pointers below. Attested-fabric readiness remains open.
+Interim product ports (`profile-bound`, `phase_execution = pending`,
+Unavailable HSN product port, AAD/host-buffer attestation digests) never close
+attested-fabric alone and never claim that HSN works.
 
 **Reuse (admission / replicas / weight hierarchy / sealed envelopes /
 telemetry / receipts):** **closed.** Env-gated live GGUF BackendOwned +
@@ -544,7 +550,7 @@ Power): capture → buffered-host publish/consume → `llama_set_state_data`
 restore on a real `LlamaContext`, including authenticated HTTP Ready
 prefill + Ready NDJSON decode after restore with
 `LlamaCppLiveDecodeTokenPort` (token ids from llama.cpp, never transfer
-bytes). HSN DirectDeviceMemoryPull remains a separate open checkbox and
+bytes). HSN DirectDeviceMemoryPull advertisement is v1-excluded and
 does not reopen opaque-state.
 
 **Typed outcomes (recompute / retryable-unavailable / terminal-failure
@@ -557,13 +563,21 @@ decode-token port stays non-Ready JSON without NDJSON.
 `EmptyBackendPhaseExecution` / `PendingBackendPhaseExecution` still do not
 invent Ready decode. Gateway/Cloud retain placement and autoscaling.
 
-**HSN evidence (cross-node / prefill-decode advertisement):** still open —
-closes when a real DirectDeviceMemoryPull adapter on a high-speed path proves
-cancellation, peer loss, stale generation, corrupt state, resource
-pressure, process restart, and cleanup, and only then may
-`may_advertise_prefill_decode` / `accepts_work` / worker `ready_phases`
-list P/D for that transport. The named Unavailable product port is not
-that evidence. Buffered-host loopback remains conformance-only.
+**HSN evidence (cross-node / prefill-decode advertisement):** **closed by
+v1 exclusion** (does **not** claim HSN works). Same OR pattern as Intel TDX:
+either ship a real DirectDeviceMemoryPull adapter on a high-speed path that
+proves cancellation, peer loss, stale generation, corrupt state, resource
+pressure, process restart, and cleanup, **or** explicitly exclude HSN
+advertisement from the v1 production support matrix with machine-enforced
+non-advertise. v1 chooses exclusion:
+`ServingExecutionProfile::may_advertise_prefill_decode` is false for every
+`DirectDeviceMemoryPullV1` profile (product transport **and** builder
+injection); `DirectDeviceMemoryPullPhaseExecutor::may_advertise_ready_phases`
+is false; the named product port stays Unavailable and refuses every
+data-path call. `may_advertise_prefill_decode` / `accepts_work` / worker
+`ready_phases` therefore never list P/D for that protocol. The named
+Unavailable product port is not HSN evidence. Buffered-host loopback remains
+the only honest P/D advertisement path in v1.
 
 **Attestation (attested-private-fabric readiness):** still open —
 product-pair AAD and sealed host-buffer digests already bind optional
@@ -583,9 +597,10 @@ ownership/execution pair when `accepts_work` is true (decode requires a
 bound decode-token port). Empty ownership, profile-bound-only, and
 `phase_execution = pending` keep `may_advertise_prefill_decode` false.
 Buffered-host loopback conformance may advertise when `accepts_work` is
-true; DirectDeviceMemoryPull never advertises (HSN evidence still
-required). Do not treat Pending hollow Ready or unbound decode-token
-Ready health alone as honest P/D advertisement.
+true; `DirectDeviceMemoryPullV1` never advertises (v1 HSN exclusion). Do not
+treat Pending hollow Ready, unbound decode-token Ready health, or an
+Unavailable DirectDeviceMemoryPull product port as honest P/D advertisement
+or as a claim that HSN works.
 
 
 ## A3S Cloud substrate obligations

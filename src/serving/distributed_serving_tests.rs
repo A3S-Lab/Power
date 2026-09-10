@@ -111,7 +111,7 @@ async fn mismatched_executor_lifetime_is_rejected_and_cleaned_synchronously() {
     assert!(matches!(error, PowerError::InvalidRequest(_)));
     assert_eq!(calls.values(), ["phase.prepare", "phase.abort"]);
     assert_eq!(calls.phase_aborts.load(Ordering::SeqCst), 1);
-    assert!(runtime.accepts_work());
+    assert!(runtime.execution_admissible());
 }
 
 #[tokio::test]
@@ -138,7 +138,7 @@ async fn phase_preparation_deadline_reclaims_the_runtime_lease() {
 
     assert!(matches!(result, Err(PowerError::BackendNotAvailable(_))));
     wait_for_count(&calls.phase_aborts, 1).await;
-    assert!(runtime.accepts_work());
+    assert!(runtime.execution_admissible());
 }
 
 #[tokio::test]
@@ -199,7 +199,7 @@ async fn unconfirmed_cleanup_taints_the_runtime_and_suppresses_new_work() {
 
     assert!(matches!(result, Err(PowerError::BackendNotAvailable(_))));
     assert_eq!(calls.phase_aborts.load(Ordering::SeqCst), 1);
-    assert!(!runtime.accepts_work());
+    assert!(!runtime.execution_admissible());
 }
 
 #[tokio::test]
@@ -325,7 +325,7 @@ async fn transfer_receipt_then_non_ready_execute_never_opens_a_decode_stream() {
         );
         wait_for_count(&calls.phase_aborts, 1).await;
         assert_eq!(calls.phase_aborts.load(Ordering::SeqCst), 1, "{label}");
-        assert!(runtime.accepts_work(), "{label}: cleanup confirmed");
+        assert!(runtime.execution_admissible(), "{label}: cleanup confirmed");
         runtime.abort(execution_id).await.unwrap();
         assert_eq!(
             calls.phase_aborts.load(Ordering::SeqCst),
@@ -360,7 +360,7 @@ async fn post_consume_non_ready_cleanup_failure_taints_readiness() {
 
     assert!(matches!(error, PowerError::BackendNotAvailable(_)));
     assert_eq!(calls.phase_aborts.load(Ordering::SeqCst), 1);
-    assert!(!runtime.accepts_work());
+    assert!(!runtime.execution_admissible());
 }
 
 #[tokio::test]
@@ -391,7 +391,7 @@ async fn corrupt_source_ticket_bytes_fail_closed_without_opening_a_decode_stream
         !calls.values().iter().any(|value| *value == "phase.execute"),
         "corrupt ticket must never reach phase execute"
     );
-    assert!(runtime.accepts_work());
+    assert!(runtime.execution_admissible());
 }
 
 #[tokio::test]
@@ -438,7 +438,7 @@ async fn corrupt_consume_receipt_bytes_fail_closed_with_compensating_cleanup() {
         );
         wait_for_count(&calls.phase_aborts, 1).await;
         assert_eq!(calls.phase_aborts.load(Ordering::SeqCst), 1, "{mode:?}");
-        assert!(runtime.accepts_work(), "{mode:?}");
+        assert!(runtime.execution_admissible(), "{mode:?}");
     }
 }
 
@@ -485,7 +485,7 @@ async fn inflight_capacity_pressure_fails_closed_and_reclaims_after_abort() {
         Err(PowerError::BackendNotAvailable(message))
             if message.contains("capacity is exhausted")
     ));
-    assert!(runtime.accepts_work());
+    assert!(runtime.execution_admissible());
     let phase_admission = runtime.admission_snapshot();
     assert_eq!(phase_admission.active_limit, Some(2));
     assert_eq!(phase_admission.waiting_limit, Some(0));
@@ -504,7 +504,7 @@ async fn inflight_capacity_pressure_fails_closed_and_reclaims_after_abort() {
         .unwrap();
     runtime.abort(second).await.unwrap();
     runtime.abort(third).await.unwrap();
-    assert!(runtime.accepts_work());
+    assert!(runtime.execution_admissible());
 }
 
 #[tokio::test]
@@ -536,7 +536,7 @@ async fn resource_pressure_phase_decision_cleans_up_without_a_decode_stream() {
         }
     ));
     wait_for_count(&calls.phase_aborts, 1).await;
-    assert!(runtime.accepts_work());
+    assert!(runtime.execution_admissible());
 }
 
 #[tokio::test]
@@ -584,7 +584,7 @@ async fn caller_abort_during_transfer_consume_never_opens_a_decode_stream() {
     );
     wait_for_count(&calls.phase_aborts, 1).await;
     wait_for_count(&calls.transfer_aborts, 1).await;
-    assert!(runtime.accepts_work());
+    assert!(runtime.execution_admissible());
     hooks.block_consume.store(false, Ordering::SeqCst);
     assert_lease_capacity_reclaimed(&runtime, 250).await;
 }
@@ -621,7 +621,7 @@ async fn deadline_abort_during_transfer_consume_never_opens_a_decode_stream() {
     assert!(!calls.values().iter().any(|value| *value == "phase.execute"));
     wait_for_count(&calls.phase_aborts, 1).await;
     wait_for_count(&calls.transfer_aborts, 1).await;
-    assert!(runtime.accepts_work());
+    assert!(runtime.execution_admissible());
     hooks.block_consume.store(false, Ordering::SeqCst);
     assert_lease_capacity_reclaimed(&runtime, 40).await;
 }
@@ -673,7 +673,7 @@ async fn caller_abort_during_destination_prepare_reclaims_without_success() {
     assert!(matches!(outcome, Err(PowerError::BackendNotAvailable(_))));
     wait_for_count(&calls.phase_aborts, 1).await;
     wait_for_count(&calls.transfer_aborts, 1).await;
-    assert!(runtime.accepts_work());
+    assert!(runtime.execution_admissible());
     hooks
         .block_prepare_destination
         .store(false, Ordering::SeqCst);
@@ -720,7 +720,7 @@ async fn caller_abort_mid_decode_stream_never_emits_success_after_cancel() {
     // Consume already finished before the stream opened, so transfer abort is
     // idempotent and may not invoke the driver again.
     wait_for_count(&calls.phase_aborts, 1).await;
-    assert!(runtime.accepts_work());
+    assert!(runtime.execution_admissible());
     assert_lease_capacity_reclaimed(&runtime, 250).await;
 }
 

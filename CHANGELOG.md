@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Honest v1 production exclusion for DirectDeviceMemoryPull / HSN
+  advertisement (TDX OR-pattern): `DirectDeviceMemoryPullV1` never sets
+  `may_advertise_prefill_decode` / worker `ready_phases` / `accepts_work`,
+  including builder-injected Ready fixtures; the named Unavailable product
+  port refuses every data-path call and documents the matrix exclusion.
+  Closes the last P6 HSN checkbox without claiming HSN works.
+  Attested-fabric readiness remains open.
+
 - Live P/D reuse evidence under shared session-pool + weight-hierarchy ports
   (`llamacpp` + `embedded-inference`, `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`):
   `tests/llamacpp_phase_state_live.rs` pins `session_pool_policy_sha256` /

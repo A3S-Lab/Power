@@ -609,31 +609,44 @@ impl ServingExecutionProfile {
     /// Whether worker observation **may** list this profile's P/D phase as
     /// ready once runtime Injected + REQUIRED + Ready also hold.
     ///
-    /// Builder-injected adapters (no composition transport) remain gated only
-    /// by provision, contract, and health. Product DirectDeviceMemoryPull never
-    /// advertises (no in-tree HSN). Buffered-host loopback without
-    /// `backend-owned` may advertise the Ready conformance pair.
-    /// `phase_executor = backend-owned` advertises only for the honest
-    /// `state_ownership = llamacpp` + `phase_execution = llamacpp` product
-    /// pair — Empty, profile-bound-only, and `phase_execution = pending`
+    /// **v1 production matrix:** [`StateTransferProtocol::DirectDeviceMemoryPullV1`]
+    /// never advertises — including builder-injected Ready fixtures and the
+    /// named Unavailable product port. HSN cross-node / prefill-decode
+    /// advertisement is explicitly unsupported until a real high-speed adapter
+    /// plus evidence suite exists (same OR-exclusion pattern as Intel TDX in
+    /// `docs/v1-support-matrix.md`).
+    /// Typed-outcome / lifecycle work may still run via
+    /// [`crate::serving::DistributedServingRuntime::execution_admissible`]
+    /// while advertise stays false.
+    ///
+    /// Buffered-host loopback without `backend-owned` may advertise the Ready
+    /// conformance pair. `phase_executor = backend-owned` advertises only for
+    /// the honest `state_ownership = llamacpp` + `phase_execution = llamacpp`
+    /// product pair — Empty, profile-bound-only, and `phase_execution = pending`
     /// stay false (hollow Ready must not list `ready_phases`). Decode still
     /// requires a bound decode-token port at runtime
     /// ([`crate::serving::ServingPhaseExecutor::may_advertise_ready_phases`])
     /// before [`crate::serving::DistributedServingRuntime::accepts_work`]
-    /// flips. Typed-outcome HTTP may still run via
-    /// [`crate::serving::DistributedServingRuntime::execution_admissible`]
-    /// when advertise stays false.
+    /// flips.
     pub fn may_advertise_prefill_decode(&self) -> bool {
-        match self.composition_transport() {
+        let Self::PrefillDecode { execution } = self else {
+            return false;
+        };
+        // Machine-enforced v1 exclusion: DirectDeviceMemoryPullV1 never lists
+        // ready_phases / accepts_work, regardless of composition transport.
+        if matches!(
+            execution.protocol,
+            StateTransferProtocol::DirectDeviceMemoryPullV1
+        ) {
+            return false;
+        }
+        match execution.transport {
             Some(ServingCompositionTransport::DirectDeviceMemoryPull) => false,
             Some(ServingCompositionTransport::BufferedHostLoopback) => {
-                match self.composition_phase_executor() {
+                match execution.phase_executor {
                     None => true,
                     Some(ServingCompositionPhaseExecutor::BackendOwned) => matches!(
-                        (
-                            self.composition_state_ownership(),
-                            self.composition_phase_execution(),
-                        ),
+                        (execution.state_ownership, execution.phase_execution),
                         (
                             Some(ServingCompositionStateOwnership::LlamaCpp),
                             Some(ServingCompositionPhaseExecution::LlamaCpp),

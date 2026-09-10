@@ -220,17 +220,20 @@ deployment generation or a foreign peer set before the adapter data path runs;
 process epoch alone cannot admit cross-generation transfers when model /
 execution / layout bindings still match. Wire tickets stay intentionally
 unsealed opaque metadata (host buffers seal; sealed-persistence markers fail
-closed). High-speed DirectDeviceMemoryPull evidence and attested-fabric
-readiness remain open. Live buffered-host llama.cpp P/D now also binds and
+closed). High-speed DirectDeviceMemoryPull advertisement is explicitly
+excluded from the v1 production matrix (machine-enforced non-advertise; does
+not claim HSN works). Attested-fabric readiness remains open. Live
+buffered-host llama.cpp P/D now also binds and
 exercises the shared session-pool / weight-hierarchy ports
 (`validate_session_pool` / `validate_weight_hierarchy`) under
 `DistributedServingRuntime` (`tests/llamacpp_phase_state_live.rs`).
 
-The default Power backends inject neither port, and this repository does not yet
-ship a concrete high-speed distributed backend/transport pair. The internal request-flow
+The default Power backends inject neither port. The named Unavailable
+DirectDeviceMemoryPull product port may be composed but never advertises
+P/D under the v1 exclusion. The internal request-flow
 endpoint is present but fails closed without a matching composed runtime.
-Gateway must therefore continue to reject HSN P/D dispatch until a selected
-deployment truthfully supplies that complete path.
+Gateway must therefore continue to reject HSN P/D dispatch; only buffered-host
+paths may advertise when honestly Ready.
 
 ## Cross-process conformance boundary
 

@@ -153,7 +153,9 @@ fn buffered_host_loopback_may_advertise_prefill_decode_when_protocol_matches() {
     }
     loopback.validate().unwrap();
     assert!(loopback.may_advertise_prefill_decode());
-    assert!(profile(DisaggregatedServingRole::Decode).may_advertise_prefill_decode());
+    // DirectDeviceMemoryPullV1 (default fixture protocol) never advertises under
+    // the v1 production exclusion, even with transport absent.
+    assert!(!profile(DisaggregatedServingRole::Decode).may_advertise_prefill_decode());
 }
 
 #[test]
@@ -331,12 +333,14 @@ fn may_advertise_prefill_decode_first_principles_true_vs_false() {
     }
     assert!(llamacpp.may_advertise_prefill_decode());
 
-    // FALSE: DirectDeviceMemoryPull never advertises without HSN evidence.
+    // FALSE: DirectDeviceMemoryPullV1 never advertises (v1 exclusion), with or
+    // without the product transport opt-in.
     let mut hsn = profile(DisaggregatedServingRole::Decode);
     if let ServingExecutionProfile::PrefillDecode { execution } = &mut hsn {
         execution.transport = Some(ServingCompositionTransport::DirectDeviceMemoryPull);
     }
     assert!(!hsn.may_advertise_prefill_decode());
+    assert!(!profile(DisaggregatedServingRole::Decode).may_advertise_prefill_decode());
 
     // FALSE: BackendOwned + pending hollow Ready unlock.
     let mut pending = profile(DisaggregatedServingRole::Decode);

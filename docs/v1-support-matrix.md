@@ -64,6 +64,18 @@ development and later policy revisions. The v1 verifier nevertheless requires
 `sev-snp` in the confidential release binding and fails closed for TDX. Enabling
 a custom hardware verifier cannot bypass that release rule.
 
+## Distributed serving / HSN advertisement
+
+| Surface | v1 status | Reason |
+| --- | --- | --- |
+| Buffered-host loopback P/D (product pair + live llama.cpp BackendOwned path) | Supported as conformance / software P/D | Opaque host buffers over authenticated loopback; live GGUF evidence closes reuse / opaque-state / typed-outcome. Not high-speed-network. |
+| `DirectDeviceMemoryPullV1` / HSN cross-node or prefill-decode advertisement | Explicitly unsupported | No in-tree high-speed adapter or HSN evidence suite. Machine enforcement keeps `may_advertise_prefill_decode` / `accepts_work` / worker `ready_phases` false for every `DirectDeviceMemoryPullV1` profile, including builder-injected Ready fixtures; the named product port stays Unavailable and refuses every data-path call. |
+| Attested-private-fabric readiness beyond digest wire binding | Still open | Product AAD / sealed host-buffer digests bind optional `attestation_policy_sha256` fail-closed; TEE-export / fabric attestation evidence is not complete. |
+
+This is the same OR-exclusion pattern as Intel TDX: implement the reviewed HSN
+path **or** keep advertisement out of the v1 production matrix. v1 chooses
+exclusion. Shipping the Unavailable product port does **not** claim HSN works.
+
 ## Release artifact contract
 
 Every non-`0.x` release currently uses the strict v1 gate and must check in:

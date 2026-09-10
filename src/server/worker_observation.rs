@@ -245,7 +245,7 @@ mod tests {
             layout_sha256: "5".repeat(64),
             peer_set_sha256: "6".repeat(64),
             generation,
-            protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
+            protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
             state_kind: StateKind::KvCache,
             max_state_bytes: 1024,
             max_inflight_transfers: 2,
@@ -354,7 +354,7 @@ mod tests {
             capabilities: StateTransferCapabilities {
                 execution_profile_sha256: profile.sha256().unwrap(),
                 phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
-                protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
+                protocols: vec![StateTransferProtocol::BufferedHostMemoryPullV1],
                 max_transfer_bytes: 1024,
                 max_inflight_transfers,
             },
@@ -399,7 +399,7 @@ mod tests {
             layout_sha256: "5".repeat(64),
             peer_set_sha256: "6".repeat(64),
             generation: 7,
-            protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
+            protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
             state_kind: StateKind::KvCache,
             max_state_bytes: 1024,
             max_inflight_transfers,
@@ -929,7 +929,14 @@ mod tests {
         let before = state.worker_observation();
         assert_eq!(before.admission.active_limit, Some(2));
         assert_eq!(before.admission.active, 0);
-        assert_eq!(before.ready_phases, [ServingPhase::Decode]);
+        // support::profile pins DirectDeviceMemoryPullV1 — v1 exclusion keeps
+        // ready_phases empty even while execution_admissible / phase work run.
+        assert!(before.ready_phases.is_empty());
+        assert!(state
+            .distributed_serving
+            .as_ref()
+            .unwrap()
+            .execution_admissible());
 
         let runtime = state.distributed_serving.as_ref().unwrap().clone();
         let execution_id = Uuid::new_v4();
@@ -961,7 +968,7 @@ mod tests {
         let after_abort = state.worker_observation();
         assert!(after_abort.observation_generation > held.observation_generation);
         assert_eq!(after_abort.admission.active, 0);
-        assert_eq!(after_abort.ready_phases, [ServingPhase::Decode]);
+        assert!(after_abort.ready_phases.is_empty());
 
         let tainted_runtime = runtime_with_behavior(
             &serving_profile,
@@ -985,7 +992,12 @@ mod tests {
         .with_distributed_serving(Arc::new(tainted_runtime))
         .with_auth(Arc::new(ApiKeyAuth::new(&["service-key".to_string()])));
         let ready = tainted_state.worker_observation();
-        assert_eq!(ready.ready_phases, [ServingPhase::Decode]);
+        assert!(ready.ready_phases.is_empty());
+        assert!(tainted_state
+            .distributed_serving
+            .as_ref()
+            .unwrap()
+            .execution_admissible());
 
         let taint_result = tainted_state
             .distributed_serving
