@@ -459,24 +459,56 @@ model-semantics owner.
   the `SealedStateEnvelope` state-id so reopen with a drifted policy fails
   closed without claiming attested fabric or TEE-export readiness.
 
-Remaining before any open P6 checkbox can close (not claimed here):
+### P6 open-checkbox exit criteria (not claimed here)
 
-- Reuse: live session-replica / weight-hierarchy lifecycle under a real
-  backend P/D executor (software reuse of those ports is already bound).
-- Opaque state: model-owned KV/recurrent layout and import/export in
-  llama.cpp or picolm; `BackendPhaseStateOwnership` is the thin opaque
-  bind surface (layout digest + byte hooks).
-  `ProfileBoundBackendPhaseStateOwnership` only mirrors closed profile
-  digests (Eligible without KV)—it is not that implementor.
-  `BackendOwnedPhaseExecutor` Eligible after matching registration still
-  lacks a concrete Ready execute implementor: `phase_execution = pending`
-  unlocks Ready health only and fails closed on prepare/execute.
-- Typed outcomes: production phase execute path bound to that ownership;
-  Empty execution keeps Eligible from becoming Ready; Pending is not a
-  model-semantic executor.
-- HSN: a real DirectDeviceMemoryPull adapter with high-speed-path evidence
-  (cancellation, peer loss, stale generation, corrupt state, pressure,
-  restart, cleanup). The named Unavailable product port is not that evidence.
+Each open checkbox closes only when its evidence below exists. Interim
+product ports (`profile-bound`, `phase_execution = pending`, Unavailable
+HSN, AAD/host-buffer attestation digests) never close a checkbox alone.
+
+**Reuse (admission / replicas / weight hierarchy / sealed envelopes /
+telemetry / receipts):** closes when a concrete llama.cpp or picolm
+`BackendPhaseExecution` drives live P/D under the already-bound shared
+session-pool and weight-hierarchy ports, with process-bound transfer
+leases and digest-only receipts on that path. Software reuse of the ports
+is already bound; live executor lifecycle evidence is not.
+
+**Opaque state (tokenization / KV / layout stay model-owned):** closes
+when a real `BackendPhaseStateOwnership` implementor imports/exports
+opaque adapter-owned state bytes for llama.cpp or picolm (layout digest
+match + byte hooks only in Power). `ProfileBoundBackendPhaseStateOwnership`
+mirrors closed profile digests to Eligible without KV and does **not**
+close this checkbox. Power must not invent a second KV format.
+
+**Typed outcomes (recompute / retryable-unavailable / terminal-failure
+before response generation):** closes when that same concrete
+`BackendPhaseExecution` produces Ready prepare/execute (or typed
+non-Ready decisions) over the authenticated HTTP boundary after transfer
+consume. `EmptyBackendPhaseExecution` keeps Eligible from Ready;
+`PendingBackendPhaseExecution` unlocks Ready health only and fails closed
+on prepare/execute—neither closes this checkbox. Gateway/Cloud retain
+placement and autoscaling.
+
+**HSN evidence (cross-node / prefill-decode advertisement):** closes when
+a real DirectDeviceMemoryPull adapter on a high-speed path proves
+cancellation, peer loss, stale generation, corrupt state, resource
+pressure, process restart, and cleanup, and only then may
+`may_advertise_prefill_decode` / `accepts_work` / worker `ready_phases`
+list P/D for that transport. The named Unavailable product port is not
+that evidence. Buffered-host loopback remains conformance-only.
+
+**Attestation (attested-private-fabric readiness):** product-pair AAD and
+sealed host-buffer digests already bind optional
+`attestation_policy_sha256` fail-closed. Closing attested-fabric
+readiness still requires TEE-export / fabric attestation evidence beyond
+digest wire binding; mismatched-policy consume rejection alone does not
+close it.
+
+**Composition fail-closed (always required, not a checkbox closer):**
+`phase_execution = pending` + `state_ownership = profile-bound` under
+`phase_executor = backend-owned` may reach executor Ready health, but
+`may_advertise_prefill_decode` stays false, so
+`DistributedServingRuntime::accepts_work` stays false and worker
+`ready_phases` never list prefill/decode.
 
 ## Cross-repository delivery order
 

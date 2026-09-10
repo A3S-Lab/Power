@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P6 open-checkbox exit criteria in `ROADMAP.md`: each remaining reuse /
+  opaque-state / typed-outcome / HSN / attestation checkbox names the
+  concrete evidence that closes it; interim `profile-bound` /
+  `phase_execution = pending` / Unavailable HSN / AAD digest binding alone
+  do not close checkboxes. Composition fail-closed rule: pending +
+  profile-bound may reach executor Ready health but never advertises P/D
+  without `DistributedServingRuntime::accepts_work`.
+- Worker-observation composition test:
+  `pending_profile_bound_ready_health_never_advertises_without_accepts_work`
+  proves `phase_execution = pending` + `state_ownership = profile-bound`
+  under backend-owned reaches executor Ready / `accepts_work`, yet
+  `may_advertise_prefill_decode` stays false, runtime `accepts_work` stays
+  false, and worker `ready_phases` stay empty.
 - Product-surface `BackendPhaseExecution` for backend-owned prepare/execute:
   default `EmptyBackendPhaseExecution` keeps Eligible ownership from becoming
   Ready. Binding a Ready-capable adapter (`can_produce_ready`) advances
