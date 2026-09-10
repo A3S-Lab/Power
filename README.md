@@ -314,9 +314,12 @@ measurements, and strict policy; simulated attestation never passes strict
 verification.
 
 The built-in composition remains aggregated. A downstream disaggregated build
-must inject an exact profile-bound `StateTransferService` and
-`ServingPhaseExecutor` through `PowerServerBuilder`; either service alone is a
-startup error. Empty/Unavailable placeholders
+must either inject an exact profile-bound `StateTransferService` and
+`ServingPhaseExecutor` through `PowerServerBuilder`, or set the honest ACL
+opt-in `serving_execution.transport = "buffered-host-loopback"` (programmatic
+equivalent: `with_buffered_host_loopback_transport`) so Power installs the
+product loopback pair. Either service alone is a startup error; protocol alone
+never auto-wires. Empty/Unavailable placeholders
 (`EmptyStateTransferService` / `EmptyServingPhaseExecutor`) also fail closed
 until a concrete adapter is injected. Injected ports declare
 `ProductionAdapterContract::REQUIRED` (adapter-owned memory registration,

@@ -370,6 +370,7 @@ mod tests {
             residency_policy_sha256: None,
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
+            transport: None,
         })
         .unwrap()
     }
@@ -413,14 +414,14 @@ mod tests {
     #[test]
     fn refuses_aggregated_and_undersized_profiles() {
         let err = BufferedHostLoopbackPhaseExecutor::paired_for_profile(
-            &ServingExecutionProfile::Aggregated,
+            &ServingExecutionProfile::Aggregated {},
         )
         .unwrap_err();
         assert!(err.to_string().contains("prefill-decode"));
 
         let mut execution = match profile(DisaggregatedServingRole::Prefill) {
             ServingExecutionProfile::PrefillDecode { execution } => *execution,
-            ServingExecutionProfile::Aggregated => panic!("expected prefill-decode"),
+            ServingExecutionProfile::Aggregated {} => panic!("expected prefill-decode"),
         };
         execution.max_state_bytes = 32;
         let small = ServingExecutionProfile::prefill_decode(execution).unwrap();

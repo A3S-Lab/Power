@@ -294,7 +294,10 @@ gpu {
 度量与严格策略；模拟证明从不通过严格验证。
 
 内置组合仍为聚合式。下游解聚构建必须通过 `PowerServerBuilder` 注入精确配置绑定的
-`StateTransferService` 与 `ServingPhaseExecutor`；单独任一服务都是启动错误。
+`StateTransferService` 与 `ServingPhaseExecutor`，或设置诚实 ACL 选项
+`serving_execution.transport = "buffered-host-loopback"`（程序等价：
+`with_buffered_host_loopback_transport`）以安装产品回环对；单独任一服务都是启动错误，
+仅凭 protocol 从不自动接线。
 Empty/Unavailable 占位（`EmptyStateTransferService` / `EmptyServingPhaseExecutor`）
 在注入具体适配器前同样失败关闭。注入端口声明
 `ProductionAdapterContract::REQUIRED`（适配器拥有的内存注册、适配器拥有的传输完整性、

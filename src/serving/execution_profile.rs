@@ -41,6 +41,21 @@ pub enum ServingPrivacyMode {
     AttestedPrivateFabric,
 }
 
+/// Explicit composition selector for product-surface P/D adapters.
+///
+/// Absent means the composition root must inject both ports through
+/// [`crate::server::PowerServerBuilder`]. Setting a value is an honest opt-in
+/// that installs a concrete product pair at startup; it is not a silent
+/// inference from `protocol` alone and does not claim high-speed network
+/// readiness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServingCompositionTransport {
+    /// Install `BufferedHostLoopbackStateTransfer` +
+    /// `BufferedHostLoopbackPhaseExecutor` for the immutable profile.
+    BufferedHostLoopback,
+}
+
 /// How a prefill/decode worker obtains model weights.
 ///
 /// Only the shared process weight hierarchy / residency path is accepted.
@@ -149,6 +164,13 @@ pub struct PrefillDecodeExecutionProfile {
     /// (fixtures / adapters not yet bound).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_pool_policy_sha256: Option<String>,
+    /// Honest composition opt-in for a product-surface adapter pair.
+    ///
+    /// Absent keeps fail-closed external injection. `buffered-host-loopback`
+    /// installs the product loopback pair only when protocol/privacy match;
+    /// it never auto-wires from protocol alone and never claims HSN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<ServingCompositionTransport>,
 }
 
 /// Immutable execution profile for one Power process generation.
@@ -158,15 +180,22 @@ pub struct PrefillDecodeExecutionProfile {
 /// phase executor or state-transfer adapter can be used. Request-specific
 /// token counts, state sizes, worker epochs, and deadlines remain bound by the
 /// state-transfer command and descriptor types.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "profile", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ServingExecutionProfile {
-    #[default]
-    Aggregated,
+    /// Ordinary local inference. Extra ACL attributes (for example `transport`)
+    /// fail closed so aggregated never silently ignores a P/D opt-in.
+    Aggregated {},
     PrefillDecode {
         #[serde(flatten)]
         execution: Box<PrefillDecodeExecutionProfile>,
     },
+}
+
+impl Default for ServingExecutionProfile {
+    fn default() -> Self {
+        Self::Aggregated {}
+    }
 }
 
 impl ServingExecutionProfile {
@@ -201,6 +230,8 @@ impl ServingExecutionProfile {
             attestation_policy_sha256,
             residency_policy_sha256,
             session_pool_policy_sha256,
+            transport,
+            protocol,
             ..
         } = execution.as_ref();
 
@@ -233,6 +264,20 @@ impl ServingExecutionProfile {
                 "attested-private-fabric serving requires attestation_policy_sha256".to_string(),
             ));
         }
+        if let Some(ServingCompositionTransport::BufferedHostLoopback) = transport {
+            if !matches!(protocol, StateTransferProtocol::BufferedHostMemoryPullV1) {
+                return Err(PowerError::Config(
+                    "serving_execution.transport = buffered-host-loopback requires protocol = buffered-host-memory-pull-v1"
+                        .to_string(),
+                ));
+            }
+            if !matches!(privacy, ServingPrivacyMode::AuthenticatedEncryptedTransport) {
+                return Err(PowerError::Config(
+                    "serving_execution.transport = buffered-host-loopback requires privacy = authenticated-encrypted-transport"
+                        .to_string(),
+                ));
+            }
+        }
         if *generation == 0 || *generation > MAX_EXACT_ACL_INTEGER {
             return Err(PowerError::Config(format!(
                 "serving generation must be within 1..={MAX_EXACT_ACL_INTEGER}"
@@ -263,12 +308,20 @@ impl ServingExecutionProfile {
     }
 
     pub fn is_aggregated(&self) -> bool {
-        matches!(self, Self::Aggregated)
+        matches!(self, Self::Aggregated {})
+    }
+
+    /// Explicit product-surface composition transport, when opted in by ACL.
+    pub fn composition_transport(&self) -> Option<ServingCompositionTransport> {
+        match self {
+            Self::Aggregated {} => None,
+            Self::PrefillDecode { execution } => execution.transport,
+        }
     }
 
     pub fn phase(&self) -> ServingPhase {
         match self {
-            Self::Aggregated => ServingPhase::Aggregated,
+            Self::Aggregated {} => ServingPhase::Aggregated,
             Self::PrefillDecode { execution } => execution.role.into(),
         }
     }

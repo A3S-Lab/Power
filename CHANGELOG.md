@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Honest ACL composition opt-in for the product buffered-host loopback pair:
+  `serving_execution.transport = "buffered-host-loopback"` installs
+  `BufferedHostLoopbackStateTransfer` + `BufferedHostLoopbackPhaseExecutor`
+  at startup when protocol/privacy match. Protocol alone never auto-wires;
+  incomplete pairs and mixing with builder-injected adapters fail closed.
+  Aggregated defaults still advertise no P/D. This is composition wiring only
+  and does not claim high-speed transport, llama.cpp P/D, or HSN readiness.
+  Programmatic equivalent: `PowerServerBuilder::with_buffered_host_loopback_transport`.
 - Injectable product-surface buffered-host / loopback phase executor:
   `BufferedHostLoopbackPhaseExecutor` pairs with
   `BufferedHostLoopbackStateTransfer` via `paired_for_profile` / `pair_with`,

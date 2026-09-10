@@ -92,6 +92,28 @@ impl PowerServerBuilder {
         self
     }
 
+    /// Install the product buffered-host / loopback transfer + phase pair for
+    /// the configured `prefill-decode` profile.
+    ///
+    /// Prefer ACL `serving_execution.transport = "buffered-host-loopback"` for
+    /// declarative composition. This builder helper is the programmatic
+    /// equivalent and still fails closed when the profile cannot bind the pair.
+    pub fn with_buffered_host_loopback_transport(mut self) -> Result<Self> {
+        if self.options.state_transfer_service.is_some() || self.options.phase_executor.is_some() {
+            return Err(crate::error::PowerError::Config(
+                "with_buffered_host_loopback_transport cannot combine with separately injected distributed adapters"
+                    .to_string(),
+            ));
+        }
+        let (transfer, executor) =
+            crate::serving::BufferedHostLoopbackPhaseExecutor::paired_for_profile(
+                &self.options.config.serving_execution,
+            )?;
+        self.options.state_transfer_service = Some(transfer);
+        self.options.phase_executor = Some(executor);
+        Ok(self)
+    }
+
     /// Start with only caller-injected backends.
     pub fn without_default_backends(mut self) -> Self {
         self.options.include_default_backends = false;

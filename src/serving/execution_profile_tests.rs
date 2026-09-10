@@ -29,6 +29,7 @@ fn profile(role: DisaggregatedServingRole) -> ServingExecutionProfile {
         residency_policy_sha256: None,
         session_pool: PhaseSessionPoolMode::SharedSessionPool,
         session_pool_policy_sha256: None,
+        transport: None,
     })
     .unwrap()
 }
@@ -49,6 +50,7 @@ fn aggregated_profile_is_the_safe_canonical_default() {
     let profile = ServingExecutionProfile::default();
     profile.validate().unwrap();
     assert!(profile.is_aggregated());
+    assert!(profile.composition_transport().is_none());
     assert_eq!(profile.phase(), ServingPhase::Aggregated);
     assert_eq!(
         serde_json::to_value(&profile).unwrap(),
@@ -101,6 +103,13 @@ fn prefill_decode_profile_rejects_noncanonical_or_unbounded_values() {
         execution.attestation_policy_sha256 = None;
     }
     assert!(invalid.validate().is_err());
+
+    let mut invalid = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut invalid {
+        execution.transport = Some(ServingCompositionTransport::BufferedHostLoopback);
+    }
+    let err = invalid.validate().unwrap_err();
+    assert!(err.to_string().contains("buffered-host-memory-pull-v1"));
 }
 
 #[test]

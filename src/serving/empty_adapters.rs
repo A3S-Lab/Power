@@ -203,6 +203,7 @@ mod tests {
             residency_policy_sha256: None,
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
+            transport: None,
         })
         .unwrap()
     }

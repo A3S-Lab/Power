@@ -37,8 +37,8 @@ pub use empty_adapters::{
 };
 pub use execution_profile::{
     DisaggregatedServingRole, PhaseSessionPoolMode, PhaseWeightCacheMode,
-    PrefillDecodeExecutionProfile, ServingDeploymentIdentity, ServingExecutionProfile,
-    ServingPrivacyMode,
+    PrefillDecodeExecutionProfile, ServingCompositionTransport, ServingDeploymentIdentity,
+    ServingExecutionProfile, ServingPrivacyMode,
 };
 pub use observation::{
     AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,

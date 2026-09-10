@@ -1,9 +1,45 @@
+use std::sync::Arc;
+
 use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::serving::{
-    validate_injected_production_adapters, ServingPhaseExecutor, StateTransferService,
-    TransferHealth,
+    validate_injected_production_adapters, BufferedHostLoopbackPhaseExecutor,
+    ServingCompositionTransport, ServingPhaseExecutor, StateTransferService, TransferHealth,
 };
+
+/// Resolve ACL composition transport into injectable adapters before startup
+/// validation.
+///
+/// `serving_execution.transport = buffered-host-loopback` is an honest opt-in
+/// that installs the product loopback pair. It refuses silent auto-wire from
+/// protocol alone and refuses mixing with builder-injected adapters. Incomplete
+/// external pairs remain a validation error.
+pub(super) fn resolve(
+    config: &PowerConfig,
+    state_transfer: Option<Arc<dyn StateTransferService>>,
+    phase_executor: Option<Arc<dyn ServingPhaseExecutor>>,
+) -> Result<(
+    Option<Arc<dyn StateTransferService>>,
+    Option<Arc<dyn ServingPhaseExecutor>>,
+)> {
+    match config.serving_execution.composition_transport() {
+        None => Ok((state_transfer, phase_executor)),
+        Some(ServingCompositionTransport::BufferedHostLoopback) => {
+            if state_transfer.is_some() || phase_executor.is_some() {
+                return Err(PowerError::Config(
+                    "serving_execution.transport = buffered-host-loopback cannot combine with builder-injected distributed adapters"
+                        .to_string(),
+                ));
+            }
+            let (transfer, executor) =
+                BufferedHostLoopbackPhaseExecutor::paired_for_profile(&config.serving_execution)?;
+            Ok((
+                Some(transfer as Arc<dyn StateTransferService>),
+                Some(executor as Arc<dyn ServingPhaseExecutor>),
+            ))
+        }
+    }
+}
 
 /// Validate the process-local serving composition before listeners or model
 /// resources are created.
@@ -44,13 +80,15 @@ pub(super) fn validate(
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
+    use std::sync::Arc;
 
     use crate::serving::{
-        AbortPhaseExecution, AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole,
-        EmptyServingPhaseExecutor, EmptyStateTransferService, ExecutePhaseExecution, PhaseDecision,
-        PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth, PhaseSessionPoolMode,
-        PhaseWeightCacheMode, PrefillDecodeExecutionProfile, PreparePhaseExecution,
-        PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
+        AbortPhaseExecution, AbortStateTransfer, BoundedStateTransferService, ConsumeStateTransfer,
+        DisaggregatedServingRole, DistributedServingRuntime, EmptyServingPhaseExecutor,
+        EmptyStateTransferService, ExecutePhaseExecution, PhaseDecision, PhaseExecutionOutput,
+        PhaseExecutorCapabilities, PhaseExecutorHealth, PhaseSessionPoolMode, PhaseWeightCacheMode,
+        PrefillDecodeExecutionProfile, PreparePhaseExecution, PrepareStateTransfer,
+        PreparedPhaseExecution, PublishStateTransfer, ServingCompositionTransport,
         ServingExecutionProfile, ServingPhase, ServingPhaseExecutor, ServingPrivacyMode, StateKind,
         StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
         StateTransferSource, StateTransferTarget,
@@ -162,6 +200,7 @@ mod tests {
             residency_policy_sha256: None,
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
+            transport: None,
         })
         .unwrap()
     }
@@ -184,6 +223,38 @@ mod tests {
             capabilities: PhaseExecutorCapabilities::for_profile(profile).unwrap(),
             health: PhaseExecutorHealth::Ready,
         }
+    }
+
+    fn buffered_host_profile(
+        transport: Option<ServingCompositionTransport>,
+    ) -> ServingExecutionProfile {
+        ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".to_string(),
+            model_sha256: "1".repeat(64),
+            backend: "buffered-host-loopback".to_string(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
+            transport,
+        })
+        .unwrap()
     }
 
     #[test]
@@ -283,38 +354,9 @@ mod tests {
         );
     }
 
-    fn buffered_host_profile() -> ServingExecutionProfile {
-        ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
-            role: DisaggregatedServingRole::Decode,
-            model: "internal/model-v1".to_string(),
-            model_sha256: "1".repeat(64),
-            backend: "buffered-host-loopback".to_string(),
-            backend_sha256: "2".repeat(64),
-            execution_sha256: "3".repeat(64),
-            device_sha256: "4".repeat(64),
-            layout_sha256: "5".repeat(64),
-            peer_set_sha256: "6".repeat(64),
-            generation: 7,
-            protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
-            state_kind: StateKind::KvCache,
-            max_state_bytes: 1024,
-            max_inflight_transfers: 2,
-            transfer_timeout_ms: 30_000,
-            cancellation_timeout_ms: 5_000,
-            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
-            privacy_policy_sha256: "7".repeat(64),
-            attestation_policy_sha256: None,
-            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
-            residency_policy_sha256: None,
-            session_pool: PhaseSessionPoolMode::SharedSessionPool,
-            session_pool_policy_sha256: None,
-        })
-        .unwrap()
-    }
-
     #[test]
     fn product_buffered_host_loopback_pair_satisfies_startup_gate() {
-        let profile = buffered_host_profile();
+        let profile = buffered_host_profile(None);
         let config = PowerConfig {
             serving_execution: profile.clone(),
             ..PowerConfig::default()
@@ -327,7 +369,7 @@ mod tests {
 
     #[test]
     fn product_buffered_host_transfer_alone_still_requires_phase_executor() {
-        let profile = buffered_host_profile();
+        let profile = buffered_host_profile(None);
         let config = PowerConfig {
             serving_execution: profile.clone(),
             ..PowerConfig::default()
@@ -340,7 +382,7 @@ mod tests {
 
     #[test]
     fn aggregated_default_still_rejects_product_buffered_host_injection() {
-        let profile = buffered_host_profile();
+        let profile = buffered_host_profile(None);
         let (transfer, executor) =
             crate::serving::BufferedHostLoopbackPhaseExecutor::paired_for_profile(&profile)
                 .unwrap();
@@ -351,5 +393,143 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("aggregated serving"));
+    }
+
+    #[test]
+    fn incomplete_pair_without_transport_opt_in_fails_resolve_then_validate() {
+        let profile = buffered_host_profile(None);
+        let config = PowerConfig {
+            serving_execution: profile,
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) = resolve(&config, None, None).unwrap();
+        assert!(transfer.is_none());
+        assert!(executor.is_none());
+        let err = validate(&config, transfer.as_deref(), executor.as_deref()).unwrap_err();
+        assert!(err.to_string().contains("state-transfer adapter"));
+    }
+
+    #[test]
+    fn transport_opt_in_wires_complete_product_pair_and_projects_ready_phase() {
+        let profile =
+            buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) = resolve(&config, None, None).unwrap();
+        validate(&config, transfer.as_deref(), executor.as_deref()).unwrap();
+        let transfer = transfer.expect("transport opt-in installs transfer");
+        let executor = executor.expect("transport opt-in installs phase executor");
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
+                .unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile.clone(), bounded, executor).unwrap();
+        assert!(runtime.accepts_work());
+        assert_eq!(runtime.phase(), ServingPhase::Decode);
+        assert_eq!(
+            profile.composition_transport(),
+            Some(ServingCompositionTransport::BufferedHostLoopback)
+        );
+        // Honest opt-in installs buffered-host loopback only; never an HSN protocol.
+        if let ServingExecutionProfile::PrefillDecode { execution } = &profile {
+            assert!(matches!(
+                execution.protocol,
+                StateTransferProtocol::BufferedHostMemoryPullV1
+            ));
+        }
+    }
+
+    #[test]
+    fn transport_opt_in_refuses_builder_injected_partial_or_complete_pair() {
+        let profile =
+            buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) =
+            crate::serving::BufferedHostLoopbackPhaseExecutor::paired_for_profile(&profile)
+                .unwrap();
+        let err = match resolve(
+            &config,
+            Some(transfer.clone() as Arc<dyn StateTransferService>),
+            None,
+        ) {
+            Ok(_) => panic!("expected resolve to reject a partial builder injection"),
+            Err(error) => error,
+        };
+        assert!(err.to_string().contains("cannot combine"));
+
+        let err = match resolve(
+            &config,
+            Some(transfer as Arc<dyn StateTransferService>),
+            Some(executor as Arc<dyn ServingPhaseExecutor>),
+        ) {
+            Ok(_) => panic!("expected resolve to reject a complete builder injection mix"),
+            Err(error) => error,
+        };
+        assert!(err.to_string().contains("cannot combine"));
+    }
+
+    #[test]
+    fn transport_opt_in_with_wrong_protocol_fails_closed_at_profile_validate() {
+        let err = ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".to_string(),
+            model_sha256: "1".repeat(64),
+            backend: "buffered-host-loopback".to_string(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
+            transport: Some(ServingCompositionTransport::BufferedHostLoopback),
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("buffered-host-memory-pull-v1"));
+    }
+
+    #[test]
+    fn aggregated_default_resolve_does_not_advertise_prefill_decode() {
+        let config = PowerConfig::default();
+        assert!(config.serving_execution.is_aggregated());
+        assert!(config.serving_execution.composition_transport().is_none());
+        let (transfer, executor) = resolve(&config, None, None).unwrap();
+        validate(&config, transfer.as_deref(), executor.as_deref()).unwrap();
+        assert!(transfer.is_none());
+        assert!(executor.is_none());
+        assert_eq!(config.serving_execution.phase(), ServingPhase::Aggregated);
+    }
+
+    #[test]
+    fn protocol_alone_does_not_auto_wire_product_pair() {
+        let profile = buffered_host_profile(None);
+        let config = PowerConfig {
+            serving_execution: profile,
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) = resolve(&config, None, None).unwrap();
+        assert!(transfer.is_none());
+        assert!(executor.is_none());
     }
 }

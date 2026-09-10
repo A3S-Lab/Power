@@ -69,6 +69,8 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         include_default_backends,
     } = options;
     config.validate()?;
+    let (state_transfer_service, phase_executor) =
+        serving_composition::resolve(&config, state_transfer_service, phase_executor)?;
     serving_composition::validate(
         &config,
         state_transfer_service.as_deref(),

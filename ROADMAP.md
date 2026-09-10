@@ -367,6 +367,12 @@ model-semantics owner.
   or Empty-phase compositions still fail closed. This completes an injectable
   product pair for buffered-host loopback conformance composition only; HSN,
   sealed wire tickets, and real backend/llama.cpp P/D remain open.
+  ACL/composition now accepts an honest opt-in
+  `serving_execution.transport = "buffered-host-loopback"` (or
+  `PowerServerBuilder::with_buffered_host_loopback_transport`) that wires the
+  product pair at startup when protocol/privacy match. Protocol alone never
+  auto-wires; incomplete pairs and builder+transport mixes fail closed.
+  Aggregated defaults still advertise no P/D and make no HSN claim.
 
 ## Cross-repository delivery order
 

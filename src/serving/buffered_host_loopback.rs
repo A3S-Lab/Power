@@ -584,6 +584,7 @@ mod tests {
             residency_policy_sha256: None,
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
+            transport: None,
         })
         .unwrap()
     }
@@ -661,7 +662,7 @@ mod tests {
     fn refuses_direct_device_and_aggregated_profiles() {
         let mut execution = match profile(DisaggregatedServingRole::Prefill) {
             ServingExecutionProfile::PrefillDecode { execution } => *execution,
-            ServingExecutionProfile::Aggregated => panic!("expected prefill-decode"),
+            ServingExecutionProfile::Aggregated {} => panic!("expected prefill-decode"),
         };
         execution.protocol = StateTransferProtocol::DirectDeviceMemoryPullV1;
         let direct = ServingExecutionProfile::prefill_decode(execution).unwrap();
@@ -669,7 +670,7 @@ mod tests {
         assert!(err.to_string().contains("BufferedHostMemoryPullV1"));
 
         let err =
-            BufferedHostLoopbackStateTransfer::for_profile(&ServingExecutionProfile::Aggregated)
+            BufferedHostLoopbackStateTransfer::for_profile(&ServingExecutionProfile::Aggregated {})
                 .unwrap_err();
         assert!(err.to_string().contains("prefill-decode"));
     }

@@ -67,8 +67,11 @@ profiles that pin `BufferedHostMemoryPullV1` and
 Together they are a real composition injection—not the cross-process
 conformance fixture—and still are not high-speed-network, llama.cpp P/D, or
 model-backend evidence. Incomplete pairs (transfer-only, Empty phase, or Empty
-transfer) fail closed. The aggregated default still refuses any transfer
-injection and never advertises P/D readiness.
+transfer) fail closed. Composition installs the pair when ACL sets
+`serving_execution.transport = "buffered-host-loopback"` or when a builder
+calls `with_buffered_host_loopback_transport` / injects both ports explicitly;
+protocol alone never auto-wires. The aggregated default still refuses any
+transfer injection and never advertises P/D readiness.
 
 ## State-transfer port
 
@@ -241,7 +244,41 @@ serving_execution {
 
 Static profile parsing and attestation binding do not make the phase runnable.
 Startup remains fail-closed until the composition root supplies both an exact
-profile-bound transfer adapter and a verified phase executor.
+profile-bound transfer adapter and a verified phase executor, either by
+builder injection or by the honest ACL opt-in
+`transport = "buffered-host-loopback"` (which installs the product loopback
+pair only when `protocol` / `privacy` match). Protocol alone never auto-wires,
+and aggregated defaults still advertise no P/D.
+
+~~~acl
+api_keys = ["<Gateway service-key SHA-256>"]
+
+serving_execution {
+  profile = "prefill-decode"
+  role = "decode"
+  model = "internal/model-v1"
+  model_sha256 = "<64 lowercase hex characters>"
+  backend = "buffered-host-loopback"
+  backend_sha256 = "<64 lowercase hex characters>"
+  execution_sha256 = "<backend-owned phase contract SHA-256>"
+  device_sha256 = "<device declaration SHA-256>"
+  layout_sha256 = "<model-owned state layout SHA-256>"
+  peer_set_sha256 = "<Cloud-certified peer set SHA-256>"
+  generation = 7
+  protocol = "buffered-host-memory-pull-v1"
+  state_kind = "kv-cache"
+  max_state_bytes = 1024
+  max_inflight_transfers = 2
+  transfer_timeout_ms = 30000
+  cancellation_timeout_ms = 5000
+  privacy = "authenticated-encrypted-transport"
+  privacy_policy_sha256 = "<64 lowercase hex characters>"
+  transport = "buffered-host-loopback"
+}
+~~~
+
+The ACL example above is a loopback conformance composition path only. It does
+not claim high-speed-network transport or production llama.cpp P/D.
 
 ## Phase-executor port
 
