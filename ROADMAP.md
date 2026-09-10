@@ -253,15 +253,20 @@ model-semantics owner.
   fail-fast mode (`waiting_limit == 0`) bound to the ACL
   `max_inflight_transfers` limit; construction refuses a waiting queue or
   mismatched active limit as a second admission policy, and capacity rejections
-  project from that controller. When `embedded-inference` is enabled,
+  project from that controller. When a matching runtime is composed, worker
+  observation projects that same fail-fast phase admission snapshot rather than
+  inventing a second capacity story from the HTTP `max_concurrent_requests`
+  limiter; generation stays monotonic after cancel/taint while readiness
+  clears. When `embedded-inference` is enabled,
   host-buffered transfer payloads reuse `SealedStateEnvelope` via
   `seal_transfer_host_buffer` / `open_transfer_host_buffer` (domain-separated
   binding over transfer identity and profile generation). Wire tickets fail
   closed if they carry sealed-model-state schema or envelope magic so tickets
-  cannot become a second persistence format. Session-replica reuse,
-  weight-hierarchy reuse, sealing of wire tickets themselves, telemetry/receipt
-  consolidation, and production-adapter / high-speed-transport evidence remain
-  open. A
+  cannot become a second persistence format. DistributedServingRuntime and the
+  phase-executor port do not construct a second session-replica pool or weight
+  hierarchy; session-replica reuse, weight-hierarchy reuse, sealing of wire
+  tickets themselves, telemetry/receipt consolidation, and production-adapter /
+  high-speed-transport evidence remain open. A
   request-level runtime now composes that lifecycle with phase execution under
   one bounded execution lease and is the server's single source of distributed
   readiness. A deterministic conformance test launches independent prefill and

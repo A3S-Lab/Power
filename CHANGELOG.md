@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Worker observation for a matching `DistributedServingRuntime` now reuses the
+  shared fail-fast P/D `AdmissionController` snapshot (`max_inflight_transfers`,
+  `waiting_limit == 0`) instead of projecting the HTTP
+  `max_concurrent_requests` limiter as a second capacity surface. Held phase
+  leases appear in `admission.active`; after cleanup taint, observation
+  generation stays monotonic within the worker epoch while `ready_phases`
+  clears. Aggregated profiles still project the HTTP limiter. This advances P6
+  admission-observation honesty only and does not claim session replicas,
+  weight-hierarchy reuse, high-speed transport, or production adapters.
 - Reused `SealedStateEnvelope` / `SealedStateStore` for host-buffered transfer
   payloads through `seal_transfer_host_buffer` and `open_transfer_host_buffer`
   (requires the `embedded-inference` feature). The helper domain-separates

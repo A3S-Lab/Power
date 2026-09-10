@@ -86,13 +86,19 @@ policy as transfer (separate lease domain, identical
 on mismatch), prepares a decode destination before state movement,
 publishes prefill state only after phase execution, consumes verified state
 before decode execution, and owns cancellation until the returned stream ends.
-In-flight transfer prepare, publish, and consume honor the same caller-cancel
+Worker observation for that matching runtime projects the shared fail-fast phase
+admission snapshot (`active_limit` / `active` / `waiting`) rather than the HTTP
+`max_concurrent_requests` limiter, so Gateway does not see a second capacity
+surface. Observation generation remains positive and monotonic within
+`worker_epoch` across cancel and cleanup-taint transitions while `ready_phases`
+clears. In-flight transfer prepare, publish, and consume honor the same caller-cancel
 and deadline abort contract as phase prepare/execute: cancel or timeout aborts
 the step without opening a Ready/NDJSON success path, and compensating phase
 plus transfer cleanup reclaim the lease. Expiry, caller cancellation, non-ready
 decisions, invalid adapter output, and explicit abort all trigger compensating
 phase and transfer cleanup. An unconfirmed cleanup permanently suppresses new
-work for that process epoch.
+work for that process epoch. The runtime and phase-executor port do not invent a
+second session-replica pool or weight hierarchy; those reuse paths remain open.
 
 The default Power backends inject neither port, and this repository does not yet
 ship a concrete distributed backend/transport pair. The internal request-flow

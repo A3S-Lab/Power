@@ -7,8 +7,8 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::serving::{
-    AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,
-    WorkerObservation, WORKER_OBSERVATION_SCHEMA,
+    AdmissionObservation, DistributedServingRuntime, PromptCacheObservation, ServingPhase,
+    TransferHealth, WorkerCapabilities, WorkerObservation, WORKER_OBSERVATION_SCHEMA,
 };
 
 use super::state::AppState;
@@ -76,12 +76,7 @@ impl WorkerObservationSource {
                 state_transfer: serving.state_transfer,
             },
             ready_phases: serving.ready_phases,
-            admission: AdmissionObservation {
-                active_limit: (state.config.max_concurrent_requests > 0)
-                    .then_some(state.config.max_concurrent_requests),
-                active: state.metrics.running_requests(),
-                waiting: state.metrics.waiting_requests(),
-            },
+            admission: admission_observation(state),
             prompt_cache: PromptCacheObservation {
                 supported: prompt_cache_supported,
                 entries,
@@ -115,14 +110,10 @@ fn serving_observation(state: &AppState) -> ServingObservation {
         };
     }
 
-    let Some(runtime) = state.distributed_serving.as_ref() else {
+    let Some(runtime) = matching_distributed_runtime(state) else {
         return unsupported_distributed_observation();
     };
     let transfer_health = runtime.transfer_health();
-    if runtime.profile() != profile || matches!(transfer_health, TransferHealth::Unsupported) {
-        return unsupported_distributed_observation();
-    }
-
     let phase = profile.phase();
     let ready_phases = if state.auth.is_some() && runtime.accepts_work() {
         vec![phase]
@@ -135,6 +126,51 @@ fn serving_observation(state: &AppState) -> ServingObservation {
         state_transfer: true,
         transfer_health,
     }
+}
+
+/// Prefer the shared fail-fast P/D AdmissionController when a matching runtime
+/// is composed. Do not invent a second capacity story from the HTTP limiter.
+fn admission_observation(state: &AppState) -> AdmissionObservation {
+    if let Some(runtime) = matching_distributed_runtime(state) {
+        let phase = runtime.admission_snapshot();
+        let transfer = runtime.transfer_admission_snapshot();
+        // Construction already refuses mismatched limits; observe still requires
+        // the same ACL fail-fast shape so a drifted process cannot project a
+        // waiting queue or alternate active bound.
+        if phase.active_limit == transfer.active_limit
+            && phase.waiting_limit == Some(0)
+            && transfer.waiting_limit == Some(0)
+        {
+            return AdmissionObservation {
+                active_limit: phase
+                    .active_limit
+                    .map(|limit| u64::try_from(limit).unwrap_or(u64::MAX)),
+                active: u64::try_from(phase.active).unwrap_or(u64::MAX),
+                waiting: u64::try_from(phase.waiting).unwrap_or(u64::MAX),
+            };
+        }
+    }
+
+    AdmissionObservation {
+        active_limit: (state.config.max_concurrent_requests > 0)
+            .then_some(state.config.max_concurrent_requests),
+        active: state.metrics.running_requests(),
+        waiting: state.metrics.waiting_requests(),
+    }
+}
+
+fn matching_distributed_runtime(state: &AppState) -> Option<&Arc<DistributedServingRuntime>> {
+    let profile = &state.config.serving_execution;
+    if profile.is_aggregated() {
+        return None;
+    }
+    let runtime = state.distributed_serving.as_ref()?;
+    if runtime.profile() != profile
+        || matches!(runtime.transfer_health(), TransferHealth::Unsupported)
+    {
+        return None;
+    }
+    Some(runtime)
 }
 
 fn unsupported_distributed_observation() -> ServingObservation {
@@ -160,6 +196,7 @@ fn cache_pressure_basis_points(entries: u64, capacity: u64) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -294,7 +331,16 @@ mod tests {
         transfer_health: TransferHealth,
         executor_health: PhaseExecutorHealth,
     ) -> AppState {
-        let profile = execution_profile();
+        state_with_services_and_limits(transfer_health, executor_health, 2, 0)
+    }
+
+    fn state_with_services_and_limits(
+        transfer_health: TransferHealth,
+        executor_health: PhaseExecutorHealth,
+        max_inflight_transfers: u32,
+        max_concurrent_requests: u64,
+    ) -> AppState {
+        let profile = execution_profile_with_inflight(max_inflight_transfers);
         let service = TestStateTransferService {
             health: transfer_health,
             capabilities: StateTransferCapabilities {
@@ -302,7 +348,7 @@ mod tests {
                 phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
                 protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
                 max_transfer_bytes: 1024,
-                max_inflight_transfers: 2,
+                max_inflight_transfers,
             },
         };
         let executor = TestPhaseExecutor {
@@ -314,6 +360,7 @@ mod tests {
         };
         let config = PowerConfig {
             serving_execution: profile.clone(),
+            max_concurrent_requests,
             ..PowerConfig::default()
         };
         let state = AppState::new(
@@ -333,6 +380,31 @@ mod tests {
         state
             .with_distributed_serving(Arc::new(runtime))
             .with_auth(Arc::new(ApiKeyAuth::new(&["service-key".to_string()])))
+    }
+
+    fn execution_profile_with_inflight(max_inflight_transfers: u32) -> ServingExecutionProfile {
+        ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".to_string(),
+            model_sha256: "1".repeat(64),
+            backend: "llama.cpp".to_string(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+        })
+        .unwrap()
     }
 
     #[test]
@@ -436,5 +508,169 @@ mod tests {
         assert!(observation.capabilities.phases.is_empty());
         assert!(observation.ready_phases.is_empty());
         assert!(!observation.capabilities.state_transfer);
+    }
+
+    #[test]
+    fn composed_observation_reuses_fail_fast_inflight_admission_not_http_limiter() {
+        let state = state_with_services_and_limits(
+            TransferHealth::Ready,
+            PhaseExecutorHealth::Ready,
+            2,
+            99,
+        );
+        let observation = state.worker_observation();
+
+        assert_eq!(observation.admission.active_limit, Some(2));
+        assert_eq!(observation.admission.active, 0);
+        assert_eq!(observation.admission.waiting, 0);
+        assert_ne!(
+            observation.admission.active_limit,
+            Some(99),
+            "worker observation must not invent a second admission surface from max_concurrent_requests"
+        );
+    }
+
+    #[test]
+    fn aggregated_observation_keeps_http_limiter_admission() {
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig {
+                max_concurrent_requests: 4,
+                ..PowerConfig::default()
+            }),
+        );
+        let observation = state.worker_observation();
+        assert_eq!(observation.admission.active_limit, Some(4));
+        assert_eq!(observation.admission.active, 0);
+        assert_eq!(observation.admission.waiting, 0);
+    }
+
+    #[tokio::test]
+    async fn observation_projects_held_phase_lease_and_stays_monotonic_after_taint() {
+        use crate::serving::distributed_serving_tests::support::{
+            profile, request, runtime_with_behavior, Calls, FixtureBehavior, TransferHooks,
+        };
+        use crate::serving::DecodePhaseRequest;
+        use chrono::{Duration, Utc};
+        use uuid::Uuid;
+
+        let serving_profile = profile(DisaggregatedServingRole::Decode, 200);
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig {
+                serving_execution: serving_profile.clone(),
+                max_concurrent_requests: 99,
+                ..PowerConfig::default()
+            }),
+        );
+        let hooks = Arc::new(TransferHooks::default());
+        hooks
+            .block_prepare_destination
+            .store(true, Ordering::SeqCst);
+        let calls = Arc::new(Calls::default());
+        let runtime = runtime_with_behavior(
+            &serving_profile,
+            state.worker_epoch(),
+            calls.clone(),
+            FixtureBehavior {
+                transfer_hooks: Arc::clone(&hooks),
+                ..FixtureBehavior::default()
+            },
+        );
+        let state = state
+            .with_distributed_serving(Arc::new(runtime))
+            .with_auth(Arc::new(ApiKeyAuth::new(&["service-key".to_string()])));
+
+        let before = state.worker_observation();
+        assert_eq!(before.admission.active_limit, Some(2));
+        assert_eq!(before.admission.active, 0);
+        assert_eq!(before.ready_phases, [ServingPhase::Decode]);
+
+        let runtime = state.distributed_serving.as_ref().unwrap().clone();
+        let execution_id = Uuid::new_v4();
+        let prepare = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .prepare_decode(DecodePhaseRequest {
+                        execution_id,
+                        model: "internal/model-v1".to_string(),
+                        request: request(),
+                        expires_at: Utc::now() + Duration::milliseconds(200),
+                    })
+                    .await
+            }
+        });
+        hooks.prepare_destination_started.notified().await;
+
+        let held = state.worker_observation();
+        assert_eq!(held.worker_epoch, before.worker_epoch);
+        assert!(held.observation_generation > before.observation_generation);
+        assert_eq!(held.admission.active_limit, Some(2));
+        assert_eq!(held.admission.active, 1);
+        assert_eq!(held.admission.waiting, 0);
+
+        runtime.abort(execution_id).await.unwrap();
+        let _ = prepare.await.unwrap();
+
+        let after_abort = state.worker_observation();
+        assert!(after_abort.observation_generation > held.observation_generation);
+        assert_eq!(after_abort.admission.active, 0);
+        assert_eq!(after_abort.ready_phases, [ServingPhase::Decode]);
+
+        let tainted_runtime = runtime_with_behavior(
+            &serving_profile,
+            state.worker_epoch(),
+            Arc::new(Calls::default()),
+            FixtureBehavior {
+                retryable_prepare: true,
+                fail_abort: true,
+                ..FixtureBehavior::default()
+            },
+        );
+        let tainted_state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig {
+                serving_execution: serving_profile,
+                max_concurrent_requests: 99,
+                ..PowerConfig::default()
+            }),
+        )
+        .with_distributed_serving(Arc::new(tainted_runtime))
+        .with_auth(Arc::new(ApiKeyAuth::new(&["service-key".to_string()])));
+        let ready = tainted_state.worker_observation();
+        assert_eq!(ready.ready_phases, [ServingPhase::Decode]);
+
+        let taint_result = tainted_state
+            .distributed_serving
+            .as_ref()
+            .unwrap()
+            .prepare_decode(DecodePhaseRequest {
+                execution_id: Uuid::new_v4(),
+                model: "internal/model-v1".to_string(),
+                request: request(),
+                expires_at: Utc::now() + Duration::milliseconds(80),
+            })
+            .await;
+        assert!(matches!(
+            taint_result,
+            Err(PowerError::BackendNotAvailable(_))
+        ));
+        assert!(!tainted_state
+            .distributed_serving
+            .as_ref()
+            .unwrap()
+            .accepts_work());
+
+        let after_taint = tainted_state.worker_observation();
+        assert_eq!(after_taint.worker_epoch, ready.worker_epoch);
+        assert!(after_taint.observation_generation > ready.observation_generation);
+        assert!(after_taint.ready_phases.is_empty());
+        assert_eq!(after_taint.admission.active_limit, Some(2));
+        assert_eq!(after_taint.admission.waiting, 0);
+        assert_eq!(after_taint.admission.active, 0);
     }
 }

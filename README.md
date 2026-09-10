@@ -332,7 +332,10 @@ The runtime prepares decode destinations before transfer, publishes prefill
 state only after phase execution, consumes verified state before starting
 decode, and retains stream cancellation ownership until termination. Phase and
 transfer leases remain separate domains but refuse any second admission policy
-shape at composition. The
+shape at composition. When the runtime matches the immutable profile, worker
+observation projects that shared fail-fast inflight admission snapshot rather
+than the HTTP request limiter, and observation generation stays monotonic after
+cancel or cleanup taint. The
 authenticated internal request-flow API exposes those operations to Gateway,
 binding every call to the current worker epoch and execution-profile digest.
 The cross-process conformance suite launches separate prefill and decode Power
