@@ -162,6 +162,11 @@ impl ServingPhaseExecutor for DirectDeviceMemoryPullPhaseExecutor {
         ProductionAdapterContract::REQUIRED
     }
 
+    fn may_advertise_ready_phases(&self) -> bool {
+        // Named HSN product port — never advertise without HSN evidence.
+        false
+    }
+
     async fn prepare(
         &self,
         _command: PreparePhaseExecution,

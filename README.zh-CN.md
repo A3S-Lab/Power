@@ -329,8 +329,10 @@ Ready 的 `BackendPhaseExecution` 前仍拒绝 Ready 工作（ACL
 `phase_executor = "backend-owned"`）在组合时安装该面，缺省 Empty 保持 Unavailable。
 不透明 import/export 失败关闭，且不是真实后端适配器。Eligible 仍
 `accepts_work == false`，worker `ready_phases` 在仅 Eligible 时从不列出 P/D。
-Pending Ready 解锁仍通过 backend-owned 的 `may_advertise_prefill_decode` 抑制
-worker 宣称。
+Pending / Empty 空心 Ready 仍抑制 worker 宣称。ACL
+`state_ownership = "llamacpp"` + `phase_execution = "llamacpp"` 在
+Injected+REQUIRED+Ready 且（decode）绑定 decode-token 端口时可诚实列出
+`ready_phases`；DirectDeviceMemoryPull 与 Pending 空心 Ready 从不宣称。
 组合根将该对包装并组装为单一 `DistributedServingRuntime`，它是唯一的请求级生命周期与就绪源。
 仅当运行时匹配不可变配置且可接受工作时，Power 才发布已配置的 P/D 角色。仅传输完成
 从不计为成功 decode。每个注入的传输适配器由 `BoundedStateTransferService` 包装，

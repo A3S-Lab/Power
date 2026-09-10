@@ -275,8 +275,8 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
     .unwrap();
     assert_eq!(prefill_executor.health(), PhaseExecutorHealth::Ready);
     assert_eq!(decode_executor.health(), PhaseExecutorHealth::Ready);
-    assert!(!prefill_profile.may_advertise_prefill_decode());
-    assert!(!decode_profile.may_advertise_prefill_decode());
+    assert!(prefill_profile.may_advertise_prefill_decode());
+    assert!(decode_profile.may_advertise_prefill_decode());
 
     let execution_id = Uuid::new_v4();
     let source_epoch = Uuid::new_v4();

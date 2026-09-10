@@ -106,7 +106,11 @@ pub enum ServingCompositionPhaseExecutor {
 }
 
 impl ServingCompositionPhaseExecutor {
-    /// Backend-owned product port never advertises P/D readiness.
+    /// Backend-owned alone never advertises. Honest advertise requires the
+    /// full buffered-host + `state_ownership = llamacpp` +
+    /// `phase_execution = llamacpp` composition on
+    /// [`ServingExecutionProfile::may_advertise_prefill_decode`], plus runtime
+    /// Injected/REQUIRED/Ready and (for decode) a bound decode-token port.
     pub fn may_advertise_prefill_decode(self) -> bool {
         match self {
             Self::BackendOwned => false,
@@ -165,8 +169,11 @@ impl fmt::Display for ServingCompositionStateOwnership {
 /// execute Ready via pinned state snapshot APIs / fixture port; decode execute
 /// restores via set_state_data then Ready only when a
 /// [`crate::serving::LlamaCppDecodeTokenPort`] is bound — transfer bytes alone
-/// never invent tokens). Worker `ready_phases` stay
-/// suppressed via backend-owned `may_advertise_prefill_decode`.
+/// never invent tokens). Worker `ready_phases` may list P/D only when the
+/// profile's buffered-host + llamacpp ownership/execution composition allows
+/// advertise **and** runtime Injected/REQUIRED/Ready holds **and** (for
+/// decode) a decode-token port is bound — never for Empty/Pending hollow Ready
+/// or DirectDeviceMemoryPull without HSN evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServingCompositionPhaseExecution {
@@ -599,28 +606,42 @@ impl ServingExecutionProfile {
         }
     }
 
-    /// Whether worker observation may list this profile's P/D phase as ready.
+    /// Whether worker observation **may** list this profile's P/D phase as
+    /// ready once runtime Injected + REQUIRED + Ready also hold.
     ///
     /// Builder-injected adapters (no composition transport) remain gated only
     /// by provision, contract, and health. Product DirectDeviceMemoryPull never
-    /// advertises (no in-tree HSN). Buffered-host loopback may advertise when
-    /// adapters accept work (`accepts_work`). `phase_executor = backend-owned`
-    /// keeps this false: Eligible-only ownership and Ready-unlock surfaces
-    /// (`phase_execution = pending` or `llamacpp`) must not list
-    /// `ready_phases` from Ready health alone — decode Ready still needs a
-    /// bound decode-token port, and HSN evidence is separate. Typed-outcome
-    /// HTTP may still run when
-    /// [`crate::serving::DistributedServingRuntime::execution_admissible`] is
-    /// true without flipping this gate.
+    /// advertises (no in-tree HSN). Buffered-host loopback without
+    /// `backend-owned` may advertise the Ready conformance pair.
+    /// `phase_executor = backend-owned` advertises only for the honest
+    /// `state_ownership = llamacpp` + `phase_execution = llamacpp` product
+    /// pair — Empty, profile-bound-only, and `phase_execution = pending`
+    /// stay false (hollow Ready must not list `ready_phases`). Decode still
+    /// requires a bound decode-token port at runtime
+    /// ([`crate::serving::ServingPhaseExecutor::may_advertise_ready_phases`])
+    /// before [`crate::serving::DistributedServingRuntime::accepts_work`]
+    /// flips. Typed-outcome HTTP may still run via
+    /// [`crate::serving::DistributedServingRuntime::execution_admissible`]
+    /// when advertise stays false.
     pub fn may_advertise_prefill_decode(&self) -> bool {
-        if let Some(phase_executor) = self.composition_phase_executor() {
-            if !phase_executor.may_advertise_prefill_decode() {
-                return false;
-            }
-        }
         match self.composition_transport() {
+            Some(ServingCompositionTransport::DirectDeviceMemoryPull) => false,
+            Some(ServingCompositionTransport::BufferedHostLoopback) => {
+                match self.composition_phase_executor() {
+                    None => true,
+                    Some(ServingCompositionPhaseExecutor::BackendOwned) => matches!(
+                        (
+                            self.composition_state_ownership(),
+                            self.composition_phase_execution(),
+                        ),
+                        (
+                            Some(ServingCompositionStateOwnership::LlamaCpp),
+                            Some(ServingCompositionPhaseExecution::LlamaCpp),
+                        )
+                    ),
+                }
+            }
             None => true,
-            Some(transport) => transport.may_advertise_prefill_decode(),
         }
     }
 

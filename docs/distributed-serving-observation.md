@@ -109,10 +109,13 @@ model-semantic P/D. Eligible still refuses `accepts_work`, so worker
 `ready_phases` never lists prefill/decode while only Eligible. ACL
 `phase_execution = "pending"` installs `PendingBackendPhaseExecution` so
 Eligible ownership can advance to Ready health and delegate prepare/execute;
-pending unlocks Ready health only and still fails closed on work. Backend-owned
-composition continues to suppress worker advertising. Wrong transport is
-refused and P/D is never advertised. This advances the named backend phase
-product port; model-backend Ready P/D remains open.
+pending unlocks Ready health only and still fails closed on work. Pending /
+Empty hollow Ready never advertise. ACL `state_ownership = "llamacpp"` +
+`phase_execution = "llamacpp"` on buffered-host may advertise P/D when
+runtime Injected+REQUIRED+Ready holds and (decode) a decode-token port is
+bound. Wrong transport is refused. DirectDeviceMemoryPull never advertises
+without HSN evidence. This advances the named backend phase product port;
+live GGUF over HTTP and HSN remain open.
 
 ## State-transfer port
 

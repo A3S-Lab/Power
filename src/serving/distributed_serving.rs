@@ -259,9 +259,9 @@ impl DistributedServingRuntime {
     ///
     /// Independent of worker `ready_phases` advertisement. Backend-owned
     /// `phase_execution = llamacpp` on buffered-host may be execution-admissible
-    /// (Injected + REQUIRED + Ready) while `may_advertise_prefill_decode` stays
-    /// false — typed-outcome HTTP evidence can run without claiming HSN or
-    /// advertising P/D until advertisement is honest for that product pair.
+    /// (Injected + REQUIRED + Ready) while `accepts_work` stays false when
+    /// decode has no bound decode-token port — typed-outcome HTTP evidence can
+    /// run without hollow P/D advertisement or claiming HSN.
     pub fn execution_admissible(&self) -> bool {
         // Defense in depth: composition already refuses Empty / non-REQUIRED
         // contracts, but phase work must never run while either port is still an
@@ -279,14 +279,16 @@ impl DistributedServingRuntime {
     }
 
     pub fn accepts_work(&self) -> bool {
-        // Worker ready_phases projection. DirectDeviceMemoryPull never
-        // advertises (no in-tree HSN). Backend-owned keeps
-        // may_advertise_prefill_decode false until advertisement is honest for
-        // the loopback product pair; buffered-host loopback conformance may
-        // advertise when this returns true. Builder-injected fixtures
-        // (transport absent) still use provision/health via
-        // execution_admissible plus a true may_advertise default.
-        self.execution_admissible() && self.inner.profile.may_advertise_prefill_decode()
+        // Worker ready_phases projection. Requires execution_admissible plus
+        // honest profile advertise (buffered-host + llamacpp ownership/execution;
+        // never DirectDeviceMemoryPull without HSN; never Empty/Pending-only)
+        // and executor may_advertise_ready_phases (decode needs a bound
+        // decode-token port). Builder-injected fixtures (transport absent)
+        // still use provision/health via execution_admissible plus a true
+        // may_advertise default.
+        self.execution_admissible()
+            && self.inner.profile.may_advertise_prefill_decode()
+            && self.inner.executor.may_advertise_ready_phases()
     }
 
     pub async fn prepare_decode(

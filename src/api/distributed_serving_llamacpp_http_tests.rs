@@ -8,9 +8,10 @@
 //!   `ControlledLlamaCppDecodeTokenPort` (not from transfer alone)
 //! - Decode without a decode-token port stays non-NDJSON JSON fail-closed
 //!
-//! Does **not** flip `may_advertise_prefill_decode` / worker `ready_phases`
-//! (BackendOwned stays honest-suppressed). Runtime is `execution_admissible`
-//! so phase HTTP can run without claiming HSN.
+//! Does **not** claim HSN. Worker `ready_phases` advertise only when profile
+//! may_advertise is true **and** decode has a bound decode-token port
+//! (`accepts_work`). Unbound decode stays execution_admissible for typed
+//! fail-closed HTTP without listing ready_phases.
 
 use super::distributed_serving::{
     DistributedDecodeStreamEvent, DistributedDecodeStreamFrame, DistributedPhaseDecision,
@@ -117,9 +118,11 @@ fn product_pair_app(
     expected_state_bytes: Option<u64>,
 ) -> ProductPairApp {
     let profile = llamacpp_profile(role);
+    let expects_advertise = matches!(role, DisaggregatedServingRole::Prefill)
+        || decode_tokens.is_some();
     assert!(
-        !profile.may_advertise_prefill_decode(),
-        "BackendOwned must not advertise P/D (not HSN; decode may still need a token port)"
+        profile.may_advertise_prefill_decode(),
+        "buffered-host + BackendOwned + llamacpp ownership/execution may advertise at profile"
     );
     let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
     let ownership = Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&profile).unwrap());
@@ -169,9 +172,10 @@ fn product_pair_app(
         runtime.execution_admissible(),
         "Injected + REQUIRED + Ready must be execution-admissible for typed-outcome HTTP"
     );
-    assert!(
-        !runtime.accepts_work(),
-        "may_advertise stays false → ready_phases must stay empty"
+    assert_eq!(
+        runtime.accepts_work(),
+        expects_advertise,
+        "accepts_work / ready_phases only when decode-token bound (or prefill)"
     );
     let state = state
         .with_distributed_serving(Arc::clone(&runtime))
@@ -334,9 +338,10 @@ async fn authenticated_http_llamacpp_prefill_ready_after_capture_and_decode_ndjs
         "HTTP Ready NDJSON must follow consume + set_state_data restore, not transfer alone"
     );
     assert!(
-        !decode.runtime.accepts_work(),
-        "success must not flip may_advertise / ready_phases"
+        decode.runtime.accepts_work(),
+        "bound decode-token port must allow honest ready_phases advertise"
     );
+    assert!(prefill.runtime.accepts_work());
     assert!(prefill.runtime.execution_admissible());
     assert!(decode.runtime.execution_admissible());
 }
@@ -442,4 +447,9 @@ async fn authenticated_http_llamacpp_decode_without_token_port_is_json_not_ndjso
         snapshot,
         "fail-closed path must still restore opaque bytes before refusing tokens"
     );
+    assert!(
+        !decode.runtime.accepts_work(),
+        "unbound decode-token must keep ready_phases empty"
+    );
+    assert!(decode.runtime.execution_admissible());
 }

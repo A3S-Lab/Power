@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Honest `may_advertise_prefill_decode` / worker `ready_phases` for
+  BackendOwned + buffered-host + llamacpp ownership/execution: profile ACL
+  admits advertise only for that full pair; runtime `accepts_work` still
+  requires Injected+REQUIRED+Ready (`execution_admissible`) and
+  `ServingPhaseExecutor::may_advertise_ready_phases` (decode needs a bound
+  `LlamaCppDecodeTokenPort`; Pending/Empty hollow Ready stay false;
+  DirectDeviceMemoryPull never advertises without HSN). First-principles
+  true/false tests cover profile gates, runtime advertise with/without
+  decode-token, and worker observation. Does **not** close ROADMAP
+  opaque-state / typed-outcome / HSN checkboxes (live GGUF over HTTP and
+  HSN evidence remain open).
 - Authenticated HTTP typed-outcome evidence for product buffered-host +
   `BackendOwnedPhaseExecutor` + llamacpp ownership/execution (fixture ports,
   no GGUF): `api::distributed_serving_llamacpp_http_tests` proves Ready
@@ -16,11 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consume+restore+`ControlledLlamaCppDecodeTokenPort`, and unbound
   decode-token fail-closed as JSON without NDJSON success.
   `DistributedServingRuntime::execution_admissible` separates phase-work
-  admission from worker `ready_phases` advertisement so BackendOwned can
-  exercise typed-outcome HTTP while `may_advertise_prefill_decode` stays
-  false (not HSN; not honest P/D advertise while decode Ready still needs a
-  bound token port). Does **not** close ROADMAP typed-outcome / opaque-state
-  checkboxes (no P/D advertisement; live GGUF over HTTP remains open).
+  admission from worker `ready_phases` advertisement so unbound decode can
+  exercise typed-outcome HTTP while `accepts_work` stays false; bound
+  decode-token flips honest advertise. Does **not** close ROADMAP
+  typed-outcome / opaque-state checkboxes (live GGUF over HTTP remains open).
 - Live llama.cpp opaque-state phase evidence (`llamacpp` feature,
   `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`): `SharedLlamaCppContextStateApi`
   boxes a real `LlamaContext` through `LlamaCppContextStateApi` get/copy/set.

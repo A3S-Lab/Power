@@ -677,6 +677,123 @@ mod tests {
     }
 
     #[test]
+    fn llamacpp_decode_lists_ready_phases_only_with_bound_decode_token_port() {
+        use crate::serving::{
+            BackendOwnedPhaseExecutor, BoundedStateTransferService,
+            BufferedHostLoopbackStateTransfer, ControlledLlamaCppDecodeTokenPort,
+            LlamaCppBackendPhaseExecution, LlamaCppBackendPhaseStateOwnership,
+            ServingCompositionPhaseExecution, ServingCompositionPhaseExecutor,
+            ServingCompositionStateOwnership, ServingCompositionTransport, ServingPhaseExecutor,
+        };
+
+        let profile = ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".to_string(),
+            model_sha256: "1".repeat(64),
+            backend: "llamacpp".to_string(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
+            transport: Some(ServingCompositionTransport::BufferedHostLoopback),
+            phase_executor: Some(ServingCompositionPhaseExecutor::BackendOwned),
+            state_ownership: Some(ServingCompositionStateOwnership::LlamaCpp),
+            phase_execution: Some(ServingCompositionPhaseExecution::LlamaCpp),
+        })
+        .unwrap();
+        assert!(profile.may_advertise_prefill_decode());
+
+        let (transfer_hollow, executor_hollow) =
+            BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();
+        assert!(!executor_hollow.may_advertise_ready_phases());
+        let bounded_hollow = Arc::new(
+            BoundedStateTransferService::new(
+                profile.clone(),
+                uuid::Uuid::new_v4(),
+                transfer_hollow,
+            )
+            .unwrap(),
+        );
+        let runtime_hollow =
+            DistributedServingRuntime::new(profile.clone(), bounded_hollow, executor_hollow)
+                .unwrap();
+        assert!(runtime_hollow.execution_admissible());
+        assert!(!runtime_hollow.accepts_work());
+        let state_hollow = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig {
+                serving_execution: profile.clone(),
+                api_keys: vec!["service-key".to_string()],
+                ..PowerConfig::default()
+            }),
+        )
+        .with_auth(Arc::new(ApiKeyAuth::new(&["service-key".to_string()])))
+        .with_distributed_serving(Arc::new(runtime_hollow));
+        assert!(state_hollow.worker_observation().ready_phases.is_empty());
+
+        let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
+        let ownership = Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&profile).unwrap());
+        let execution = Arc::new(
+            LlamaCppBackendPhaseExecution::for_profile(&profile)
+                .unwrap()
+                .with_ownership(Arc::clone(&ownership))
+                .with_transfer(Arc::clone(&transfer))
+                .with_decode_tokens(Arc::new(ControlledLlamaCppDecodeTokenPort::single_completion(
+                    "observe-token",
+                    9,
+                ))),
+        );
+        let executor = Arc::new(
+            BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+                &profile,
+                Arc::clone(&transfer),
+                ownership,
+                execution,
+            )
+            .unwrap(),
+        );
+        assert!(executor.may_advertise_ready_phases());
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
+                .unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile.clone(), bounded, executor).unwrap();
+        assert!(runtime.execution_admissible());
+        assert!(runtime.accepts_work());
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(PowerConfig {
+                serving_execution: profile,
+                api_keys: vec!["service-key".to_string()],
+                ..PowerConfig::default()
+            }),
+        )
+        .with_auth(Arc::new(ApiKeyAuth::new(&["service-key".to_string()])))
+        .with_distributed_serving(Arc::new(runtime));
+        assert_eq!(
+            state.worker_observation().ready_phases,
+            [ServingPhase::Decode]
+        );
+    }
+
+    #[test]
     fn missing_service_authentication_suppresses_distributed_readiness() {
         let mut state = state_with_services(TransferHealth::Ready, PhaseExecutorHealth::Ready);
         state.auth = None;

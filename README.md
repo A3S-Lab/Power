@@ -356,17 +356,18 @@ binding `BackendPhaseStateOwnership` validates opaque `state_layout_sha256`
 against profile `layout_sha256` fail-closed before Eligible. Eligible still
 refuses Ready work until a Ready-capable `BackendPhaseExecution` is bound
 (ACL `phase_execution = "pending"` unlocks Ready health only; prepare/execute
-still fail closed), refuses wrong transport, and never advertises P/D—layout
-registration alone is not llama.cpp / picolm readiness.
+still fail closed), refuses wrong transport, and does not advertise P/D from
+layout registration alone—Eligible/Pending hollow Ready is not llama.cpp /
+picolm readiness.
 `ProfileBoundBackendPhaseStateOwnership` is the honest
 interim product surface: it mirrors closed profile digests (including the
 closed backend artifact digest) so composition can reach Eligible without a
 real KV owner via ACL `state_ownership = "profile-bound"` (with
 `phase_executor = "backend-owned"`); absent keeps Empty → Unavailable.
 Opaque import/export fail closed and it is not a backend adapter. Eligible
-still has `accepts_work == false` and worker `ready_phases` never list P/D.
-Pending Ready-unlock still suppresses worker advertising via backend-owned
-`may_advertise_prefill_decode`.
+still has executor `accepts_work == false` and worker `ready_phases` never
+list P/D. Pending Ready-unlock still suppresses worker advertising
+(`may_advertise_prefill_decode` stays false for Empty/profile-bound/pending).
 `state_ownership = "llamacpp"` + `phase_execution = "llamacpp"` binds live
 `LlamaContext` snapshot APIs (`SharedLlamaCppContextStateApi`). Set
 `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL` to a GGUF to run
@@ -375,8 +376,11 @@ proves capture → buffered-host → restore on a real context and optional
 Ready decode via live greedy sample after restore. Fixture authenticated
 HTTP typed-outcome evidence
 (`distributed_serving_llamacpp_http_tests`) proves Ready prefill and
-Ready NDJSON decode after consume+restore+`ControlledLlamaCppDecodeTokenPort`
-without advertising P/D. Neither closes the ROADMAP opaque-state /
+Ready NDJSON decode after consume+restore+`ControlledLlamaCppDecodeTokenPort`.
+Worker `ready_phases` may list P/D for that honest product pair when runtime
+is Injected+REQUIRED+Ready and (decode) a decode-token port is bound;
+DirectDeviceMemoryPull and Empty/Pending hollow Ready never advertise.
+Neither closes the ROADMAP opaque-state /
 typed-outcome checkboxes (live GGUF over HTTP and honest advertisement
 remain open).
 The composition root wraps and

@@ -157,7 +157,7 @@ fn buffered_host_loopback_may_advertise_prefill_decode_when_protocol_matches() {
 }
 
 #[test]
-fn backend_owned_phase_executor_never_advertises_prefill_decode() {
+fn backend_owned_phase_executor_never_advertises_prefill_decode_without_llamacpp_pair() {
     let mut backend_owned = profile(DisaggregatedServingRole::Decode);
     if let ServingExecutionProfile::PrefillDecode { execution } = &mut backend_owned {
         execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
@@ -235,7 +235,7 @@ fn llamacpp_state_ownership_requires_backend_owned_phase() {
 }
 
 #[test]
-fn llamacpp_state_ownership_validates_with_backend_owned_and_never_advertises() {
+fn llamacpp_state_ownership_alone_validates_but_does_not_advertise() {
     let mut profile = profile(DisaggregatedServingRole::Decode);
     if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
         execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
@@ -291,7 +291,7 @@ fn llamacpp_phase_execution_requires_backend_owned_phase() {
 }
 
 #[test]
-fn llamacpp_phase_execution_validates_with_backend_owned_and_never_advertises() {
+fn llamacpp_phase_execution_with_ownership_may_advertise_at_profile() {
     let mut profile = profile(DisaggregatedServingRole::Decode);
     if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
         execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
@@ -305,7 +305,68 @@ fn llamacpp_phase_execution_validates_with_backend_owned_and_never_advertises() 
         profile.composition_phase_execution(),
         Some(ServingCompositionPhaseExecution::LlamaCpp)
     );
-    assert!(!profile.may_advertise_prefill_decode());
+    // Profile ACL admits advertise; decode still needs a bound decode-token
+    // port before runtime accepts_work / ready_phases flip.
+    assert!(profile.may_advertise_prefill_decode());
+}
+
+#[test]
+fn may_advertise_prefill_decode_first_principles_true_vs_false() {
+    // TRUE: buffered-host loopback conformance (no backend-owned).
+    let mut loopback = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut loopback {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.transport = Some(ServingCompositionTransport::BufferedHostLoopback);
+    }
+    assert!(loopback.may_advertise_prefill_decode());
+
+    // TRUE: BackendOwned + buffered-host + llamacpp ownership + llamacpp execution.
+    let mut llamacpp = profile(DisaggregatedServingRole::Prefill);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut llamacpp {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.transport = Some(ServingCompositionTransport::BufferedHostLoopback);
+        execution.phase_executor = Some(ServingCompositionPhaseExecutor::BackendOwned);
+        execution.state_ownership = Some(ServingCompositionStateOwnership::LlamaCpp);
+        execution.phase_execution = Some(ServingCompositionPhaseExecution::LlamaCpp);
+    }
+    assert!(llamacpp.may_advertise_prefill_decode());
+
+    // FALSE: DirectDeviceMemoryPull never advertises without HSN evidence.
+    let mut hsn = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut hsn {
+        execution.transport = Some(ServingCompositionTransport::DirectDeviceMemoryPull);
+    }
+    assert!(!hsn.may_advertise_prefill_decode());
+
+    // FALSE: BackendOwned + pending hollow Ready unlock.
+    let mut pending = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut pending {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.transport = Some(ServingCompositionTransport::BufferedHostLoopback);
+        execution.phase_executor = Some(ServingCompositionPhaseExecutor::BackendOwned);
+        execution.state_ownership = Some(ServingCompositionStateOwnership::ProfileBound);
+        execution.phase_execution = Some(ServingCompositionPhaseExecution::Pending);
+    }
+    assert!(!pending.may_advertise_prefill_decode());
+
+    // FALSE: BackendOwned Empty ownership (no state_ownership / phase_execution).
+    let mut empty = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut empty {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.transport = Some(ServingCompositionTransport::BufferedHostLoopback);
+        execution.phase_executor = Some(ServingCompositionPhaseExecutor::BackendOwned);
+    }
+    assert!(!empty.may_advertise_prefill_decode());
+
+    // FALSE: llamacpp ownership without llamacpp phase_execution.
+    let mut ownership_only = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut ownership_only {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.transport = Some(ServingCompositionTransport::BufferedHostLoopback);
+        execution.phase_executor = Some(ServingCompositionPhaseExecutor::BackendOwned);
+        execution.state_ownership = Some(ServingCompositionStateOwnership::LlamaCpp);
+    }
+    assert!(!ownership_only.may_advertise_prefill_decode());
 }
 
 #[test]

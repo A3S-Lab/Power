@@ -150,6 +150,10 @@ impl ServingPhaseExecutor for EmptyServingPhaseExecutor {
         ProductionAdapterContract::REQUIRED
     }
 
+    fn may_advertise_ready_phases(&self) -> bool {
+        false
+    }
+
     async fn prepare(
         &self,
         _command: PreparePhaseExecution,

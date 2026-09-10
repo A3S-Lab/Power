@@ -10,8 +10,8 @@
 //! (`phase_execution = pending`): it can unlock Ready health so the execute
 //! path is bound, but prepare/execute/abort fail closed until a concrete
 //! backend implementor exists. This does **not** invent KV layout or claim
-//! model-semantic P/D. Worker advertising remains suppressed by the
-//! backend-owned `may_advertise_prefill_decode` gate.
+//! model-semantic P/D. Pending hollow Ready must not advertise via
+//! [`BackendPhaseExecution::may_advertise_ready_phases`].
 
 use async_trait::async_trait;
 
@@ -40,6 +40,15 @@ pub trait BackendPhaseExecution: Send + Sync {
     /// executor can delegate prepare/execute instead of refusing at Eligible.
     fn can_produce_ready(&self) -> bool;
 
+    /// Whether Ready health may honestly list this phase in worker
+    /// `ready_phases`. Distinct from [`Self::can_produce_ready`]: Pending
+    /// unlocks Ready for typed fail-closed execute but must not advertise.
+    /// Defaults to [`Self::can_produce_ready`]; Pending/Empty override false;
+    /// llamacpp decode requires a bound decode-token port.
+    fn may_advertise_ready_phases(&self) -> bool {
+        self.can_produce_ready()
+    }
+
     async fn prepare(
         &self,
         command: PreparePhaseExecution,
@@ -64,6 +73,10 @@ impl BackendPhaseExecution for EmptyBackendPhaseExecution {
     }
 
     fn can_produce_ready(&self) -> bool {
+        false
+    }
+
+    fn may_advertise_ready_phases(&self) -> bool {
         false
     }
 
@@ -102,6 +115,11 @@ pub struct PendingBackendPhaseExecution;
 impl BackendPhaseExecution for PendingBackendPhaseExecution {
     fn can_produce_ready(&self) -> bool {
         true
+    }
+
+    fn may_advertise_ready_phases(&self) -> bool {
+        // Hollow Ready unlock only — never list ready_phases.
+        false
     }
 
     async fn prepare(

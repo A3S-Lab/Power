@@ -24,12 +24,16 @@
 //!     existing llamacpp completion/decode after restore; tests:
 //!     [`ControlledLlamaCppDecodeTokenPort`]): returns Ready decode stream.
 //!     The decode adapter must not invent tokens from transfer bytes.
-//! - Backend-owned composition still suppresses
-//!   [`super::ServingExecutionProfile::may_advertise_prefill_decode`] (not
-//!   honest to advertise while decode Ready can still require a separate
-//!   decode-token port). DistributedServingRuntime may still be
-//!   `execution_admissible` for typed-outcome HTTP without listing
-//!   `ready_phases`.
+//! - Worker `ready_phases` advertise only when profile
+//!   [`super::ServingExecutionProfile::may_advertise_prefill_decode`] is true
+//!   for buffered-host + llamacpp ownership/execution **and** runtime
+//!   Injected+REQUIRED+Ready holds **and** (decode)
+//!   [`BackendPhaseExecution::may_advertise_ready_phases`] is true because a
+//!   decode-token port is bound. Empty/Pending hollow Ready and
+//!   DirectDeviceMemoryPull without HSN never advertise.
+//!   DistributedServingRuntime may still be `execution_admissible` for
+//!   typed-outcome HTTP without listing `ready_phases` when advertise is
+//!   false (for example decode without a token port).
 //! - Composed with [`super::BackendOwnedPhaseExecutor`] under
 //!   `state_ownership = llamacpp` + `phase_execution = llamacpp` +
 //!   `transport = buffered-host-loopback`, prefill capture → buffered-host
@@ -469,6 +473,18 @@ impl LlamaCppBackendPhaseExecution {
 impl BackendPhaseExecution for LlamaCppBackendPhaseExecution {
     fn can_produce_ready(&self) -> bool {
         true
+    }
+
+    fn may_advertise_ready_phases(&self) -> bool {
+        match self.phase {
+            // Prefill advertise is honest once ACL composition + runtime Ready
+            // hold; capture still fail-closes without a bound context port.
+            ServingPhase::Prefill => true,
+            // Decode Ready without a decode-token port is hollow: restore may
+            // succeed but tokens are not owned — never list ready_phases.
+            ServingPhase::Decode => self.decode_tokens.is_some(),
+            ServingPhase::Aggregated => false,
+        }
     }
 
     async fn prepare(
@@ -1033,8 +1049,8 @@ mod tests {
         .unwrap();
         assert_eq!(prefill_executor.health(), PhaseExecutorHealth::Ready);
         assert_eq!(decode_executor.health(), PhaseExecutorHealth::Ready);
-        assert!(!prefill_profile.may_advertise_prefill_decode());
-        assert!(!decode_profile.may_advertise_prefill_decode());
+        assert!(prefill_profile.may_advertise_prefill_decode());
+        assert!(decode_profile.may_advertise_prefill_decode());
 
         let execution_id = Uuid::new_v4();
         let source_epoch = Uuid::new_v4();
@@ -1351,7 +1367,8 @@ mod tests {
             snapshot,
             "Ready decode still requires set_state_data restore first"
         );
-        assert!(!decode_profile.may_advertise_prefill_decode());
+        assert!(decode_profile.may_advertise_prefill_decode());
+        assert!(decode_executor.may_advertise_ready_phases());
     }
 
     #[test]
@@ -1365,29 +1382,97 @@ mod tests {
         assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
         assert!(!executor.ownership().is_empty());
         assert!(executor.execution().can_produce_ready());
-        assert!(!profile.may_advertise_prefill_decode());
-        // ACL composition wires ownership+transfer into llamacpp execution;
+        assert!(profile.may_advertise_prefill_decode());
+        // ACL wires ownership+transfer; decode advertise still needs a bound
+        // decode-token port (paired ACL construction leaves it unbound).
+        assert!(!executor.may_advertise_ready_phases());
         // Ready prefill still needs a bound context port (fixture or live).
     }
 
     #[test]
-    fn acl_llamacpp_phase_execution_never_advertises_without_accepts_work() {
+    fn acl_llamacpp_phase_execution_advertises_only_with_decode_token_port() {
         let profile = decode_profile(
             Some(ServingCompositionStateOwnership::LlamaCpp),
             Some(ServingCompositionPhaseExecution::LlamaCpp),
         );
-        assert!(!profile.may_advertise_prefill_decode());
+        assert!(profile.may_advertise_prefill_decode());
         let (transfer, executor) = BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();
         assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
         assert!(executor.health().accepts_work());
         assert!(executor.execution().can_produce_ready());
+        assert!(!executor.may_advertise_ready_phases());
         let bounded = Arc::new(
             BoundedStateTransferService::new(profile.clone(), Uuid::new_v4(), transfer).unwrap(),
         );
         let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
         // Injected + REQUIRED + Ready is execution-admissible for typed-outcome
-        // HTTP, but may_advertise stays false so worker ready_phases do not
-        // list P/D (not HSN; not honest advertise without a bound decode path).
+        // HTTP, but hollow decode (no token port) must not list ready_phases.
+        assert!(runtime.execution_admissible());
+        assert!(!runtime.accepts_work());
+
+        let profile = decode_profile(
+            Some(ServingCompositionStateOwnership::LlamaCpp),
+            Some(ServingCompositionPhaseExecution::LlamaCpp),
+        );
+        let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
+        let ownership = Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&profile).unwrap());
+        let decode_tokens = Arc::new(ControlledLlamaCppDecodeTokenPort::single_completion(
+            "advertise-token",
+            3,
+        ));
+        let execution = Arc::new(
+            LlamaCppBackendPhaseExecution::for_profile(&profile)
+                .unwrap()
+                .with_ownership(Arc::clone(&ownership))
+                .with_transfer(Arc::clone(&transfer))
+                .with_decode_tokens(decode_tokens),
+        );
+        let executor = Arc::new(
+            BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+                &profile,
+                Arc::clone(&transfer),
+                ownership,
+                execution,
+            )
+            .unwrap(),
+        );
+        assert!(executor.may_advertise_ready_phases());
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), Uuid::new_v4(), transfer).unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
+        assert!(runtime.execution_admissible());
+        assert!(runtime.accepts_work());
+    }
+
+    #[test]
+    fn prefill_llamacpp_runtime_accepts_work_without_decode_token_port() {
+        let profile = prefill_profile();
+        assert!(profile.may_advertise_prefill_decode());
+        let (transfer, executor) = BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();
+        assert!(executor.may_advertise_ready_phases());
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), Uuid::new_v4(), transfer).unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
+        assert!(runtime.execution_admissible());
+        assert!(runtime.accepts_work());
+    }
+
+    #[test]
+    fn pending_ready_never_advertises_even_when_execution_admissible() {
+        let profile = decode_profile(
+            Some(ServingCompositionStateOwnership::ProfileBound),
+            Some(ServingCompositionPhaseExecution::Pending),
+        );
+        assert!(!profile.may_advertise_prefill_decode());
+        let (transfer, executor) = BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();
+        assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
+        assert!(!executor.may_advertise_ready_phases());
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), Uuid::new_v4(), transfer).unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
         assert!(runtime.execution_admissible());
         assert!(!runtime.accepts_work());
     }

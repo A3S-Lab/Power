@@ -372,6 +372,10 @@ impl ServingPhaseExecutor for BackendOwnedPhaseExecutor {
         ProductionAdapterContract::REQUIRED
     }
 
+    fn may_advertise_ready_phases(&self) -> bool {
+        self.execution.may_advertise_ready_phases()
+    }
+
     async fn prepare(
         &self,
         command: PreparePhaseExecution,

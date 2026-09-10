@@ -1078,7 +1078,7 @@ mod tests {
             decoded.serving_execution.composition_phase_execution(),
             Some(ServingCompositionPhaseExecution::LlamaCpp)
         );
-        assert!(!decoded.serving_execution.may_advertise_prefill_decode());
+        assert!(decoded.serving_execution.may_advertise_prefill_decode());
         decoded.validate().unwrap();
     }
 

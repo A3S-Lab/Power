@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_owned_llamacpp_phase_execution_wires_ready_without_advertising() {
+    fn backend_owned_llamacpp_phase_execution_wires_ready_without_hollow_advertise() {
         let mut profile =
             buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
         if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
@@ -653,7 +653,7 @@ mod tests {
                 Some(crate::serving::ServingCompositionPhaseExecution::LlamaCpp);
         }
         profile.validate().unwrap();
-        assert!(!profile.may_advertise_prefill_decode());
+        assert!(profile.may_advertise_prefill_decode());
         let config = PowerConfig {
             serving_execution: profile.clone(),
             api_keys: vec!["service-key".to_string()],
@@ -666,11 +666,15 @@ mod tests {
         assert_eq!(transfer.health(), TransferHealth::Ready);
         assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
         assert!(executor.health().accepts_work());
+        // ACL admits advertise, but paired decode leaves decode-token unbound
+        // so may_advertise_ready_phases stays false → accepts_work false.
+        assert!(!executor.may_advertise_ready_phases());
         let bounded = Arc::new(
             BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
                 .unwrap(),
         );
         let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
+        assert!(runtime.execution_admissible());
         assert!(!runtime.accepts_work());
     }
 

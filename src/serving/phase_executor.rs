@@ -312,6 +312,18 @@ pub trait ServingPhaseExecutor: Send + Sync {
         ProductionAdapterContract::REQUIRED
     }
 
+    /// Whether Ready health may honestly appear in worker `ready_phases`.
+    ///
+    /// Defaults true for Ready loopback conformance / builder fixtures.
+    /// Backend-owned surfaces override: Pending/Empty stay false; llamacpp
+    /// decode requires a bound decode-token port. Combined with profile
+    /// [`crate::serving::ServingExecutionProfile::may_advertise_prefill_decode`]
+    /// and runtime `execution_admissible` inside
+    /// [`crate::serving::DistributedServingRuntime::accepts_work`].
+    fn may_advertise_ready_phases(&self) -> bool {
+        true
+    }
+
     async fn prepare(
         &self,
         command: PreparePhaseExecution,
