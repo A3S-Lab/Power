@@ -87,10 +87,14 @@ fn install_product_pair_from_acl_transport(
                 BufferedHostLoopbackPhaseExecutor::paired_for_profile(&config.serving_execution)?;
             Ok((transfer as Arc<dyn StateTransferService>, executor))
         }
-        None => Err(a3s_power::error::PowerError::Config(
-            "cross-process product-pair worker requires serving_execution.transport = buffered-host-loopback"
-                .to_string(),
-        )),
+        // Cross-process suite is loopback conformance only — never install the
+        // Unavailable HSN product port here (v1 exclusion / wrong evidence class).
+        Some(ServingCompositionTransport::DirectDeviceMemoryPull) | None => {
+            Err(a3s_power::error::PowerError::Config(
+                "cross-process product-pair worker requires serving_execution.transport = buffered-host-loopback"
+                    .to_string(),
+            ))
+        }
     }
 }
 

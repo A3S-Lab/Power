@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Cross-process product-pair fixture fail-closes on
+  `ServingCompositionTransport::DirectDeviceMemoryPull` instead of leaving a
+  non-exhaustive match after the HSN transport variant landed (loopback
+  conformance only; never installs the Unavailable HSN port).
+
 ### Added
 
 - Honest v1 production exclusion for attested-private-fabric readiness
