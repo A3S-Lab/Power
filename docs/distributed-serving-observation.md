@@ -75,9 +75,13 @@ as the single source of distributed readiness. It reserves one bounded local
 lease per execution ID, prepares a decode destination before state movement,
 publishes prefill state only after phase execution, consumes verified state
 before decode execution, and owns cancellation until the returned stream ends.
-Expiry, caller cancellation, non-ready decisions, invalid adapter output, and
-explicit abort all trigger compensating phase and transfer cleanup. An
-unconfirmed cleanup permanently suppresses new work for that process epoch.
+In-flight transfer prepare, publish, and consume honor the same caller-cancel
+and deadline abort contract as phase prepare/execute: cancel or timeout aborts
+the step without opening a Ready/NDJSON success path, and compensating phase
+plus transfer cleanup reclaim the lease. Expiry, caller cancellation, non-ready
+decisions, invalid adapter output, and explicit abort all trigger compensating
+phase and transfer cleanup. An unconfirmed cleanup permanently suppresses new
+work for that process epoch.
 
 The default Power backends inject neither port, and this repository does not yet
 ship a concrete distributed backend/transport pair. The internal request-flow
@@ -182,9 +186,12 @@ binding fields), never `application/x-ndjson` or generated-token frames, while
 compensating cleanup reclaims the lease. The same fixtures also prove corrupt
 source tickets and consume receipts fail closed as protocol `InvalidRequest`
 before any token stream, and that `ResourcePressure` / `AdmissionPressure`
-decisions map to typed `RetryableUnavailable` with cleanup. That evidence is
-contract and cleanup coverage only: it does not claim a production backend
-adapter or high-speed network path.
+decisions map to typed `RetryableUnavailable` with cleanup. Additional runtime
+fixtures prove caller abort and deadline abort during blocked transfer
+prepare/consume, and caller abort mid-decode-stream before any success token:
+no Ready stream after cancel, compensating cleanup, and reclaimed lease
+capacity. That evidence is contract and cleanup coverage only: it does not
+claim a production backend adapter or high-speed network path.
 
 Phase abort accepts either an in-progress preparation without a backend handle
 or a completed reservation with its opaque handle. Prepared phase lifetimes

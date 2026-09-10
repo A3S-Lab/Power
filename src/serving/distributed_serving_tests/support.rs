@@ -1,8 +1,9 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use super::super::*;
@@ -68,6 +69,8 @@ pub(crate) fn request() -> PhaseRequest {
 pub(crate) enum DecodeExecuteFixture {
     #[default]
     ReadyStream,
+    /// Stream that never yields a token chunk; used for mid-stream cancel.
+    HangBeforeFirstChunk,
     Recompute(RecomputeReason),
     RetryableUnavailable {
         reason: RetryableUnavailableReason,
@@ -85,7 +88,17 @@ pub(crate) enum CorruptConsumeReceipt {
     InvalidIntegrityDigest,
 }
 
-#[derive(Clone, Debug)]
+/// Shared hooks for mid-transfer / mid-stream cancellation fixtures.
+#[derive(Default)]
+pub(crate) struct TransferHooks {
+    pub(crate) block_consume: AtomicBool,
+    pub(crate) consume_started: Notify,
+    pub(crate) block_prepare_destination: AtomicBool,
+    pub(crate) prepare_destination_started: Notify,
+    pub(crate) stream_started: Notify,
+}
+
+#[derive(Clone)]
 pub(crate) struct FixtureBehavior {
     pub prepared_expiry_delta: Duration,
     pub block_prepare: bool,
@@ -93,6 +106,7 @@ pub(crate) struct FixtureBehavior {
     pub fail_abort: bool,
     pub decode_execute: DecodeExecuteFixture,
     pub corrupt_consume_receipt: CorruptConsumeReceipt,
+    pub transfer_hooks: Arc<TransferHooks>,
 }
 
 impl Default for FixtureBehavior {
@@ -104,6 +118,7 @@ impl Default for FixtureBehavior {
             fail_abort: false,
             decode_execute: DecodeExecuteFixture::ReadyStream,
             corrupt_consume_receipt: CorruptConsumeReceipt::None,
+            transfer_hooks: Arc::new(TransferHooks::default()),
         }
     }
 }
@@ -129,6 +144,7 @@ struct TestTransferDriver {
     capabilities: StateTransferCapabilities,
     calls: Arc<Calls>,
     corrupt_consume_receipt: CorruptConsumeReceipt,
+    hooks: Arc<TransferHooks>,
 }
 
 #[async_trait]
@@ -146,6 +162,10 @@ impl StateTransferService for TestTransferDriver {
         command: PrepareStateTransfer,
     ) -> Result<StateTransferTarget> {
         self.calls.push("transfer.prepare");
+        self.hooks.prepare_destination_started.notify_waiters();
+        if self.hooks.block_prepare_destination.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         Ok(StateTransferTarget {
             schema: STATE_TRANSFER_TARGET_SCHEMA.to_string(),
             transfer_id: command.transfer_id,
@@ -175,6 +195,10 @@ impl StateTransferService for TestTransferDriver {
 
     async fn consume_source(&self, command: ConsumeStateTransfer) -> Result<StateTransferReceipt> {
         self.calls.push("transfer.consume");
+        self.hooks.consume_started.notify_waiters();
+        if self.hooks.block_consume.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         let bytes_transferred = match self.corrupt_consume_receipt {
             CorruptConsumeReceipt::ShortBytes => command
                 .source
@@ -304,6 +328,22 @@ impl ServingPhaseExecutor for TestPhaseExecutor {
                         Box::pin(stream),
                     )))
                 }
+                DecodeExecuteFixture::HangBeforeFirstChunk => {
+                    let hooks = Arc::clone(&self.behavior.transfer_hooks);
+                    let stream = futures::stream::unfold(false, move |started| {
+                        let hooks = Arc::clone(&hooks);
+                        async move {
+                            if !started {
+                                hooks.stream_started.notify_waiters();
+                            }
+                            std::future::pending::<()>().await;
+                            None::<(Result<PhaseResponseChunk>, bool)>
+                        }
+                    });
+                    Ok(PhaseDecision::ready(PhaseExecutionOutput::Decode(
+                        Box::pin(stream),
+                    )))
+                }
                 DecodeExecuteFixture::Recompute(reason) => Ok(PhaseDecision::recompute(reason)),
                 DecodeExecuteFixture::RetryableUnavailable {
                     reason,
@@ -374,6 +414,7 @@ pub(crate) fn runtime_with_behavior(
             capabilities,
             calls: calls.clone(),
             corrupt_consume_receipt: behavior.corrupt_consume_receipt,
+            hooks: Arc::clone(&behavior.transfer_hooks),
         }),
     )
     .unwrap();
@@ -446,4 +487,23 @@ pub(crate) async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
     })
     .await
     .expect("cleanup should complete");
+}
+
+/// Prove a cancelled/expired execution freed capacity for a new lease.
+pub(crate) async fn assert_lease_capacity_reclaimed(
+    runtime: &DistributedServingRuntime,
+    timeout_ms: u64,
+) {
+    let probe = Uuid::new_v4();
+    let lifetime = timeout_ms.min(80).max(20);
+    runtime
+        .prepare_decode(DecodePhaseRequest {
+            execution_id: probe,
+            model: "internal/model-v1".to_string(),
+            request: request(),
+            expires_at: Utc::now() + Duration::milliseconds(lifetime as i64),
+        })
+        .await
+        .expect("cancelled execution must free runtime lease capacity");
+    runtime.abort(probe).await.unwrap();
 }

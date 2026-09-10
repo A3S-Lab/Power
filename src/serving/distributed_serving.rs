@@ -184,7 +184,9 @@ impl DistributedServingRuntime {
         let deadline = self.deadline(command.expires_at)?;
         let cancellation = self.inner.reserve(command.execution_id, deadline)?;
         let mut guard = RuntimeOperationGuard::new(Arc::clone(&self.inner), command.execution_id);
-        let operation = self.prepare_phase(command, cancellation, deadline).await;
+        let operation = self
+            .prepare_phase(command, cancellation.clone(), deadline)
+            .await;
         let decision = guard.require(operation).await?;
         let prepared = match ready_or_cleanup(decision, &mut guard).await? {
             ReadyOrDecision::Ready(prepared) => prepared,
@@ -218,21 +220,23 @@ impl DistributedServingRuntime {
             .inner
             .commit_decode_prepared(request.execution_id, prepared.clone());
         guard.require(committed).await?;
-        let target = match self
-            .inner
-            .transfer
-            .prepare_destination(PrepareStateTransfer {
-                transfer_id: request.execution_id,
-                local_worker_epoch: self.inner.transfer.local_worker_epoch(),
-                binding: prepared.binding().clone(),
-                destination: prepared.destination().clone(),
-                expires_at: request.expires_at,
-            })
-            .await
-        {
-            Ok(target) => target,
-            Err(error) => return guard.fail(error).await,
-        };
+        let target = Self::wait_transfer(
+            cancellation,
+            deadline,
+            self.inner
+                .transfer
+                .prepare_destination(PrepareStateTransfer {
+                    transfer_id: request.execution_id,
+                    local_worker_epoch: self.inner.transfer.local_worker_epoch(),
+                    binding: prepared.binding().clone(),
+                    destination: prepared.destination().clone(),
+                    expires_at: request.expires_at,
+                }),
+            "distributed state-transfer destination preparation was cancelled",
+            "distributed state-transfer destination preparation timed out",
+        )
+        .await;
+        let target = guard.require(target).await?;
         let committed = self
             .inner
             .commit_decode_target(request.execution_id, target.clone());
@@ -310,7 +314,7 @@ impl DistributedServingRuntime {
         let operation = self
             .execute_phase(
                 ExecutePhaseExecution::prefill(prepared.clone()),
-                cancellation,
+                cancellation.clone(),
                 deadline,
             )
             .await;
@@ -328,19 +332,19 @@ impl DistributedServingRuntime {
         };
         let validation = produced.validate_for(&prepared, &self.inner.profile);
         guard.require(validation).await?;
-        let source = match self
-            .inner
-            .transfer
-            .publish_source(PublishStateTransfer {
+        let source = Self::wait_transfer(
+            cancellation,
+            deadline,
+            self.inner.transfer.publish_source(PublishStateTransfer {
                 local_worker_epoch: self.inner.transfer.local_worker_epoch(),
                 source: produced.source().clone(),
                 target: request.target,
-            })
-            .await
-        {
-            Ok(source) => source,
-            Err(error) => return guard.fail(error).await,
-        };
+            }),
+            "distributed state-transfer source publication was cancelled",
+            "distributed state-transfer source publication timed out",
+        )
+        .await;
+        let source = guard.require(source).await?;
         let committed = self.inner.commit_prefill_published(request.execution_id);
         guard.require(committed).await?;
         guard.disarm();
@@ -359,21 +363,24 @@ impl DistributedServingRuntime {
         let validation =
             source.validate_for(&target, Utc::now(), &self.inner.transfer.capabilities());
         guard.require(validation).await?;
-        let imported = match ImportedModelState::consume_at(
-            self.inner.transfer.as_ref(),
-            ConsumeStateTransfer {
-                local_worker_epoch: self.inner.transfer.local_worker_epoch(),
-                destination: prepared.destination().clone(),
-                source,
-            },
-            Utc::now(),
-            &self.inner.profile,
+        let imported = Self::wait_transfer(
+            cancellation.clone(),
+            deadline,
+            ImportedModelState::consume_at(
+                self.inner.transfer.as_ref(),
+                ConsumeStateTransfer {
+                    local_worker_epoch: self.inner.transfer.local_worker_epoch(),
+                    destination: prepared.destination().clone(),
+                    source,
+                },
+                Utc::now(),
+                &self.inner.profile,
+            ),
+            "distributed state-transfer consume was cancelled",
+            "distributed state-transfer consume timed out",
         )
-        .await
-        {
-            Ok(imported) => imported,
-            Err(error) => return guard.fail(error).await,
-        };
+        .await;
+        let imported = guard.require(imported).await?;
         let execute = guard
             .require(ExecutePhaseExecution::decode(prepared, imported))
             .await?;

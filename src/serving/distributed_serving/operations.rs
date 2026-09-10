@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -42,6 +44,30 @@ impl DistributedServingRuntime {
             RuntimeOperation::TimedOut => Err(PowerError::BackendNotAvailable(
                 "distributed phase execution timed out".to_string(),
             )),
+        }
+    }
+
+    /// Apply the same caller-cancel / deadline abort contract used for phase
+    /// work to an in-flight state-transfer step. Dropping the transfer future
+    /// must not leave a success path open after cancel intent.
+    pub(super) async fn wait_transfer<T, F>(
+        cancellation: CancellationToken,
+        deadline: Instant,
+        operation: F,
+        cancelled: &'static str,
+        timed_out: &'static str,
+    ) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        match wait_operation(cancellation, deadline, operation).await {
+            RuntimeOperation::Completed(result) => result,
+            RuntimeOperation::Cancelled => {
+                Err(PowerError::BackendNotAvailable(cancelled.to_string()))
+            }
+            RuntimeOperation::TimedOut => {
+                Err(PowerError::BackendNotAvailable(timed_out.to_string()))
+            }
         }
     }
 }

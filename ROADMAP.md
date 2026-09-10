@@ -282,7 +282,11 @@ model-semantics owner.
   ticket/receipt bytes and resource-pressure / in-flight capacity / admission
   pressure fail-closed outcomes (typed `InvalidRequest`,
   `RetryableUnavailable`, or equivalent `BackendNotAvailable`) with
-  compensating cleanup. High-speed-network transport and production adapters
+  compensating cleanup. The distributed runtime now applies the same
+  caller-cancel and deadline abort contract to in-flight transfer
+  prepare/publish/consume as to phase work; fixture evidence covers mid-transfer
+  and mid-stream abort without Ready/NDJSON success, with compensating cleanup
+  and reclaimed leases. High-speed-network transport and production adapters
   remain open.
 
 ## Cross-repository delivery order

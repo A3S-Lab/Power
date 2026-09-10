@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Applied the distributed runtime's caller-cancel and deadline abort contract to
+  in-flight state-transfer destination prepare, source publish, and consume
+  steps (same `wait_operation` boundary already used for phase prepare/execute).
+  Fixture evidence covers mid-consume and mid-prepare abort, deadline abort
+  during blocked consume, and mid-stream abort before any success token chunk:
+  no Ready/NDJSON success after cancel, compensating phase/transfer cleanup,
+  and reclaimed lease capacity. This strengthens P6 cancellation evidence only
+  and does not claim high-speed-network transport or production adapters.
 - Added first-principles fail-closed evidence for corrupt authenticated
   state-transfer tickets/receipts and for resource-pressure outcomes on the
   distributed serving / bounded transfer path. Corrupt ticket or receipt bytes
