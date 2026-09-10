@@ -64,10 +64,11 @@ profiles that pin `BufferedHostMemoryPullV1` and
   returns Ready decode from a transfer receipt alone; missing or corrupt
   adapter-owned bytes map to `Recompute`.
 
-Together they are a real composition injection—not the cross-process
-conformance fixture—and still are not high-speed-network, llama.cpp P/D, or
-model-backend evidence. Incomplete pairs (transfer-only, Empty phase, or Empty
-transfer) fail closed. Composition installs the pair when ACL sets
+Together they are a real composition injection used by the cross-process
+conformance suite via ACL `transport = "buffered-host-loopback"`, and still are
+not high-speed-network, llama.cpp P/D, or model-backend evidence. Incomplete
+pairs (transfer-only, Empty phase, or Empty transfer) fail closed. Composition
+installs the pair when ACL sets
 `serving_execution.transport = "buffered-host-loopback"` or when a builder
 calls `with_buffered_host_loopback_transport` / injects both ports explicitly;
 protocol alone never auto-wires. The aggregated default still refuses any
@@ -183,20 +184,23 @@ deployment truthfully supplies that complete path.
 `tests/distributed_serving_cross_process.rs` provides executable evidence for
 the process boundary itself. The parent test launches independent prefill and
 decode Power HTTP processes, acts only as the request orchestrator, and passes
-the opaque target and source tickets unchanged. A test-only backend owns the
-fixture state and phase semantics; a test-only buffered-host adapter moves that
-state through an authenticated AES-GCM loopback channel. The suite verifies a
-successful decode stream, explicit cleanup, peer disappearance during transfer,
-process restart, rejection of the stale worker epoch, and fail-closed rejection
-of a stale Cloud deployment generation or foreign peer set when the orchestrator
-tampers with transfer descriptors (prefill publish and decode consume) without
-opening Ready/NDJSON success.
+the opaque target and source tickets unchanged. Each worker loads an ACL document
+with `serving_execution.transport = "buffered-host-loopback"` and installs the
+product `BufferedHostLoopbackStateTransfer` +
+`BufferedHostLoopbackPhaseExecutor` pair (the same composition path as startup
+resolve)—not a test-only fixture adapter. Opaque conformance handles move over
+the product authenticated AES-GCM loopback channel. The suite verifies a
+successful decode stream (`loopback-conformance-token`), explicit cleanup, peer
+disappearance during transfer, process restart, rejection of the stale worker
+epoch, and fail-closed rejection of a stale Cloud deployment generation or
+foreign peer set when the orchestrator tampers with transfer descriptors
+(prefill publish and decode consume) without opening Ready/NDJSON success.
 
-This is conformance evidence for Power's composition and wire contracts. The
-fixture adapter is not exported by the library, is not a high-speed network
-implementation, and supplies no model-semantic parity evidence. A deployment
-must still inject and certify a concrete model/backend adapter and a transport
-that enforces the selected privacy profile before it advertises prefill/decode
+This is loopback conformance evidence for Power's product composition and wire
+contracts across processes. It is not a high-speed network implementation and
+supplies no model-semantic parity evidence. A deployment must still inject and
+certify a concrete model/backend adapter and a transport that enforces the
+selected privacy profile before it advertises production prefill/decode
 readiness.
 
 ## Immutable execution profile

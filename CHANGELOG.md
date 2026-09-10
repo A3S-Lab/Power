@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cross-process distributed-serving conformance now uses the product-surface
+  `BufferedHostLoopback` pair via ACL
+  `serving_execution.transport = "buffered-host-loopback"` instead of a
+  test-only fixture adapter: independent prefill/decode workers load that ACL
+  opt-in, install `BufferedHostLoopbackStateTransfer` +
+  `BufferedHostLoopbackPhaseExecutor`, and prove success
+  (`loopback-conformance-token`), peer-loss, restart epoch invalidation, and
+  stale Cloud deployment generation / foreign peer-set rejection over the
+  product authenticated loopback path. Claims remain loopback conformance only
+  and do not claim HSN, llama.cpp P/D, or model-semantic readiness.
 - Honest ACL composition opt-in for the product buffered-host loopback pair:
   `serving_execution.transport = "buffered-host-loopback"` installs
   `BufferedHostLoopbackStateTransfer` + `BufferedHostLoopbackPhaseExecutor`
@@ -26,9 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Recompute(StateMissing|StateCorrupt)` unless adapter-owned bytes verify
   after consume. Transfer receipt alone never yields Ready/NDJSON.
   Composition accepts the complete pair; Empty phase or transfer-only
-  injection still fails closed. Distinct from the cross-process conformance
-  fixture. Advances the P6 injectable adapter path only and does not claim
-  high-speed transport, llama.cpp P/D, sealed wire tickets, or HSN readiness.
+  injection still fails closed. The cross-process suite now exercises this
+  product pair via ACL transport opt-in. Advances the P6 injectable adapter
+  path only and does not claim high-speed transport, llama.cpp P/D, sealed
+  wire tickets, or HSN readiness.
 - Injectable product-surface buffered-host / loopback state-transfer adapter:
   `BufferedHostLoopbackStateTransfer` binds prefill/decode profiles that pin
   `BufferedHostMemoryPullV1` and `AuthenticatedEncryptedTransport`, reports
@@ -37,9 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TCP, and confirms abort reclaim of destination reservations. Composition and
   bounded-transfer wrap accept it as a concrete injection (Empty placeholders
   still fail closed); aggregated defaults still refuse transfer injection.
-  Distinct from the cross-process conformance fixture. This advances the P6
-  injectable adapter path only and does not claim high-speed transport,
-  sealed wire tickets, production phase executors, or HSN readiness.
+  The cross-process suite now exercises this product adapter via ACL transport
+  opt-in. This advances the P6 injectable adapter path only and does not claim
+  high-speed transport, sealed wire tickets, production phase executors, or
+  HSN readiness.
 - Hardened distributed readiness against Empty / non-required adapter contracts:
   `DistributedServingRuntime::accepts_work` now requires both ports to report
   `AdapterProvisionState::Injected` and `ProductionAdapterContract::REQUIRED`

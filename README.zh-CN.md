@@ -321,11 +321,12 @@ decode 成功；不完整配对与 Empty 占位仍失败关闭。这不是 HSN�
 失败快速 inflight 准入快照，而非 HTTP 请求限流器，并在取消或清理污染后保持
 observation generation 单调。经认证的内部请求流 API 将这些操作暴露给 Gateway，
 将每次调用绑定到当前 worker epoch 与执行配置摘要。跨进程一致性套件启动独立的
-prefill 与 decode Power 进程，并证明经认证的 HTTP 流、加密不透明状态交接、
-对等丢失失败、重启 epoch 失效、陈旧 Cloud deployment generation / 外源
-peer-set 拒绝与优雅清理。其后端与回环传输是测试 fixture，
-而非导出适配器。产品表面回环对仅覆盖不透明一致性组合，不是端到端 llm-d
-或真实后端 P/D 声明。
+prefill 与 decode Power 进程，其 ACL 设置
+`serving_execution.transport = "buffered-host-loopback"`，从而安装产品
+`BufferedHostLoopback` 对（而非仅测试 fixture 适配器），并证明经认证的 HTTP 流、
+加密不透明状态交接、对等丢失失败、重启 epoch 失效、陈旧 Cloud deployment
+generation / 外源 peer-set 拒绝与优雅清理。这仍仅为回环一致性证据——不是 HSN、
+llama.cpp P/D 或端到端 llm-d 部署声明。
 
 ## API 表面
 

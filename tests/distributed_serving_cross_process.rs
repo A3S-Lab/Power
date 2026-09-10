@@ -21,7 +21,7 @@ use uuid::Uuid;
 #[path = "distributed_serving_cross_process/fixture.rs"]
 mod fixture;
 
-use fixture::{ReadyWorker, MODEL, SERVICE_KEY};
+use fixture::{ReadyWorker, CONFORMANCE_TOKEN, MODEL, SERVICE_KEY};
 
 const ROLE_ENV: &str = "A3S_POWER_CONFORMANCE_ROLE";
 const READY_ENV: &str = "A3S_POWER_CONFORMANCE_READY";
@@ -267,7 +267,7 @@ async fn cross_process_rejects_stale_deployment_generation_and_foreign_peer_set(
         .expect("test HTTP client is valid");
 
     // Prefill must fail closed on a stale Cloud deployment generation before
-    // the fixture adapter data path runs, even when model/layout bindings match.
+    // the product loopback data path runs, even when model/layout bindings match.
     let stale_generation_id = Uuid::new_v4();
     let expires_at = Utc::now() + Duration::seconds(10);
     let mut stale_target = prepare_decode(&client, &decode, stale_generation_id, expires_at).await;
@@ -397,7 +397,7 @@ async fn distributed_serving_crosses_processes_and_fails_closed_on_peer_loss_and
         DistributedDecodeStreamEvent::Chunk {
             sequence: 0,
             response: DistributedResponseChunk::Completions(chunk),
-        } => assert_eq!(chunk.text, "cross-process-token"),
+        } => assert_eq!(chunk.text, CONFORMANCE_TOKEN),
         event => panic!("unexpected decode frame: {event:?}"),
     }
     assert!(matches!(

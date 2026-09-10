@@ -292,10 +292,13 @@ model-semantics owner.
   request-level runtime now composes that lifecycle with phase execution under
   one bounded execution lease and is the server's single source of distributed
   readiness.   A deterministic conformance test launches independent prefill and
-  decode Power processes, moves backend-owned fixture state over an
-  authenticated encrypted loopback data path, and verifies the public HTTP
-  lifecycle (including stale Cloud deployment generation / foreign peer-set
-  rejection) without making the fixture adapter part of the product surface.
+  decode Power processes with ACL
+  `serving_execution.transport = "buffered-host-loopback"`, installs the
+  product `BufferedHostLoopback` pair (not a test-only fixture adapter), moves
+  opaque conformance state over the product authenticated encrypted loopback
+  data path, and verifies the public HTTP lifecycle (including stale Cloud
+  deployment generation / foreign peer-set rejection, peer loss, and restart)
+  as loopback conformance only—not HSN or model-semantic evidence.
 - [ ] Keep tokenization, KV/recurrent layout, serialization, phase arithmetic and
   semantic parity in the owning model/backend adapter. Power moves only opaque,
   bounded authenticated state and never claims a cache hit or successful
@@ -322,11 +325,11 @@ model-semantics owner.
   close model-semantic or HSN readiness.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
-  advertising cross-node or prefill/decode support. The loopback conformance
-  suite covers peer loss, process restart, stale process epochs, stale Cloud
-  deployment generation / foreign peer set over the HTTP orchestrator boundary,
-  and graceful cleanup, but it is not high-speed-network or model-semantic
-  evidence.
+  advertising cross-node or prefill/decode support. The product-pair loopback
+  conformance suite covers peer loss, process restart, stale process epochs,
+  stale Cloud deployment generation / foreign peer set over the HTTP
+  orchestrator boundary, and graceful cleanup, but it is not high-speed-network
+  or model-semantic evidence.
   First-principles fixture evidence now covers corrupt authenticated
   ticket/receipt bytes and resource-pressure / in-flight capacity / admission
   pressure fail-closed outcomes (typed `InvalidRequest`,
@@ -355,11 +358,11 @@ model-semantics owner.
   `BufferedHostMemoryPullV1` and `AuthenticatedEncryptedTransport`: opaque
   adapter-owned host buffers move over authenticated AES-GCM loopback TCP under
   `Injected` + `ProductionAdapterContract::REQUIRED`, with confirmed abort
-  reclaim. This is a real composition path (distinct from the cross-process
-  test fixture) and still not high-speed-network, sealed wire-ticket, or
-  model-backend evidence; concrete production phase executors and HSN remain
-  open. Aggregated defaults still refuse transfer injection and never advertise
-  P/D. Power now also ships a matching product-surface
+  reclaim. This is a real composition path (also exercised by the cross-process
+  ACL-transport conformance suite) and still not high-speed-network, sealed
+  wire-ticket, or model-backend evidence; concrete production phase executors
+  and HSN remain open. Aggregated defaults still refuse transfer injection and
+  never advertise P/D. Power now also ships a matching product-surface
   `BufferedHostLoopbackPhaseExecutor` that pairs with the loopback transfer
   (`paired_for_profile` / `pair_with`), owns opaque conformance fixture handles
   (not model-semantic layout), and refuses Ready decode until adapter-owned
@@ -373,6 +376,10 @@ model-semantics owner.
   product pair at startup when protocol/privacy match. Protocol alone never
   auto-wires; incomplete pairs and builder+transport mixes fail closed.
   Aggregated defaults still advertise no P/D and make no HSN claim.
+  Cross-process distributed-serving conformance now loads that same ACL
+  transport opt-in and exercises the product pair end-to-end (success stream,
+  peer-loss, restart, stale deployment / peer-set) instead of a test-only
+  fixture adapter; claims remain loopback conformance only.
 
 ## Cross-repository delivery order
 
