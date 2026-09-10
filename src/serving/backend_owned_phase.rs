@@ -79,7 +79,7 @@ fn unavailable() -> PowerError {
 /// installs [`ProfileBoundBackendPhaseStateOwnership`] (Eligible after digests
 /// match). `llamacpp` installs [`LlamaCppBackendPhaseStateOwnership`]
 /// (Eligible after digests match; opaque snapshots use llama.cpp state APIs
-/// or a fixture port ? not Ready execute).
+/// or a fixture port - not Ready execute alone).
 fn composition_ownership(
     profile: &ServingExecutionProfile,
 ) -> Result<Arc<dyn BackendPhaseStateOwnership>> {
@@ -94,25 +94,50 @@ fn composition_ownership(
     }
 }
 
-/// Resolve ACL/composition phase execution for a backend-owned phase profile.
-///
-/// Absent `phase_execution` keeps Empty (Eligible refuses Ready). `pending`
-/// installs [`PendingBackendPhaseExecution`] (Eligible ? Ready health; work
-/// still fail-closed). `llamacpp` installs [`LlamaCppBackendPhaseExecution`]
-/// (Eligible ? Ready; prepare Ready; prefill execute needs a bound state port;
-/// decode execute fail-closes until tokens are owned).
-fn composition_execution(
+/// Resolve ACL ownership + execution together so `phase_execution = llamacpp`
+/// shares the same [`LlamaCppBackendPhaseStateOwnership`] Arc (when
+/// `state_ownership = llamacpp`) and optional buffered-host transfer for the
+/// product pair (capture -> publish/consume -> restore). Absent options keep
+/// Empty placeholders.
+fn composition_ownership_and_execution(
     profile: &ServingExecutionProfile,
-) -> Result<Arc<dyn BackendPhaseExecution>> {
-    match profile.composition_phase_execution() {
-        None => Ok(Arc::new(EmptyBackendPhaseExecution)),
-        Some(ServingCompositionPhaseExecution::Pending) => {
-            Ok(Arc::new(PendingBackendPhaseExecution))
+    transfer: Option<Arc<BufferedHostLoopbackStateTransfer>>,
+) -> Result<(
+    Arc<dyn BackendPhaseStateOwnership>,
+    Arc<dyn BackendPhaseExecution>,
+)> {
+    if matches!(
+        (
+            profile.composition_state_ownership(),
+            profile.composition_phase_execution(),
+        ),
+        (
+            Some(ServingCompositionStateOwnership::LlamaCpp),
+            Some(ServingCompositionPhaseExecution::LlamaCpp),
+        )
+    ) {
+        let ownership = Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(profile)?);
+        let mut execution = LlamaCppBackendPhaseExecution::for_profile(profile)?
+            .with_ownership(Arc::clone(&ownership));
+        if let Some(transfer) = transfer {
+            execution = execution.with_transfer(transfer);
         }
-        Some(ServingCompositionPhaseExecution::LlamaCpp) => Ok(Arc::new(
-            LlamaCppBackendPhaseExecution::for_profile(profile)?,
-        )),
+        return Ok((ownership, Arc::new(execution)));
     }
+
+    let ownership = composition_ownership(profile)?;
+    let execution: Arc<dyn BackendPhaseExecution> = match profile.composition_phase_execution() {
+        None => Arc::new(EmptyBackendPhaseExecution),
+        Some(ServingCompositionPhaseExecution::Pending) => Arc::new(PendingBackendPhaseExecution),
+        Some(ServingCompositionPhaseExecution::LlamaCpp) => {
+            let mut execution = LlamaCppBackendPhaseExecution::for_profile(profile)?;
+            if let Some(transfer) = transfer {
+                execution = execution.with_transfer(transfer);
+            }
+            Arc::new(execution)
+        }
+    };
+    Ok((ownership, execution))
 }
 
 fn ready_blocked() -> PowerError {
@@ -198,8 +223,8 @@ impl BackendOwnedPhaseExecutor {
         profile: &ServingExecutionProfile,
     ) -> Result<(Arc<BufferedHostLoopbackStateTransfer>, Arc<Self>)> {
         let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(profile)?);
-        let ownership = composition_ownership(profile)?;
-        let execution = composition_execution(profile)?;
+        let (ownership, execution) =
+            composition_ownership_and_execution(profile, Some(Arc::clone(&transfer)))?;
         let executor = Arc::new(Self::pair_with_ownership_and_execution(
             profile,
             Arc::clone(&transfer),
@@ -275,13 +300,13 @@ impl BackendOwnedPhaseExecutor {
     }
 
     /// Bind one backend-owned phase executor for the profile, honoring ACL
-    /// `state_ownership` and `phase_execution` (Empty when absent).
+    /// `state_ownership` and `phase_execution` (Empty when absent). Without a
+    /// paired transfer, llamacpp execution still binds shared ownership when
+    /// `state_ownership = llamacpp`; call [`Self::paired_for_profile`] for the
+    /// buffered-host product pair wiring.
     pub fn for_profile(profile: &ServingExecutionProfile) -> Result<Self> {
-        Self::with_state_ownership_and_execution(
-            profile,
-            composition_ownership(profile)?,
-            composition_execution(profile)?,
-        )
+        let (ownership, execution) = composition_ownership_and_execution(profile, None)?;
+        Self::with_state_ownership_and_execution(profile, ownership, execution)
     }
 
     /// Bind ownership against the immutable profile under Empty execution.

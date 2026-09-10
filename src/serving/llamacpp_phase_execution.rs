@@ -19,9 +19,15 @@
 //!   registers them on a paired buffered-host transfer / ownership slots.
 //! - Decode `execute` may restore via set_state_data, then fail-closes:
 //!   transfer completion / imported opaque bytes alone never yield a Ready
-//!   token stream. Token generation remains unowned until a later brick.
-//! - Backend-owned composition still suppresses
+//!   token stream. Token generation remains unowned: existing llamacpp
+//!   completion APIs require a live session/model graph, not fixture layout
+//!   invention. Backend-owned composition still suppresses
 //!   [`super::ServingExecutionProfile::may_advertise_prefill_decode`].
+//! - Composed with [`super::BackendOwnedPhaseExecutor`] under
+//!   `state_ownership = llamacpp` + `phase_execution = llamacpp` +
+//!   `transport = buffered-host-loopback`, prefill capture → buffered-host
+//!   publish/consume → decode restore is fixture-proven; live GGUF evidence
+//!   remains required before ROADMAP opaque-state / typed-outcome close.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -406,12 +412,14 @@ mod tests {
     use crate::serving::{
         bind_backend_phase_execution, bind_backend_phase_state_ownership,
         BackendOwnedPhaseExecutor, BackendPhaseStateOwnership, BoundedStateTransferService,
-        DisaggregatedServingRole, DistributedServingRuntime, EmptyBackendPhaseStateOwnership,
-        FixtureLlamaCppContextStatePort, ImportedModelState, PhaseExecutorHealth, PhaseRequest,
-        PhaseSessionPoolMode, PhaseWeightCacheMode, PrefillDecodeExecutionProfile,
+        ConsumeStateTransfer, DisaggregatedServingRole, DistributedServingRuntime,
+        EmptyBackendPhaseStateOwnership, FixtureLlamaCppContextStatePort, ImportedModelState,
+        PhaseExecutorHealth, PhaseRequest, PhaseSessionPoolMode, PhaseWeightCacheMode,
+        PrefillDecodeExecutionProfile, PrepareStateTransfer, PublishStateTransfer,
         ServingCompositionPhaseExecution, ServingCompositionPhaseExecutor,
         ServingCompositionStateOwnership, ServingCompositionTransport, ServingPhaseExecutor,
-        ServingPrivacyMode, StateTransferProtocol, StateTransferService,
+        ServingPrivacyMode, SharedFixtureLlamaCppContextStatePort, StateTransferProtocol,
+        StateTransferService,
     };
 
     fn digest(character: char) -> String {
@@ -620,6 +628,213 @@ mod tests {
         assert!(err
             .to_string()
             .contains("transfer completion alone never yields Ready decode"));
+    }
+
+    #[tokio::test]
+    async fn backend_owned_llamacpp_buffered_host_captures_publishes_restores_then_fail_closes() {
+        // First-principles composition evidence for opaque-state / typed-outcome
+        // progress: BackendOwnedPhaseExecutor + llamacpp ownership/execution +
+        // buffered-host product pair. Fixture port only — live GGUF still
+        // required before ROADMAP checkboxes close. Decode stays fail-closed:
+        // completion APIs need a live session, not invented fixture tokens.
+        let snapshot = fixture_snapshot();
+        let prefill_profile = prefill_profile();
+        let decode_profile = decode_profile(
+            Some(ServingCompositionStateOwnership::LlamaCpp),
+            Some(ServingCompositionPhaseExecution::LlamaCpp),
+        );
+
+        let prefill_transfer =
+            Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&prefill_profile).unwrap());
+        let decode_transfer =
+            Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&decode_profile).unwrap());
+
+        let prefill_ownership =
+            Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&prefill_profile).unwrap());
+        let decode_ownership =
+            Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&decode_profile).unwrap());
+
+        let prefill_port = SharedFixtureLlamaCppContextStatePort::with_snapshot(snapshot.clone());
+        let decode_port = SharedFixtureLlamaCppContextStatePort::empty();
+        assert!(decode_port.snapshot().unwrap().is_empty());
+
+        let prefill_execution = Arc::new(
+            LlamaCppBackendPhaseExecution::with_port(
+                &prefill_profile,
+                Box::new(prefill_port.clone()),
+            )
+            .unwrap()
+            .with_ownership(Arc::clone(&prefill_ownership))
+            .with_transfer(Arc::clone(&prefill_transfer)),
+        );
+        let decode_execution = Arc::new(
+            LlamaCppBackendPhaseExecution::with_port(
+                &decode_profile,
+                Box::new(decode_port.clone()),
+            )
+            .unwrap()
+            .with_ownership(Arc::clone(&decode_ownership))
+            .with_transfer(Arc::clone(&decode_transfer)),
+        );
+
+        let prefill_executor = BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+            &prefill_profile,
+            Arc::clone(&prefill_transfer),
+            prefill_ownership,
+            prefill_execution,
+        )
+        .unwrap();
+        let decode_executor = BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+            &decode_profile,
+            Arc::clone(&decode_transfer),
+            decode_ownership,
+            decode_execution,
+        )
+        .unwrap();
+        assert_eq!(prefill_executor.health(), PhaseExecutorHealth::Ready);
+        assert_eq!(decode_executor.health(), PhaseExecutorHealth::Ready);
+        assert!(!prefill_profile.may_advertise_prefill_decode());
+        assert!(!decode_profile.may_advertise_prefill_decode());
+
+        let execution_id = Uuid::new_v4();
+        let source_epoch = Uuid::new_v4();
+        let destination_epoch = Uuid::new_v4();
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(30);
+        let completion_request = || {
+            PhaseRequest::Completion(
+                serde_json::from_value(serde_json::json!({ "prompt": "hi" })).unwrap(),
+            )
+        };
+
+        let prepared = match prefill_executor
+            .prepare(PreparePhaseExecution {
+                execution_id,
+                local_worker_epoch: source_epoch,
+                model: "internal/model-v1".to_string(),
+                expires_at,
+                request: completion_request(),
+            })
+            .await
+            .unwrap()
+        {
+            PhaseDecision::Ready(PreparedPhaseExecution::Prefill(prepared)) => prepared,
+            PhaseDecision::Ready(_) => panic!("expected Ready prefill reservation"),
+            PhaseDecision::Recompute { .. } => panic!("expected Ready prefill, got Recompute"),
+            PhaseDecision::RetryableUnavailable { .. } => {
+                panic!("expected Ready prefill, got RetryableUnavailable")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected Ready prefill, got TerminalFailure")
+            }
+        };
+        let produced = match prefill_executor
+            .execute(ExecutePhaseExecution::prefill(prepared))
+            .await
+            .unwrap()
+        {
+            PhaseDecision::Ready(PhaseExecutionOutput::Prefill(produced)) => produced,
+            PhaseDecision::Ready(_) => {
+                panic!("expected Ready prefill produce via ownership capture")
+            }
+            PhaseDecision::Recompute { .. } => panic!("expected Ready produce, got Recompute"),
+            PhaseDecision::RetryableUnavailable { .. } => {
+                panic!("expected Ready produce, got RetryableUnavailable")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected Ready produce, got TerminalFailure")
+            }
+        };
+        assert_eq!(produced.binding().state_bytes, snapshot.len() as u64);
+
+        let decode_prepared = match decode_executor
+            .prepare(PreparePhaseExecution {
+                execution_id,
+                local_worker_epoch: destination_epoch,
+                model: "internal/model-v1".to_string(),
+                expires_at,
+                request: completion_request(),
+            })
+            .await
+            .unwrap()
+        {
+            PhaseDecision::Ready(PreparedPhaseExecution::Decode(prepared)) => prepared,
+            PhaseDecision::Ready(_) => panic!("expected Ready decode reservation"),
+            PhaseDecision::Recompute { .. } => panic!("expected Ready decode, got Recompute"),
+            PhaseDecision::RetryableUnavailable { .. } => {
+                panic!("expected Ready decode, got RetryableUnavailable")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected Ready decode, got TerminalFailure")
+            }
+        };
+
+        let target = decode_transfer
+            .prepare_destination(PrepareStateTransfer {
+                transfer_id: execution_id,
+                local_worker_epoch: destination_epoch,
+                binding: produced.binding().clone(),
+                destination: decode_prepared.destination().clone(),
+                expires_at,
+            })
+            .await
+            .unwrap();
+        let published = prefill_transfer
+            .publish_source(PublishStateTransfer {
+                local_worker_epoch: source_epoch,
+                source: produced.source().clone(),
+                target,
+            })
+            .await
+            .unwrap();
+        let _receipt = decode_transfer
+            .consume_source(ConsumeStateTransfer {
+                local_worker_epoch: destination_epoch,
+                destination: decode_prepared.destination().clone(),
+                source: published,
+            })
+            .await
+            .unwrap();
+
+        let imported = ImportedModelState::from_parts_for_test(
+            execution_id,
+            destination_epoch,
+            decode_profile.sha256().unwrap(),
+            decode_prepared.destination().clone(),
+            decode_prepared.binding().clone(),
+        );
+        let err = match decode_executor
+            .execute(ExecutePhaseExecution::decode(decode_prepared, imported).unwrap())
+            .await
+        {
+            Ok(_) => panic!("decode must fail-closed after restore"),
+            Err(error) => error,
+        };
+        assert!(
+            err.to_string()
+                .contains("decode token generation is not yet owned"),
+            "{err}"
+        );
+        assert_eq!(
+            decode_port.snapshot().unwrap(),
+            snapshot,
+            "decode execute must restore opaque bytes via set_state_data before fail-closed tokens"
+        );
+    }
+
+    #[test]
+    fn paired_for_profile_wires_shared_llamacpp_ownership_and_buffered_host_transfer() {
+        let profile = decode_profile(
+            Some(ServingCompositionStateOwnership::LlamaCpp),
+            Some(ServingCompositionPhaseExecution::LlamaCpp),
+        );
+        let (transfer, executor) = BackendOwnedPhaseExecutor::paired_for_profile(&profile).unwrap();
+        assert_eq!(transfer.health(), crate::serving::TransferHealth::Ready);
+        assert_eq!(executor.health(), PhaseExecutorHealth::Ready);
+        assert!(!executor.ownership().is_empty());
+        assert!(executor.execution().can_produce_ready());
+        assert!(!profile.may_advertise_prefill_decode());
+        // ACL composition wires ownership+transfer into llamacpp execution;
+        // Ready prefill still needs a bound context port (fixture or live).
     }
 
     #[test]

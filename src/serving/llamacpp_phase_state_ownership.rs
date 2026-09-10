@@ -13,7 +13,7 @@
 //! [`super::BackendPhaseExecution`] is bound, and never advertises P/D.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -155,6 +155,82 @@ impl LlamaCppContextStatePort for FixtureLlamaCppContextStatePort {
         }
         self.snapshot = src.to_vec();
         Ok(self.snapshot.len())
+    }
+}
+
+/// Shared fixture port for cross-executor opaque restore proofs.
+///
+/// Same get/copy/set contract as [`FixtureLlamaCppContextStatePort`], but the
+/// snapshot is `Arc`-shared so a test can assert `set_state_data` restore after
+/// the port is boxed into [`super::LlamaCppBackendPhaseExecution`].
+#[derive(Clone, Debug, Default)]
+pub struct SharedFixtureLlamaCppContextStatePort {
+    snapshot: Arc<Mutex<Vec<u8>>>,
+}
+
+impl SharedFixtureLlamaCppContextStatePort {
+    #[must_use]
+    pub fn with_snapshot(snapshot: Vec<u8>) -> Self {
+        Self {
+            snapshot: Arc::new(Mutex::new(snapshot)),
+        }
+    }
+
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::with_snapshot(Vec::new())
+    }
+
+    /// Current opaque snapshot bytes (test / restore evidence).
+    pub fn snapshot(&self) -> Result<Vec<u8>> {
+        self.snapshot
+            .lock()
+            .map(|guard| guard.clone())
+            .map_err(|_| {
+                PowerError::InferenceFailed(
+                    "SharedFixtureLlamaCppContextStatePort snapshot lock poisoned".to_string(),
+                )
+            })
+    }
+}
+
+impl LlamaCppContextStatePort for SharedFixtureLlamaCppContextStatePort {
+    fn state_byte_len(&self) -> usize {
+        self.snapshot.lock().map(|guard| guard.len()).unwrap_or(0)
+    }
+
+    fn copy_state_into(&self, dest: &mut [u8]) -> Result<usize> {
+        let guard = self.snapshot.lock().map_err(|_| {
+            PowerError::InferenceFailed(
+                "SharedFixtureLlamaCppContextStatePort snapshot lock poisoned".to_string(),
+            )
+        })?;
+        if dest.len() < guard.len() {
+            return Err(PowerError::InvalidRequest(format!(
+                "llama.cpp shared fixture state export buffer too small: need {}, got {}",
+                guard.len(),
+                dest.len()
+            )));
+        }
+        dest[..guard.len()].copy_from_slice(&guard);
+        Ok(guard.len())
+    }
+
+    fn set_state_from(&mut self, src: &[u8]) -> Result<usize> {
+        let mut guard = self.snapshot.lock().map_err(|_| {
+            PowerError::InferenceFailed(
+                "SharedFixtureLlamaCppContextStatePort snapshot lock poisoned".to_string(),
+            )
+        })?;
+        if src.len() != guard.len() && !guard.is_empty() {
+            return Err(PowerError::InvalidRequest(format!(
+                "llama.cpp shared fixture state import size mismatch: expected {}, got {}",
+                guard.len(),
+                src.len()
+            )));
+        }
+        *guard = src.to_vec();
+        Ok(guard.len())
     }
 }
 

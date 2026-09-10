@@ -65,8 +65,8 @@ pub use llamacpp_phase_state_ownership::LlamaCppContextStateApi;
 pub use llamacpp_phase_state_ownership::{
     probe_llamacpp_state_transfer_api, FixtureLlamaCppContextStatePort,
     LlamaCppBackendPhaseStateOwnership, LlamaCppContextStatePort, LlamaCppLayoutFacts,
-    LlamaCppStateTransferApiProbe, LLAMACPP_STATE_LAYOUT_DOMAIN,
-    LLAMACPP_STATE_TRANSFER_API_SYMBOLS,
+    LlamaCppStateTransferApiProbe, SharedFixtureLlamaCppContextStatePort,
+    LLAMACPP_STATE_LAYOUT_DOMAIN, LLAMACPP_STATE_TRANSFER_API_SYMBOLS,
 };
 pub use observation::{
     AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,
