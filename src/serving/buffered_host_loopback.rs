@@ -13,7 +13,9 @@
 //! by the separately injected phase executor / backend. Host-buffer sealing
 //! through [`SealedStateEnvelope`] remains available via `transfer_host_buffer`
 //! when `embedded-inference` is enabled; this adapter does not embed sealed
-//! envelopes in tickets.
+//! envelopes in tickets. Transfer AAD v2 binds the profile privacy mode,
+//! `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
+//! with matching model/layout bindings but mismatched privacy fail closed.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -46,7 +48,9 @@ use super::{
 
 const SOURCE_TICKET_SCHEMA: &str = "a3s.power.buffered-host-loopback-source.v1";
 const DATA_PATH_DOMAIN: &[u8] = b"a3s.power.buffered-host-loopback.v1\0";
-const AAD_SCHEMA: &str = "a3s.power.buffered-host-loopback.aad.v1";
+/// AAD v2 binds privacy/attestation policy digests into the data path so peers
+/// with matching model/layout bindings but mismatched privacy fail closed.
+const AAD_SCHEMA: &str = "a3s.power.buffered-host-loopback.aad.v2";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,6 +60,18 @@ struct SourceTicket {
     key_hex: String,
     nonce_hex: String,
     state_sha256: String,
+}
+
+/// Profile privacy/attestation facts cryptographically bound into every
+/// loopback transfer AAD. Model/execution/layout bindings alone are not enough:
+/// a peer with a different privacy or attestation policy must fail closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivacyAttestationBinding {
+    privacy: ServingPrivacyMode,
+    privacy_policy_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attestation_policy_sha256: Option<String>,
 }
 
 #[derive(Default)]
@@ -146,6 +162,7 @@ impl OwnedStateStore {
 pub struct BufferedHostLoopbackStateTransfer {
     capabilities: StateTransferCapabilities,
     deployment: super::ServingDeploymentIdentity,
+    privacy: PrivacyAttestationBinding,
     store: Arc<OwnedStateStore>,
     sources: Arc<AsyncMutex<HashMap<Uuid, JoinHandle<()>>>>,
 }
@@ -156,6 +173,7 @@ impl std::fmt::Debug for BufferedHostLoopbackStateTransfer {
             .debug_struct("BufferedHostLoopbackStateTransfer")
             .field("capabilities", &self.capabilities)
             .field("deployment", &self.deployment)
+            .field("privacy", &self.privacy)
             .finish_non_exhaustive()
     }
 }
@@ -197,6 +215,11 @@ impl BufferedHostLoopbackStateTransfer {
         Ok(Self {
             capabilities,
             deployment: profile.deployment_identity()?,
+            privacy: PrivacyAttestationBinding {
+                privacy: execution.privacy,
+                privacy_policy_sha256: execution.privacy_policy_sha256.clone(),
+                attestation_policy_sha256: execution.attestation_policy_sha256.clone(),
+            },
             store: Arc::new(OwnedStateStore::default()),
             sources: Arc::new(AsyncMutex::new(HashMap::new())),
         })
@@ -287,6 +310,7 @@ impl StateTransferService for BufferedHostLoopbackStateTransfer {
             command.local_worker_epoch,
             command.target.destination_worker_epoch,
             &command.target.binding,
+            &self.privacy,
         )?;
         let mut key = [0_u8; 32];
         let mut nonce = [0_u8; 12];
@@ -338,6 +362,7 @@ impl StateTransferService for BufferedHostLoopbackStateTransfer {
             command.source.source_worker_epoch,
             command.source.destination_worker_epoch,
             &command.source.binding,
+            &self.privacy,
         )?;
         let auth = authentication_token(&key, &aad);
         let mut stream = TcpStream::connect(ticket.address)
@@ -492,6 +517,7 @@ fn transfer_aad(
     source_worker_epoch: Uuid,
     destination_worker_epoch: Uuid,
     binding: &super::StateTransferBinding,
+    privacy: &PrivacyAttestationBinding,
 ) -> Result<Vec<u8>> {
     serde_json::to_vec(&(
         AAD_SCHEMA,
@@ -499,6 +525,7 @@ fn transfer_aad(
         source_worker_epoch,
         destination_worker_epoch,
         binding,
+        privacy,
     ))
     .map_err(PowerError::from)
 }
@@ -764,6 +791,153 @@ mod tests {
             .await
             .unwrap();
         assert!(decode.take_owned_state(&abort_destination).is_err());
+    }
+
+    fn profile_with_privacy(
+        role: DisaggregatedServingRole,
+        privacy_policy_sha256: String,
+        attestation_policy_sha256: Option<String>,
+    ) -> ServingExecutionProfile {
+        let mut execution = match profile(role) {
+            ServingExecutionProfile::PrefillDecode { execution } => *execution,
+            ServingExecutionProfile::Aggregated {} => panic!("expected prefill-decode"),
+        };
+        execution.privacy_policy_sha256 = privacy_policy_sha256;
+        execution.attestation_policy_sha256 = attestation_policy_sha256;
+        ServingExecutionProfile::prefill_decode(execution).unwrap()
+    }
+
+    async fn publish_across(
+        prefill: &BufferedHostLoopbackStateTransfer,
+        decode: &BufferedHostLoopbackStateTransfer,
+    ) -> Result<(
+        crate::serving::StateTransferSource,
+        ModelStateHandle,
+        Uuid,
+        Uuid,
+    )> {
+        let transfer_id = Uuid::new_v4();
+        let source_epoch = Uuid::new_v4();
+        let destination_epoch = Uuid::new_v4();
+        let source = ModelStateHandle::new(format!("source:{transfer_id}")).unwrap();
+        let destination = ModelStateHandle::new(format!("destination:{transfer_id}")).unwrap();
+        prefill
+            .register_owned_state(&source, opaque_state())
+            .unwrap();
+        let expires_at = Utc::now() + Duration::seconds(30);
+        let target = decode
+            .prepare_destination(PrepareStateTransfer {
+                transfer_id,
+                local_worker_epoch: destination_epoch,
+                binding: binding(),
+                destination: destination.clone(),
+                expires_at,
+            })
+            .await
+            .unwrap();
+        let published = prefill
+            .publish_source(PublishStateTransfer {
+                local_worker_epoch: source_epoch,
+                source,
+                target,
+            })
+            .await
+            .unwrap();
+        Ok((published, destination, destination_epoch, transfer_id))
+    }
+
+    #[tokio::test]
+    async fn mismatched_privacy_policy_fail_closed_on_consume() {
+        let prefill = BufferedHostLoopbackStateTransfer::for_profile(&profile_with_privacy(
+            DisaggregatedServingRole::Prefill,
+            digest('7'),
+            None,
+        ))
+        .unwrap();
+        let decode = BufferedHostLoopbackStateTransfer::for_profile(&profile_with_privacy(
+            DisaggregatedServingRole::Decode,
+            digest('a'),
+            None,
+        ))
+        .unwrap();
+        let (published, destination, destination_epoch, _) =
+            publish_across(&prefill, &decode).await.unwrap();
+        let err = decode
+            .consume_source(ConsumeStateTransfer {
+                local_worker_epoch: destination_epoch,
+                destination,
+                source: published,
+            })
+            .await
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("authentication")
+                || message.contains("unavailable")
+                || message.contains("integrity"),
+            "privacy policy mismatch must fail closed: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mismatched_attestation_policy_fail_closed_on_consume() {
+        let prefill = BufferedHostLoopbackStateTransfer::for_profile(&profile_with_privacy(
+            DisaggregatedServingRole::Prefill,
+            digest('7'),
+            Some(digest('8')),
+        ))
+        .unwrap();
+        let decode = BufferedHostLoopbackStateTransfer::for_profile(&profile_with_privacy(
+            DisaggregatedServingRole::Decode,
+            digest('7'),
+            None,
+        ))
+        .unwrap();
+        let (published, destination, destination_epoch, _) =
+            publish_across(&prefill, &decode).await.unwrap();
+        let err = decode
+            .consume_source(ConsumeStateTransfer {
+                local_worker_epoch: destination_epoch,
+                destination,
+                source: published,
+            })
+            .await
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("authentication")
+                || message.contains("unavailable")
+                || message.contains("integrity"),
+            "attestation policy mismatch must fail closed: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_privacy_and_attestation_policies_still_round_trip() {
+        let prefill = BufferedHostLoopbackStateTransfer::for_profile(&profile_with_privacy(
+            DisaggregatedServingRole::Prefill,
+            digest('7'),
+            Some(digest('8')),
+        ))
+        .unwrap();
+        let decode = BufferedHostLoopbackStateTransfer::for_profile(&profile_with_privacy(
+            DisaggregatedServingRole::Decode,
+            digest('7'),
+            Some(digest('8')),
+        ))
+        .unwrap();
+        let (published, destination, destination_epoch, _) =
+            publish_across(&prefill, &decode).await.unwrap();
+        let receipt = decode
+            .consume_source(ConsumeStateTransfer {
+                local_worker_epoch: destination_epoch,
+                destination: destination.clone(),
+                source: published,
+            })
+            .await
+            .unwrap();
+        assert_eq!(receipt.bytes_transferred, 64);
+        assert_eq!(decode.take_owned_state(&destination).unwrap(), opaque_state());
     }
 
     #[tokio::test]

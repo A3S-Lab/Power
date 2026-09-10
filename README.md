@@ -330,9 +330,12 @@ evidence. For profiles that pin `BufferedHostMemoryPullV1` and
 `BufferedHostLoopbackStateTransfer` plus `BufferedHostLoopbackPhaseExecutor`
 (`paired_for_profile`)—that moves opaque host buffers over authenticated
 loopback TCP and verifies opaque conformance bytes before Ready decode.
-Transfer receipt alone is never decode success; incomplete pairs and Empty
-placeholders still fail closed. This is not HSN, llama.cpp P/D, or model-backend
-evidence. The composition root wraps and assembles that pair into one
+Transfer AAD v2 binds privacy mode, `privacy_policy_sha256`, and optional
+`attestation_policy_sha256` so mismatched peer privacy fails closed even when
+model/layout bindings match. Transfer receipt alone is never decode success;
+incomplete pairs and Empty placeholders still fail closed. This is not HSN,
+llama.cpp P/D, or model-backend evidence. The composition root wraps and
+assembles that pair into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and
 readiness source. Power publishes the configured P/D role only when the runtime
 matches the immutable profile and can accept work. Transport completion alone

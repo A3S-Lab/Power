@@ -58,7 +58,9 @@ profiles that pin `BufferedHostMemoryPullV1` and
 - `BufferedHostLoopbackStateTransfer` moves opaque adapter-owned host buffers
   over authenticated AES-GCM loopback TCP, reports
   `Injected` + `ProductionAdapterContract::REQUIRED`, and reclaims
-  reservations on abort.
+  reservations on abort. Transfer AAD v2 binds privacy mode,
+  `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
+  with matching model/layout bindings but mismatched privacy fail closed.
 - `BufferedHostLoopbackPhaseExecutor` (via `paired_for_profile` / `pair_with`)
   owns opaque conformance fixture handles—not model-semantic KV—and never
   returns Ready decode from a transfer receipt alone; missing or corrupt

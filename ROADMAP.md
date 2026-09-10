@@ -389,6 +389,11 @@ model-semantics owner.
   transport opt-in and exercises the product pair end-to-end (success stream,
   peer-loss, restart, stale deployment / peer-set) instead of a test-only
   fixture adapter; claims remain loopback conformance only.
+  The product loopback transfer AAD (v2) now also binds privacy mode,
+  `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
+  with matching model/layout bindings but mismatched privacy or attestation
+  policies fail closed on consume; this is product-pair wire binding, not HSN
+  or attested-fabric readiness.
 
 ## Cross-repository delivery order
 

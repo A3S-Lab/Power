@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Buffered-host loopback transfer AAD v2 binds the immutable profile privacy
+  mode, `privacy_policy_sha256`, and optional `attestation_policy_sha256` into
+  every publish/consume authentication tag. Peers with matching model /
+  execution / layout bindings but mismatched privacy or attestation policies
+  fail closed on consume (AES-GCM authentication). This closes the product-pair
+  privacy/attestation wire binding only and does not claim HSN, attested
+  fabric readiness, or production adapters.
 - Documented and expanded the intentional wire-ticket fail-closed property:
   tickets remain opaque adapter connection metadata and are **not**
   force-sealed with `SealedStateEnvelope` (host buffers seal; tickets do not).
