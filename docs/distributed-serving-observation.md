@@ -162,7 +162,10 @@ the opaque target and source tickets unchanged. A test-only backend owns the
 fixture state and phase semantics; a test-only buffered-host adapter moves that
 state through an authenticated AES-GCM loopback channel. The suite verifies a
 successful decode stream, explicit cleanup, peer disappearance during transfer,
-process restart, and rejection of the stale worker epoch.
+process restart, rejection of the stale worker epoch, and fail-closed rejection
+of a stale Cloud deployment generation or foreign peer set when the orchestrator
+tampers with transfer descriptors (prefill publish and decode consume) without
+opening Ready/NDJSON success.
 
 This is conformance evidence for Power's composition and wire contracts. The
 fixture adapter is not exported by the library, is not a high-speed network

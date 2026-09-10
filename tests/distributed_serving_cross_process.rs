@@ -219,6 +219,117 @@ async fn abort_execution(client: &Client, worker: &ReadyWorker, execution_id: Uu
     assert!(response.accepted);
 }
 
+async fn assert_invalid_prefill(
+    client: &Client,
+    prefill: &ReadyWorker,
+    execution_id: Uuid,
+    expires_at: chrono::DateTime<Utc>,
+    target: a3s_power::serving::StateTransferTarget,
+) {
+    let response = post(
+        client,
+        prefill,
+        "/internal/v1/distributed-serving/prefill/execute",
+        json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": execution_id,
+            "worker_epoch": prefill.worker_epoch,
+            "execution_profile_sha256": prefill.execution_profile_sha256,
+            "expires_at": expires_at,
+            "request": completion_payload(),
+            "target": target
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error: DistributedProtocolErrorResponse = json_body(response).await;
+    assert_eq!(error.code, DistributedProtocolErrorCode::InvalidRequest);
+}
+
+#[tokio::test]
+async fn cross_process_rejects_stale_deployment_generation_and_foreign_peer_set() {
+    let directory = TempDir::new().expect("temporary process directory is available");
+    let mut decode_process = WorkerProcess::spawn(
+        directory.path(),
+        "decode-deployment",
+        DisaggregatedServingRole::Decode,
+    );
+    let mut prefill_process = WorkerProcess::spawn(
+        directory.path(),
+        "prefill-deployment",
+        DisaggregatedServingRole::Prefill,
+    );
+    let decode = decode_process.wait_until_ready().await;
+    let prefill = prefill_process.wait_until_ready().await;
+    let client = Client::builder()
+        .timeout(StdDuration::from_secs(12))
+        .build()
+        .expect("test HTTP client is valid");
+
+    // Prefill must fail closed on a stale Cloud deployment generation before
+    // the fixture adapter data path runs, even when model/layout bindings match.
+    let stale_generation_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::seconds(10);
+    let mut stale_target =
+        prepare_decode(&client, &decode, stale_generation_id, expires_at).await;
+    assert_eq!(stale_target.deployment.generation, 7);
+    stale_target.deployment.generation = 8;
+    assert_invalid_prefill(
+        &client,
+        &prefill,
+        stale_generation_id,
+        expires_at,
+        stale_target,
+    )
+    .await;
+    abort_execution(&client, &decode, stale_generation_id).await;
+
+    // Prefill must fail closed on a foreign peer set the same way.
+    let foreign_peers_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::seconds(10);
+    let mut foreign_target = prepare_decode(&client, &decode, foreign_peers_id, expires_at).await;
+    foreign_target.deployment.peer_set_sha256 = "a".repeat(64);
+    assert_invalid_prefill(
+        &client,
+        &prefill,
+        foreign_peers_id,
+        expires_at,
+        foreign_target,
+    )
+    .await;
+    abort_execution(&client, &decode, foreign_peers_id).await;
+
+    // Decode must refuse a published source whose deployment identity was
+    // tampered by the orchestrator; never open Ready/NDJSON success.
+    let tampered_source_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::seconds(10);
+    let target = prepare_decode(&client, &decode, tampered_source_id, expires_at).await;
+    let mut source =
+        publish_prefill(&client, &prefill, tampered_source_id, expires_at, target).await;
+    source.deployment.generation = 8;
+    let response = post(
+        &client,
+        &decode,
+        "/internal/v1/distributed-serving/decode/execute",
+        json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": tampered_source_id,
+            "worker_epoch": decode.worker_epoch,
+            "execution_profile_sha256": decode.execution_profile_sha256,
+            "source": source
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error: DistributedProtocolErrorResponse = json_body(response).await;
+    assert_eq!(error.code, DistributedProtocolErrorCode::InvalidRequest);
+    abort_execution(&client, &prefill, tampered_source_id).await;
+    abort_execution(&client, &decode, tampered_source_id).await;
+
+    prefill_process.stop().await;
+    decode_process.stop().await;
+}
+
 #[tokio::test]
 async fn distributed_serving_crosses_processes_and_fails_closed_on_peer_loss_and_restart() {
     let directory = TempDir::new().expect("temporary process directory is available");

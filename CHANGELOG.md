@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cross-process distributed-serving conformance now covers stale Cloud
+  deployment generation and foreign peer-set rejection end-to-end: independent
+  prefill/decode HTTP workers fail closed with typed `InvalidRequest` when the
+  orchestrator tampers with `ServingDeploymentIdentity` on the prepared target
+  (before publish) or published source (before decode consume), without opening
+  Ready/NDJSON success. This strengthens P6 stale-generation peer binding over
+  the process boundary only and does not claim high-speed transport, production
+  adapters, sealed wire tickets, or live replica lifecycle reuse.
 - Closed `EffectivePromptClaimKind` enum for receipt `effective_prompt` claims:
   emitible text kinds (`chat.rendered-prompt`, `chat.prompt-token-ids`,
   `text.prompt`) plus reserved `chat.multimodal-rendered-prompt`. Digests of the

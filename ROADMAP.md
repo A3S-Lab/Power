@@ -291,10 +291,11 @@ model-semantics owner.
   live P/D execution remain open. A
   request-level runtime now composes that lifecycle with phase execution under
   one bounded execution lease and is the server's single source of distributed
-  readiness. A deterministic conformance test launches independent prefill and
+  readiness.   A deterministic conformance test launches independent prefill and
   decode Power processes, moves backend-owned fixture state over an
   authenticated encrypted loopback data path, and verifies the public HTTP
-  lifecycle without making the fixture adapter part of the product surface.
+  lifecycle (including stale Cloud deployment generation / foreign peer-set
+  rejection) without making the fixture adapter part of the product surface.
 - [ ] Keep tokenization, KV/recurrent layout, serialization, phase arithmetic and
   semantic parity in the owning model/backend adapter. Power moves only opaque,
   bounded authenticated state and never claims a cache hit or successful
@@ -316,8 +317,10 @@ model-semantics owner.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support. The loopback conformance
-  suite covers peer loss, process restart, stale process epochs and graceful
-  cleanup, but it is not high-speed-network or model-semantic evidence.
+  suite covers peer loss, process restart, stale process epochs, stale Cloud
+  deployment generation / foreign peer set over the HTTP orchestrator boundary,
+  and graceful cleanup, but it is not high-speed-network or model-semantic
+  evidence.
   First-principles fixture evidence now covers corrupt authenticated
   ticket/receipt bytes and resource-pressure / in-flight capacity / admission
   pressure fail-closed outcomes (typed `InvalidRequest`,
@@ -326,12 +329,14 @@ model-semantics owner.
   caller-cancel and deadline abort contract to in-flight transfer
   prepare/publish/consume as to phase work; fixture evidence covers mid-transfer
   and mid-stream abort without Ready/NDJSON success, with compensating cleanup
-  and reclaimed leases. Peer publish/consume now also fail closed on stale
-  deployment generation or foreign peer set carried by transfer descriptors
-  (beyond process-epoch checks). High-speed-network transport and production
-  adapters remain open. A typed `ProductionAdapterContract` now documents the
-  required adapter memory ownership (`AdapterOwnedRegistration`), transport
-  integrity, and confirmed-reclaim cleanup obligations; Empty/Unavailable
+  and reclaimed leases. Peer publish/consume fail closed on stale deployment
+  generation or foreign peer set carried by transfer descriptors (beyond
+  process-epoch checks), including cross-process HTTP evidence that prefill
+  rejects a tampered target and decode refuses a tampered source without
+  Ready/NDJSON. High-speed-network transport and production adapters remain
+  open. A typed `ProductionAdapterContract` now documents the required adapter
+  memory ownership (`AdapterOwnedRegistration`), transport integrity, and
+  confirmed-reclaim cleanup obligations; Empty/Unavailable
   `EmptyStateTransferService` / `EmptyServingPhaseExecutor` placeholders refuse
   work and fail composition until a concrete adapter is injected. That contract
   strengthens the P6 injection boundary only and is not high-speed-network or

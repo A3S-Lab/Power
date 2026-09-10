@@ -346,7 +346,8 @@ authenticated internal request-flow API exposes those operations to Gateway,
 binding every call to the current worker epoch and execution-profile digest.
 The cross-process conformance suite launches separate prefill and decode Power
 processes and proves the authenticated HTTP flow, encrypted opaque state
-handoff, peer-loss failure, restart epoch invalidation, and graceful cleanup.
+handoff, peer-loss failure, restart epoch invalidation, stale Cloud deployment
+generation / foreign peer-set rejection, and graceful cleanup.
 Its backend and loopback transport are test fixtures, not exported adapters.
 The repository still ships no concrete distributed backend/transport pair, so
 this is not an end-to-end llm-d deployment claim.

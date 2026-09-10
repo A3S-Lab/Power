@@ -313,7 +313,8 @@ Empty/Unavailable 占位（`EmptyStateTransferService` / `EmptyServingPhaseExecu
 observation generation 单调。经认证的内部请求流 API 将这些操作暴露给 Gateway，
 将每次调用绑定到当前 worker epoch 与执行配置摘要。跨进程一致性套件启动独立的
 prefill 与 decode Power 进程，并证明经认证的 HTTP 流、加密不透明状态交接、
-对等丢失失败、重启 epoch 失效与优雅清理。其后端与回环传输是测试 fixture，
+对等丢失失败、重启 epoch 失效、陈旧 Cloud deployment generation / 外源
+peer-set 拒绝与优雅清理。其后端与回环传输是测试 fixture，
 而非导出适配器。仓库仍未附带具体的分布式后端/传输对，因此这不是端到端 llm-d 部署声明。
 
 ## API 表面
