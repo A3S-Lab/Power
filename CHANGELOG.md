@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added first-principles fail-closed evidence for corrupt authenticated
+  state-transfer tickets/receipts and for resource-pressure outcomes on the
+  distributed serving / bounded transfer path. Corrupt ticket or receipt bytes
+  never decode as success (`InvalidRequest` / protocol `InvalidRequest`) and
+  reclaim leases; in-flight capacity exhaustion, ACL byte-limit rejection,
+  admission pressure, and `ResourcePressure` decisions surface typed
+  retryable/unavailable outcomes with compensating cleanup. Controllable
+  fixtures drive the path; this does not claim high-speed-network transport or
+  production adapters.
 - Added process-local adapter memory-registration accounting on
   `BoundedStateTransferService`: each active lease registers declared
   `state_bytes` as adapter-owned, pins one opaque handle, rejects a second

@@ -63,6 +63,19 @@ fn binding() -> StateTransferBinding {
     }
 }
 
+/// Controllable consume-receipt corruption modes for fail-closed evidence.
+///
+/// Modes mutate only fields the wrapper must verify after the driver returns;
+/// they never encode a memorized golden payload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum CorruptReceiptMode {
+    #[default]
+    None,
+    ShortBytes,
+    InvalidIntegrityDigest,
+    MismatchedTransferId,
+}
+
 #[derive(Default)]
 struct DriverControl {
     prepare_calls: AtomicUsize,
@@ -71,6 +84,8 @@ struct DriverControl {
     abort_calls: AtomicUsize,
     block_prepare: AtomicBool,
     invalid_target: AtomicBool,
+    corrupt_ticket: AtomicBool,
+    corrupt_receipt: std::sync::Mutex<CorruptReceiptMode>,
     fail_abort: AtomicBool,
     prepare_started: Notify,
 }
@@ -111,7 +126,11 @@ impl StateTransferService for TestDriver {
                 protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
                 prepared_at: Utc::now(),
                 expires_at: command.expires_at,
-                ticket: "target-ticket".to_string(),
+                ticket: if self.control.corrupt_ticket.load(Ordering::SeqCst) {
+                    "target\tticket".to_string()
+                } else {
+                    "target-ticket".to_string()
+                },
             })
         }
     }
@@ -133,15 +152,35 @@ impl StateTransferService for TestDriver {
 
     async fn consume_source(&self, command: ConsumeStateTransfer) -> Result<StateTransferReceipt> {
         self.control.consume_calls.fetch_add(1, Ordering::SeqCst);
+        let mode = *self.control.corrupt_receipt.lock().unwrap();
+        let transfer_id = match mode {
+            CorruptReceiptMode::MismatchedTransferId => Uuid::new_v4(),
+            _ => command.source.transfer_id,
+        };
+        let bytes_transferred = match mode {
+            CorruptReceiptMode::ShortBytes => command
+                .source
+                .binding
+                .state_bytes
+                .checked_sub(1)
+                .expect("fixture binding must leave room to shorten"),
+            _ => command.source.binding.state_bytes,
+        };
+        let integrity = match mode {
+            CorruptReceiptMode::InvalidIntegrityDigest => StateTransferIntegrity::Sha256 {
+                digest: "not-a-sha256-digest".to_string(),
+            },
+            _ => StateTransferIntegrity::TransportVerified,
+        };
         Ok(StateTransferReceipt {
             schema: STATE_TRANSFER_RECEIPT_SCHEMA.to_string(),
-            transfer_id: command.source.transfer_id,
+            transfer_id,
             source_worker_epoch: command.source.source_worker_epoch,
             destination_worker_epoch: command.local_worker_epoch,
             binding: command.source.binding,
             protocol: command.source.protocol,
-            bytes_transferred: 512,
-            integrity: StateTransferIntegrity::TransportVerified,
+            bytes_transferred,
+            integrity,
             completed_at: Utc::now(),
         })
     }
@@ -256,8 +295,14 @@ async fn destination_lease_is_idempotent_and_holds_capacity_until_abort() {
     let second = prepare(epoch, 200);
     assert!(matches!(
         service.prepare_destination(second.clone()).await,
-        Err(PowerError::BackendNotAvailable(_))
+        Err(PowerError::BackendNotAvailable(message))
+            if message.contains("capacity is exhausted")
     ));
+    let rejected = service.snapshot();
+    assert_eq!(rejected.capacity_rejections, 1);
+    assert_eq!(rejected.active_transfers, 1);
+    assert_eq!(rejected.registered_adapter_bytes, 512);
+    assert_eq!(control.prepare_calls.load(Ordering::SeqCst), 1);
     service
         .abort(AbortStateTransfer {
             transfer_id: first.transfer_id,
@@ -267,6 +312,7 @@ async fn destination_lease_is_idempotent_and_holds_capacity_until_abort() {
         .unwrap();
     assert_eq!(service.snapshot().registered_adapter_bytes, 0);
     service.prepare_destination(second).await.unwrap();
+    assert_eq!(service.snapshot().capacity_rejections, 1);
 }
 
 #[tokio::test]
@@ -496,6 +542,98 @@ async fn invalid_driver_output_is_rejected_and_cleaned() {
     assert_eq!(control.abort_calls.load(Ordering::SeqCst), 1);
     assert_eq!(service.snapshot().active_transfers, 0);
     assert_eq!(service.health(), TransferHealth::Ready);
+}
+
+#[tokio::test]
+async fn corrupt_adapter_ticket_bytes_fail_closed_before_lease_commit() {
+    let profile = profile(DisaggregatedServingRole::Decode, 1, 100);
+    let epoch = Uuid::new_v4();
+    let control = Arc::new(DriverControl::default());
+    control.corrupt_ticket.store(true, Ordering::SeqCst);
+    let service = service(&profile, epoch, control.clone());
+
+    assert!(matches!(
+        service.prepare_destination(prepare(epoch, 80)).await,
+        Err(PowerError::InvalidRequest(_))
+    ));
+    assert_eq!(control.prepare_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(control.abort_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(service.snapshot().active_transfers, 0);
+    assert_eq!(service.snapshot().registered_adapter_bytes, 0);
+    assert_eq!(service.health(), TransferHealth::Ready);
+}
+
+#[tokio::test]
+async fn corrupt_consume_receipt_bytes_fail_closed_and_reclaim_registration() {
+    let cases = [
+        CorruptReceiptMode::ShortBytes,
+        CorruptReceiptMode::InvalidIntegrityDigest,
+        CorruptReceiptMode::MismatchedTransferId,
+    ];
+
+    for mode in cases {
+        let profile = profile(DisaggregatedServingRole::Decode, 1, 250);
+        let epoch = Uuid::new_v4();
+        let source_epoch = Uuid::new_v4();
+        let control = Arc::new(DriverControl::default());
+        *control.corrupt_receipt.lock().unwrap() = mode;
+        let service = service(&profile, epoch, control.clone());
+        let command = prepare(epoch, 200);
+        let target = service.prepare_destination(command.clone()).await.unwrap();
+        assert_eq!(service.snapshot().registered_adapter_bytes, 512);
+
+        let source = StateTransferSource {
+            schema: STATE_TRANSFER_SOURCE_SCHEMA.to_string(),
+            transfer_id: target.transfer_id,
+            source_worker_epoch: source_epoch,
+            destination_worker_epoch: epoch,
+            binding: target.binding,
+            protocol: target.protocol,
+            published_at: Utc::now(),
+            expires_at: target.expires_at,
+            ticket: "source-ticket".to_string(),
+        };
+        let error = match service
+            .consume_source(ConsumeStateTransfer {
+                local_worker_epoch: epoch,
+                destination: command.destination.clone(),
+                source,
+            })
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("{mode:?}: corrupt receipt must never decode as success"),
+        };
+        assert!(
+            matches!(error, PowerError::InvalidRequest(_)),
+            "{mode:?}: expected InvalidRequest, got {error:?}"
+        );
+        assert_eq!(control.consume_calls.load(Ordering::SeqCst), 1, "{mode:?}");
+        assert_eq!(control.abort_calls.load(Ordering::SeqCst), 1, "{mode:?}");
+        assert_eq!(service.snapshot().active_transfers, 0, "{mode:?}");
+        assert_eq!(service.snapshot().registered_adapter_bytes, 0, "{mode:?}");
+        assert_eq!(service.snapshot().completed_consumes, 0, "{mode:?}");
+        assert_eq!(service.health(), TransferHealth::Ready, "{mode:?}");
+    }
+}
+
+#[tokio::test]
+async fn binding_over_acl_byte_limit_fails_closed_before_driver_admission() {
+    let profile = profile(DisaggregatedServingRole::Decode, 1, 100);
+    let epoch = Uuid::new_v4();
+    let control = Arc::new(DriverControl::default());
+    let service = service(&profile, epoch, control.clone());
+    let mut oversized = prepare(epoch, 80);
+    oversized.binding.state_bytes = 1025;
+
+    assert!(matches!(
+        service.prepare_destination(oversized).await,
+        Err(PowerError::InvalidRequest(_))
+    ));
+    assert_eq!(control.prepare_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(service.snapshot().active_transfers, 0);
+    assert_eq!(service.snapshot().registered_adapter_bytes, 0);
+    assert_eq!(service.snapshot().capacity_rejections, 0);
 }
 
 #[tokio::test]

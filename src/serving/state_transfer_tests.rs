@@ -150,12 +150,41 @@ fn receipt_proves_exact_source_identity_size_and_integrity() {
     let mut short = receipt.clone();
     short.bytes_transferred -= 1;
     assert!(short.validate_for(&source, &capabilities()).is_err());
-    let mut invalid_digest = receipt;
+    let mut invalid_digest = receipt.clone();
     invalid_digest.integrity = StateTransferIntegrity::Sha256 {
         digest: "invalid".to_string(),
     };
     assert!(invalid_digest
         .validate_for(&source, &capabilities())
+        .is_err());
+    let mut wrong_id = receipt;
+    wrong_id.transfer_id = Uuid::from_u128(99);
+    assert!(wrong_id.validate_for(&source, &capabilities()).is_err());
+}
+
+#[test]
+fn corrupt_ticket_bytes_never_validate_as_authenticated_descriptors() {
+    let capabilities = capabilities();
+    let mut empty = target();
+    empty.ticket.clear();
+    assert!(empty.validate_at(now(), &capabilities).is_err());
+
+    let mut control = target();
+    control.ticket = "ticket\nwith-control".to_string();
+    assert!(control.validate_at(now(), &capabilities).is_err());
+
+    let mut padded = target();
+    padded.ticket = " leading-space".to_string();
+    assert!(padded.validate_at(now(), &capabilities).is_err());
+
+    let mut oversized = target();
+    oversized.ticket = "t".repeat(16 * 1024 + 1);
+    assert!(oversized.validate_at(now(), &capabilities).is_err());
+
+    let mut source = source();
+    source.ticket = "source\0ticket".to_string();
+    assert!(source
+        .validate_for(&target(), now() + Duration::seconds(1), &capabilities)
         .is_err());
 }
 

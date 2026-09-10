@@ -51,7 +51,13 @@ local handle; a second lease for the same handle fails closed, and consume,
 abort, timeout, or compensating cleanup reclaim the registration. Power never
 copies KV payloads into the wrapper — only handles and content-free counters.
 Operation drop, timeout, explicit abort, and invalid adapter output all trigger
-abort under the separate cancellation timeout. An unconfirmed cleanup marks the
+abort under the separate cancellation timeout. Corrupt authenticated ticket or
+receipt bytes (control characters, integrity digest failures, byte-count or
+identity mismatches) fail closed as `InvalidRequest`, never commit a successful
+consume, and reclaim registered adapter bytes. In-flight capacity exhaustion
+increments `capacity_rejections` and returns a typed unavailable outcome without
+growing registration; bindings above the ACL `max_state_bytes` limit are rejected
+before driver admission. An unconfirmed cleanup marks the
 wrapper unavailable for the rest of the process generation. Its snapshot contains
 only bounded, content-free counters, including `registeredAdapterBytes`.
 
@@ -173,9 +179,12 @@ Fixture-driven unit and authenticated HTTP tests inject non-`Ready` decode
 `execute` outcomes after a successful prepare+consume path and assert the
 internal boundary returns the typed JSON decision (with status mapping and
 binding fields), never `application/x-ndjson` or generated-token frames, while
-compensating cleanup reclaims the lease. That evidence is contract and cleanup
-coverage only: it does not claim a production backend adapter or high-speed
-network path.
+compensating cleanup reclaims the lease. The same fixtures also prove corrupt
+source tickets and consume receipts fail closed as protocol `InvalidRequest`
+before any token stream, and that `ResourcePressure` / `AdmissionPressure`
+decisions map to typed `RetryableUnavailable` with cleanup. That evidence is
+contract and cleanup coverage only: it does not claim a production backend
+adapter or high-speed network path.
 
 Phase abort accepts either an in-progress preparation without a backend handle
 or a completed reservation with its opaque handle. Prepared phase lifetimes

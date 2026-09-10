@@ -13,7 +13,8 @@ use crate::server::auth::ApiKeyAuth;
 use crate::server::router;
 use crate::server::state::AppState;
 use crate::serving::distributed_serving_tests::support::{
-    profile, runtime_with_behavior, wait_for_count, Calls, DecodeExecuteFixture, FixtureBehavior,
+    profile, runtime_with_behavior, wait_for_count, Calls, CorruptConsumeReceipt,
+    DecodeExecuteFixture, FixtureBehavior,
 };
 use crate::serving::{
     DisaggregatedServingRole, PhaseRequest, RecomputeReason, RetryableUnavailableReason,
@@ -705,4 +706,263 @@ async fn post_consume_non_ready_execute_returns_typed_json_not_ndjson_stream() {
             "{label}: abort remains idempotent after decision cleanup"
         );
     }
+}
+
+#[tokio::test]
+async fn corrupt_source_ticket_over_http_fails_closed_as_invalid_request() {
+    let calls = Arc::new(Calls::default());
+    let (app, profile, epoch) = distributed_app(DisaggregatedServingRole::Decode, calls.clone());
+    let execution_id = Uuid::new_v4();
+    let digest = profile.sha256().unwrap();
+    let expires_at = Utc::now() + Duration::milliseconds(800);
+    let prepared = post_internal(
+        &app,
+        "/internal/v1/distributed-serving/decode/prepare",
+        serde_json::json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": execution_id,
+            "worker_epoch": epoch,
+            "execution_profile_sha256": digest,
+            "expires_at": expires_at,
+            "request": completion_payload()
+        }),
+    )
+    .await;
+    assert_eq!(prepared.status(), StatusCode::OK);
+    let prepared: DistributedPhaseResponse<PreparedDecodeResult> = parse_json(prepared).await;
+    let target = match prepared.outcome {
+        DistributedPhaseDecision::Ready { result } => result.target,
+        other => panic!("expected ready decode target, got {other:?}"),
+    };
+    let mut source = StateTransferSource {
+        schema: STATE_TRANSFER_SOURCE_SCHEMA.to_string(),
+        transfer_id: target.transfer_id,
+        source_worker_epoch: Uuid::new_v4(),
+        destination_worker_epoch: target.destination_worker_epoch,
+        binding: target.binding,
+        protocol: target.protocol,
+        published_at: Utc::now(),
+        expires_at: target.expires_at,
+        ticket: "source-ticket".to_string(),
+    };
+    source.ticket = "source\tticket".to_string();
+
+    let response = post_internal(
+        &app,
+        "/internal/v1/distributed-serving/decode/execute",
+        serde_json::json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": execution_id,
+            "worker_epoch": epoch,
+            "execution_profile_sha256": digest,
+            "source": source
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error: DistributedProtocolErrorResponse = parse_json(response).await;
+    assert_eq!(error.code, DistributedProtocolErrorCode::InvalidRequest);
+    wait_for_count(&calls.phase_aborts, 1).await;
+    assert!(
+        !calls
+            .values()
+            .iter()
+            .any(|value| *value == "transfer.consume"),
+        "HTTP corrupt ticket must fail before consume"
+    );
+}
+
+#[tokio::test]
+async fn corrupt_consume_receipt_over_http_fails_closed_without_ndjson() {
+    let calls = Arc::new(Calls::default());
+    let (app, profile, epoch) = distributed_app_with_behavior(
+        DisaggregatedServingRole::Decode,
+        calls.clone(),
+        FixtureBehavior {
+            corrupt_consume_receipt: CorruptConsumeReceipt::InvalidIntegrityDigest,
+            ..FixtureBehavior::default()
+        },
+    );
+    let execution_id = Uuid::new_v4();
+    let digest = profile.sha256().unwrap();
+    let expires_at = Utc::now() + Duration::milliseconds(800);
+    let prepared = post_internal(
+        &app,
+        "/internal/v1/distributed-serving/decode/prepare",
+        serde_json::json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": execution_id,
+            "worker_epoch": epoch,
+            "execution_profile_sha256": digest,
+            "expires_at": expires_at,
+            "request": completion_payload()
+        }),
+    )
+    .await;
+    assert_eq!(prepared.status(), StatusCode::OK);
+    let prepared: DistributedPhaseResponse<PreparedDecodeResult> = parse_json(prepared).await;
+    let target = match prepared.outcome {
+        DistributedPhaseDecision::Ready { result } => result.target,
+        _ => panic!("expected ready decode target"),
+    };
+    let source = StateTransferSource {
+        schema: STATE_TRANSFER_SOURCE_SCHEMA.to_string(),
+        transfer_id: target.transfer_id,
+        source_worker_epoch: Uuid::new_v4(),
+        destination_worker_epoch: target.destination_worker_epoch,
+        binding: target.binding,
+        protocol: target.protocol,
+        published_at: Utc::now(),
+        expires_at: target.expires_at,
+        ticket: "source-ticket".to_string(),
+    };
+
+    let response = post_internal(
+        &app,
+        "/internal/v1/distributed-serving/decode/execute",
+        serde_json::json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": execution_id,
+            "worker_epoch": epoch,
+            "execution_profile_sha256": digest,
+            "source": source
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(content_type.starts_with("application/json"));
+    assert!(!content_type.contains("ndjson"));
+    let error: DistributedProtocolErrorResponse = parse_json(response).await;
+    assert_eq!(error.code, DistributedProtocolErrorCode::InvalidRequest);
+    wait_for_count(&calls.phase_aborts, 1).await;
+    assert!(
+        !calls.values().iter().any(|value| *value == "phase.execute"),
+        "corrupt receipt must never reach phase execute"
+    );
+}
+
+#[tokio::test]
+async fn resource_pressure_over_http_returns_typed_retryable_unavailable() {
+    let calls = Arc::new(Calls::default());
+    let (app, profile, epoch) = distributed_app_with_behavior(
+        DisaggregatedServingRole::Decode,
+        calls.clone(),
+        FixtureBehavior {
+            decode_execute: DecodeExecuteFixture::RetryableUnavailable {
+                reason: RetryableUnavailableReason::ResourcePressure,
+                retry_after_ms: Some(33),
+            },
+            ..FixtureBehavior::default()
+        },
+    );
+    let execution_id = Uuid::new_v4();
+    let digest = profile.sha256().unwrap();
+    let expires_at = Utc::now() + Duration::milliseconds(800);
+    let prepared = post_internal(
+        &app,
+        "/internal/v1/distributed-serving/decode/prepare",
+        serde_json::json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": execution_id,
+            "worker_epoch": epoch,
+            "execution_profile_sha256": digest,
+            "expires_at": expires_at,
+            "request": completion_payload()
+        }),
+    )
+    .await;
+    assert_eq!(prepared.status(), StatusCode::OK);
+    let prepared: DistributedPhaseResponse<PreparedDecodeResult> = parse_json(prepared).await;
+    let target = match prepared.outcome {
+        DistributedPhaseDecision::Ready { result } => result.target,
+        _ => panic!("expected ready decode target"),
+    };
+    let source = StateTransferSource {
+        schema: STATE_TRANSFER_SOURCE_SCHEMA.to_string(),
+        transfer_id: target.transfer_id,
+        source_worker_epoch: Uuid::new_v4(),
+        destination_worker_epoch: target.destination_worker_epoch,
+        binding: target.binding,
+        protocol: target.protocol,
+        published_at: Utc::now(),
+        expires_at: target.expires_at,
+        ticket: "source-ticket".to_string(),
+    };
+
+    let response = post_internal(
+        &app,
+        "/internal/v1/distributed-serving/decode/execute",
+        serde_json::json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": execution_id,
+            "worker_epoch": epoch,
+            "execution_profile_sha256": digest,
+            "source": source
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(content_type.starts_with("application/json"));
+    assert!(!content_type.contains("ndjson"));
+    let decision: DistributedPhaseResponse<serde_json::Value> = parse_json(response).await;
+    match decision.outcome {
+        DistributedPhaseDecision::RetryableUnavailable {
+            reason,
+            retry_after_ms,
+        } => {
+            assert_eq!(reason, RetryableUnavailableReason::ResourcePressure);
+            assert_eq!(retry_after_ms, Some(33));
+        }
+        other => panic!("expected resource-pressure retryable decision, got {other:?}"),
+    }
+    wait_for_count(&calls.phase_aborts, 1).await;
+}
+
+#[tokio::test]
+async fn admission_pressure_over_http_returns_typed_retryable_unavailable() {
+    let calls = Arc::new(Calls::default());
+    let (app, profile, epoch) = distributed_app_with_behavior(
+        DisaggregatedServingRole::Decode,
+        calls.clone(),
+        FixtureBehavior {
+            retryable_prepare: true,
+            ..FixtureBehavior::default()
+        },
+    );
+    let response = post_internal(
+        &app,
+        "/internal/v1/distributed-serving/decode/prepare",
+        serde_json::json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": Uuid::new_v4(),
+            "worker_epoch": epoch,
+            "execution_profile_sha256": profile.sha256().unwrap(),
+            "expires_at": Utc::now() + Duration::milliseconds(800),
+            "request": completion_payload()
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let decision: DistributedPhaseResponse<serde_json::Value> = parse_json(response).await;
+    match decision.outcome {
+        DistributedPhaseDecision::RetryableUnavailable {
+            reason,
+            retry_after_ms,
+        } => {
+            assert_eq!(reason, RetryableUnavailableReason::AdmissionPressure);
+            assert_eq!(retry_after_ms, Some(5));
+        }
+        other => panic!("expected admission-pressure retryable decision, got {other:?}"),
+    }
+    wait_for_count(&calls.phase_aborts, 1).await;
 }

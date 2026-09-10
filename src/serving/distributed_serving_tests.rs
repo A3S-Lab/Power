@@ -10,6 +10,7 @@ use uuid::Uuid;
 use super::*;
 use crate::error::PowerError;
 use support::*;
+use support::{CorruptConsumeReceipt, DecodeExecuteFixture};
 
 #[tokio::test]
 async fn decode_prepares_destination_then_consumes_before_returning_stream() {
@@ -327,6 +328,174 @@ async fn post_consume_non_ready_cleanup_failure_taints_readiness() {
     assert!(matches!(error, PowerError::BackendNotAvailable(_)));
     assert_eq!(calls.phase_aborts.load(Ordering::SeqCst), 1);
     assert!(!runtime.accepts_work());
+}
+
+#[tokio::test]
+async fn corrupt_source_ticket_bytes_fail_closed_without_opening_a_decode_stream() {
+    let profile = profile(DisaggregatedServingRole::Decode, 100);
+    let epoch = Uuid::new_v4();
+    let calls = Arc::new(Calls::default());
+    let runtime = runtime(&profile, epoch, calls.clone());
+    let execution_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::milliseconds(80);
+    let mut source = prepare_decode_source(&runtime, epoch, execution_id, expires_at).await;
+    source.ticket = "source\tticket".to_string();
+
+    let error = match runtime.execute_decode(execution_id, source).await {
+        Err(error) => error,
+        Ok(_) => panic!("corrupt ticket must never open a decode stream"),
+    };
+    assert!(matches!(error, PowerError::InvalidRequest(_)));
+    wait_for_count(&calls.phase_aborts, 1).await;
+    assert!(
+        !calls.values().iter().any(|value| *value == "transfer.consume"),
+        "corrupt ticket must fail before consume"
+    );
+    assert!(
+        !calls.values().iter().any(|value| *value == "phase.execute"),
+        "corrupt ticket must never reach phase execute"
+    );
+    assert!(runtime.accepts_work());
+}
+
+#[tokio::test]
+async fn corrupt_consume_receipt_bytes_fail_closed_with_compensating_cleanup() {
+    let cases = [
+        CorruptConsumeReceipt::ShortBytes,
+        CorruptConsumeReceipt::InvalidIntegrityDigest,
+    ];
+
+    for mode in cases {
+        let profile = profile(DisaggregatedServingRole::Decode, 100);
+        let epoch = Uuid::new_v4();
+        let calls = Arc::new(Calls::default());
+        let runtime = runtime_with_behavior(
+            &profile,
+            epoch,
+            calls.clone(),
+            FixtureBehavior {
+                corrupt_consume_receipt: mode,
+                ..FixtureBehavior::default()
+            },
+        );
+        let execution_id = Uuid::new_v4();
+        let expires_at = Utc::now() + Duration::milliseconds(80);
+        let source = prepare_decode_source(&runtime, epoch, execution_id, expires_at).await;
+        let error = match runtime.execute_decode(execution_id, source).await {
+            Err(error) => error,
+            Ok(_) => panic!("{mode:?}: corrupt receipt must never decode as success"),
+        };
+        assert!(
+            matches!(error, PowerError::InvalidRequest(_)),
+            "{mode:?}: expected InvalidRequest, got {error:?}"
+        );
+        assert!(
+            calls
+                .values()
+                .iter()
+                .any(|value| *value == "transfer.consume"),
+            "{mode:?}: consume must run before integrity rejection"
+        );
+        assert!(
+            !calls.values().iter().any(|value| *value == "phase.execute"),
+            "{mode:?}: corrupt receipt must never reach phase execute"
+        );
+        wait_for_count(&calls.phase_aborts, 1).await;
+        assert_eq!(calls.phase_aborts.load(Ordering::SeqCst), 1, "{mode:?}");
+        assert!(runtime.accepts_work(), "{mode:?}");
+    }
+}
+
+#[tokio::test]
+async fn inflight_capacity_pressure_fails_closed_and_reclaims_after_abort() {
+    let profile = profile(DisaggregatedServingRole::Decode, 100);
+    let epoch = Uuid::new_v4();
+    let calls = Arc::new(Calls::default());
+    let runtime = runtime(&profile, epoch, calls.clone());
+    let expires_at = Utc::now() + Duration::milliseconds(80);
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    let third = Uuid::new_v4();
+
+    runtime
+        .prepare_decode(DecodePhaseRequest {
+            execution_id: first,
+            model: "internal/model-v1".to_string(),
+            request: request(),
+            expires_at,
+        })
+        .await
+        .unwrap();
+    runtime
+        .prepare_decode(DecodePhaseRequest {
+            execution_id: second,
+            model: "internal/model-v1".to_string(),
+            request: request(),
+            expires_at,
+        })
+        .await
+        .unwrap();
+
+    let pressure = runtime
+        .prepare_decode(DecodePhaseRequest {
+            execution_id: third,
+            model: "internal/model-v1".to_string(),
+            request: request(),
+            expires_at,
+        })
+        .await;
+    assert!(matches!(
+        pressure,
+        Err(PowerError::BackendNotAvailable(message))
+            if message.contains("capacity is exhausted")
+    ));
+    assert!(runtime.accepts_work());
+
+    runtime.abort(first).await.unwrap();
+    runtime
+        .prepare_decode(DecodePhaseRequest {
+            execution_id: third,
+            model: "internal/model-v1".to_string(),
+            request: request(),
+            expires_at: Utc::now() + Duration::milliseconds(80),
+        })
+        .await
+        .unwrap();
+    runtime.abort(second).await.unwrap();
+    runtime.abort(third).await.unwrap();
+    assert!(runtime.accepts_work());
+}
+
+#[tokio::test]
+async fn resource_pressure_phase_decision_cleans_up_without_a_decode_stream() {
+    let profile = profile(DisaggregatedServingRole::Decode, 100);
+    let epoch = Uuid::new_v4();
+    let calls = Arc::new(Calls::default());
+    let runtime = runtime_with_behavior(
+        &profile,
+        epoch,
+        calls.clone(),
+        FixtureBehavior {
+            decode_execute: DecodeExecuteFixture::RetryableUnavailable {
+                reason: RetryableUnavailableReason::ResourcePressure,
+                retry_after_ms: Some(15),
+            },
+            ..FixtureBehavior::default()
+        },
+    );
+    let execution_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::milliseconds(80);
+    let source = prepare_decode_source(&runtime, epoch, execution_id, expires_at).await;
+    let decision = runtime.execute_decode(execution_id, source).await.unwrap();
+    assert!(matches!(
+        decision,
+        PhaseDecision::RetryableUnavailable {
+            reason: RetryableUnavailableReason::ResourcePressure,
+            retry_after_ms: Some(15)
+        }
+    ));
+    wait_for_count(&calls.phase_aborts, 1).await;
+    assert!(runtime.accepts_work());
 }
 
 #[test]

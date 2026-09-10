@@ -278,6 +278,12 @@ model-semantics owner.
   advertising cross-node or prefill/decode support. The loopback conformance
   suite covers peer loss, process restart, stale process epochs and graceful
   cleanup, but it is not high-speed-network or model-semantic evidence.
+  First-principles fixture evidence now covers corrupt authenticated
+  ticket/receipt bytes and resource-pressure / in-flight capacity / admission
+  pressure fail-closed outcomes (typed `InvalidRequest`,
+  `RetryableUnavailable`, or equivalent `BackendNotAvailable`) with
+  compensating cleanup. High-speed-network transport and production adapters
+  remain open.
 
 ## Cross-repository delivery order
 

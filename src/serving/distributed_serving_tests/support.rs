@@ -76,6 +76,15 @@ pub(crate) enum DecodeExecuteFixture {
     TerminalFailure(TerminalFailureReason),
 }
 
+/// Controllable consume-receipt corruption for distributed fail-closed tests.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum CorruptConsumeReceipt {
+    #[default]
+    None,
+    ShortBytes,
+    InvalidIntegrityDigest,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct FixtureBehavior {
     pub prepared_expiry_delta: Duration,
@@ -83,6 +92,7 @@ pub(crate) struct FixtureBehavior {
     pub retryable_prepare: bool,
     pub fail_abort: bool,
     pub decode_execute: DecodeExecuteFixture,
+    pub corrupt_consume_receipt: CorruptConsumeReceipt,
 }
 
 impl Default for FixtureBehavior {
@@ -93,6 +103,7 @@ impl Default for FixtureBehavior {
             retryable_prepare: false,
             fail_abort: false,
             decode_execute: DecodeExecuteFixture::ReadyStream,
+            corrupt_consume_receipt: CorruptConsumeReceipt::None,
         }
     }
 }
@@ -117,6 +128,7 @@ impl Calls {
 struct TestTransferDriver {
     capabilities: StateTransferCapabilities,
     calls: Arc<Calls>,
+    corrupt_consume_receipt: CorruptConsumeReceipt,
 }
 
 #[async_trait]
@@ -163,6 +175,25 @@ impl StateTransferService for TestTransferDriver {
 
     async fn consume_source(&self, command: ConsumeStateTransfer) -> Result<StateTransferReceipt> {
         self.calls.push("transfer.consume");
+        let bytes_transferred = match self.corrupt_consume_receipt {
+            CorruptConsumeReceipt::ShortBytes => command
+                .source
+                .binding
+                .state_bytes
+                .checked_sub(1)
+                .expect("fixture binding must leave room to shorten"),
+            CorruptConsumeReceipt::None | CorruptConsumeReceipt::InvalidIntegrityDigest => {
+                command.source.binding.state_bytes
+            }
+        };
+        let integrity = match self.corrupt_consume_receipt {
+            CorruptConsumeReceipt::InvalidIntegrityDigest => StateTransferIntegrity::Sha256 {
+                digest: "ZZ".repeat(32),
+            },
+            CorruptConsumeReceipt::None | CorruptConsumeReceipt::ShortBytes => {
+                StateTransferIntegrity::TransportVerified
+            }
+        };
         Ok(StateTransferReceipt {
             schema: STATE_TRANSFER_RECEIPT_SCHEMA.to_string(),
             transfer_id: command.source.transfer_id,
@@ -170,8 +201,8 @@ impl StateTransferService for TestTransferDriver {
             destination_worker_epoch: command.local_worker_epoch,
             binding: command.source.binding,
             protocol: command.source.protocol,
-            bytes_transferred: 512,
-            integrity: StateTransferIntegrity::TransportVerified,
+            bytes_transferred,
+            integrity,
             completed_at: Utc::now(),
         })
     }
@@ -229,7 +260,7 @@ impl ServingPhaseExecutor for TestPhaseExecutor {
                 command.local_worker_epoch,
                 self.profile_sha256.clone(),
                 execution,
-                ModelStateHandle::new("decode-destination")?,
+                ModelStateHandle::new(format!("decode-destination-{}", command.execution_id))?,
                 binding(),
                 expires_at,
             )?),
@@ -342,6 +373,7 @@ pub(crate) fn runtime_with_behavior(
         Arc::new(TestTransferDriver {
             capabilities,
             calls: calls.clone(),
+            corrupt_consume_receipt: behavior.corrupt_consume_receipt,
         }),
     )
     .unwrap();
