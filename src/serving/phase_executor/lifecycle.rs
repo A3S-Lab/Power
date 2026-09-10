@@ -377,6 +377,24 @@ impl ImportedModelState {
     pub fn binding(&self) -> &StateTransferBinding {
         &self.binding
     }
+
+    /// Test-only constructor for post-consume proofs without a second wire pull.
+    #[cfg(test)]
+    pub(crate) fn from_parts_for_test(
+        transfer_id: Uuid,
+        local_worker_epoch: Uuid,
+        execution_profile_sha256: String,
+        destination: ModelStateHandle,
+        binding: StateTransferBinding,
+    ) -> Self {
+        Self {
+            transfer_id,
+            local_worker_epoch,
+            execution_profile_sha256,
+            destination,
+            binding,
+        }
+    }
 }
 
 /// Phase-specific input accepted only after preparation and compatibility

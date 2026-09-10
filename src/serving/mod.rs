@@ -6,6 +6,7 @@
 mod adapter_contract;
 mod bounded_state_transfer;
 mod buffered_host_loopback;
+mod buffered_host_loopback_phase;
 mod distributed_operation_evidence;
 mod distributed_serving;
 mod empty_adapters;
@@ -23,6 +24,7 @@ pub use adapter_contract::{
 };
 pub use bounded_state_transfer::{BoundedStateTransferService, StateTransferRuntimeSnapshot};
 pub use buffered_host_loopback::BufferedHostLoopbackStateTransfer;
+pub use buffered_host_loopback_phase::BufferedHostLoopbackPhaseExecutor;
 pub use distributed_operation_evidence::{
     DistributedOperationEvidence, DistributedOperationKind, DISTRIBUTED_OPERATION_EVIDENCE_SCHEMA,
 };

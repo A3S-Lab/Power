@@ -6,12 +6,14 @@
 //! reclaim) so prefill/decode composition can inject a real path instead of an
 //! Empty placeholder.
 //!
-//! This is **not** high-speed-network evidence, model-semantic phase execution,
-//! or production readiness. Wire tickets stay connection metadata; KV layout
-//! and decode success remain owned by a separately injected phase executor /
-//! backend. Host-buffer sealing through [`SealedStateEnvelope`] remains
-//! available via `transfer_host_buffer` when `embedded-inference` is enabled;
-//! this adapter does not embed sealed envelopes in tickets.
+//! Pair with [`crate::serving::BufferedHostLoopbackPhaseExecutor`] for a
+//! complete product-surface injection. This is **not** high-speed-network
+//! evidence, model-semantic phase execution, or production readiness. Wire
+//! tickets stay connection metadata; KV layout and decode success remain owned
+//! by the separately injected phase executor / backend. Host-buffer sealing
+//! through [`SealedStateEnvelope`] remains available via `transfer_host_buffer`
+//! when `embedded-inference` is enabled; this adapter does not embed sealed
+//! envelopes in tickets.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Injectable product-surface buffered-host / loopback phase executor:
+  `BufferedHostLoopbackPhaseExecutor` pairs with
+  `BufferedHostLoopbackStateTransfer` via `paired_for_profile` / `pair_with`,
+  reports `AdapterProvisionState::Injected` under
+  `ProductionAdapterContract::REQUIRED`, owns opaque conformance fixture
+  handles (not model-semantic KV), and fail-closes decode to
+  `Recompute(StateMissing|StateCorrupt)` unless adapter-owned bytes verify
+  after consume. Transfer receipt alone never yields Ready/NDJSON.
+  Composition accepts the complete pair; Empty phase or transfer-only
+  injection still fails closed. Distinct from the cross-process conformance
+  fixture. Advances the P6 injectable adapter path only and does not claim
+  high-speed transport, llama.cpp P/D, sealed wire tickets, or HSN readiness.
 - Injectable product-surface buffered-host / loopback state-transfer adapter:
   `BufferedHostLoopbackStateTransfer` binds prefill/decode profiles that pin
   `BufferedHostMemoryPullV1` and `AuthenticatedEncryptedTransport`, reports

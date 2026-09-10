@@ -322,6 +322,13 @@ until a concrete adapter is injected. Injected ports declare
 `ProductionAdapterContract::REQUIRED` (adapter-owned memory registration,
 adapter-owned transport integrity, confirmed reclaim); that contract is a
 software ownership boundary, not high-speed-network or production-readiness
+evidence. For profiles that pin `BufferedHostMemoryPullV1` and
+`AuthenticatedEncryptedTransport`, Power ships an injectable product pair—
+`BufferedHostLoopbackStateTransfer` plus `BufferedHostLoopbackPhaseExecutor`
+(`paired_for_profile`)—that moves opaque host buffers over authenticated
+loopback TCP and verifies opaque conformance bytes before Ready decode.
+Transfer receipt alone is never decode success; incomplete pairs and Empty
+placeholders still fail closed. This is not HSN, llama.cpp P/D, or model-backend
 evidence. The composition root wraps and assembles that pair into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and
 readiness source. Power publishes the configured P/D role only when the runtime

@@ -317,6 +317,9 @@ model-semantics owner.
   authenticated HTTP boundary is covered by first-principles fixture tests;
   concrete production backend phase executors remain open (buffered-host
   loopback transfer injection is available without claiming backend readiness).
+  A matching product-surface `BufferedHostLoopbackPhaseExecutor` now pairs with
+  the loopback transfer for opaque conformance composition; it still does not
+  close model-semantic or HSN readiness.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support. The loopback conformance
@@ -356,7 +359,14 @@ model-semantics owner.
   test fixture) and still not high-speed-network, sealed wire-ticket, or
   model-backend evidence; concrete production phase executors and HSN remain
   open. Aggregated defaults still refuse transfer injection and never advertise
-  P/D.
+  P/D. Power now also ships a matching product-surface
+  `BufferedHostLoopbackPhaseExecutor` that pairs with the loopback transfer
+  (`paired_for_profile` / `pair_with`), owns opaque conformance fixture handles
+  (not model-semantic layout), and refuses Ready decode until adapter-owned
+  bytes verify after consume (`Recompute` on missing/corrupt). Transfer-only
+  or Empty-phase compositions still fail closed. This completes an injectable
+  product pair for buffered-host loopback conformance composition only; HSN,
+  sealed wire tickets, and real backend/llama.cpp P/D remain open.
 
 ## Cross-repository delivery order
 

@@ -313,7 +313,20 @@ mod tests {
     }
 
     #[test]
-    fn product_buffered_host_loopback_satisfies_startup_gate() {
+    fn product_buffered_host_loopback_pair_satisfies_startup_gate() {
+        let profile = buffered_host_profile();
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) =
+            crate::serving::BufferedHostLoopbackPhaseExecutor::paired_for_profile(&profile)
+                .unwrap();
+        validate(&config, Some(transfer.as_ref()), Some(executor.as_ref())).unwrap();
+    }
+
+    #[test]
+    fn product_buffered_host_transfer_alone_still_requires_phase_executor() {
         let profile = buffered_host_profile();
         let config = PowerConfig {
             serving_execution: profile.clone(),
@@ -321,18 +334,20 @@ mod tests {
         };
         let transfer =
             crate::serving::BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap();
-        validate(&config, Some(&transfer), Some(&executor(&profile))).unwrap();
+        let err = validate(&config, Some(&transfer), None).unwrap_err();
+        assert!(err.to_string().contains("phase executor"));
     }
 
     #[test]
     fn aggregated_default_still_rejects_product_buffered_host_injection() {
         let profile = buffered_host_profile();
-        let transfer =
-            crate::serving::BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap();
+        let (transfer, executor) =
+            crate::serving::BufferedHostLoopbackPhaseExecutor::paired_for_profile(&profile)
+                .unwrap();
         let err = validate(
             &PowerConfig::default(),
-            Some(&transfer),
-            Some(&executor(&profile)),
+            Some(transfer.as_ref()),
+            Some(executor.as_ref()),
         )
         .unwrap_err();
         assert!(err.to_string().contains("aggregated serving"));

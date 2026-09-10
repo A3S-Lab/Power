@@ -51,15 +51,23 @@ contract documents ownership obligations only; it does not claim high-speed
 network evidence, sealed wire tickets, live replica lifecycle reuse, or
 production readiness.
 
-Power ships one injectable product-surface transfer path,
-`BufferedHostLoopbackStateTransfer`, for profiles that pin
-`BufferedHostMemoryPullV1` and `AuthenticatedEncryptedTransport`. It moves
-opaque adapter-owned host buffers over authenticated AES-GCM loopback TCP,
-reports `Injected` + `ProductionAdapterContract::REQUIRED`, and reclaims
-reservations on abort. It is a real composition injection—not the cross-process
-conformance fixture—and still is not high-speed-network or model-backend
-evidence. Prefill/decode startup continues to require a separately injected
-`ServingPhaseExecutor`; the aggregated default still refuses any transfer
+Power ships one injectable product-surface buffered-host loopback pair for
+profiles that pin `BufferedHostMemoryPullV1` and
+`AuthenticatedEncryptedTransport`:
+
+- `BufferedHostLoopbackStateTransfer` moves opaque adapter-owned host buffers
+  over authenticated AES-GCM loopback TCP, reports
+  `Injected` + `ProductionAdapterContract::REQUIRED`, and reclaims
+  reservations on abort.
+- `BufferedHostLoopbackPhaseExecutor` (via `paired_for_profile` / `pair_with`)
+  owns opaque conformance fixture handles—not model-semantic KV—and never
+  returns Ready decode from a transfer receipt alone; missing or corrupt
+  adapter-owned bytes map to `Recompute`.
+
+Together they are a real composition injection—not the cross-process
+conformance fixture—and still are not high-speed-network, llama.cpp P/D, or
+model-backend evidence. Incomplete pairs (transfer-only, Empty phase, or Empty
+transfer) fail closed. The aggregated default still refuses any transfer
 injection and never advertises P/D readiness.
 
 ## State-transfer port

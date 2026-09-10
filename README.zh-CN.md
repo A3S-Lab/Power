@@ -299,6 +299,12 @@ Empty/Unavailable 占位（`EmptyStateTransferService` / `EmptyServingPhaseExecu
 在注入具体适配器前同样失败关闭。注入端口声明
 `ProductionAdapterContract::REQUIRED`（适配器拥有的内存注册、适配器拥有的传输完整性、
 确认回收）；该合约是软件所有权边界，而非高速网络或生产就绪证据。
+对钉住 `BufferedHostMemoryPullV1` 与 `AuthenticatedEncryptedTransport` 的配置，
+Power 提供可注入的产品面对：`BufferedHostLoopbackStateTransfer` 与
+`BufferedHostLoopbackPhaseExecutor`（`paired_for_profile`），经认证回环 TCP 移动
+不透明主机缓冲，并在 Ready decode 前校验不透明一致性字节。仅传输回执从不算
+decode 成功；不完整配对与 Empty 占位仍失败关闭。这不是 HSN、llama.cpp P/D 或
+模型后端证据。
 组合根将该对包装并组装为单一 `DistributedServingRuntime`，它是唯一的请求级生命周期与就绪源。
 仅当运行时匹配不可变配置且可接受工作时，Power 才发布已配置的 P/D 角色。仅传输完成
 从不计为成功 decode。每个注入的传输适配器由 `BoundedStateTransferService` 包装，
@@ -315,7 +321,8 @@ observation generation 单调。经认证的内部请求流 API 将这些操作�
 prefill 与 decode Power 进程，并证明经认证的 HTTP 流、加密不透明状态交接、
 对等丢失失败、重启 epoch 失效、陈旧 Cloud deployment generation / 外源
 peer-set 拒绝与优雅清理。其后端与回环传输是测试 fixture，
-而非导出适配器。仓库仍未附带具体的分布式后端/传输对，因此这不是端到端 llm-d 部署声明。
+而非导出适配器。产品表面回环对仅覆盖不透明一致性组合，不是端到端 llm-d
+或真实后端 P/D 声明。
 
 ## API 表面
 
