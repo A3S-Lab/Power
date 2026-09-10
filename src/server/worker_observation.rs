@@ -212,9 +212,9 @@ mod tests {
         PhaseExecutionOutput, PhaseExecutorCapabilities, PhaseExecutorHealth, PhaseSessionPoolMode,
         PhaseWeightCacheMode, PrefillDecodeExecutionProfile, PreparePhaseExecution,
         PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
-        ServingExecutionProfile, ServingPhaseExecutor, ServingPrivacyMode, StateKind,
-        StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt,
-        StateTransferService, StateTransferSource, StateTransferTarget,
+        ServingCompositionTransport, ServingExecutionProfile, ServingPhaseExecutor,
+        ServingPrivacyMode, StateKind, StateTransferCapabilities, StateTransferProtocol,
+        StateTransferReceipt, StateTransferService, StateTransferSource, StateTransferTarget,
     };
 
     use super::{cache_pressure_basis_points, AppState, ServingPhase, TransferHealth};
@@ -444,6 +444,63 @@ mod tests {
         assert_eq!(observation.capabilities.phases, [ServingPhase::Decode]);
         assert!(observation.ready_phases.is_empty());
         assert_eq!(observation.transfer_health, TransferHealth::Unavailable);
+    }
+
+    #[test]
+    fn direct_device_memory_pull_product_port_never_lists_ready_phases() {
+        let profile = ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".to_string(),
+            model_sha256: "1".repeat(64),
+            backend: "direct-device-memory-pull".to_string(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
+            transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
+        })
+        .unwrap();
+        let (transfer, executor) =
+            crate::serving::DirectDeviceMemoryPullPhaseExecutor::paired_for_profile(&profile)
+                .unwrap();
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            ..PowerConfig::default()
+        };
+        let state = AppState::new(
+            Arc::new(ModelRegistry::new()),
+            Arc::new(BackendRegistry::new()),
+            Arc::new(config),
+        );
+        let bounded =
+            BoundedStateTransferService::new(profile.clone(), state.worker_epoch(), transfer)
+                .unwrap();
+        let runtime = DistributedServingRuntime::new(profile, Arc::new(bounded), executor).unwrap();
+        let state = state
+            .with_distributed_serving(Arc::new(runtime))
+            .with_auth(Arc::new(ApiKeyAuth::new(&["service-key".to_string()])));
+        let observation = state.worker_observation();
+
+        assert_eq!(observation.capabilities.phases, [ServingPhase::Decode]);
+        assert!(observation.capabilities.state_transfer);
+        assert!(observation.ready_phases.is_empty());
+        assert_eq!(observation.transfer_health, TransferHealth::Unavailable);
+        assert!(!state.distributed_serving.as_ref().unwrap().accepts_work());
     }
 
     #[test]

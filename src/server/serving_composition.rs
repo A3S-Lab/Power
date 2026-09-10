@@ -4,16 +4,18 @@ use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::serving::{
     validate_injected_production_adapters, BufferedHostLoopbackPhaseExecutor,
-    ServingCompositionTransport, ServingPhaseExecutor, StateTransferService, TransferHealth,
+    DirectDeviceMemoryPullPhaseExecutor, ServingCompositionTransport, ServingPhaseExecutor,
+    StateTransferService, TransferHealth,
 };
 
 /// Resolve ACL composition transport into injectable adapters before startup
 /// validation.
 ///
-/// `serving_execution.transport = buffered-host-loopback` is an honest opt-in
-/// that installs the product loopback pair. It refuses silent auto-wire from
-/// protocol alone and refuses mixing with builder-injected adapters. Incomplete
-/// external pairs remain a validation error.
+/// `serving_execution.transport` is an honest opt-in that installs a product
+/// pair. It refuses silent auto-wire from protocol alone and refuses mixing
+/// with builder-injected adapters. Incomplete external pairs remain a
+/// validation error. DirectDeviceMemoryPull installs an Unavailable HSN port
+/// and never claims high-speed evidence.
 pub(super) fn resolve(
     config: &PowerConfig,
     state_transfer: Option<Arc<dyn StateTransferService>>,
@@ -24,19 +26,34 @@ pub(super) fn resolve(
 )> {
     match config.serving_execution.composition_transport() {
         None => Ok((state_transfer, phase_executor)),
-        Some(ServingCompositionTransport::BufferedHostLoopback) => {
+        Some(transport) => {
             if state_transfer.is_some() || phase_executor.is_some() {
-                return Err(PowerError::Config(
-                    "serving_execution.transport = buffered-host-loopback cannot combine with builder-injected distributed adapters"
-                        .to_string(),
-                ));
+                return Err(PowerError::Config(format!(
+                    "serving_execution.transport = {transport} cannot combine with builder-injected distributed adapters"
+                )));
             }
-            let (transfer, executor) =
-                BufferedHostLoopbackPhaseExecutor::paired_for_profile(&config.serving_execution)?;
-            Ok((
-                Some(transfer as Arc<dyn StateTransferService>),
-                Some(executor as Arc<dyn ServingPhaseExecutor>),
-            ))
+            match transport {
+                ServingCompositionTransport::BufferedHostLoopback => {
+                    let (transfer, executor) =
+                        BufferedHostLoopbackPhaseExecutor::paired_for_profile(
+                            &config.serving_execution,
+                        )?;
+                    Ok((
+                        Some(transfer as Arc<dyn StateTransferService>),
+                        Some(executor as Arc<dyn ServingPhaseExecutor>),
+                    ))
+                }
+                ServingCompositionTransport::DirectDeviceMemoryPull => {
+                    let (transfer, executor) =
+                        DirectDeviceMemoryPullPhaseExecutor::paired_for_profile(
+                            &config.serving_execution,
+                        )?;
+                    Ok((
+                        Some(transfer as Arc<dyn StateTransferService>),
+                        Some(executor as Arc<dyn ServingPhaseExecutor>),
+                    ))
+                }
+            }
         }
     }
 }
@@ -506,6 +523,135 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.to_string().contains("buffered-host-memory-pull-v1"));
+    }
+
+    fn direct_device_profile(
+        transport: Option<ServingCompositionTransport>,
+    ) -> ServingExecutionProfile {
+        ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".to_string(),
+            model_sha256: "1".repeat(64),
+            backend: "direct-device-memory-pull".to_string(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
+            transport,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn direct_device_memory_pull_opt_in_wires_unavailable_pair_and_never_advertises() {
+        let profile =
+            direct_device_profile(Some(ServingCompositionTransport::DirectDeviceMemoryPull));
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) = resolve(&config, None, None).unwrap();
+        validate(&config, transfer.as_deref(), executor.as_deref()).unwrap();
+        let transfer = transfer.expect("transport opt-in installs transfer");
+        let executor = executor.expect("transport opt-in installs phase executor");
+        assert_eq!(transfer.health(), TransferHealth::Unavailable);
+        assert!(!profile.may_advertise_prefill_decode());
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
+                .unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile.clone(), bounded, executor).unwrap();
+        assert!(!runtime.accepts_work());
+        assert_eq!(runtime.transfer_health(), TransferHealth::Unavailable);
+        assert_eq!(
+            profile.composition_transport(),
+            Some(ServingCompositionTransport::DirectDeviceMemoryPull)
+        );
+    }
+
+    #[test]
+    fn direct_device_memory_pull_opt_in_refuses_builder_injected_pair() {
+        let profile =
+            direct_device_profile(Some(ServingCompositionTransport::DirectDeviceMemoryPull));
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) =
+            crate::serving::DirectDeviceMemoryPullPhaseExecutor::paired_for_profile(&profile)
+                .unwrap();
+        let err = match resolve(
+            &config,
+            Some(transfer as Arc<dyn StateTransferService>),
+            Some(executor as Arc<dyn ServingPhaseExecutor>),
+        ) {
+            Ok(_) => panic!("expected resolve to reject a builder injection mix"),
+            Err(error) => error,
+        };
+        assert!(err.to_string().contains("cannot combine"));
+        assert!(err.to_string().contains("direct-device-memory-pull"));
+    }
+
+    #[test]
+    fn direct_device_memory_pull_transport_with_buffered_protocol_fails_closed() {
+        let err = ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".to_string(),
+            model_sha256: "1".repeat(64),
+            backend: "direct-device-memory-pull".to_string(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
+            transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("direct-device-memory-pull-v1"));
+    }
+
+    #[test]
+    fn protocol_alone_does_not_auto_wire_direct_device_memory_pull() {
+        let profile = direct_device_profile(None);
+        let config = PowerConfig {
+            serving_execution: profile,
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) = resolve(&config, None, None).unwrap();
+        assert!(transfer.is_none());
+        assert!(executor.is_none());
     }
 
     #[test]

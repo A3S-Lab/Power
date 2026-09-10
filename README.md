@@ -315,10 +315,12 @@ verification.
 
 The built-in composition remains aggregated. A downstream disaggregated build
 must either inject an exact profile-bound `StateTransferService` and
-`ServingPhaseExecutor` through `PowerServerBuilder`, or set the honest ACL
-opt-in `serving_execution.transport = "buffered-host-loopback"` (programmatic
-equivalent: `with_buffered_host_loopback_transport`) so Power installs the
-product loopback pair. Either service alone is a startup error; protocol alone
+`ServingPhaseExecutor` through `PowerServerBuilder`, or set an honest ACL
+opt-in: `serving_execution.transport = "buffered-host-loopback"` (programmatic
+equivalent: `with_buffered_host_loopback_transport`) for the product loopback
+pair, or `serving_execution.transport = "direct-device-memory-pull"`
+(programmatic equivalent: `with_direct_device_memory_pull_transport`) for the
+Unavailable HSN product port. Either service alone is a startup error; protocol alone
 never auto-wires. Empty/Unavailable placeholders
 (`EmptyStateTransferService` / `EmptyServingPhaseExecutor`) also fail closed
 until a concrete adapter is injected. Injected ports declare
@@ -337,8 +339,16 @@ host-buffer identity v2 binds those same digests into the
 `SealedStateEnvelope` state-id so reopen with privacy/attestation drift fails
 closed. Transfer receipt alone is never decode success;
 incomplete pairs and Empty placeholders still fail closed. This is not HSN,
-llama.cpp P/D, or model-backend evidence. The composition root wraps and
-assembles that pair into one
+llama.cpp P/D, or model-backend evidence. For profiles that pin
+`DirectDeviceMemoryPullV1`, Power ships a named product port—
+`DirectDeviceMemoryPullStateTransfer` plus
+`DirectDeviceMemoryPullPhaseExecutor`—via ACL
+`transport = "direct-device-memory-pull"`. That pair is Injected + required
+contract so composition can start, but health stays Unavailable, data-path
+methods refuse work, and worker `ready_phases` never list prefill/decode until
+a real high-speed adapter is bound. This is the HSN product port, not HSN
+evidence. The composition root wraps and
+assembles injected pairs into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and
 readiness source. Power publishes the configured P/D role only when the runtime
 matches the immutable profile and can accept work. Transport completion alone

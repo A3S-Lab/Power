@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -54,6 +56,36 @@ pub enum ServingCompositionTransport {
     /// Install `BufferedHostLoopbackStateTransfer` +
     /// `BufferedHostLoopbackPhaseExecutor` for the immutable profile.
     BufferedHostLoopback,
+    /// Install `DirectDeviceMemoryPullStateTransfer` +
+    /// `DirectDeviceMemoryPullPhaseExecutor` for `DirectDeviceMemoryPullV1`.
+    ///
+    /// The pair is a named product port: Injected + required contract, but
+    /// Unavailable until a real high-speed adapter exists. It never claims
+    /// HSN evidence and must not advertise P/D readiness.
+    DirectDeviceMemoryPull,
+}
+
+impl ServingCompositionTransport {
+    /// Whether a healthy injection of this transport may list prefill/decode
+    /// in worker `ready_phases`.
+    ///
+    /// Buffered-host loopback may advertise when adapters accept work.
+    /// DirectDeviceMemoryPull never advertises: no in-tree HSN adapter exists.
+    pub fn may_advertise_prefill_decode(self) -> bool {
+        match self {
+            Self::BufferedHostLoopback => true,
+            Self::DirectDeviceMemoryPull => false,
+        }
+    }
+}
+
+impl fmt::Display for ServingCompositionTransport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BufferedHostLoopback => formatter.write_str("buffered-host-loopback"),
+            Self::DirectDeviceMemoryPull => formatter.write_str("direct-device-memory-pull"),
+        }
+    }
 }
 
 /// How a prefill/decode worker obtains model weights.
@@ -166,9 +198,13 @@ pub struct PrefillDecodeExecutionProfile {
     pub session_pool_policy_sha256: Option<String>,
     /// Honest composition opt-in for a product-surface adapter pair.
     ///
+    /// Honest composition opt-in for a product-surface adapter pair.
+    ///
     /// Absent keeps fail-closed external injection. `buffered-host-loopback`
-    /// installs the product loopback pair only when protocol/privacy match;
-    /// it never auto-wires from protocol alone and never claims HSN.
+    /// installs the product loopback pair only when protocol/privacy match.
+    /// `direct-device-memory-pull` installs the Unavailable HSN product port
+    /// when protocol is `DirectDeviceMemoryPullV1`. Protocol alone never
+    /// auto-wires and neither opt-in claims HSN evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<ServingCompositionTransport>,
 }
@@ -264,19 +300,30 @@ impl ServingExecutionProfile {
                 "attested-private-fabric serving requires attestation_policy_sha256".to_string(),
             ));
         }
-        if let Some(ServingCompositionTransport::BufferedHostLoopback) = transport {
-            if !matches!(protocol, StateTransferProtocol::BufferedHostMemoryPullV1) {
-                return Err(PowerError::Config(
-                    "serving_execution.transport = buffered-host-loopback requires protocol = buffered-host-memory-pull-v1"
-                        .to_string(),
-                ));
+        match transport {
+            Some(ServingCompositionTransport::BufferedHostLoopback) => {
+                if !matches!(protocol, StateTransferProtocol::BufferedHostMemoryPullV1) {
+                    return Err(PowerError::Config(
+                        "serving_execution.transport = buffered-host-loopback requires protocol = buffered-host-memory-pull-v1"
+                            .to_string(),
+                    ));
+                }
+                if !matches!(privacy, ServingPrivacyMode::AuthenticatedEncryptedTransport) {
+                    return Err(PowerError::Config(
+                        "serving_execution.transport = buffered-host-loopback requires privacy = authenticated-encrypted-transport"
+                            .to_string(),
+                    ));
+                }
             }
-            if !matches!(privacy, ServingPrivacyMode::AuthenticatedEncryptedTransport) {
-                return Err(PowerError::Config(
-                    "serving_execution.transport = buffered-host-loopback requires privacy = authenticated-encrypted-transport"
-                        .to_string(),
-                ));
+            Some(ServingCompositionTransport::DirectDeviceMemoryPull) => {
+                if !matches!(protocol, StateTransferProtocol::DirectDeviceMemoryPullV1) {
+                    return Err(PowerError::Config(
+                        "serving_execution.transport = direct-device-memory-pull requires protocol = direct-device-memory-pull-v1"
+                            .to_string(),
+                    ));
+                }
             }
+            None => {}
         }
         if *generation == 0 || *generation > MAX_EXACT_ACL_INTEGER {
             return Err(PowerError::Config(format!(
@@ -316,6 +363,18 @@ impl ServingExecutionProfile {
         match self {
             Self::Aggregated {} => None,
             Self::PrefillDecode { execution } => execution.transport,
+        }
+    }
+
+    /// Whether worker observation may list this profile's P/D phase as ready.
+    ///
+    /// Builder-injected adapters (no composition transport) remain gated only
+    /// by provision, contract, and health. Product DirectDeviceMemoryPull
+    /// never advertises until a real HSN adapter exists.
+    pub fn may_advertise_prefill_decode(&self) -> bool {
+        match self.composition_transport() {
+            None => true,
+            Some(transport) => transport.may_advertise_prefill_decode(),
         }
     }
 

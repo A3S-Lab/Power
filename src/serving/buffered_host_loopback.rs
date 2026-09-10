@@ -937,7 +937,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(receipt.bytes_transferred, 64);
-        assert_eq!(decode.take_owned_state(&destination).unwrap(), opaque_state());
+        assert_eq!(
+            decode.take_owned_state(&destination).unwrap(),
+            opaque_state()
+        );
     }
 
     #[tokio::test]

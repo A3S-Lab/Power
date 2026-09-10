@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Product-surface DirectDeviceMemoryPull port for `DirectDeviceMemoryPullV1`:
+  `DirectDeviceMemoryPullStateTransfer` + `DirectDeviceMemoryPullPhaseExecutor`
+  (`paired_for_profile`). ACL
+  `serving_execution.transport = "direct-device-memory-pull"` (programmatic
+  equivalent: `PowerServerBuilder::with_direct_device_memory_pull_transport`)
+  installs the pair as Injected + `ProductionAdapterContract::REQUIRED`, but
+  health stays Unavailable and every data-path method refuses work until a real
+  high-speed adapter is bound. `DistributedServingRuntime::accepts_work` and
+  worker `ready_phases` refuse to advertise P/D for this composition transport.
+  This is the named HSN product port, not HSN evidence, llama.cpp P/D, or
+  model-semantic readiness. Empty placeholders still fail composition; protocol
+  alone never auto-wires.
 - Buffered-host loopback transfer AAD v2 binds the immutable profile privacy
   mode, `privacy_policy_sha256`, and optional `attestation_policy_sha256` into
   every publish/consume authentication tag. Peers with matching model /

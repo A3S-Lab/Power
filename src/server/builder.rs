@@ -114,6 +114,28 @@ impl PowerServerBuilder {
         Ok(self)
     }
 
+    /// Install the product DirectDeviceMemoryPull pair for the configured
+    /// `prefill-decode` profile.
+    ///
+    /// Prefer ACL `serving_execution.transport = "direct-device-memory-pull"`.
+    /// The pair is Injected + required contract but Unavailable until a real
+    /// HSN adapter is bound; it never advertises P/D readiness.
+    pub fn with_direct_device_memory_pull_transport(mut self) -> Result<Self> {
+        if self.options.state_transfer_service.is_some() || self.options.phase_executor.is_some() {
+            return Err(crate::error::PowerError::Config(
+                "with_direct_device_memory_pull_transport cannot combine with separately injected distributed adapters"
+                    .to_string(),
+            ));
+        }
+        let (transfer, executor) =
+            crate::serving::DirectDeviceMemoryPullPhaseExecutor::paired_for_profile(
+                &self.options.config.serving_execution,
+            )?;
+        self.options.state_transfer_service = Some(transfer);
+        self.options.phase_executor = Some(executor);
+        Ok(self)
+    }
+
     /// Start with only caller-injected backends.
     pub fn without_default_backends(mut self) -> Self {
         self.options.include_default_backends = false;

@@ -350,7 +350,7 @@ model-semantics owner.
   generation or foreign peer set carried by transfer descriptors (beyond
   process-epoch checks), including cross-process HTTP evidence that prefill
   rejects a tampered target and decode refuses a tampered source without
-  Ready/NDJSON. High-speed-network transport and production adapters remain
+  Ready/NDJSON.   High-speed-network transport and production adapters remain
   open. A typed `ProductionAdapterContract` now documents the required adapter
   memory ownership (`AdapterOwnedRegistration`), transport integrity, and
   confirmed-reclaim cleanup obligations; Empty/Unavailable
@@ -377,15 +377,31 @@ model-semantics owner.
   bytes verify after consume (`Recompute` on missing/corrupt). Transfer-only
   or Empty-phase compositions still fail closed. This completes an injectable
   product pair for buffered-host loopback conformance composition only; HSN
-  and real backend/llama.cpp P/D remain open. Force-sealing wire tickets with
+  and real backend/llama.cpp P/D remain open. Power now also ships a named
+  product-surface DirectDeviceMemoryPull pair
+  (`DirectDeviceMemoryPullStateTransfer` +
+  `DirectDeviceMemoryPullPhaseExecutor`, ACL
+  `transport = "direct-device-memory-pull"`) that pins
+  `DirectDeviceMemoryPullV1`, reports Injected + required contract so
+  composition can install it instead of Empty, and stays Unavailable with
+  refused data-path work until a real high-speed adapter is bound.
+  `accepts_work` / worker `ready_phases` refuse to advertise P/D for that
+  composition transport. This is the HSN product port, not HSN evidence:
+  cancellation, peer loss, stale generation, corrupt state, resource pressure,
+  process restart, and cleanup still need a real adapter on a high-speed path
+  before this checkbox can close. Force-sealing wire tickets with
   `SealedStateEnvelope` is an intentional non-goal (opaque metadata + fail-closed
   sealed-persistence rejection; host buffers seal instead).
-  ACL/composition now accepts an honest opt-in
+  ACL/composition now accepts honest opt-ins
   `serving_execution.transport = "buffered-host-loopback"` (or
-  `PowerServerBuilder::with_buffered_host_loopback_transport`) that wires the
-  product pair at startup when protocol/privacy match. Protocol alone never
-  auto-wires; incomplete pairs and builder+transport mixes fail closed.
-  Aggregated defaults still advertise no P/D and make no HSN claim.
+  `PowerServerBuilder::with_buffered_host_loopback_transport`) and
+  `serving_execution.transport = "direct-device-memory-pull"` (or
+  `with_direct_device_memory_pull_transport`). Loopback wires the working
+  product pair when protocol/privacy match. DirectDeviceMemoryPull wires the
+  Unavailable HSN product port when protocol is `DirectDeviceMemoryPullV1` and
+  never advertises P/D. Protocol alone never auto-wires; incomplete pairs and
+  builder+transport mixes fail closed. Aggregated defaults still advertise no
+  P/D and make no HSN claim.
   Cross-process distributed-serving conformance now loads that same ACL
   transport opt-in and exercises the product pair end-to-end (success stream,
   peer-loss, restart, stale deployment / peer-set) instead of a test-only
@@ -398,6 +414,18 @@ model-semantics owner.
   (`transfer-host-buffer.v2`) binds the same privacy/attestation digests into
   the `SealedStateEnvelope` state-id so reopen with a drifted policy fails
   closed without claiming attested fabric or TEE-export readiness.
+
+Remaining before any open P6 checkbox can close (not claimed here):
+
+- Reuse: live session-replica / weight-hierarchy lifecycle under a real
+  backend P/D executor (software reuse of those ports is already bound).
+- Opaque state: model-owned KV/recurrent layout and import/export in
+  llama.cpp or picolm; DirectDeviceMemoryPull phase is not that executor.
+- Typed outcomes: production phase executors bound to that layout; the
+  Unavailable DirectDeviceMemoryPull companion is not a backend executor.
+- HSN: a real DirectDeviceMemoryPull adapter with high-speed-path evidence
+  (cancellation, peer loss, stale generation, corrupt state, pressure,
+  restart, cleanup). The named Unavailable product port is not that evidence.
 
 ## Cross-repository delivery order
 

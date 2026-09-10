@@ -258,6 +258,9 @@ impl DistributedServingRuntime {
         // Defense in depth: composition already refuses Empty / non-REQUIRED
         // contracts, but readiness must never project prefill/decode while either
         // port is still an Empty placeholder or declares a non-required contract.
+        // DirectDeviceMemoryPull composition never advertises: no in-tree HSN
+        // adapter exists. Builder-injected fixtures (transport absent) still use
+        // provision/health only.
         !self.inner.tainted.load(Ordering::Acquire)
             && self.inner.transfer.provision().is_injected()
             && self.inner.executor.provision().is_injected()
@@ -268,6 +271,7 @@ impl DistributedServingRuntime {
                 self.transfer_health(),
                 TransferHealth::Ready | TransferHealth::Degraded
             )
+            && self.inner.profile.may_advertise_prefill_decode()
     }
 
     pub async fn prepare_decode(

@@ -296,8 +296,10 @@ gpu {
 内置组合仍为聚合式。下游解聚构建必须通过 `PowerServerBuilder` 注入精确配置绑定的
 `StateTransferService` 与 `ServingPhaseExecutor`，或设置诚实 ACL 选项
 `serving_execution.transport = "buffered-host-loopback"`（程序等价：
-`with_buffered_host_loopback_transport`）以安装产品回环对；单独任一服务都是启动错误，
-仅凭 protocol 从不自动接线。
+`with_buffered_host_loopback_transport`）以安装产品回环对，或
+`serving_execution.transport = "direct-device-memory-pull"`（程序等价：
+`with_direct_device_memory_pull_transport`）以安装 Unavailable 的 HSN 产品端口；
+单独任一服务都是启动错误，仅凭 protocol 从不自动接线。
 Empty/Unavailable 占位（`EmptyStateTransferService` / `EmptyServingPhaseExecutor`）
 在注入具体适配器前同样失败关闭。注入端口声明
 `ProductionAdapterContract::REQUIRED`（适配器拥有的内存注册、适配器拥有的传输完整性、
@@ -307,7 +309,11 @@ Power 提供可注入的产品面对：`BufferedHostLoopbackStateTransfer` 与
 `BufferedHostLoopbackPhaseExecutor`（`paired_for_profile`），经认证回环 TCP 移动
 不透明主机缓冲，并在 Ready decode 前校验不透明一致性字节。仅传输回执从不算
 decode 成功；不完整配对与 Empty 占位仍失败关闭。这不是 HSN、llama.cpp P/D 或
-模型后端证据。
+模型后端证据。对钉住 `DirectDeviceMemoryPullV1` 的配置，Power 提供命名产品端口
+`DirectDeviceMemoryPullStateTransfer` 与 `DirectDeviceMemoryPullPhaseExecutor`
+（ACL `transport = "direct-device-memory-pull"`）：Injected + 必需合约以便组合，
+但健康度保持 Unavailable，数据路径拒绝工作，worker `ready_phases` 在真实高速
+适配器绑定前从不列出 prefill/decode。这是 HSN 产品端口，不是 HSN 证据。
 组合根将该对包装并组装为单一 `DistributedServingRuntime`，它是唯一的请求级生命周期与就绪源。
 仅当运行时匹配不可变配置且可接受工作时，Power 才发布已配置的 P/D 角色。仅传输完成
 从不计为成功 decode。每个注入的传输适配器由 `BoundedStateTransferService` 包装，

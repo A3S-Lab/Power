@@ -34,6 +34,9 @@ pub enum StateKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StateTransferProtocol {
+    /// Device-memory / high-speed pull. The product port
+    /// [`crate::serving::DirectDeviceMemoryPullStateTransfer`] fail-closes
+    /// Unavailable until a real adapter is bound and does not claim HSN evidence.
     DirectDeviceMemoryPullV1,
     BufferedHostMemoryPullV1,
 }

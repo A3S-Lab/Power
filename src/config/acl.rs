@@ -788,6 +788,59 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_direct_device_memory_pull_transport_opt_in() {
+        use crate::serving::{
+            DisaggregatedServingRole, PhaseSessionPoolMode, PhaseWeightCacheMode,
+            PrefillDecodeExecutionProfile, ServingCompositionTransport, ServingExecutionProfile,
+            ServingPrivacyMode, StateKind, StateTransferProtocol,
+        };
+
+        let profile = ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".into(),
+            model_sha256: "1".repeat(64),
+            backend: "direct-device-memory-pull".into(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
+            transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
+        })
+        .unwrap();
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+
+        let encoded = serialize(&config).unwrap();
+        assert!(encoded.contains("direct-device-memory-pull"));
+        let decoded = deserialize(&encoded).unwrap();
+        assert_eq!(decoded.serving_execution, profile);
+        assert_eq!(
+            decoded.serving_execution.composition_transport(),
+            Some(ServingCompositionTransport::DirectDeviceMemoryPull)
+        );
+        assert!(!decoded.serving_execution.may_advertise_prefill_decode());
+        decoded.validate().unwrap();
+    }
+
+    #[test]
     fn aggregated_profile_rejects_transport_opt_in() {
         let error = deserialize(
             "serving_execution { profile = \"aggregated\" transport = \"buffered-host-loopback\" }\n",

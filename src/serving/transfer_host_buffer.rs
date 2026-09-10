@@ -205,9 +205,7 @@ fn state_kind_tag(kind: StateKind) -> &'static [u8] {
 
 fn privacy_mode_tag(privacy: ServingPrivacyMode) -> &'static [u8] {
     match privacy {
-        ServingPrivacyMode::AuthenticatedEncryptedTransport => {
-            b"authenticated-encrypted-transport"
-        }
+        ServingPrivacyMode::AuthenticatedEncryptedTransport => b"authenticated-encrypted-transport",
         ServingPrivacyMode::AttestedPrivateFabric => b"attested-private-fabric",
     }
 }

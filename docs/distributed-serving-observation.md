@@ -76,6 +76,16 @@ calls `with_buffered_host_loopback_transport` / injects both ports explicitly;
 protocol alone never auto-wires. The aggregated default still refuses any
 transfer injection and never advertises P/D readiness.
 
+For profiles that pin `DirectDeviceMemoryPullV1`, Power also ships a named
+product port (`DirectDeviceMemoryPullStateTransfer` +
+`DirectDeviceMemoryPullPhaseExecutor`) via ACL
+`transport = "direct-device-memory-pull"` or
+`with_direct_device_memory_pull_transport`. The pair is Injected +
+`ProductionAdapterContract::REQUIRED` so composition can install it instead of
+Empty, but health stays Unavailable, data-path methods refuse work, and
+`ready_phases` never lists prefill/decode. This is the high-speed product
+surface, not high-speed-network evidence.
+
 ## State-transfer port
 
 Power owns a model-neutral, pull-oriented transfer lifecycle:
@@ -258,10 +268,12 @@ serving_execution {
 Static profile parsing and attestation binding do not make the phase runnable.
 Startup remains fail-closed until the composition root supplies both an exact
 profile-bound transfer adapter and a verified phase executor, either by
-builder injection or by the honest ACL opt-in
-`transport = "buffered-host-loopback"` (which installs the product loopback
-pair only when `protocol` / `privacy` match). Protocol alone never auto-wires,
-and aggregated defaults still advertise no P/D.
+builder injection or by an honest ACL opt-in:
+`transport = "buffered-host-loopback"` (product loopback pair when `protocol` /
+`privacy` match) or `transport = "direct-device-memory-pull"` (Unavailable HSN
+product port when protocol is `DirectDeviceMemoryPullV1`). Protocol alone never
+auto-wires, and aggregated defaults still advertise no P/D. DirectDeviceMemoryPull
+never lists prefill/decode in `ready_phases`.
 
 ~~~acl
 api_keys = ["<Gateway service-key SHA-256>"]

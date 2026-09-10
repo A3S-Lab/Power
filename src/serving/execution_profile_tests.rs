@@ -113,6 +113,47 @@ fn prefill_decode_profile_rejects_noncanonical_or_unbounded_values() {
 }
 
 #[test]
+fn direct_device_memory_pull_transport_requires_matching_protocol() {
+    let mut matching = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut matching {
+        execution.transport = Some(ServingCompositionTransport::DirectDeviceMemoryPull);
+    }
+    matching.validate().unwrap();
+    assert!(!matching.may_advertise_prefill_decode());
+    assert_eq!(
+        matching.composition_transport(),
+        Some(ServingCompositionTransport::DirectDeviceMemoryPull)
+    );
+
+    let mut mismatched = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut mismatched {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.transport = Some(ServingCompositionTransport::DirectDeviceMemoryPull);
+    }
+    let err = mismatched.validate().unwrap_err();
+    assert!(err.to_string().contains("direct-device-memory-pull-v1"));
+}
+
+#[test]
+fn unknown_composition_transport_fails_closed_at_deserialization() {
+    let mut document = serde_json::to_value(profile(DisaggregatedServingRole::Decode)).unwrap();
+    document["transport"] = serde_json::json!("rdma-nixl");
+    assert!(serde_json::from_value::<ServingExecutionProfile>(document).is_err());
+}
+
+#[test]
+fn buffered_host_loopback_may_advertise_prefill_decode_when_protocol_matches() {
+    let mut loopback = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut loopback {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.transport = Some(ServingCompositionTransport::BufferedHostLoopback);
+    }
+    loopback.validate().unwrap();
+    assert!(loopback.may_advertise_prefill_decode());
+    assert!(profile(DisaggregatedServingRole::Decode).may_advertise_prefill_decode());
+}
+
+#[test]
 fn state_binding_must_match_model_execution_layout_kind_and_byte_limit() {
     let profile = profile(DisaggregatedServingRole::Decode);
     profile.validate_state_binding(&binding()).unwrap();
@@ -265,4 +306,5 @@ fn execution_profile_is_send_and_sync() {
     assert_send_sync::<ServingExecutionProfile>();
     assert_send_sync::<PhaseWeightCacheMode>();
     assert_send_sync::<PhaseSessionPoolMode>();
+    assert_send_sync::<ServingCompositionTransport>();
 }
