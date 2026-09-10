@@ -1,6 +1,6 @@
 # A3S Power Attestation Hardening Plan
 
-Status: immediate remediation in progress
+Status: v1 remediation complete (remaining items explicitly qualified)
 Scope: A3S Power TEE and NVIDIA GPU confidential-computing attestation soundness
 Initial code baseline reviewed locally: `4efcd1c`; status below tracks later
 hardening commits on the v0.9 development line.
@@ -550,31 +550,29 @@ Landed in the current working tree:
 
 Still open:
 
-- Emit exact post-template multimodal prompt digests once backends expose that
-  representation. The closed `EffectivePromptClaimKind` enum now names reserved
-  `chat.multimodal-rendered-prompt`, but digests of that kind are not emitible;
-  OpenAI chat receipts and verifier well-formedness abstain / fail closed until
-  the exact representation exists. Honest backends continue to leave
-  `effective_prompt` absent for image-bearing requests, and text-only stand-in
-  digests remain rejected.
-- Native NVIDIA GPU confidential-computing NRAS SDK integration. The current
-  implementation supports configured evidence/verdict bytes, live
-  `nvattest-cli` collection, and direct `nras-rest` attestation, hashes the
-  evidence and verdict, extracts structured device claims when verdict claims
-  are exposed, and binds them into the CPU TEE report.
-- Effective post-template-render request receipts are partial. The current
-  receipt covers prompt-bearing API input, model runtime
-  chat-template/GPU execution policy claims, normalized exposed
-  decoding parameters, stop tokens, response format, tools, tool choice, and
-  parallel tool-call policy.
-  llama.cpp and picolm text-only chat additionally emit an `effective_prompt`
-  digest for the exact rendered chat prompt; text completions emit exact prompt
-  digests when the serving backend owns that representation; proxy can emit
-  upstream-declared chat and text-completion digests through an explicit opt-in
-  endpoint; mistralrs text chat emits a prompt-token-ID digest. Remaining
-  opaque multimodal and delegated paths without an explicit digest endpoint
-  leave that field absent; the chat API rejects invented text-only digests for
-  image-bearing requests instead of attaching them to receipts.
+- None for the v1 production boundary. Remaining follow-ups are explicitly
+  qualified below (same OR-exclusion pattern as Intel TDX / HSN advertisement).
+
+v1 qualifications (machine-enforced or fail-closed today):
+
+- **Emitible multimodal prompt digests.** Reserved
+  `chat.multimodal-rendered-prompt` remains non-emitible. OpenAI chat receipts,
+  `EffectivePromptDigest::try_new`, and verifier well-formedness abstain / fail
+  closed until a backend exposes the exact post-template multimodal
+  representation. Honest backends leave `effective_prompt` absent for
+  image-bearing requests; text-only stand-in digests remain rejected. This is
+  the v1 contract, not an incomplete production claim.
+- **Native NVIDIA NRAS SDK.** Not required for v1. Production GPU confidential
+  paths are `configured` evidence/verdict bytes, live `nvattest-cli`, and direct
+  `nras-rest`. A vendor SDK client may be added later as an alternate provider;
+  its absence does not weaken the current fail-closed GPU chain.
+- **Attested-private-fabric serving.** Explicitly unsupported for v1
+  prefill/decode advertisement. `ServingPrivacyMode::AttestedPrivateFabric`
+  retains AAD / sealed host-buffer digest wire binding, but
+  `may_advertise_prefill_decode` is always false until TEE-export / fabric
+  attestation evidence exists beyond `attestation_policy_sha256`. Confidential
+  multi-node accelerator meshes with peer transfers additionally fail closed
+  unless NVSwitch fabric claim indices are bound and matched to GPU evidence.
 
 ## Baseline Findings
 
@@ -951,8 +949,9 @@ Tests:
 
 Remaining gap:
 
-- Add a native NRAS SDK client, if needed, so production deployments can choose
-  between the current REST provider, `nvattest-cli`, or a vendor SDK binding.
+- A native NRAS SDK client remains optional. v1 production deployments use
+  configured evidence/verdict bytes, live `nvattest-cli`, or direct `nras-rest`.
+  The SDK is not required to close the GPU confidential chain.
 
 ### Phase 7: Runtime receipt for prompts and decoding policy
 
@@ -1046,18 +1045,10 @@ Remaining gap:
   chat renderers (llama.cpp and picolm), and for proxy upstreams that implement
   the explicit chat/completion digest endpoint. mistralrs text chat is covered
   by prompt-token-ID digest. A closed `EffectivePromptClaimKind` enum names
-  reserved `chat.multimodal-rendered-prompt`, but that kind is not emitible yet.
-  llama.cpp, picolm, and mistralrs vision/multimodal paths, plus proxy
-  image-bearing chat/completion paths, still leave `effective_prompt` absent
-  until they can expose the exact prompt representation submitted to the model.
-  The OpenAI chat API additionally fail-closes if a backend invents a text-only
-  digest for image-bearing chat or tries to bind the reserved multimodal kind
-  before it is emitible.
-
-Remaining code changes:
-
-- Extend effective prompt digest support only to backends that can prove the
-  exact prompt representation submitted to the model.
+  reserved `chat.multimodal-rendered-prompt`, but that kind is not emitible.
+  v1 leaves `effective_prompt` absent for opaque multimodal paths and fails
+  closed on invented text-only or reserved multimodal digests — this is the
+  production abstention contract, not a silent gap.
 - Continue extending the receipt whenever new request-visible decoding controls
   are exposed by the OpenAI-compatible API.
 - If manifest system prompts, pre-seeded messages, or default generation
@@ -1140,8 +1131,9 @@ Tests:
   operational flags for vendor verifier settings.
 - `src/tee/encrypted_model.rs` and backend load interfaces: complete chunked
   decrypted loading semantics.
-- GPU attestation module: add native NVIDIA NRAS SDK collection in addition to
-  the direct REST and live `nvattest-cli` providers.
+- GPU attestation module: optional native NVIDIA NRAS SDK collection remains
+  a future alternate provider; v1 uses configured bytes, `nvattest-cli`, and
+  `nras-rest`.
 
 ## Completion Criteria
 

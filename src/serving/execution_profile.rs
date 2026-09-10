@@ -40,6 +40,13 @@ pub enum ServingPrivacyMode {
     /// The data path authenticates both peers and encrypts state in transit.
     AuthenticatedEncryptedTransport,
     /// An attested peer set and its private fabric form the reviewed boundary.
+    ///
+    /// **v1 production matrix:** retained for forward-compatible AAD / sealed
+    /// host-buffer digest wire binding only. Prefill/decode advertisement is
+    /// explicitly unsupported until TEE-export / fabric attestation evidence
+    /// exists beyond `attestation_policy_sha256` (same OR-exclusion pattern as
+    /// Intel TDX and DirectDeviceMemoryPull / HSN). Machine enforcement keeps
+    /// [`ServingExecutionProfile::may_advertise_prefill_decode`] false.
     AttestedPrivateFabric,
 }
 
@@ -615,6 +622,9 @@ impl ServingExecutionProfile {
     /// advertisement is explicitly unsupported until a real high-speed adapter
     /// plus evidence suite exists (same OR-exclusion pattern as Intel TDX in
     /// `docs/v1-support-matrix.md`).
+    /// [`ServingPrivacyMode::AttestedPrivateFabric`] likewise never advertises:
+    /// optional `attestation_policy_sha256` wire binding is not TEE-export /
+    /// fabric attestation evidence.
     /// Typed-outcome / lifecycle work may still run via
     /// [`crate::serving::DistributedServingRuntime::execution_admissible`]
     /// while advertise stays false.
@@ -638,6 +648,12 @@ impl ServingExecutionProfile {
             execution.protocol,
             StateTransferProtocol::DirectDeviceMemoryPullV1
         ) {
+            return false;
+        }
+        // Machine-enforced v1 exclusion: AttestedPrivateFabric never advertises
+        // prefill/decode readiness. Digest wire binding alone is not fabric
+        // attestation evidence.
+        if matches!(execution.privacy, ServingPrivacyMode::AttestedPrivateFabric) {
             return false;
         }
         match execution.transport {

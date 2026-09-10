@@ -9,13 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Honest v1 production exclusion for attested-private-fabric readiness
+  (TDX/HSN OR-pattern): `ServingPrivacyMode::AttestedPrivateFabric` never
+  sets `may_advertise_prefill_decode` / worker `ready_phases` /
+  `accepts_work`, even when `attestation_policy_sha256` is present for AAD /
+  sealed host-buffer digest wire binding. Confidential multi-node GPU meshes
+  with peer transfers fail closed unless NVSwitch fabric claim indices are
+  declared and matched to GPU evidence. Documents the matrix exclusion and
+  qualifies attestation-hardening Still-open items (multimodal abstention,
+  optional NRAS SDK, attested-fabric exclusion) so v1 remediation is complete
+  without claiming fabric attestation, emitible multimodal digests, or a
+  native NRAS SDK.
+
 - Honest v1 production exclusion for DirectDeviceMemoryPull / HSN
   advertisement (TDX OR-pattern): `DirectDeviceMemoryPullV1` never sets
   `may_advertise_prefill_decode` / worker `ready_phases` / `accepts_work`,
   including builder-injected Ready fixtures; the named Unavailable product
   port refuses every data-path call and documents the matrix exclusion.
   Closes the last P6 HSN checkbox without claiming HSN works.
-  Attested-fabric readiness remains open.
 
 - Live P/D reuse evidence under shared session-pool + weight-hierarchy ports
   (`llamacpp` + `embedded-inference`, `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`):
@@ -26,8 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reclaims `BoundedStateTransferService` leases after live consume, and binds
   digest-only `DistributedOperationEvidence` via
   `ImportedModelState::consume_with_receipt_at`. Closes ROADMAP reuse /
-  opaque-state / typed-outcome checkboxes. Does **not** close HSN
-  DirectDeviceMemoryPull or attested-fabric.
+  opaque-state / typed-outcome checkboxes. Does **not** claim HSN
+  DirectDeviceMemoryPull works (v1-excluded) or that attested fabric works
+  (also v1-excluded; see attestation claim qualification).
 - Env-gated live authenticated HTTP typed-outcome / opaque-state evidence
   (`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`, `llamacpp` feature):
   `tests/llamacpp_phase_state_live.rs` →
@@ -37,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Ready prefill JSON after live capture; Ready NDJSON decode after
   consume+restore+live greedy sample). Together with the reuse brick above,
   this closes ROADMAP opaque-state / typed-outcome (HSN DirectDeviceMemoryPull
-  evidence and attested-fabric readiness remain open).
+  and attested-fabric are closed by v1 exclusion, not by claiming they work).
 - Honest `may_advertise_prefill_decode` / worker `ready_phases` for
   BackendOwned + buffered-host + llamacpp ownership/execution: profile ACL
   admits advertise only for that full pair; runtime `accepts_work` still

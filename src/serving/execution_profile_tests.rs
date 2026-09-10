@@ -371,6 +371,19 @@ fn may_advertise_prefill_decode_first_principles_true_vs_false() {
         execution.state_ownership = Some(ServingCompositionStateOwnership::LlamaCpp);
     }
     assert!(!ownership_only.may_advertise_prefill_decode());
+
+    // FALSE: AttestedPrivateFabric never advertises (v1 exclusion). Digest wire
+    // binding alone is not TEE-export / fabric attestation evidence — including
+    // when protocol would otherwise allow advertise without a transport opt-in.
+    let mut fabric = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut fabric {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.privacy = ServingPrivacyMode::AttestedPrivateFabric;
+        execution.attestation_policy_sha256 = Some(digest('a'));
+        execution.transport = None;
+    }
+    fabric.validate().unwrap();
+    assert!(!fabric.may_advertise_prefill_decode());
 }
 
 #[test]

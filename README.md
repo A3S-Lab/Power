@@ -386,8 +386,10 @@ Worker `ready_phases` may list P/D for that honest product pair when runtime
 is Injected+REQUIRED+Ready and (decode) a decode-token port is bound;
 DirectDeviceMemoryPull and Empty/Pending hollow Ready never advertise.
 HSN DirectDeviceMemoryPull advertisement is explicitly excluded from the
-v1 production matrix (machine-enforced non-advertise); attested-fabric
-readiness remains open. Reuse / opaque-state / typed-outcome
+v1 production matrix (machine-enforced non-advertise). Attested-private-fabric
+readiness is likewise excluded: `AttestedPrivateFabric` may bind
+`attestation_policy_sha256` for AAD / sealed host-buffer digests but never
+advertises prefill/decode. Reuse / opaque-state / typed-outcome
 are closed by the live session-pool / weight-hierarchy binding evidence and
 HTTP Ready path above (`llamacpp` + `embedded-inference`).
 The composition root wraps and

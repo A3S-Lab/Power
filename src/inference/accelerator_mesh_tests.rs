@@ -384,6 +384,40 @@ fn stale_mesh_and_untracked_mesh_execution_are_rejected() {
 }
 
 #[test]
+fn confidential_mesh_with_peer_transfers_fails_closed_without_fabric_claims() {
+    let (_directory, runtime, hierarchy, _permit, _cancellation) = hierarchy();
+    let mesh = AcceleratorDeviceMesh::new(
+        "home",
+        vec![
+            AcceleratorMeshDevice::new("home", runtime.device().clone())
+                .with_attestation_gpu_claim_index(7),
+            AcceleratorMeshDevice::new(
+                "peer",
+                RuntimeDevice::test_accelerator(RuntimeDeviceKind::Cuda, 1).unwrap(),
+            )
+            .with_attestation_gpu_claim_index(9),
+        ],
+        vec![
+            AcceleratorPeerTransferSpec::new("home", "peer", 8, 1),
+            AcceleratorPeerTransferSpec::new("peer", "home", 8, 1),
+        ],
+        16,
+    )
+    .unwrap();
+    let err = hierarchy
+        .declare_accelerator_mesh_residency(
+            &spec().with_security(AcceleratorSecurityRequirement::ConfidentialGpu),
+            &mesh,
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("require attested fabric (NVSwitch) claim indices"),
+        "{err}"
+    );
+}
+
+#[test]
 fn confidential_mesh_binds_exact_gpu_and_fabric_claim_indices() {
     let (_directory, runtime, hierarchy, permit, cancellation) = hierarchy();
     let mesh = AcceleratorDeviceMesh::new(

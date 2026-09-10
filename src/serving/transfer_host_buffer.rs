@@ -16,8 +16,10 @@
 //! buffered-host loopback transfer AAD v2.
 //!
 //! This is not high-speed transport, production-adapter, attested-fabric, or
-//! TEE-export evidence. Tickets stay adapter-owned; receipts stay content-free
-//! proofs.
+//! TEE-export evidence. Under the v1 production matrix,
+//! [`ServingPrivacyMode::AttestedPrivateFabric`] may appear here for digest
+//! wire binding only; it never advertises prefill/decode readiness. Tickets
+//! stay adapter-owned; receipts stay content-free proofs.
 
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;

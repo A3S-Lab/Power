@@ -70,11 +70,14 @@ a custom hardware verifier cannot bypass that release rule.
 | --- | --- | --- |
 | Buffered-host loopback P/D (product pair + live llama.cpp BackendOwned path) | Supported as conformance / software P/D | Opaque host buffers over authenticated loopback; live GGUF evidence closes reuse / opaque-state / typed-outcome. Not high-speed-network. |
 | `DirectDeviceMemoryPullV1` / HSN cross-node or prefill-decode advertisement | Explicitly unsupported | No in-tree high-speed adapter or HSN evidence suite. Machine enforcement keeps `may_advertise_prefill_decode` / `accepts_work` / worker `ready_phases` false for every `DirectDeviceMemoryPullV1` profile, including builder-injected Ready fixtures; the named product port stays Unavailable and refuses every data-path call. |
-| Attested-private-fabric readiness beyond digest wire binding | Still open | Product AAD / sealed host-buffer digests bind optional `attestation_policy_sha256` fail-closed; TEE-export / fabric attestation evidence is not complete. |
+| Attested-private-fabric readiness beyond digest wire binding | Explicitly unsupported | Product AAD / sealed host-buffer digests bind optional `attestation_policy_sha256` fail-closed, but that is not TEE-export / fabric attestation evidence. Machine enforcement keeps `may_advertise_prefill_decode` false for every `AttestedPrivateFabric` profile. Confidential multi-node GPU meshes with peer transfers additionally require NVSwitch fabric claim indices matched to evidence. |
 
 This is the same OR-exclusion pattern as Intel TDX: implement the reviewed HSN
 path **or** keep advertisement out of the v1 production matrix. v1 chooses
 exclusion. Shipping the Unavailable product port does **not** claim HSN works.
+Attested-private-fabric uses the same pattern: retain digest wire binding for
+forward-compatible AAD, but never advertise fabric readiness until TEE-export
+evidence exists.
 
 ## Release artifact contract
 

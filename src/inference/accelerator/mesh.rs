@@ -249,6 +249,19 @@ impl AcceleratorDeviceMesh {
                 "local accelerator meshes cannot carry attested fabric claims".to_string(),
             ));
         }
+        // Confidential multi-node meshes imply a private fabric. Require
+        // NVSwitch fabric claim indices so gpu-confidential cannot bind peer
+        // transfers without fabric evidence (validated against the report in
+        // ConfidentialGpuBinding).
+        if security == AcceleratorSecurityRequirement::ConfidentialGpu
+            && !self.peer_transfers.is_empty()
+            && self.attestation_fabric_claim_indices.is_empty()
+        {
+            return Err(PowerError::PolicyViolation(
+                "confidential GPU meshes with peer transfers require attested fabric (NVSwitch) claim indices"
+                    .to_string(),
+            ));
+        }
         for index in &self.attestation_fabric_claim_indices {
             if !claim_indices.insert(*index) {
                 return Err(PowerError::PolicyViolation(
@@ -523,6 +536,15 @@ impl AcceleratorDeviceMeshDeclaration {
         {
             return Err(PowerError::InvalidFormat(
                 "local accelerator mesh contains attested fabric claims".to_string(),
+            ));
+        }
+        if security == AcceleratorSecurityRequirement::ConfidentialGpu
+            && !self.peer_transfers.is_empty()
+            && self.attestation_fabric_claim_indices.is_empty()
+        {
+            return Err(PowerError::InvalidFormat(
+                "confidential GPU mesh with peer transfers is missing attested fabric claim indices"
+                    .to_string(),
             ));
         }
         for index in &self.attestation_fabric_claim_indices {

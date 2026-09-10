@@ -510,25 +510,25 @@ model-semantics owner.
   llamacpp ownership/execution when runtime is Injected+REQUIRED+Ready
   **and** (decode) a decode-token port is bound — Empty/Pending hollow
   Ready and DirectDeviceMemoryPullV1 (v1 HSN advertisement exclusion) still
-  never advertise. Reuse / opaque-state / typed-outcome / HSN-exclusion
-  checkboxes are closed with the live evidence and matrix below;
-  attested-fabric readiness remains open.
+  never advertise. Reuse / opaque-state / typed-outcome / HSN-exclusion /
+  attested-fabric-exclusion checkboxes are closed with the live evidence and
+  matrix below.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
   policies fail closed on consume; this is product-pair wire binding, not HSN
-  or attested-fabric readiness. The sealed host-buffer helper
+  or a claim that attested fabric works. The sealed host-buffer helper
   (`transfer-host-buffer.v2`) binds the same privacy/attestation digests into
   the `SealedStateEnvelope` state-id so reopen with a drifted policy fails
-  closed without claiming attested fabric or TEE-export readiness.
+  closed; AttestedPrivateFabric never advertises under the v1 exclusion.
 
 ### P6 open-checkbox exit criteria
 
-Reuse, opaque-state, typed-outcome, and HSN advertisement are closed by the
-evidence / exclusion pointers below. Attested-fabric readiness remains open.
+Reuse, opaque-state, typed-outcome, HSN advertisement, and attested-fabric
+readiness are closed by the evidence / exclusion pointers below.
 Interim product ports (`profile-bound`, `phase_execution = pending`,
-Unavailable HSN product port, AAD/host-buffer attestation digests) never close
-attested-fabric alone and never claim that HSN works.
+Unavailable HSN product port, AAD/host-buffer attestation digests) never claim
+that HSN or attested fabric works.
 
 **Reuse (admission / replicas / weight hierarchy / sealed envelopes /
 telemetry / receipts):** **closed.** Env-gated live GGUF BackendOwned +
@@ -579,12 +579,18 @@ data-path call. `may_advertise_prefill_decode` / `accepts_work` / worker
 Unavailable product port is not HSN evidence. Buffered-host loopback remains
 the only honest P/D advertisement path in v1.
 
-**Attestation (attested-private-fabric readiness):** still open —
-product-pair AAD and sealed host-buffer digests already bind optional
-`attestation_policy_sha256` fail-closed. Closing attested-fabric
-readiness still requires TEE-export / fabric attestation evidence beyond
-digest wire binding; mismatched-policy consume rejection alone does not
-close it.
+**Attestation (attested-private-fabric readiness):** **closed by v1
+exclusion** (does **not** claim fabric attestation works). Same OR pattern as
+Intel TDX / HSN: either ship TEE-export / fabric attestation evidence beyond
+digest wire binding, **or** exclude fabric readiness from the v1 production
+support matrix with machine-enforced non-advertise. v1 chooses exclusion:
+`ServingExecutionProfile::may_advertise_prefill_decode` is false for every
+`ServingPrivacyMode::AttestedPrivateFabric` profile, including profiles that
+carry `attestation_policy_sha256` for AAD / sealed host-buffer digests.
+Confidential multi-node accelerator meshes with peer transfers fail closed
+unless NVSwitch fabric claim indices are declared and matched to GPU evidence.
+Product-pair AAD binding alone never closes fabric readiness and never claims
+that attested fabric works.
 
 **Composition fail-closed (always required, not a checkbox closer):**
 `phase_execution = pending` or `phase_execution = llamacpp` with
