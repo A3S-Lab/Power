@@ -323,12 +323,16 @@ matches the immutable profile and can accept work. Transport completion alone
 never counts as successful decode.
 Every injected transfer adapter is wrapped by `BoundedStateTransferService`,
 which narrows advertised capabilities to the immutable local role and enforces
-the process epoch, fail-fast transfer capacity, idempotent leases, monotonic
+the process epoch, fail-fast inflight admission via the shared
+`AdmissionController` (`waiting_limit == 0`, ACL `max_inflight_transfers`),
+idempotent leases, monotonic
 deadlines, expiry reaping, bounded abort, and fail-closed cleanup health. The
 wrapped adapter still owns registered memory and the real data path.
 The runtime prepares decode destinations before transfer, publishes prefill
 state only after phase execution, consumes verified state before starting
-decode, and retains stream cancellation ownership until termination. The
+decode, and retains stream cancellation ownership until termination. Phase and
+transfer leases remain separate domains but refuse any second admission policy
+shape at composition. The
 authenticated internal request-flow API exposes those operations to Gateway,
 binding every call to the current worker epoch and execution-profile digest.
 The cross-process conformance suite launches separate prefill and decode Power

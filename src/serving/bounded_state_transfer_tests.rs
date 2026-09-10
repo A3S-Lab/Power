@@ -277,6 +277,61 @@ fn construction_binds_epoch_and_projects_only_configured_limits() {
     .is_err());
 }
 
+#[test]
+fn construction_reuses_fail_fast_admission_and_rejects_a_second_queue_policy() {
+    let profile = profile(DisaggregatedServingRole::Decode, 2, 100);
+    let epoch = Uuid::new_v4();
+    let service = service(&profile, epoch, Arc::new(DriverControl::default()));
+    let admission = service.admission_snapshot();
+    assert_eq!(admission.active_limit, Some(2));
+    assert_eq!(admission.waiting_limit, Some(0));
+    assert_eq!(admission.queue_rejections, 0);
+
+    let waiting_queue = crate::admission::AdmissionController::new_bounded(2, 1);
+    let rejected = BoundedStateTransferService::new_with_admission(
+        profile.clone(),
+        epoch,
+        Arc::new(TestDriver {
+            capabilities: StateTransferCapabilities {
+                execution_profile_sha256: profile.sha256().unwrap(),
+                phases: vec![ServingPhase::Decode],
+                protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
+                max_transfer_bytes: 1024,
+                max_inflight_transfers: 2,
+            },
+            control: Arc::new(DriverControl::default()),
+        }),
+        waiting_queue,
+    );
+    assert!(matches!(
+        rejected,
+        Err(PowerError::Config(message))
+            if message.contains("refusing a second admission policy")
+    ));
+
+    let mismatched_limit = crate::admission::AdmissionController::new_bounded(1, 0);
+    let rejected_limit = BoundedStateTransferService::new_with_admission(
+        profile.clone(),
+        epoch,
+        Arc::new(TestDriver {
+            capabilities: StateTransferCapabilities {
+                execution_profile_sha256: profile.sha256().unwrap(),
+                phases: vec![ServingPhase::Decode],
+                protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
+                max_transfer_bytes: 1024,
+                max_inflight_transfers: 2,
+            },
+            control: Arc::new(DriverControl::default()),
+        }),
+        mismatched_limit,
+    );
+    assert!(matches!(
+        rejected_limit,
+        Err(PowerError::Config(message))
+            if message.contains("refusing a second admission policy")
+    ));
+}
+
 #[tokio::test]
 async fn destination_lease_is_idempotent_and_holds_capacity_until_abort() {
     let profile = profile(DisaggregatedServingRole::Decode, 1, 250);
@@ -302,6 +357,7 @@ async fn destination_lease_is_idempotent_and_holds_capacity_until_abort() {
     assert_eq!(rejected.capacity_rejections, 1);
     assert_eq!(rejected.active_transfers, 1);
     assert_eq!(rejected.registered_adapter_bytes, 512);
+    assert_eq!(service.admission_snapshot().queue_rejections, 1);
     assert_eq!(control.prepare_calls.load(Ordering::SeqCst), 1);
     service
         .abort(AbortStateTransfer {

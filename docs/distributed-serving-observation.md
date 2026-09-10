@@ -43,7 +43,9 @@ Server composition wraps every injected data path in
 `BoundedStateTransferService`. The wrapper projects only the configured local
 role and ACL limits even when the underlying transport supports more. It binds
 commands to the current random worker epoch, admits no more than the configured
-in-flight count, makes identical prepare/publish retries idempotent, retains
+in-flight count through Power's shared fail-fast `AdmissionController`
+(`waiting_limit == 0`; construction refuses any other queue shape as a second
+admission policy), makes identical prepare/publish retries idempotent, retains
 registered leases until consume or compensating abort, and reaps them at their
 monotonic deadline without requiring another request. Each active lease registers
 the binding's declared `state_bytes` as adapter-owned memory and pins one opaque
@@ -55,7 +57,8 @@ abort under the separate cancellation timeout. Corrupt authenticated ticket or
 receipt bytes (control characters, integrity digest failures, byte-count or
 identity mismatches) fail closed as `InvalidRequest`, never commit a successful
 consume, and reclaim registered adapter bytes. In-flight capacity exhaustion
-increments `capacity_rejections` and returns a typed unavailable outcome without
+increments the shared admission `queue_rejections` counter (projected as
+`capacity_rejections`) and returns a typed unavailable outcome without
 growing registration; bindings above the ACL `max_state_bytes` limit are rejected
 before driver admission. An unconfirmed cleanup marks the
 wrapper unavailable for the rest of the process generation. Its snapshot contains
@@ -72,7 +75,10 @@ generations. Neither receives KV bytes.
 When both ports are injected, the composition root assembles one
 `DistributedServingRuntime`; AppState and worker observation retain that runtime
 as the single source of distributed readiness. It reserves one bounded local
-lease per execution ID, prepares a decode destination before state movement,
+lease per execution ID under the same ACL fail-fast `AdmissionController`
+policy as transfer (separate lease domain, identical
+`max_inflight_transfers` / `waiting_limit == 0` limits; composition fails closed
+on mismatch), prepares a decode destination before state movement,
 publishes prefill state only after phase execution, consumes verified state
 before decode execution, and owns cancellation until the returned stream ends.
 In-flight transfer prepare, publish, and consume honor the same caller-cancel

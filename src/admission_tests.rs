@@ -181,3 +181,16 @@ async fn an_expired_deadline_never_admits_even_when_capacity_is_ready() {
     assert_eq!(snapshot.admitted, 0);
     assert_eq!(snapshot.deadline_expirations, 1);
 }
+
+#[test]
+fn fail_fast_try_acquire_or_reject_records_queue_rejections() {
+    let controller = AdmissionController::new_bounded(1, 0);
+    let active = controller.try_acquire_or_reject().unwrap();
+    let overflow = controller.try_acquire_or_reject().unwrap_err();
+    assert_eq!(overflow, AdmissionError::QueueFull { maximum: 0 });
+    assert_eq!(controller.snapshot().queue_rejections, 1);
+    assert_eq!(controller.snapshot().active, 1);
+    drop(active);
+    assert!(controller.try_acquire_or_reject().is_ok());
+    assert_eq!(controller.snapshot().admitted, 2);
+}

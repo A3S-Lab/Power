@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::admission::{AdmissionController, AdmissionPermit};
 use crate::error::{PowerError, Result};
 
 use super::super::{
@@ -27,7 +27,7 @@ pub(super) struct Inner {
     pub(super) transfer_timeout: std::time::Duration,
     pub(super) cancellation_timeout: std::time::Duration,
     pub(super) capabilities: StateTransferCapabilities,
-    pub(super) capacity: Arc<Semaphore>,
+    pub(super) admission: AdmissionController,
     pub(super) leases: Mutex<HashMap<Uuid, TransferLease>>,
     pub(super) tainted: AtomicBool,
     pub(super) registered_adapter_bytes: AtomicU64,
@@ -36,7 +36,6 @@ pub(super) struct Inner {
     pub(super) completed_consumes: AtomicU64,
     pub(super) aborted_transfers: AtomicU64,
     pub(super) timeout_expirations: AtomicU64,
-    pub(super) capacity_rejections: AtomicU64,
     pub(super) cleanup_failures: AtomicU64,
 }
 
@@ -45,7 +44,7 @@ pub(super) struct TransferLease {
     pub(super) state: LeaseState,
     pub(super) cancellation: CancellationToken,
     pub(super) expiry_cancellation: CancellationToken,
-    pub(super) _permit: OwnedSemaphorePermit,
+    pub(super) _permit: AdmissionPermit,
 }
 
 impl TransferLease {

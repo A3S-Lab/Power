@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reused Power's shared `AdmissionController` for distributed phase and
+  state-transfer inflight leases in fail-fast mode (`waiting_limit == 0`).
+  Construction refuses a waiting queue or mismatched active limit as a second
+  admission policy; capacity rejections come from
+  `AdmissionSnapshot::queue_rejections`. Phase and transfer remain separate
+  lease domains but bind one ACL `max_inflight_transfers` policy source. This
+  is a P6 reuse brick only and does not claim sealed-state envelope reuse,
+  session replicas, high-speed transport, or production adapters.
 - Fail-closed OpenAI chat attestation receipts for opaque multimodal inputs:
   image-bearing requests (`image_url` content parts or message-level `images`)
   reject any backend-invented text-only `effective_prompt` digest instead of

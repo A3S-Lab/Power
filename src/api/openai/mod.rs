@@ -268,10 +268,9 @@ mod tests {
 
     #[test]
     fn test_chat_effective_prompt_for_receipt_allows_text_only_digest() {
-        let request: ChatCompletionRequest = serde_json::from_str(
-            r#"{"model":"test","messages":[{"role":"user","content":"hi"}]}"#,
-        )
-        .unwrap();
+        let request: ChatCompletionRequest =
+            serde_json::from_str(r#"{"model":"test","messages":[{"role":"user","content":"hi"}]}"#)
+                .unwrap();
         let digest = EffectivePromptDigest::chat_rendered_prompt("mock", "rendered");
 
         let gated = chat_effective_prompt_for_receipt(&request, Some(digest.clone())).unwrap();

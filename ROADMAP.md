@@ -248,7 +248,15 @@ model-semantics owner.
   wrapper also accounts declared adapter-owned registration bytes per lease,
   rejects a second lease for an already-registered opaque handle, and reclaims
   that registration on consume/abort/timeout without copying KV into Power.
-  Production-adapter and high-speed-transport evidence remain open. A
+  Inflight capacity for both `BoundedStateTransferService` and
+  `DistributedServingRuntime` now reuses the shared `AdmissionController` in
+  fail-fast mode (`waiting_limit == 0`) bound to the ACL
+  `max_inflight_transfers` limit; construction refuses a waiting queue or
+  mismatched active limit as a second admission policy, and capacity rejections
+  project from that controller. Session-replica reuse, weight-hierarchy reuse,
+  sealed-state envelope reuse for transfer tickets, and telemetry/receipt
+  consolidation remain open. Production-adapter and high-speed-transport
+  evidence remain open. A
   request-level runtime now composes that lifecycle with phase execution under
   one bounded execution lease and is the server's single source of distributed
   readiness. A deterministic conformance test launches independent prefill and

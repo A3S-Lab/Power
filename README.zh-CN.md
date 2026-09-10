@@ -298,11 +298,13 @@ gpu {
 组合根将该对包装并组装为单一 `DistributedServingRuntime`，它是唯一的请求级生命周期与就绪源。
 仅当运行时匹配不可变配置且可接受工作时，Power 才发布已配置的 P/D 角色。仅传输完成
 从不计为成功 decode。每个注入的传输适配器由 `BoundedStateTransferService` 包装，
-后者将宣称能力收窄到不可变本地角色，并强制执行进程 epoch、失败快速传输容量、
-幂等租约、单调截止期限、过期回收、有界 abort 与失败关闭的清理健康度。
-被包装的适配器仍拥有已注册内存与真实数据路径。运行时在传输前准备 decode 目标，
-仅在阶段执行后发布 prefill 状态，在开始 decode 前消费已验证状态，
-并在终止前保留流取消所有权。经认证的内部请求流 API 将这些操作暴露给 Gateway，
+后者将宣称能力收窄到不可变本地角色，并通过共享 `AdmissionController` 强制执行
+进程 epoch、失败快速 inflight 准入（`waiting_limit == 0`，ACL
+`max_inflight_transfers`）、幂等租约、单调截止期限、过期回收、有界 abort 与
+失败关闭的清理健康度。被包装的适配器仍拥有已注册内存与真实数据路径。
+运行时在传输前准备 decode 目标，仅在阶段执行后发布 prefill 状态，在开始 decode
+前消费已验证状态，并在终止前保留流取消所有权。阶段与传输租约仍为独立域，但在
+组合时拒绝第二种准入策略形态。经认证的内部请求流 API 将这些操作暴露给 Gateway，
 将每次调用绑定到当前 worker epoch 与执行配置摘要。跨进程一致性套件启动独立的
 prefill 与 decode Power 进程，并证明经认证的 HTTP 流、加密不透明状态交接、
 对等丢失失败、重启 epoch 失效与优雅清理。其后端与回环传输是测试 fixture，

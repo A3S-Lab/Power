@@ -199,6 +199,23 @@ impl AdmissionController {
         }
     }
 
+    /// Fail-fast admission that records a queue rejection when capacity is full.
+    ///
+    /// Use this for paths that must not invent a second waiting queue. Bounded
+    /// controllers with `waiting_limit == 0` reject immediately and increment
+    /// [`AdmissionSnapshot::queue_rejections`].
+    pub fn try_acquire_or_reject(&self) -> std::result::Result<AdmissionPermit, AdmissionError> {
+        match self.try_acquire_immediate()? {
+            Some(permit) => Ok(self.admitted_permit(permit.into_owned(), false)),
+            None => {
+                self.inner.queue_rejections.fetch_add(1, Ordering::Relaxed);
+                Err(AdmissionError::QueueFull {
+                    maximum: self.inner.waiting_limit.unwrap_or(0),
+                })
+            }
+        }
+    }
+
     fn try_acquire_immediate(
         &self,
     ) -> std::result::Result<Option<ImmediatePermit>, AdmissionError> {

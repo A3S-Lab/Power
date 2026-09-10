@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use tokio::sync::Semaphore;
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use crate::admission::AdmissionController;
 use crate::error::{PowerError, Result};
 
 use super::{
@@ -116,6 +116,21 @@ impl DistributedServingRuntime {
             ));
         };
         profile.validate_state_transfer_capabilities(&transfer.capabilities())?;
+        // Phase and transfer leases are separate domains, but both must bind the
+        // same ACL fail-fast inflight limit through AdmissionController. Refuse
+        // a waiting queue or mismatched active limit as a second policy.
+        let transfer_admission = transfer.admission_snapshot();
+        let maximum = usize::try_from(execution.max_inflight_transfers).map_err(|_| {
+            PowerError::Config("distributed phase capacity does not fit this platform".to_string())
+        })?;
+        if transfer_admission.active_limit != Some(maximum)
+            || transfer_admission.waiting_limit != Some(0)
+        {
+            return Err(PowerError::Config(
+                "distributed serving refuses a second admission policy: transfer must reuse the profile fail-fast inflight limit"
+                    .to_string(),
+            ));
+        }
         let executor_capabilities = executor.capabilities();
         profile.validate_phase_executor_capabilities(&executor_capabilities)?;
         if matches!(transfer.health(), TransferHealth::Unsupported) {
@@ -123,9 +138,7 @@ impl DistributedServingRuntime {
                 "distributed serving runtime requires a supported transfer adapter".to_string(),
             ));
         }
-        let maximum = usize::try_from(execution.max_inflight_transfers).map_err(|_| {
-            PowerError::Config("distributed phase capacity does not fit this platform".to_string())
-        })?;
+        let phase_admission = AdmissionController::new_bounded(maximum, 0);
         Ok(Self {
             inner: Arc::new(RuntimeInner {
                 profile: profile.clone(),
@@ -135,13 +148,23 @@ impl DistributedServingRuntime {
                 cancellation_timeout: std::time::Duration::from_millis(
                     execution.cancellation_timeout_ms,
                 ),
-                capacity: Arc::new(Semaphore::new(maximum)),
+                admission: phase_admission,
                 leases: Mutex::new(std::collections::HashMap::with_capacity(maximum)),
                 tainted: AtomicBool::new(false),
             }),
             role: execution.role,
             transfer_timeout: std::time::Duration::from_millis(execution.transfer_timeout_ms),
         })
+    }
+
+    /// Fail-fast phase-lease admission snapshot (same ACL inflight limit as transfer).
+    pub fn admission_snapshot(&self) -> crate::admission::AdmissionSnapshot {
+        self.inner.admission.snapshot()
+    }
+
+    /// Transfer-lease admission snapshot; must match [`Self::admission_snapshot`] limits.
+    pub fn transfer_admission_snapshot(&self) -> crate::admission::AdmissionSnapshot {
+        self.inner.transfer.admission_snapshot()
     }
 
     pub fn phase(&self) -> ServingPhase {

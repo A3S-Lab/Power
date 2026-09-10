@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::admission::{AdmissionController, AdmissionError, AdmissionPermit, AdmissionSnapshot};
 use crate::error::{PowerError, Result};
 
 use super::{
@@ -44,6 +44,7 @@ pub struct StateTransferRuntimeSnapshot {
     pub completed_consumes: u64,
     pub aborted_transfers: u64,
     pub timeout_expirations: u64,
+    /// Fail-fast rejections from the shared [`AdmissionController`] policy.
     pub capacity_rejections: u64,
     pub cleanup_failures: u64,
 }
@@ -58,6 +59,11 @@ pub struct StateTransferRuntimeSnapshot {
 /// copies KV payloads, rejects a second lease for an already-registered
 /// handle, and reclaims the byte/handle registration on consume, abort,
 /// timeout, or compensating cleanup.
+///
+/// Inflight capacity reuses Power's shared [`AdmissionController`] in fail-fast
+/// mode (`waiting_limit == 0`). Construction refuses any other admission policy
+/// so transfer cannot invent a second waiting queue beside the ACL inflight
+/// limit.
 #[derive(Clone)]
 pub struct BoundedStateTransferService {
     inner: Arc<Inner>,
@@ -81,6 +87,33 @@ impl BoundedStateTransferService {
         local_worker_epoch: Uuid,
         delegate: Arc<dyn StateTransferService>,
     ) -> Result<Self> {
+        let ServingExecutionProfile::PrefillDecode { execution } = &profile else {
+            return Err(PowerError::Config(
+                "aggregated serving cannot create a state-transfer runtime".to_string(),
+            ));
+        };
+        let maximum = usize::try_from(execution.max_inflight_transfers).map_err(|_| {
+            PowerError::Config("state-transfer concurrency does not fit this platform".to_string())
+        })?;
+        Self::new_with_admission(
+            profile,
+            local_worker_epoch,
+            delegate,
+            AdmissionController::new_bounded(maximum, 0),
+        )
+    }
+
+    /// Bind an adapter with an explicit admission controller.
+    ///
+    /// The controller must be the profile fail-fast inflight policy
+    /// (`active_limit == max_inflight_transfers`, `waiting_limit == 0`). Any
+    /// other queue shape is rejected as a second admission policy.
+    pub fn new_with_admission(
+        profile: ServingExecutionProfile,
+        local_worker_epoch: Uuid,
+        delegate: Arc<dyn StateTransferService>,
+        admission: AdmissionController,
+    ) -> Result<Self> {
         profile.validate()?;
         if local_worker_epoch.is_nil() {
             return Err(PowerError::Config(
@@ -92,6 +125,7 @@ impl BoundedStateTransferService {
                 "aggregated serving cannot create a state-transfer runtime".to_string(),
             ));
         };
+        ensure_fail_fast_inflight_admission(&profile, &admission)?;
         let delegate_capabilities = delegate.capabilities();
         profile.validate_state_transfer_capabilities(&delegate_capabilities)?;
         if matches!(delegate.health(), TransferHealth::Unsupported) {
@@ -123,7 +157,7 @@ impl BoundedStateTransferService {
                     execution.cancellation_timeout_ms,
                 ),
                 capabilities,
-                capacity: Arc::new(Semaphore::new(maximum)),
+                admission,
                 leases: Mutex::new(HashMap::with_capacity(maximum)),
                 tainted: AtomicBool::new(false),
                 registered_adapter_bytes: AtomicU64::new(0),
@@ -132,7 +166,6 @@ impl BoundedStateTransferService {
                 completed_consumes: AtomicU64::new(0),
                 aborted_transfers: AtomicU64::new(0),
                 timeout_expirations: AtomicU64::new(0),
-                capacity_rejections: AtomicU64::new(0),
                 cleanup_failures: AtomicU64::new(0),
             }),
         })
@@ -141,6 +174,11 @@ impl BoundedStateTransferService {
     /// Return the only worker epoch accepted by this runtime instance.
     pub fn local_worker_epoch(&self) -> Uuid {
         self.inner.local_worker_epoch
+    }
+
+    /// Shared fail-fast admission snapshot (single inflight policy source).
+    pub fn admission_snapshot(&self) -> AdmissionSnapshot {
+        self.inner.admission.snapshot()
     }
 
     /// Return content-free bounded lifecycle counters.
@@ -152,6 +190,7 @@ impl BoundedStateTransferService {
                 u32::try_from(poisoned.into_inner().len()).unwrap_or(u32::MAX)
             }
         };
+        let admission = self.admission_snapshot();
         StateTransferRuntimeSnapshot {
             active_transfers,
             maximum_inflight_transfers: self.inner.capabilities.max_inflight_transfers,
@@ -161,7 +200,7 @@ impl BoundedStateTransferService {
             completed_consumes: self.inner.completed_consumes.load(Ordering::Relaxed),
             aborted_transfers: self.inner.aborted_transfers.load(Ordering::Relaxed),
             timeout_expirations: self.inner.timeout_expirations.load(Ordering::Relaxed),
-            capacity_rejections: self.inner.capacity_rejections.load(Ordering::Relaxed),
+            capacity_rejections: admission.queue_rejections,
             cleanup_failures: self.inner.cleanup_failures.load(Ordering::Relaxed),
         }
     }
@@ -213,20 +252,20 @@ impl BoundedStateTransferService {
         Ok(())
     }
 
-    fn try_permit(&self) -> Result<OwnedSemaphorePermit> {
-        match Arc::clone(&self.inner.capacity).try_acquire_owned() {
+    fn try_permit(&self) -> Result<AdmissionPermit> {
+        match self.inner.admission.try_acquire_or_reject() {
             Ok(permit) => Ok(permit),
-            Err(TryAcquireError::NoPermits) => {
-                self.inner
-                    .capacity_rejections
-                    .fetch_add(1, Ordering::Relaxed);
-                Err(PowerError::BackendNotAvailable(
-                    "state-transfer capacity is exhausted".to_string(),
-                ))
-            }
-            Err(TryAcquireError::Closed) => Err(PowerError::BackendNotAvailable(
+            Err(AdmissionError::QueueFull { .. }) => Err(PowerError::BackendNotAvailable(
+                "state-transfer capacity is exhausted".to_string(),
+            )),
+            Err(AdmissionError::Closed) => Err(PowerError::BackendNotAvailable(
                 "state-transfer runtime is closed".to_string(),
             )),
+            Err(AdmissionError::Cancelled | AdmissionError::DeadlineExceeded) => {
+                Err(PowerError::BackendNotAvailable(
+                    "state-transfer admission rejected an unexpected waiting outcome".to_string(),
+                ))
+            }
         }
     }
 
@@ -506,4 +545,27 @@ impl StateTransferService for BoundedStateTransferService {
             ))
         }
     }
+}
+
+/// Refuse any admission shape other than the ACL fail-fast inflight limit.
+pub(crate) fn ensure_fail_fast_inflight_admission(
+    profile: &ServingExecutionProfile,
+    admission: &AdmissionController,
+) -> Result<()> {
+    let ServingExecutionProfile::PrefillDecode { execution } = profile else {
+        return Err(PowerError::Config(
+            "aggregated serving cannot bind state-transfer admission".to_string(),
+        ));
+    };
+    let expected = usize::try_from(execution.max_inflight_transfers).map_err(|_| {
+        PowerError::Config("state-transfer concurrency does not fit this platform".to_string())
+    })?;
+    let snapshot = admission.snapshot();
+    if snapshot.active_limit != Some(expected) || snapshot.waiting_limit != Some(0) {
+        return Err(PowerError::Config(
+            "state-transfer admission must reuse the profile fail-fast inflight limit (waiting=0); refusing a second admission policy"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }

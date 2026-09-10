@@ -453,6 +453,11 @@ async fn inflight_capacity_pressure_fails_closed_and_reclaims_after_abort() {
             if message.contains("capacity is exhausted")
     ));
     assert!(runtime.accepts_work());
+    let phase_admission = runtime.admission_snapshot();
+    assert_eq!(phase_admission.active_limit, Some(2));
+    assert_eq!(phase_admission.waiting_limit, Some(0));
+    assert_eq!(phase_admission.queue_rejections, 1);
+    assert_eq!(phase_admission.active, 2);
 
     runtime.abort(first).await.unwrap();
     runtime
@@ -693,4 +698,17 @@ fn distributed_runtime_and_wire_free_commands_are_send_and_sync() {
     assert_send_sync::<DistributedServingRuntime>();
     assert_send_sync::<PreparedDecodeTransfer>();
     assert_send_sync::<PublishedPrefillState>();
+}
+
+#[test]
+fn runtime_and_transfer_share_one_fail_fast_inflight_admission_policy() {
+    let profile = profile(DisaggregatedServingRole::Decode, 100);
+    let epoch = Uuid::new_v4();
+    let runtime = runtime(&profile, epoch, Arc::new(Calls::default()));
+    let phase = runtime.admission_snapshot();
+    let transfer = runtime.transfer_admission_snapshot();
+    assert_eq!(phase.active_limit, Some(2));
+    assert_eq!(phase.waiting_limit, Some(0));
+    assert_eq!(transfer.active_limit, phase.active_limit);
+    assert_eq!(transfer.waiting_limit, phase.waiting_limit);
 }

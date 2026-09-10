@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
 
 use futures::Stream;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::admission::{AdmissionController, AdmissionError, AdmissionPermit};
 use crate::error::{PowerError, Result};
 
 use super::super::{
@@ -26,7 +26,7 @@ pub(super) struct RuntimeInner {
     pub(super) executor: Arc<dyn ServingPhaseExecutor>,
     pub(super) executor_capabilities: PhaseExecutorCapabilities,
     pub(super) cancellation_timeout: std::time::Duration,
-    pub(super) capacity: Arc<Semaphore>,
+    pub(super) admission: AdmissionController,
     pub(super) leases: Mutex<HashMap<Uuid, LocalExecutionLease>>,
     pub(super) tainted: AtomicBool,
 }
@@ -35,7 +35,7 @@ pub(super) struct LocalExecutionLease {
     state: LocalExecutionState,
     operation_cancellation: CancellationToken,
     expiry_cancellation: CancellationToken,
-    _permit: OwnedSemaphorePermit,
+    _permit: AdmissionPermit,
 }
 
 enum LocalExecutionState {
@@ -79,16 +79,22 @@ impl RuntimeInner {
         execution_id: Uuid,
         deadline: Instant,
     ) -> Result<CancellationToken> {
-        let permit = match Arc::clone(&self.capacity).try_acquire_owned() {
+        let permit = match self.admission.try_acquire_or_reject() {
             Ok(permit) => permit,
-            Err(TryAcquireError::NoPermits) => {
+            Err(AdmissionError::QueueFull { .. }) => {
                 return Err(PowerError::BackendNotAvailable(
                     "distributed phase capacity is exhausted".to_string(),
                 ));
             }
-            Err(TryAcquireError::Closed) => {
+            Err(AdmissionError::Closed) => {
                 return Err(PowerError::BackendNotAvailable(
                     "distributed phase runtime is closed".to_string(),
+                ));
+            }
+            Err(AdmissionError::Cancelled | AdmissionError::DeadlineExceeded) => {
+                return Err(PowerError::BackendNotAvailable(
+                    "distributed phase admission rejected an unexpected waiting outcome"
+                        .to_string(),
                 ));
             }
         };

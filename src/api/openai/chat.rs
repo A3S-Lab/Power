@@ -427,17 +427,17 @@ pub async fn handler(
             .into_response();
         }
     };
-    let effective_prompt = match super::chat_effective_prompt_for_receipt(&request, effective_prompt)
-    {
-        Ok(digest) => digest,
-        Err(message) => {
-            if unload_after_use {
-                crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
+    let effective_prompt =
+        match super::chat_effective_prompt_for_receipt(&request, effective_prompt) {
+            Ok(digest) => digest,
+            Err(message) => {
+                if unload_after_use {
+                    crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
+                }
+                state.metrics.decrement_active_requests();
+                return openai_error("receipt_failed", &message).into_response();
             }
-            state.metrics.decrement_active_requests();
-            return openai_error("receipt_failed", &message).into_response();
-        }
-    };
+        };
     let attestation_receipt =
         match crate::api::receipt::chat_receipt_with_runtime_policy_and_effective_prompt(
             &request,
@@ -2451,9 +2451,8 @@ mod tests {
 
         // Adversarial backend: would invent a text-only digest for vision input.
         let prompt_digest = EffectivePromptDigest::chat_rendered_prompt("mock", "text-only digest");
-        let state = test_state_with_mock(
-            MockBackend::success().with_effective_prompt(prompt_digest),
-        );
+        let state =
+            test_state_with_mock(MockBackend::success().with_effective_prompt(prompt_digest));
         state.registry.register(sample_manifest("test")).unwrap();
         state.mark_loaded("test");
 
@@ -2498,11 +2497,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("A3S_POWER_HOME", dir.path());
 
-        let prompt_digest =
-            EffectivePromptDigest::chat_prompt_token_ids("mock", &[7, 8, 9]);
-        let state = test_state_with_mock(
-            MockBackend::success().with_effective_prompt(prompt_digest),
-        );
+        let prompt_digest = EffectivePromptDigest::chat_prompt_token_ids("mock", &[7, 8, 9]);
+        let state =
+            test_state_with_mock(MockBackend::success().with_effective_prompt(prompt_digest));
         state.registry.register(sample_manifest("test")).unwrap();
         state.mark_loaded("test");
 
