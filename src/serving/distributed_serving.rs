@@ -99,6 +99,7 @@ impl fmt::Debug for DistributedServingRuntime {
                 "local_worker_epoch",
                 &self.inner.transfer.local_worker_epoch(),
             )
+            .field("execution_admissible", &self.execution_admissible())
             .field("accepts_work", &self.accepts_work())
             .finish_non_exhaustive()
     }
@@ -254,13 +255,17 @@ impl DistributedServingRuntime {
         self.inner.transfer.health()
     }
 
-    pub fn accepts_work(&self) -> bool {
+    /// Whether injected adapters are healthy enough to run phase work.
+    ///
+    /// Independent of worker `ready_phases` advertisement. Backend-owned
+    /// `phase_execution = llamacpp` on buffered-host may be execution-admissible
+    /// (Injected + REQUIRED + Ready) while `may_advertise_prefill_decode` stays
+    /// false — typed-outcome HTTP evidence can run without claiming HSN or
+    /// advertising P/D until advertisement is honest for that product pair.
+    pub fn execution_admissible(&self) -> bool {
         // Defense in depth: composition already refuses Empty / non-REQUIRED
-        // contracts, but readiness must never project prefill/decode while either
-        // port is still an Empty placeholder or declares a non-required contract.
-        // DirectDeviceMemoryPull composition never advertises: no in-tree HSN
-        // adapter exists. Builder-injected fixtures (transport absent) still use
-        // provision/health only.
+        // contracts, but phase work must never run while either port is still an
+        // Empty placeholder or declares a non-required contract.
         !self.inner.tainted.load(Ordering::Acquire)
             && self.inner.transfer.provision().is_injected()
             && self.inner.executor.provision().is_injected()
@@ -271,7 +276,17 @@ impl DistributedServingRuntime {
                 self.transfer_health(),
                 TransferHealth::Ready | TransferHealth::Degraded
             )
-            && self.inner.profile.may_advertise_prefill_decode()
+    }
+
+    pub fn accepts_work(&self) -> bool {
+        // Worker ready_phases projection. DirectDeviceMemoryPull never
+        // advertises (no in-tree HSN). Backend-owned keeps
+        // may_advertise_prefill_decode false until advertisement is honest for
+        // the loopback product pair; buffered-host loopback conformance may
+        // advertise when this returns true. Builder-injected fixtures
+        // (transport absent) still use provision/health via
+        // execution_admissible plus a true may_advertise default.
+        self.execution_admissible() && self.inner.profile.may_advertise_prefill_decode()
     }
 
     pub async fn prepare_decode(
@@ -549,7 +564,7 @@ impl DistributedServingRuntime {
                 "distributed serving operation requires the {role:?} process role"
             )));
         }
-        if !self.accepts_work() {
+        if !self.execution_admissible() {
             return Err(PowerError::BackendNotAvailable(
                 "distributed serving runtime cannot accept work".to_string(),
             ));

@@ -602,13 +602,16 @@ impl ServingExecutionProfile {
     /// Whether worker observation may list this profile's P/D phase as ready.
     ///
     /// Builder-injected adapters (no composition transport) remain gated only
-    /// by provision, contract, and health. Product DirectDeviceMemoryPull and
-    /// `phase_executor = backend-owned` never advertise until a real adapter
-    /// exists. Eligible-only ownership (`state_ownership = profile-bound` or
-    /// `llamacpp`) and Ready-unlock surfaces (`phase_execution = pending` or
-    /// `llamacpp`) never advertise: backend-owned keeps
-    /// `may_advertise_prefill_decode` false so worker `ready_phases` stay empty
-    /// until live HSN / model-semantic P/D evidence exists.
+    /// by provision, contract, and health. Product DirectDeviceMemoryPull never
+    /// advertises (no in-tree HSN). Buffered-host loopback may advertise when
+    /// adapters accept work (`accepts_work`). `phase_executor = backend-owned`
+    /// keeps this false: Eligible-only ownership and Ready-unlock surfaces
+    /// (`phase_execution = pending` or `llamacpp`) must not list
+    /// `ready_phases` from Ready health alone — decode Ready still needs a
+    /// bound decode-token port, and HSN evidence is separate. Typed-outcome
+    /// HTTP may still run when
+    /// [`crate::serving::DistributedServingRuntime::execution_admissible`] is
+    /// true without flipping this gate.
     pub fn may_advertise_prefill_decode(&self) -> bool {
         if let Some(phase_executor) = self.composition_phase_executor() {
             if !phase_executor.may_advertise_prefill_decode() {

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Authenticated HTTP typed-outcome evidence for product buffered-host +
+  `BackendOwnedPhaseExecutor` + llamacpp ownership/execution (fixture ports,
+  no GGUF): `api::distributed_serving_llamacpp_http_tests` proves Ready
+  prefill after capture, Ready NDJSON decode only after
+  consume+restore+`ControlledLlamaCppDecodeTokenPort`, and unbound
+  decode-token fail-closed as JSON without NDJSON success.
+  `DistributedServingRuntime::execution_admissible` separates phase-work
+  admission from worker `ready_phases` advertisement so BackendOwned can
+  exercise typed-outcome HTTP while `may_advertise_prefill_decode` stays
+  false (not HSN; not honest P/D advertise while decode Ready still needs a
+  bound token port). Does **not** close ROADMAP typed-outcome / opaque-state
+  checkboxes (no P/D advertisement; live GGUF over HTTP remains open).
 - Live llama.cpp opaque-state phase evidence (`llamacpp` feature,
   `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`): `SharedLlamaCppContextStateApi`
   boxes a real `LlamaContext` through `LlamaCppContextStateApi` get/copy/set.

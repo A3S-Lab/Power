@@ -372,8 +372,13 @@ Pending Ready-unlock still suppresses worker advertising via backend-owned
 `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL` to a GGUF to run
 `tests/llamacpp_phase_state_live.rs` (fails if the path is missing). That
 proves capture → buffered-host → restore on a real context and optional
-Ready decode via live greedy sample after restore. It does not advertise
-P/D or close the ROADMAP opaque-state / typed-outcome checkboxes.
+Ready decode via live greedy sample after restore. Fixture authenticated
+HTTP typed-outcome evidence
+(`distributed_serving_llamacpp_http_tests`) proves Ready prefill and
+Ready NDJSON decode after consume+restore+`ControlledLlamaCppDecodeTokenPort`
+without advertising P/D. Neither closes the ROADMAP opaque-state /
+typed-outcome checkboxes (live GGUF over HTTP and honest advertisement
+remain open).
 The composition root wraps and
 assembles injected pairs into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and

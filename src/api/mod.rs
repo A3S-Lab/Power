@@ -52,3 +52,7 @@ mod tests {
 #[cfg(test)]
 #[path = "distributed_serving_tests.rs"]
 mod distributed_serving_tests;
+
+#[cfg(test)]
+#[path = "distributed_serving_llamacpp_http_tests.rs"]
+mod distributed_serving_llamacpp_http_tests;

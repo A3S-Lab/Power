@@ -25,7 +25,11 @@
 //!     [`ControlledLlamaCppDecodeTokenPort`]): returns Ready decode stream.
 //!     The decode adapter must not invent tokens from transfer bytes.
 //! - Backend-owned composition still suppresses
-//!   [`super::ServingExecutionProfile::may_advertise_prefill_decode`].
+//!   [`super::ServingExecutionProfile::may_advertise_prefill_decode`] (not
+//!   honest to advertise while decode Ready can still require a separate
+//!   decode-token port). DistributedServingRuntime may still be
+//!   `execution_admissible` for typed-outcome HTTP without listing
+//!   `ready_phases`.
 //! - Composed with [`super::BackendOwnedPhaseExecutor`] under
 //!   `state_ownership = llamacpp` + `phase_execution = llamacpp` +
 //!   `transport = buffered-host-loopback`, prefill capture → buffered-host
@@ -35,8 +39,9 @@
 //!   buffered-host publish/consume → restore on a real `LlamaContext`, plus
 //!   Ready decode when a live hook materializes logits (this pin omits
 //!   them) via llama.cpp decode at the next M-RoPE position and greedy-
-//!   samples. That still does not close ROADMAP opaque-state / typed-outcome
-//!   checkboxes (no P/D advertisement, no HTTP boundary).
+//!   samples. Authenticated HTTP typed-outcome evidence is separate (see
+//!   API distributed-serving llamacpp HTTP tests). That still does not close
+//!   ROADMAP opaque-state / typed-outcome checkboxes.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -1380,6 +1385,10 @@ mod tests {
             BoundedStateTransferService::new(profile.clone(), Uuid::new_v4(), transfer).unwrap(),
         );
         let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
+        // Injected + REQUIRED + Ready is execution-admissible for typed-outcome
+        // HTTP, but may_advertise stays false so worker ready_phases do not
+        // list P/D (not HSN; not honest advertise without a bound decode path).
+        assert!(runtime.execution_admissible());
         assert!(!runtime.accepts_work());
     }
 

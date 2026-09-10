@@ -483,9 +483,21 @@ model-semantics owner.
   decode via `LlamaCppLiveDecodeTokenPort`. This pin's snapshot omits
   logits (`n_outputs=0`) and Qwen3.5 M-RoPE requires the next decode
   position `Y > X`, so the live hook decodes one caller-owned token at the
-  next slot then greedy-samples. Token ids come from llama.cpp, not
+  next slot then greedy-samples.   Token ids come from llama.cpp, not
   transfer bytes. That is live opaque-state progress, not checkbox close:
-  no P/D advertisement, no authenticated HTTP boundary.
+  no P/D advertisement. Authenticated HTTP typed-outcome evidence for the
+  same product pair now exists with fixture ports
+  (`ControlledLlamaCppDecodeTokenPort`) over
+  `/internal/v1/distributed-serving/*` (Ready prefill after capture; Ready
+  NDJSON decode only after consume+restore+decode adapter; fail-closed
+  JSON without NDJSON when the decode-token port is unbound).
+  `DistributedServingRuntime::execution_admissible` allows that HTTP path
+  under Injected+REQUIRED+Ready while `may_advertise_prefill_decode` stays
+  false for BackendOwned (not honest to advertise while decode Ready still
+  requires a separately bound token port; buffered-host may advertise
+  loopback conformance when `accepts_work` is true for the Ready loopback
+  pair — HSN DirectDeviceMemoryPull still never advertises). Live GGUF
+  over the HTTP boundary remains open.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
@@ -508,16 +520,18 @@ runs with transfer evidence on a full decode-token path that may advertise.
 Fixture capture/publish/consume/restore is necessary; env-gated live GGUF
 (`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`) now adds real-`LlamaContext`
 capture → buffered-host → restore (and optional live greedy decode after
-restore). That is still not sufficient to close: no HTTP boundary, no
-`may_advertise_prefill_decode`.
+restore). That is still not sufficient to close: no P/D advertisement via
+`may_advertise_prefill_decode`, and live GGUF over the authenticated HTTP
+boundary remains open (fixture HTTP typed-outcome evidence exists separately).
 `LlamaCppBackendPhaseExecution` + ACL `phase_execution = llamacpp` advances
 typed prepare / prefill-execute Ready via those same state APIs (fixture-
 proven without a huge GGUF; live GGUF restore now also runs locally) but
 does **not** close typed-outcome or reuse checkboxes: Ready decode after
 restore requires a bound `LlamaCppDecodeTokenPort` (controlled adapter
 proves the gate without inventing tokens from transfer bytes; live greedy
-sample after restore is progress, not HTTP-boundary close), and
-`may_advertise_prefill_decode` stays false.
+sample after restore is progress; fixture HTTP now proves Ready NDJSON
+only after consume+restore+adapter and non-Ready JSON without NDJSON when
+unbound), and `may_advertise_prefill_decode` stays false for BackendOwned.
 
 **Reuse (admission / replicas / weight hierarchy / sealed envelopes /
 telemetry / receipts):** closes when a concrete llama.cpp or picolm
@@ -538,9 +552,12 @@ digests and moves opaque snapshots through the pinned
   `transport = buffered-host-loopback`) now shows ownership capture ->
   buffered-host publish/consume -> decode restore. Env-gated live GGUF
   evidence (`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`) repeats that path on a
-  real `LlamaContext` (local 0.8B Q4_0). That is necessary progress but
-  **not** sufficient — HTTP-boundary P/D and advertisement remain open
-  before this checkbox closes. `ProfileBoundBackendPhaseStateOwnership` mirrors
+  real `LlamaContext` (local 0.8B Q4_0). Fixture authenticated HTTP now
+  also moves that opaque path across
+  `/internal/v1/distributed-serving/*` with controlled decode tokens.
+  That is necessary progress but **not** sufficient — live GGUF over HTTP
+  and P/D advertisement remain open before this checkbox closes.
+  `ProfileBoundBackendPhaseStateOwnership` mirrors
 closed profile digests to Eligible without KV and does **not** close this
 checkbox. Power must not invent a second KV format.
 
@@ -553,8 +570,17 @@ consume **including Ready decode token streams**. Progress note:
 execute via pinned state APIs / fixture port; decode execute restores
 opaque bytes then Ready only with a bound [`LlamaCppDecodeTokenPort`]
   (fixture + controlled adapter evidence exists; live GGUF restore + greedy
-  sample after restore is local progress, not authenticated-HTTP close).
-  `EmptyBackendPhaseExecution`
+  sample after restore is local progress). First-principles authenticated
+  HTTP evidence now composes product buffered-host +
+  `BackendOwnedPhaseExecutor` + llamacpp ownership/execution with
+  `ControlledLlamaCppDecodeTokenPort`: Ready prefill after capture, Ready
+  NDJSON decode only after consume+restore+adapter, and unbound decode-token
+  fail-closed as JSON without NDJSON success
+  (`api::distributed_serving_llamacpp_http_tests`). Runtime
+  `execution_admissible` enables that path while BackendOwned
+  `may_advertise_prefill_decode` stays false (worker `ready_phases` empty;
+  not HSN). Live GGUF over HTTP and honest P/D advertisement remain open
+  before this checkbox closes. `EmptyBackendPhaseExecution`
 keeps Eligible from Ready; `PendingBackendPhaseExecution` unlocks Ready
 health only and fails closed on prepare/execute—neither closes this
 checkbox. Gateway/Cloud retain placement and autoscaling.
@@ -577,10 +603,16 @@ close it.
 **Composition fail-closed (always required, not a checkbox closer):**
 `phase_execution = pending` or `phase_execution = llamacpp` with
 `state_ownership = profile-bound` / `llamacpp` under
-`phase_executor = backend-owned` may reach executor Ready health, but
-`may_advertise_prefill_decode` stays false, so
+`phase_executor = backend-owned` may reach executor Ready health and
+`DistributedServingRuntime::execution_admissible` (Injected + REQUIRED +
+Ready transfer/phase) so typed-outcome HTTP can run, but
+`may_advertise_prefill_decode` stays false for BackendOwned, so
 `DistributedServingRuntime::accepts_work` stays false and worker
-`ready_phases` never list prefill/decode.
+`ready_phases` never list prefill/decode. Buffered-host loopback may
+advertise only for the Ready conformance product pair when `accepts_work`
+is true; DirectDeviceMemoryPull never advertises (HSN evidence still
+required). Do not treat BackendOwned+llamacpp Ready health alone as
+honest P/D advertisement.
 
 
 ## A3S Cloud substrate obligations
