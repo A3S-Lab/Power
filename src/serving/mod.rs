@@ -5,6 +5,7 @@
 
 mod adapter_contract;
 mod backend_owned_phase;
+mod backend_phase_state_ownership;
 mod bounded_state_transfer;
 mod buffered_host_loopback;
 mod buffered_host_loopback_phase;
@@ -25,6 +26,9 @@ pub use adapter_contract::{
     AdapterTransportIntegrity, ProductionAdapterContract,
 };
 pub use backend_owned_phase::BackendOwnedPhaseExecutor;
+pub use backend_phase_state_ownership::{
+    bind_backend_phase_state_ownership, BackendPhaseStateOwnership, EmptyBackendPhaseStateOwnership,
+};
 pub use bounded_state_transfer::{BoundedStateTransferService, StateTransferRuntimeSnapshot};
 pub use buffered_host_loopback::BufferedHostLoopbackStateTransfer;
 pub use buffered_host_loopback_phase::BufferedHostLoopbackPhaseExecutor;

@@ -317,9 +317,11 @@ decode 成功；不完整配对与 Empty 占位仍失败关闭。这不是 HSN�
 面向开放的具体后端阶段路径，ACL `transport = "buffered-host-loopback"` 配合
 `phase_executor = "backend-owned"`（或
 `with_backend_owned_phase_on_buffered_host_loopback`）安装 Ready 缓冲主机回环
-传输与 Unavailable 的 `BackendOwnedPhaseExecutor`（Injected + 必需合约）。该阶段
-端口在真实 state-layout + KV 所有权适配器绑定前拒绝 Ready 工作，拒绝错误传输，
-且从不宣称 P/D——这不是 llama.cpp / picolm 就绪证据。
+传输与 `BackendOwnedPhaseExecutor`（Injected + 必需合约）。默认 Empty 所有权保持
+Unavailable；绑定 `BackendPhaseStateOwnership` 时以不透明 `state_layout_sha256`
+对照配置 `layout_sha256` 失败关闭校验后可进入 Eligible。Eligible 在真实 execute
+适配器存在前仍拒绝 Ready 工作，拒绝错误传输，且从不宣称 P/D——仅布局注册不是
+llama.cpp / picolm 就绪证据。
 组合根将该对包装并组装为单一 `DistributedServingRuntime`，它是唯一的请求级生命周期与就绪源。
 仅当运行时匹配不可变配置且可接受工作时，Power 才发布已配置的 P/D 角色。仅传输完成
 从不计为成功 decode。每个注入的传输适配器由 `BoundedStateTransferService` 包装，

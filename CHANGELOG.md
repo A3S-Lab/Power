@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Fail-closed state-layout binding for `BackendOwnedPhaseExecutor`: trait
+  `BackendPhaseStateOwnership` (opaque `state_layout_sha256` + optional related
+  model/backend/execution digests + opaque import/export hooks) with default
+  `EmptyBackendPhaseStateOwnership` staying Unavailable. Matching registration
+  advances health to `PhaseExecutorHealth::Eligible` only after profile
+  `layout_sha256` validation; mismatched digests fail closed at bind time.
+  Eligible still refuses Ready prepare/execute and never advertises P/D—
+  layout registration alone is not decode success and does not invent
+  llama.cpp KV semantics. Ready execute adapter path remains open.
 - Product-surface `BackendOwnedPhaseExecutor` for concrete backend phase work:
   reports `AdapterProvisionState::Injected` under
   `ProductionAdapterContract::REQUIRED`, pairs only with

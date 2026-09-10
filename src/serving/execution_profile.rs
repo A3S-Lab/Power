@@ -94,8 +94,10 @@ impl fmt::Display for ServingCompositionTransport {
 /// Absent keeps the transport's default phase companion (Ready loopback
 /// conformance or Unavailable DirectDeviceMemoryPull). `backend-owned`
 /// installs [`crate::serving::BackendOwnedPhaseExecutor`]: Injected + required
-/// contract, Unavailable until a real state-layout + KV ownership adapter is
-/// bound. It pairs only with buffered-host loopback transfer.
+/// contract, Unavailable under Empty ownership until a non-Empty
+/// [`crate::serving::BackendPhaseStateOwnership`] binds matching
+/// `state_layout_sha256` (Eligible). Ready execute remains blocked. It pairs
+/// only with buffered-host loopback transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServingCompositionPhaseExecutor {
@@ -241,8 +243,9 @@ pub struct PrefillDecodeExecutionProfile {
     ///
     /// Absent keeps the transport's default phase companion.
     /// `backend-owned` requires `transport = buffered-host-loopback` and
-    /// installs Unavailable `BackendOwnedPhaseExecutor` instead of the Ready
-    /// loopback conformance executor. Never claims model-semantic P/D.
+    /// installs `BackendOwnedPhaseExecutor` (Empty → Unavailable; matching
+    /// ownership bind → Eligible; Ready execute still blocked) instead of the
+    /// Ready loopback conformance executor. Never claims model-semantic P/D.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_executor: Option<ServingCompositionPhaseExecutor>,
 }

@@ -136,12 +136,14 @@ impl PowerServerBuilder {
         Ok(self)
     }
 
-    /// Install buffered-host loopback transfer + Unavailable backend-owned phase.
+    /// Install buffered-host loopback transfer + backend-owned phase.
     ///
     /// Prefer ACL `transport = "buffered-host-loopback"` with
-    /// `phase_executor = "backend-owned"`. The phase port is Injected + required
-    /// contract but stays Unavailable until a real state-layout + KV ownership
-    /// adapter is bound; transfer alone never yields Ready decode.
+    /// `phase_executor = "backend-owned"`. Phase defaults to Empty ownership
+    /// (Unavailable). Binding `BackendPhaseStateOwnership` can become Eligible
+    /// after fail-closed `state_layout_sha256` validation; Ready prepare/execute
+    /// stays blocked until a real execute adapter exists. Transfer alone never
+    /// yields Ready decode.
     pub fn with_backend_owned_phase_on_buffered_host_loopback(mut self) -> Result<Self> {
         if self.options.state_transfer_service.is_some() || self.options.phase_executor.is_some() {
             return Err(crate::error::PowerError::Config(

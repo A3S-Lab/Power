@@ -90,11 +90,16 @@ For the open concrete backend phase path, Power ships
 `BackendOwnedPhaseExecutor` via ACL `transport = "buffered-host-loopback"` with
 `phase_executor = "backend-owned"` (or
 `with_backend_owned_phase_on_buffered_host_loopback`). It pairs with Ready
-`BufferedHostLoopbackStateTransfer`, reports Injected + required contract, stays
-Unavailable, refuses Ready prepare/execute (transfer alone is never decode
-success), refuses DirectDeviceMemoryPull / wrong protocol, and never advertises
-P/D. This is the named backend phase product port until llama.cpp / picolm bind
-real state-layout + KV ownership—not model-semantic P/D evidence.
+`BufferedHostLoopbackStateTransfer`, reports Injected + required contract, and
+defaults to Empty `BackendPhaseStateOwnership` (Unavailable). Binding a
+non-Empty ownership surface validates opaque `state_layout_sha256` against
+profile `layout_sha256` (plus optional related digests) fail-closed, then
+advances to Eligible. Eligible still refuses Ready prepare/execute until a real
+execute adapter exists; transfer alone and matching layout registration alone
+are never decode success. The trait's import/export hooks are opaque
+byte↔handle only—not llama.cpp KV semantics. Wrong transport is refused and
+P/D is never advertised. This advances the named backend phase product port;
+model-backend Ready P/D remains open.
 
 ## State-transfer port
 

@@ -332,8 +332,10 @@ model-semantics owner.
   the loopback transfer for opaque conformance composition; it still does not
   close model-semantic or HSN readiness. A separate product-surface
   `BackendOwnedPhaseExecutor` (`phase_executor = backend-owned` with buffered-host
-  transport) is the Unavailable Injected port for real layout/KV binding and
-  also does not close that checkbox.
+  transport) is the Injected port for real layout/KV binding: Empty ownership
+  stays Unavailable; matching `BackendPhaseStateOwnership` becomes Eligible
+  after fail-closed layout validation, still without Ready execute. It does not
+  close that checkbox.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support. The product-pair loopback
@@ -414,11 +416,18 @@ model-semantics owner.
   `transport = "buffered-host-loopback"` + `phase_executor = "backend-owned"`
   (or `with_backend_owned_phase_on_buffered_host_loopback`) installs Ready
   buffered-host loopback transfer with an Injected + required-contract phase
-  port that stays Unavailable and refuses Ready work until a real state-layout
-  + KV ownership adapter is bound. It refuses DirectDeviceMemoryPull / wrong
-  transport, never claims cache hit or decode success from transfer alone, and
-  never advertises P/D. This is the named backend phase product port, not
-  llama.cpp / picolm P/D evidence.
+  port. Default [`EmptyBackendPhaseStateOwnership`] keeps health Unavailable.
+  Binding a non-Empty [`BackendPhaseStateOwnership`] validates profile
+  `layout_sha256` via opaque `state_layout_sha256` (plus optional related
+  model/backend/execution digests) fail-closed before becoming Eligible;
+  mismatched layout fails closed at bind time. Eligible still refuses Ready
+  prepare/execute until a real execute adapter path exists—matching layout
+  registration alone is never cache-hit or decode success, and
+  `accepts_work` / `ready_phases` never advertise P/D. Import/export hooks on
+  the trait are opaque byte↔handle only; this does not invent llama.cpp KV
+  semantics. This advances the named backend phase product port toward real
+  backends; llama.cpp / picolm layout implementors and Ready execute remain
+  open.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
@@ -433,10 +442,12 @@ Remaining before any open P6 checkbox can close (not claimed here):
 - Reuse: live session-replica / weight-hierarchy lifecycle under a real
   backend P/D executor (software reuse of those ports is already bound).
 - Opaque state: model-owned KV/recurrent layout and import/export in
-  llama.cpp or picolm; `BackendOwnedPhaseExecutor` and DirectDeviceMemoryPull
-  phase are product ports, not that layout binding.
-- Typed outcomes: production phase executors bound to that layout; the
-  Unavailable `BackendOwnedPhaseExecutor` companion is not a ready backend.
+  llama.cpp or picolm; `BackendPhaseStateOwnership` is the thin opaque
+  bind surface (layout digest + byte hooks), not that implementor.
+  `BackendOwnedPhaseExecutor` Eligible after matching registration still
+  lacks Ready execute.
+- Typed outcomes: production phase execute path bound to that ownership;
+  Eligible is not Ready, and Empty ownership remains Unavailable.
 - HSN: a real DirectDeviceMemoryPull adapter with high-speed-path evidence
   (cancellation, peer loss, stale generation, corrupt state, pressure,
   restart, cleanup). The named Unavailable product port is not that evidence.

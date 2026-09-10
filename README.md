@@ -350,10 +350,13 @@ a real high-speed adapter is bound. This is the HSN product port, not HSN
 evidence. For the open concrete backend phase path, ACL
 `transport = "buffered-host-loopback"` with `phase_executor = "backend-owned"`
 (or `with_backend_owned_phase_on_buffered_host_loopback`) installs Ready
-buffered-host loopback transfer plus Unavailable `BackendOwnedPhaseExecutor`
-(Injected + required contract). That phase port refuses Ready work until a real
-state-layout + KV ownership adapter is bound, refuses wrong transport, and never
-advertises P/D—this is not llama.cpp / picolm readiness. The composition root wraps and
+buffered-host loopback transfer plus `BackendOwnedPhaseExecutor`
+(Injected + required contract). Default Empty ownership stays Unavailable;
+binding `BackendPhaseStateOwnership` validates opaque `state_layout_sha256`
+against profile `layout_sha256` fail-closed before Eligible. Eligible still
+refuses Ready work until a real execute adapter exists, refuses wrong
+transport, and never advertises P/D—layout registration alone is not llama.cpp
+/ picolm readiness. The composition root wraps and
 assembles injected pairs into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and
 readiness source. Power publishes the configured P/D role only when the runtime

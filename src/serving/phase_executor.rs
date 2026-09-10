@@ -98,6 +98,10 @@ impl PhaseExecutorCapabilities {
 #[serde(rename_all = "kebab-case")]
 pub enum PhaseExecutorHealth {
     Ready,
+    /// State-layout ownership is bound and validated against the immutable
+    /// profile, but Ready prepare/execute remains blocked until a real execute
+    /// adapter path exists. Does **not** accept work or advertise P/D.
+    Eligible,
     Degraded,
     Unavailable,
 }
