@@ -422,6 +422,10 @@ Landed in the current working tree:
 - Added API-level image-bearing chat request detection and OpenAI receipt
   regression coverage so vision requests keep `effective_prompt` absent at the
   response boundary when no exact backend prompt representation is available.
+- Fail-closed the OpenAI chat receipt path so image-bearing requests
+  (`image_url` content parts or message-level `images`) reject any backend
+  `effective_prompt` claim instead of attaching a text-only digest; text-only
+  chat receipts that already emit digests are unchanged.
 - Tightened direct `nras-rest` evidence normalization so DeviceEvidence
   `evidence` and `certificate` fields must be non-empty base64/base64url before
   Power posts them to NVIDIA NRAS, and evidence lists are capped before request
@@ -547,8 +551,10 @@ Landed in the current working tree:
 Still open:
 
 - Expose exact post-template prompt representations for remaining opaque
-  multimodal paths, or keep requiring those paths to leave `effective_prompt`
-  absent.
+  multimodal paths. Until a multimodal claim kind exists, the OpenAI chat
+  receipt path fail-closes when a backend returns any `effective_prompt` for
+  image-bearing requests (image_url parts or message `images`), and honest
+  backends continue to leave the field absent.
 - Native NVIDIA GPU confidential-computing NRAS SDK integration. The current
   implementation supports configured evidence/verdict bytes, live
   `nvattest-cli` collection, and direct `nras-rest` attestation, hashes the
@@ -565,7 +571,8 @@ Still open:
   upstream-declared chat and text-completion digests through an explicit opt-in
   endpoint; mistralrs text chat emits a prompt-token-ID digest. Remaining
   opaque multimodal and delegated paths without an explicit digest endpoint
-  leave that field absent.
+  leave that field absent; the chat API rejects invented text-only digests for
+  image-bearing requests instead of attaching them to receipts.
 
 ## Baseline Findings
 
@@ -1039,7 +1046,9 @@ Remaining gap:
   by prompt-token-ID digest. llama.cpp, picolm, and mistralrs vision/multimodal
   paths, plus proxy image-bearing chat/completion paths, still leave
   `effective_prompt` absent until they can expose the exact prompt
-  representation submitted to the model.
+  representation submitted to the model. The OpenAI chat API additionally
+  fail-closes if a backend invents a text-only digest for image-bearing chat
+  instead of attaching that claim to the receipt.
 
 Remaining code changes:
 
@@ -1063,6 +1072,9 @@ Tests:
 - llama.cpp, picolm, mistralrs, and proxy image-bearing chat paths keep
   `effective_prompt` absent unless the backend can expose the exact
   post-template multimodal representation.
+- OpenAI chat receipts reject invented text-only `effective_prompt` digests for
+  image-bearing requests (`image_url` parts and message `images`) while text-only
+  digests continue to appear when backends expose an exact representation.
 - Shared image-input detection covers top-level request images, per-message
   image arrays, and OpenAI `image_url` content parts.
 

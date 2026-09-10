@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Fail-closed OpenAI chat attestation receipts for opaque multimodal inputs:
+  image-bearing requests (`image_url` content parts or message-level `images`)
+  reject any backend-invented text-only `effective_prompt` digest instead of
+  attaching it. Honest backends that leave the field absent still succeed;
+  text-only chat paths that already emit digests are unchanged. This does not
+  claim a multimodal post-template prompt claim kind or Phase completion.
 - Applied the distributed runtime's caller-cancel and deadline abort contract to
   in-flight state-transfer destination prepare, source publish, and consume
   steps (same `wait_operation` boundary already used for phase prepare/execute).

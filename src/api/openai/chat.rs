@@ -427,6 +427,17 @@ pub async fn handler(
             .into_response();
         }
     };
+    let effective_prompt = match super::chat_effective_prompt_for_receipt(&request, effective_prompt)
+    {
+        Ok(digest) => digest,
+        Err(message) => {
+            if unload_after_use {
+                crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
+            }
+            state.metrics.decrement_active_requests();
+            return openai_error("receipt_failed", &message).into_response();
+        }
+    };
     let attestation_receipt =
         match crate::api::receipt::chat_receipt_with_runtime_policy_and_effective_prompt(
             &request,
@@ -2428,6 +2439,93 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["object"], "chat.completion");
         assert!(json["attestation_receipt"]["effective_prompt"].is_null());
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_rejects_text_effective_prompt_for_image_url_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        // Adversarial backend: would invent a text-only digest for vision input.
+        let prompt_digest = EffectivePromptDigest::chat_rendered_prompt("mock", "text-only digest");
+        let state = test_state_with_mock(
+            MockBackend::success().with_effective_prompt(prompt_digest),
+        );
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{
+                "model":"test",
+                "messages":[{
+                    "role":"user",
+                    "content":[
+                        {"type":"text","text":"What is this?"},
+                        {"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}}
+                    ]
+                }],
+                "stream":false
+            }"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "receipt_failed");
+        let message = json["error"]["message"].as_str().unwrap();
+        assert!(message.contains("image-bearing"));
+        assert!(message.contains("effective_prompt"));
+        assert!(message.contains("chat.rendered-prompt"));
+        assert!(!message.contains("text-only digest"));
+
+        std::env::remove_var("A3S_POWER_HOME");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_openai_chat_rejects_text_effective_prompt_for_message_images() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
+
+        let prompt_digest =
+            EffectivePromptDigest::chat_prompt_token_ids("mock", &[7, 8, 9]);
+        let state = test_state_with_mock(
+            MockBackend::success().with_effective_prompt(prompt_digest),
+        );
+        state.registry.register(sample_manifest("test")).unwrap();
+        state.mark_loaded("test");
+
+        let app = router::build(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"test","messages":[{"role":"user","content":"What is this?","images":["aGVsbG8="]}],"stream":false}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "receipt_failed");
+        let message = json["error"]["message"].as_str().unwrap();
+        assert!(message.contains("image-bearing"));
+        assert!(message.contains("chat.prompt-token-ids"));
+        assert!(!message.contains("aGVsbG8="));
 
         std::env::remove_var("A3S_POWER_HOME");
     }

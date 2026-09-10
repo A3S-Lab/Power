@@ -10,9 +10,30 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use std::time::Duration;
 
-use crate::api::types::{JsonSchemaSpec, ResponseFormat};
+use crate::api::types::{ChatCompletionRequest, JsonSchemaSpec, ResponseFormat};
+use crate::backend::types::EffectivePromptDigest;
 use crate::model::manifest::ModelFormat;
 use crate::server::state::AppState;
+
+/// Opaque multimodal chat has no exact post-template claim type yet.
+///
+/// Image-bearing requests must leave `effective_prompt` absent. Never attach a
+/// text-only digest invented from rendered prompt bytes or prompt token IDs.
+pub(super) fn chat_effective_prompt_for_receipt(
+    request: &ChatCompletionRequest,
+    effective_prompt: Option<EffectivePromptDigest>,
+) -> Result<Option<EffectivePromptDigest>, String> {
+    if !request.has_image_inputs() {
+        return Ok(effective_prompt);
+    }
+    if let Some(digest) = effective_prompt {
+        return Err(format!(
+            "image-bearing chat requests must leave effective_prompt absent unless the exact multimodal prompt representation is exposed; refusing claim kind '{}'",
+            digest.kind
+        ));
+    }
+    Ok(None)
+}
 
 /// Build the OpenAI-compatible API routes.
 pub fn routes() -> Router<AppState> {
@@ -241,7 +262,66 @@ pub(super) fn round_tokens(n: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::types::ChatCompletionRequest;
+    use crate::backend::types::EffectivePromptDigest;
     use crate::model::manifest::ModelFormat;
+
+    #[test]
+    fn test_chat_effective_prompt_for_receipt_allows_text_only_digest() {
+        let request: ChatCompletionRequest = serde_json::from_str(
+            r#"{"model":"test","messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .unwrap();
+        let digest = EffectivePromptDigest::chat_rendered_prompt("mock", "rendered");
+
+        let gated = chat_effective_prompt_for_receipt(&request, Some(digest.clone())).unwrap();
+
+        assert_eq!(gated, Some(digest));
+    }
+
+    #[test]
+    fn test_chat_effective_prompt_for_receipt_keeps_image_absence() {
+        let request: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{
+                    "role":"user",
+                    "content":[
+                        {"type":"text","text":"What is this?"},
+                        {"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}}
+                    ]
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let gated = chat_effective_prompt_for_receipt(&request, None).unwrap();
+
+        assert!(gated.is_none());
+    }
+
+    #[test]
+    fn test_chat_effective_prompt_for_receipt_rejects_text_digest_on_images() {
+        let request: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"test",
+                "messages":[{
+                    "role":"user",
+                    "content":"describe",
+                    "images":["aGVsbG8="]
+                }]
+            }"#,
+        )
+        .unwrap();
+        let digest = EffectivePromptDigest::chat_prompt_token_ids("mock", &[1, 2, 3]);
+
+        let err = chat_effective_prompt_for_receipt(&request, Some(digest)).unwrap_err();
+
+        assert!(err.contains("image-bearing"));
+        assert!(err.contains("effective_prompt"));
+        assert!(err.contains("chat.prompt-token-ids"));
+        assert!(!err.contains("aGVsbG8="));
+    }
 
     #[test]
     fn test_openai_error_structure() {
