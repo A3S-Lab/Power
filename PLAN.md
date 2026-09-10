@@ -114,12 +114,14 @@ Features that fail this filter get rejected, no matter how "nice to have" they a
 
 ---
 
-## Phase 4: TEE Runtime Components Complete; Remote Verification In Progress
+## Phase 4: TEE Runtime Components Complete; Remote Verification v1 Boundary Set
 
 **Goal**: Make Power deployable in real AMD SEV-SNP and Intel TDX environments
 with independently verifiable evidence. The runtime components below are
-implemented. Production SEV-SNP still needs release evidence, and TDX remains
-blocked on DCAP Quote generation and QVL verification.
+implemented. Production SEV-SNP still needs release-evidence captures for a
+tagged production release. Intel TDX is explicitly unsupported on the v1
+production matrix until a reviewed DCAP Quote/QVL path exists (same
+OR-exclusion pattern as HSN DirectDeviceMemoryPull advertisement).
 
 ### 4.1 — ✅ picolm Multi-Turn Session KV Cache
 - `Arc<Mutex<Option<KvCache>>>` return path via `tokio::spawn` background task
@@ -251,9 +253,12 @@ blocked on DCAP Quote generation and QVL verification.
 
 ## Completion Summary
 
-The picolm, performance, hardening-component, and ecosystem milestones above
-are implemented and covered by the repository test profiles. They are not a
-claim that Power is ready to tag v1.0.0.
+The picolm, performance, hardening-component, ecosystem, attestation v1
+remediation, and ROADMAP P0–P6 development milestones above are implemented
+and covered by the repository test profiles (including first-principles
+distributed-serving and env-gated live llama.cpp evidence). That is the
+development/testing plan exit for this repository. It is not a claim that
+Power is ready to tag a production v1.0.0 release.
 
 The Rust release API now requires an opaque exact-report proof for confidential
 promotion, and the checked-in external capture runbook carries that API through
