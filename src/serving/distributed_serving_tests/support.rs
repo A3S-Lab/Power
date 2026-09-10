@@ -59,6 +59,44 @@ pub(crate) fn request() -> PhaseRequest {
     )
 }
 
+/// Controllable decode `execute` outcome after prepare+consume succeed.
+///
+/// Prefill execute always remains Ready in these fixtures; only the decode
+/// path injects typed non-Ready decisions to prove transfer receipt is not
+/// decode success.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) enum DecodeExecuteFixture {
+    #[default]
+    ReadyStream,
+    Recompute(RecomputeReason),
+    RetryableUnavailable {
+        reason: RetryableUnavailableReason,
+        retry_after_ms: Option<u64>,
+    },
+    TerminalFailure(TerminalFailureReason),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FixtureBehavior {
+    pub prepared_expiry_delta: Duration,
+    pub block_prepare: bool,
+    pub retryable_prepare: bool,
+    pub fail_abort: bool,
+    pub decode_execute: DecodeExecuteFixture,
+}
+
+impl Default for FixtureBehavior {
+    fn default() -> Self {
+        Self {
+            prepared_expiry_delta: Duration::zero(),
+            block_prepare: false,
+            retryable_prepare: false,
+            fail_abort: false,
+            decode_execute: DecodeExecuteFixture::ReadyStream,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Calls {
     values: Mutex<Vec<&'static str>>,
@@ -148,10 +186,7 @@ impl StateTransferService for TestTransferDriver {
 struct TestPhaseExecutor {
     capabilities: PhaseExecutorCapabilities,
     profile_sha256: String,
-    prepared_expiry_delta: Duration,
-    block_prepare: bool,
-    retryable_prepare: bool,
-    fail_abort: bool,
+    behavior: FixtureBehavior,
     calls: Arc<Calls>,
 }
 
@@ -170,17 +205,17 @@ impl ServingPhaseExecutor for TestPhaseExecutor {
         command: PreparePhaseExecution,
     ) -> Result<PhaseDecision<PreparedPhaseExecution>> {
         self.calls.push("phase.prepare");
-        if self.block_prepare {
+        if self.behavior.block_prepare {
             std::future::pending::<()>().await;
         }
-        if self.retryable_prepare {
+        if self.behavior.retryable_prepare {
             return PhaseDecision::retryable_unavailable(
                 RetryableUnavailableReason::AdmissionPressure,
                 Some(5),
             );
         }
         let execution = PhaseExecutionHandle::new("phase-handle")?;
-        let expires_at = command.expires_at + self.prepared_expiry_delta;
+        let expires_at = command.expires_at + self.behavior.prepared_expiry_delta;
         let prepared = match self.capabilities.phase {
             ServingPhase::Prefill => PreparedPhaseExecution::Prefill(PreparedPrefillPhase::new(
                 command.execution_id,
@@ -222,28 +257,38 @@ impl ServingPhaseExecutor for TestPhaseExecutor {
                     binding(),
                 )?),
             )),
-            ExecutePhaseExecution::Decode { .. } => {
-                let stream = futures::stream::once(async {
-                    Ok(PhaseResponseChunk::Completion(CompletionResponseChunk {
-                        text: "token".to_string(),
-                        done: true,
-                        prompt_tokens: Some(16),
-                        done_reason: Some("stop".to_string()),
-                        prompt_eval_duration_ns: None,
-                        token_id: Some(7),
-                    }))
-                });
-                Ok(PhaseDecision::ready(PhaseExecutionOutput::Decode(
-                    Box::pin(stream),
-                )))
-            }
+            ExecutePhaseExecution::Decode { .. } => match self.behavior.decode_execute {
+                DecodeExecuteFixture::ReadyStream => {
+                    let stream = futures::stream::once(async {
+                        Ok(PhaseResponseChunk::Completion(CompletionResponseChunk {
+                            text: "token".to_string(),
+                            done: true,
+                            prompt_tokens: Some(16),
+                            done_reason: Some("stop".to_string()),
+                            prompt_eval_duration_ns: None,
+                            token_id: Some(7),
+                        }))
+                    });
+                    Ok(PhaseDecision::ready(PhaseExecutionOutput::Decode(
+                        Box::pin(stream),
+                    )))
+                }
+                DecodeExecuteFixture::Recompute(reason) => Ok(PhaseDecision::recompute(reason)),
+                DecodeExecuteFixture::RetryableUnavailable {
+                    reason,
+                    retry_after_ms,
+                } => PhaseDecision::retryable_unavailable(reason, retry_after_ms),
+                DecodeExecuteFixture::TerminalFailure(reason) => {
+                    Ok(PhaseDecision::terminal_failure(reason))
+                }
+            },
         }
     }
 
     async fn abort(&self, _command: AbortPhaseExecution) -> Result<()> {
         self.calls.push("phase.abort");
         self.calls.phase_aborts.fetch_add(1, Ordering::SeqCst);
-        if self.fail_abort {
+        if self.behavior.fail_abort {
             Err(PowerError::BackendNotAvailable(
                 "test phase cleanup failed".to_string(),
             ))
@@ -258,7 +303,7 @@ pub(crate) fn runtime(
     epoch: Uuid,
     calls: Arc<Calls>,
 ) -> DistributedServingRuntime {
-    runtime_with_expiry_delta(profile, epoch, calls, Duration::zero())
+    runtime_with_behavior(profile, epoch, calls, FixtureBehavior::default())
 }
 
 pub(crate) fn runtime_with_expiry_delta(
@@ -271,10 +316,10 @@ pub(crate) fn runtime_with_expiry_delta(
         profile,
         epoch,
         calls,
-        prepared_expiry_delta,
-        false,
-        false,
-        false,
+        FixtureBehavior {
+            prepared_expiry_delta,
+            ..FixtureBehavior::default()
+        },
     )
 }
 
@@ -282,10 +327,7 @@ pub(crate) fn runtime_with_behavior(
     profile: &ServingExecutionProfile,
     epoch: Uuid,
     calls: Arc<Calls>,
-    prepared_expiry_delta: Duration,
-    block_prepare: bool,
-    retryable_prepare: bool,
-    fail_abort: bool,
+    behavior: FixtureBehavior,
 ) -> DistributedServingRuntime {
     let capabilities = StateTransferCapabilities {
         execution_profile_sha256: profile.sha256().unwrap(),
@@ -312,22 +354,19 @@ pub(crate) fn runtime_with_behavior(
                 phase: profile.phase(),
             },
             profile_sha256: profile.sha256().unwrap(),
-            prepared_expiry_delta,
-            block_prepare,
-            retryable_prepare,
-            fail_abort,
+            behavior,
             calls,
         }),
     )
     .unwrap()
 }
 
-pub(crate) async fn start_decode(
+pub(crate) async fn prepare_decode_source(
     runtime: &DistributedServingRuntime,
     epoch: Uuid,
     execution_id: Uuid,
     expires_at: chrono::DateTime<Utc>,
-) -> PhaseResponseStream {
+) -> StateTransferSource {
     let prepared = runtime
         .prepare_decode(DecodePhaseRequest {
             execution_id,
@@ -341,7 +380,7 @@ pub(crate) async fn start_decode(
         PhaseDecision::Ready(PreparedDecodeTransfer { target }) => target,
         _ => panic!("expected a prepared decode target"),
     };
-    let source = StateTransferSource {
+    StateTransferSource {
         schema: STATE_TRANSFER_SOURCE_SCHEMA.to_string(),
         transfer_id: target.transfer_id,
         source_worker_epoch: Uuid::new_v4(),
@@ -351,7 +390,16 @@ pub(crate) async fn start_decode(
         published_at: Utc::now(),
         expires_at: target.expires_at,
         ticket: "source-ticket".to_string(),
-    };
+    }
+}
+
+pub(crate) async fn start_decode(
+    runtime: &DistributedServingRuntime,
+    epoch: Uuid,
+    execution_id: Uuid,
+    expires_at: chrono::DateTime<Utc>,
+) -> PhaseResponseStream {
+    let source = prepare_decode_source(runtime, epoch, execution_id, expires_at).await;
     match runtime.execute_decode(execution_id, source).await.unwrap() {
         PhaseDecision::Ready(stream) => stream,
         _ => panic!("expected a decode stream"),

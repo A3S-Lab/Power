@@ -12,9 +12,12 @@ use crate::model::registry::ModelRegistry;
 use crate::server::auth::ApiKeyAuth;
 use crate::server::router;
 use crate::server::state::AppState;
-use crate::serving::distributed_serving_tests::support::{profile, runtime, wait_for_count, Calls};
+use crate::serving::distributed_serving_tests::support::{
+    profile, runtime_with_behavior, wait_for_count, Calls, DecodeExecuteFixture, FixtureBehavior,
+};
 use crate::serving::{
-    DisaggregatedServingRole, PhaseRequest, ServingExecutionProfile, StateTransferSource,
+    DisaggregatedServingRole, PhaseRequest, RecomputeReason, RetryableUnavailableReason,
+    ServingExecutionProfile, StateTransferSource, TerminalFailureReason,
     STATE_TRANSFER_SOURCE_SCHEMA,
 };
 use axum::body::Body;
@@ -91,6 +94,14 @@ fn distributed_app(
     role: DisaggregatedServingRole,
     calls: Arc<Calls>,
 ) -> (Router, ServingExecutionProfile, Uuid) {
+    distributed_app_with_behavior(role, calls, FixtureBehavior::default())
+}
+
+fn distributed_app_with_behavior(
+    role: DisaggregatedServingRole,
+    calls: Arc<Calls>,
+    behavior: FixtureBehavior,
+) -> (Router, ServingExecutionProfile, Uuid) {
     let profile = profile(role, 1_000);
     let config = PowerConfig {
         serving_execution: profile.clone(),
@@ -99,7 +110,7 @@ fn distributed_app(
     };
     let state = base_state(config);
     let epoch = state.worker_epoch();
-    let phase_runtime = runtime(&profile, epoch, calls);
+    let phase_runtime = runtime_with_behavior(&profile, epoch, calls, behavior);
     let state = state
         .with_distributed_serving(Arc::new(phase_runtime))
         .with_auth(Arc::new(ApiKeyAuth::new(&["service-key".to_string()])));
@@ -524,4 +535,174 @@ async fn dropping_the_internal_decode_body_reclaims_runtime_ownership() {
     drop(response);
 
     wait_for_count(&calls.phase_aborts, 1).await;
+}
+
+#[tokio::test]
+async fn post_consume_non_ready_execute_returns_typed_json_not_ndjson_stream() {
+    let cases = [
+        (
+            DecodeExecuteFixture::Recompute(RecomputeReason::StateIncompatible),
+            StatusCode::CONFLICT,
+            "recompute",
+        ),
+        (
+            DecodeExecuteFixture::RetryableUnavailable {
+                reason: RetryableUnavailableReason::PeerUnavailable,
+                retry_after_ms: Some(40),
+            },
+            StatusCode::SERVICE_UNAVAILABLE,
+            "retryable",
+        ),
+        (
+            DecodeExecuteFixture::TerminalFailure(TerminalFailureReason::PolicyViolation),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "terminal",
+        ),
+    ];
+
+    for (decode_execute, expected_status, label) in cases {
+        let calls = Arc::new(Calls::default());
+        let (app, profile, epoch) = distributed_app_with_behavior(
+            DisaggregatedServingRole::Decode,
+            calls.clone(),
+            FixtureBehavior {
+                decode_execute,
+                ..FixtureBehavior::default()
+            },
+        );
+        let execution_id = Uuid::new_v4();
+        let digest = profile.sha256().unwrap();
+        let expires_at = Utc::now() + Duration::milliseconds(800);
+        let prepared = post_internal(
+            &app,
+            "/internal/v1/distributed-serving/decode/prepare",
+            serde_json::json!({
+                "schema": DISTRIBUTED_SERVING_SCHEMA,
+                "execution_id": execution_id,
+                "worker_epoch": epoch,
+                "execution_profile_sha256": digest,
+                "expires_at": expires_at,
+                "request": completion_payload()
+            }),
+        )
+        .await;
+        assert_eq!(prepared.status(), StatusCode::OK, "{label}");
+        let prepared: DistributedPhaseResponse<PreparedDecodeResult> = parse_json(prepared).await;
+        let target = match prepared.outcome {
+            DistributedPhaseDecision::Ready { result } => result.target,
+            _ => panic!("{label}: expected ready decode target"),
+        };
+        let source = StateTransferSource {
+            schema: STATE_TRANSFER_SOURCE_SCHEMA.to_string(),
+            transfer_id: target.transfer_id,
+            source_worker_epoch: Uuid::new_v4(),
+            destination_worker_epoch: target.destination_worker_epoch,
+            binding: target.binding,
+            protocol: target.protocol,
+            published_at: Utc::now(),
+            expires_at: target.expires_at,
+            ticket: "source-ticket".to_string(),
+        };
+
+        let response = post_internal(
+            &app,
+            "/internal/v1/distributed-serving/decode/execute",
+            serde_json::json!({
+                "schema": DISTRIBUTED_SERVING_SCHEMA,
+                "execution_id": execution_id,
+                "worker_epoch": epoch,
+                "execution_profile_sha256": digest,
+                "source": source
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), expected_status, "{label}");
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            content_type.starts_with("application/json"),
+            "{label}: expected JSON decision, got {content_type}"
+        );
+        assert!(
+            !content_type.contains("ndjson"),
+            "{label}: must not open an NDJSON success stream"
+        );
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(
+            !body.contains("\"event\":\"ready\""),
+            "{label}: must not emit stream ready frames"
+        );
+        assert!(
+            !body.contains("\"token\""),
+            "{label}: must not emit generated token frames"
+        );
+
+        let decision: DistributedPhaseResponse<serde_json::Value> =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decision.schema, DISTRIBUTED_SERVING_SCHEMA, "{label}");
+        assert_eq!(decision.execution_id, execution_id, "{label}");
+        assert_eq!(decision.worker_epoch, epoch, "{label}");
+        assert_eq!(decision.execution_profile_sha256, digest, "{label}");
+        match (decode_execute, decision.outcome) {
+            (
+                DecodeExecuteFixture::Recompute(expected),
+                DistributedPhaseDecision::Recompute { reason },
+            ) => assert_eq!(reason, expected, "{label}"),
+            (
+                DecodeExecuteFixture::RetryableUnavailable {
+                    reason: expected_reason,
+                    retry_after_ms: expected_delay,
+                },
+                DistributedPhaseDecision::RetryableUnavailable {
+                    reason,
+                    retry_after_ms,
+                },
+            ) => {
+                assert_eq!(reason, expected_reason, "{label}");
+                assert_eq!(retry_after_ms, expected_delay, "{label}");
+            }
+            (
+                DecodeExecuteFixture::TerminalFailure(expected),
+                DistributedPhaseDecision::TerminalFailure { reason },
+            ) => assert_eq!(reason, expected, "{label}"),
+            _ => panic!("{label}: unexpected decision outcome"),
+        }
+
+        wait_for_count(&calls.phase_aborts, 1).await;
+        assert_eq!(
+            calls.values()[..4],
+            [
+                "phase.prepare",
+                "transfer.prepare",
+                "transfer.consume",
+                "phase.execute"
+            ],
+            "{label}"
+        );
+        let abort = post_internal(
+            &app,
+            "/internal/v1/distributed-serving/abort",
+            serde_json::json!({
+                "schema": DISTRIBUTED_SERVING_SCHEMA,
+                "execution_id": execution_id,
+                "worker_epoch": epoch,
+                "execution_profile_sha256": digest
+            }),
+        )
+        .await;
+        assert_eq!(abort.status(), StatusCode::OK, "{label}");
+        assert_eq!(
+            calls.phase_aborts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "{label}: abort remains idempotent after decision cleanup"
+        );
+    }
 }

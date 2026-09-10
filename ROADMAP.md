@@ -256,14 +256,20 @@ model-semantics owner.
   semantic parity in the owning model/backend adapter. Power moves only opaque,
   bounded authenticated state and never claims a cache hit or successful
   decode from transport completion alone.
+  Authenticated unit and HTTP evidence now proves a successful transfer
+  consume/receipt followed by non-`Ready` `execute` returns a typed decision
+  (never an NDJSON token stream) and runs compensating cleanup; production
+  backend adapters and high-speed transport remain open.
 - [ ] Report a typed recompute, retryable-unavailable, or terminal-failure outcome
   before response generation. Endpoint choice, flow control, request replay,
   desired replicas, placement, rollout and autoscaling remain Gateway or Cloud
   responsibilities.
   The closed pre-response decision contract and Gateway-facing Power endpoint
   are implemented. Cross-process orchestration now has executable success,
-  peer-loss, cleanup, restart and stale-epoch evidence; concrete production
-  backend adapters remain open.
+  peer-loss, cleanup, restart and stale-epoch evidence. Post-consume
+  `Recompute` / `RetryableUnavailable` / `TerminalFailure` mapping over the
+  authenticated HTTP boundary is covered by first-principles fixture tests;
+  concrete production backend adapters remain open.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support. The loopback conformance

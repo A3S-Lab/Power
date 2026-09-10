@@ -165,6 +165,13 @@ Every pre-response operation returns one closed `PhaseDecision`: `ready`,
 `terminal-failure`. Recompute and failure reasons are closed enums rather than
 backend text. A transfer receipt proves state movement only; decode succeeds
 only when the backend executor subsequently returns a response stream.
+Fixture-driven unit and authenticated HTTP tests inject non-`Ready` decode
+`execute` outcomes after a successful prepare+consume path and assert the
+internal boundary returns the typed JSON decision (with status mapping and
+binding fields), never `application/x-ndjson` or generated-token frames, while
+compensating cleanup reclaims the lease. That evidence is contract and cleanup
+coverage only: it does not claim a production backend adapter or high-speed
+network path.
 
 Phase abort accepts either an in-progress preparation without a backend handle
 or a completed reservation with its opaque handle. Prepared phase lifetimes

@@ -92,10 +92,10 @@ async fn phase_preparation_deadline_reclaims_the_runtime_lease() {
         &profile,
         Uuid::new_v4(),
         calls.clone(),
-        Duration::zero(),
-        true,
-        false,
-        false,
+        FixtureBehavior {
+            block_prepare: true,
+            ..FixtureBehavior::default()
+        },
     );
     let result = runtime
         .prepare_decode(DecodePhaseRequest {
@@ -119,10 +119,10 @@ async fn retryable_phase_decision_is_forwarded_only_after_cleanup() {
         &profile,
         Uuid::new_v4(),
         calls.clone(),
-        Duration::zero(),
-        false,
-        true,
-        false,
+        FixtureBehavior {
+            retryable_prepare: true,
+            ..FixtureBehavior::default()
+        },
     );
     let decision = runtime
         .prepare_decode(DecodePhaseRequest {
@@ -152,10 +152,11 @@ async fn unconfirmed_cleanup_taints_the_runtime_and_suppresses_new_work() {
         &profile,
         Uuid::new_v4(),
         calls.clone(),
-        Duration::zero(),
-        false,
-        true,
-        true,
+        FixtureBehavior {
+            retryable_prepare: true,
+            fail_abort: true,
+            ..FixtureBehavior::default()
+        },
     );
     let result = runtime
         .prepare_decode(DecodePhaseRequest {
@@ -211,6 +212,122 @@ async fn prefill_publishes_state_and_compensating_abort_reclaims_both_owners() {
     runtime.abort(execution_id).await.unwrap();
     assert_eq!(calls.phase_aborts.load(Ordering::SeqCst), 1);
     assert_eq!(calls.transfer_aborts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn transfer_receipt_then_non_ready_execute_never_opens_a_decode_stream() {
+    let cases = [
+        (
+            DecodeExecuteFixture::Recompute(RecomputeReason::StateStale),
+            "recompute",
+        ),
+        (
+            DecodeExecuteFixture::RetryableUnavailable {
+                reason: RetryableUnavailableReason::ResourcePressure,
+                retry_after_ms: Some(25),
+            },
+            "retryable",
+        ),
+        (
+            DecodeExecuteFixture::TerminalFailure(TerminalFailureReason::ExecutionFailed),
+            "terminal",
+        ),
+    ];
+
+    for (decode_execute, label) in cases {
+        let profile = profile(DisaggregatedServingRole::Decode, 100);
+        let epoch = Uuid::new_v4();
+        let calls = Arc::new(Calls::default());
+        let runtime = runtime_with_behavior(
+            &profile,
+            epoch,
+            calls.clone(),
+            FixtureBehavior {
+                decode_execute,
+                ..FixtureBehavior::default()
+            },
+        );
+        let execution_id = Uuid::new_v4();
+        let expires_at = Utc::now() + Duration::milliseconds(80);
+        let source = prepare_decode_source(&runtime, epoch, execution_id, expires_at).await;
+        let decision = runtime
+            .execute_decode(execution_id, source)
+            .await
+            .unwrap_or_else(|error| panic!("{label}: execute should return a decision: {error}"));
+
+        match (decode_execute, decision) {
+            (
+                DecodeExecuteFixture::Recompute(expected),
+                PhaseDecision::Recompute { reason },
+            ) => assert_eq!(reason, expected, "{label}"),
+            (
+                DecodeExecuteFixture::RetryableUnavailable {
+                    reason: expected_reason,
+                    retry_after_ms: expected_delay,
+                },
+                PhaseDecision::RetryableUnavailable {
+                    reason,
+                    retry_after_ms,
+                },
+            ) => {
+                assert_eq!(reason, expected_reason, "{label}");
+                assert_eq!(retry_after_ms, expected_delay, "{label}");
+            }
+            (
+                DecodeExecuteFixture::TerminalFailure(expected),
+                PhaseDecision::TerminalFailure { reason },
+            ) => assert_eq!(reason, expected, "{label}"),
+            _ => panic!("{label}: expected the injected non-Ready decision"),
+        }
+
+        assert_eq!(
+            calls.values()[..4],
+            [
+                "phase.prepare",
+                "transfer.prepare",
+                "transfer.consume",
+                "phase.execute"
+            ],
+            "{label}: consume must precede execute"
+        );
+        wait_for_count(&calls.phase_aborts, 1).await;
+        assert_eq!(calls.phase_aborts.load(Ordering::SeqCst), 1, "{label}");
+        assert!(runtime.accepts_work(), "{label}: cleanup confirmed");
+        runtime.abort(execution_id).await.unwrap();
+        assert_eq!(
+            calls.phase_aborts.load(Ordering::SeqCst),
+            1,
+            "{label}: abort after decision cleanup is idempotent"
+        );
+    }
+}
+
+#[tokio::test]
+async fn post_consume_non_ready_cleanup_failure_taints_readiness() {
+    let profile = profile(DisaggregatedServingRole::Decode, 100);
+    let epoch = Uuid::new_v4();
+    let calls = Arc::new(Calls::default());
+    let runtime = runtime_with_behavior(
+        &profile,
+        epoch,
+        calls.clone(),
+        FixtureBehavior {
+            decode_execute: DecodeExecuteFixture::Recompute(RecomputeReason::StateCorrupt),
+            fail_abort: true,
+            ..FixtureBehavior::default()
+        },
+    );
+    let execution_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::milliseconds(80);
+    let source = prepare_decode_source(&runtime, epoch, execution_id, expires_at).await;
+    let error = match runtime.execute_decode(execution_id, source).await {
+        Err(error) => error,
+        Ok(_) => panic!("unconfirmed cleanup must not surface a ready stream"),
+    };
+
+    assert!(matches!(error, PowerError::BackendNotAvailable(_)));
+    assert_eq!(calls.phase_aborts.load(Ordering::SeqCst), 1);
+    assert!(!runtime.accepts_work());
 }
 
 #[test]

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added first-principles distributed-serving evidence that a successful
+  transfer consume/receipt never upgrades into an NDJSON decode success stream
+  when phase `execute` returns `Recompute`, `RetryableUnavailable`, or
+  `TerminalFailure`. Controllable test-only phase fixtures drive the post-
+  consume path; authenticated HTTP tests assert typed JSON decision status
+  mapping, binding fields, absence of token frames, and compensating cleanup.
+  This is contract/cleanup coverage only and does not claim production backends
+  or high-speed transport.
 - Added the authenticated `a3s.power.distributed-serving.v1` internal HTTP
   boundary for decode preparation, prefill execution, decode execution, and
   idempotent abort. Every call binds the process epoch and immutable execution
