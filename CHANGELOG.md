@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Env-gated live authenticated HTTP typed-outcome / opaque-state evidence
+  (`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`, `llamacpp` feature):
+  `tests/llamacpp_phase_state_live.rs` →
+  `live_llamacpp_authenticated_http_ready_prefill_and_ndjson_decode_after_restore`
+  composes BackendOwned + buffered-host + llamacpp ownership/execution +
+  `LlamaCppLiveDecodeTokenPort` over `/internal/v1/distributed-serving/*`
+  (Ready prefill JSON after live capture; Ready NDJSON decode after
+  consume+restore+live greedy sample). Does **not** close ROADMAP
+  opaque-state / typed-outcome / HSN checkboxes (reuse under live P/D
+  lifecycle, HSN DirectDeviceMemoryPull evidence, and attested-fabric
+  readiness remain open).
 - Honest `may_advertise_prefill_decode` / worker `ready_phases` for
   BackendOwned + buffered-host + llamacpp ownership/execution: profile ACL
   admits advertise only for that full pair; runtime `accepts_work` still
@@ -18,8 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DirectDeviceMemoryPull never advertises without HSN). First-principles
   true/false tests cover profile gates, runtime advertise with/without
   decode-token, and worker observation. Does **not** close ROADMAP
-  opaque-state / typed-outcome / HSN checkboxes (live GGUF over HTTP and
-  HSN evidence remain open).
+  opaque-state / typed-outcome / HSN checkboxes (reuse / HSN / attestation
+  remain open).
 - Authenticated HTTP typed-outcome evidence for product buffered-host +
   `BackendOwnedPhaseExecutor` + llamacpp ownership/execution (fixture ports,
   no GGUF): `api::distributed_serving_llamacpp_http_tests` proves Ready
@@ -30,7 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   admission from worker `ready_phases` advertisement so unbound decode can
   exercise typed-outcome HTTP while `accepts_work` stays false; bound
   decode-token flips honest advertise. Does **not** close ROADMAP
-  typed-outcome / opaque-state checkboxes (live GGUF over HTTP remains open).
+  typed-outcome / opaque-state checkboxes (reuse / HSN / attestation remain
+  open).
 - Live llama.cpp opaque-state phase evidence (`llamacpp` feature,
   `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`): `SharedLlamaCppContextStateApi`
   boxes a real `LlamaContext` through `LlamaCppContextStateApi` get/copy/set.
@@ -39,9 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publish/consume → restore on live contexts. Ready decode uses
   `LlamaCppLiveDecodeTokenPort` + a post-restore llama.cpp decode at the
   next M-RoPE position (this pin's snapshot leaves `n_outputs=0`) then
-  greedy sample (token id from llama.cpp, never from transfer bytes). Does
-  **not** close ROADMAP opaque-state / typed-outcome checkboxes (no P/D
-  advertisement, no HTTP boundary).
+  greedy sample (token id from llama.cpp, never from transfer bytes). Live
+  HTTP boundary evidence is listed above. Does **not** close ROADMAP
+  opaque-state / typed-outcome checkboxes.
 - Decode Ready path for `LlamaCppBackendPhaseExecution` after opaque restore:
   bind a distinct `LlamaCppDecodeTokenPort` (production:
   `LlamaCppLiveDecodeTokenPort` under `llamacpp` wrapping existing completion /

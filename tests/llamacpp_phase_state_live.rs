@@ -12,6 +12,10 @@
 //!    llama.cpp greedy sample after restore. Transfer bytes never become
 //!    tokens. If sampling cannot complete honestly, restore evidence still
 //!    stands and the decode gap is recorded.
+//! 4. Authenticated HTTP boundary (`/internal/v1/distributed-serving/*`) with
+//!    the same BackendOwned + buffered-host + llamacpp pair and live decode
+//!    token port: Ready prefill JSON after capture, Ready NDJSON decode after
+//!    consume + restore + live greedy sample.
 
 #![cfg(feature = "llamacpp")]
 
@@ -19,26 +23,45 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use a3s_power::api::distributed_serving::{
+    DistributedDecodeStreamEvent, DistributedDecodeStreamFrame, DistributedPhaseDecision,
+    DistributedPhaseResponse, DistributedResponseChunk, PreparedDecodeResult,
+    PublishedPrefillResult, DISTRIBUTED_SERVING_SCHEMA, DISTRIBUTED_SERVING_STREAM_SCHEMA,
+};
+use a3s_power::backend::BackendRegistry;
+use a3s_power::config::PowerConfig;
+use a3s_power::model::registry::ModelRegistry;
+use a3s_power::server::auth::ApiKeyAuth;
+use a3s_power::server::router;
+use a3s_power::server::state::AppState;
 use a3s_power::serving::{
     live_greedy_decode_chunk_after_restore, BackendOwnedPhaseExecutor, BackendPhaseStateOwnership,
-    BufferedHostLoopbackStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole,
-    ExecutePhaseExecution, ImportedModelState, LlamaCppBackendPhaseExecution,
-    LlamaCppBackendPhaseStateOwnership, LlamaCppContextStateApi, LlamaCppContextStatePort,
-    LlamaCppLayoutFacts, LlamaCppLiveDecodeTokenPort, PhaseDecision, PhaseExecutionOutput,
-    PhaseExecutorHealth, PhaseRequest, PhaseResponseChunk, PhaseSessionPoolMode,
-    PhaseWeightCacheMode, PrefillDecodeExecutionProfile, PreparePhaseExecution,
-    PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
-    ServingCompositionPhaseExecution, ServingCompositionPhaseExecutor,
-    ServingCompositionStateOwnership, ServingCompositionTransport, ServingExecutionProfile,
-    ServingPhaseExecutor, ServingPrivacyMode, SharedLlamaCppContextStateApi, StateKind,
-    StateTransferProtocol, StateTransferService,
+    BoundedStateTransferService, BufferedHostLoopbackStateTransfer, ConsumeStateTransfer,
+    DisaggregatedServingRole, DistributedServingRuntime, ExecutePhaseExecution,
+    ImportedModelState, LlamaCppBackendPhaseExecution, LlamaCppBackendPhaseStateOwnership,
+    LlamaCppContextStateApi, LlamaCppContextStatePort, LlamaCppLayoutFacts,
+    LlamaCppLiveDecodeTokenPort, PhaseDecision, PhaseExecutionOutput, PhaseExecutorHealth,
+    PhaseRequest, PhaseResponseChunk, PhaseSessionPoolMode, PhaseWeightCacheMode,
+    PrefillDecodeExecutionProfile, PreparePhaseExecution, PrepareStateTransfer,
+    PreparedPhaseExecution, PublishStateTransfer, ServingCompositionPhaseExecution,
+    ServingCompositionPhaseExecutor, ServingCompositionStateOwnership,
+    ServingCompositionTransport, ServingExecutionProfile, ServingPhaseExecutor,
+    ServingPrivacyMode, SharedLlamaCppContextStateApi, StateKind, StateTransferProtocol,
+    StateTransferService,
 };
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::response::Response;
+use axum::Router;
+use chrono::{Duration, Utc};
 use futures::StreamExt;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
+use serde::de::DeserializeOwned;
 use serial_test::serial;
+use tower::ServiceExt;
 use uuid::Uuid;
 
 const LIVE_PROMPT: &str = "Hi";
@@ -424,5 +447,339 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
     }
 
     // Shared live contexts must drop before model (declaration order).
+    let _keep_loaded = (backend, &model);
+}
+
+const SERVICE_KEY: &str = "live-http-service-key";
+const LIVE_MODEL: &str = "internal/qwen35-0.8b-live";
+
+struct LiveHttpApp {
+    app: Router,
+    profile: ServingExecutionProfile,
+    epoch: Uuid,
+    runtime: Arc<DistributedServingRuntime>,
+    context_port: SharedLlamaCppContextStateApi,
+}
+
+fn live_http_app(
+    role: DisaggregatedServingRole,
+    profile: ServingExecutionProfile,
+    port: SharedLlamaCppContextStateApi,
+    ownership: Arc<LlamaCppBackendPhaseStateOwnership>,
+    transfer: Arc<BufferedHostLoopbackStateTransfer>,
+    decode_tokens: Option<Arc<LlamaCppLiveDecodeTokenPort>>,
+    expected_state_bytes: Option<u64>,
+) -> LiveHttpApp {
+    let expects_advertise = matches!(role, DisaggregatedServingRole::Prefill) || decode_tokens.is_some();
+    assert!(
+        profile.may_advertise_prefill_decode(),
+        "buffered-host + BackendOwned + llamacpp ownership/execution may advertise at profile"
+    );
+    let mut execution = LlamaCppBackendPhaseExecution::with_port(&profile, Box::new(port.clone()))
+        .unwrap()
+        .with_ownership(Arc::clone(&ownership))
+        .with_transfer(Arc::clone(&transfer));
+    if let Some(state_bytes) = expected_state_bytes {
+        execution = execution
+            .with_captured_state_bytes(state_bytes)
+            .expect("expected_state_bytes fits profile max_state_bytes");
+    }
+    if let Some(tokens) = decode_tokens {
+        execution = execution.with_decode_tokens(tokens);
+    }
+    let execution = Arc::new(execution);
+    let executor = Arc::new(
+        BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+            &profile,
+            Arc::clone(&transfer),
+            ownership,
+            execution,
+        )
+        .unwrap(),
+    );
+    let config = PowerConfig {
+        serving_execution: profile.clone(),
+        api_keys: vec![SERVICE_KEY.to_string()],
+        ..PowerConfig::default()
+    };
+    let state = AppState::new(
+        Arc::new(ModelRegistry::new()),
+        Arc::new(BackendRegistry::new()),
+        Arc::new(config),
+    );
+    let epoch = state.worker_epoch();
+    let bounded =
+        Arc::new(BoundedStateTransferService::new(profile.clone(), epoch, transfer).unwrap());
+    let runtime =
+        Arc::new(DistributedServingRuntime::new(profile.clone(), bounded, executor).unwrap());
+    assert!(
+        runtime.execution_admissible(),
+        "Injected + REQUIRED + Ready must be execution-admissible for live HTTP typed-outcome"
+    );
+    assert_eq!(
+        runtime.accepts_work(),
+        expects_advertise,
+        "accepts_work / ready_phases only when decode-token bound (or prefill)"
+    );
+    let state = state
+        .with_distributed_serving(Arc::clone(&runtime))
+        .with_auth(Arc::new(ApiKeyAuth::new(&[SERVICE_KEY.to_string()])));
+    LiveHttpApp {
+        app: router::build(state),
+        profile,
+        epoch,
+        runtime,
+        context_port: port,
+    }
+}
+
+async fn post_internal(app: &Router, path: &str, document: serde_json::Value) -> Response {
+    app.clone()
+        .oneshot(
+            Request::post(path)
+                .header("authorization", format!("Bearer {SERVICE_KEY}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&document).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn parse_json<T: DeserializeOwned>(response: Response) -> T {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+fn live_completion_payload() -> serde_json::Value {
+    serde_json::json!({
+        "endpoint": "completions",
+        "body": {
+            "model": LIVE_MODEL,
+            "prompt": LIVE_PROMPT,
+            "stream": true
+        }
+    })
+}
+
+#[tokio::test]
+#[serial]
+async fn live_llamacpp_authenticated_http_ready_prefill_and_ndjson_decode_after_restore() {
+    let Some(path) = require_live_model() else {
+        return;
+    };
+
+    let backend = llama_backend();
+    let model = LlamaModel::load_from_file(backend, &path, &LlamaModelParams::default())
+        .expect("load GGUF for live HTTP typed-outcome evidence");
+    let n_ctx = NonZeroU32::new(LIVE_N_CTX).expect("n_ctx");
+    let facts = LlamaCppLayoutFacts::from_model(&model, n_ctx.get());
+    let layout = facts.layout_sha256();
+
+    let prefill_ctx = model
+        .new_context(
+            backend,
+            LlamaContextParams::default().with_n_ctx(Some(n_ctx)),
+        )
+        .expect("prefill live context for HTTP");
+    let prefill_port = SharedLlamaCppContextStateApi::from_context(prefill_ctx);
+
+    let tokens = model
+        .str_to_token(LIVE_PROMPT, AddBos::Always)
+        .expect("tokenize live prompt for HTTP");
+    prefill_port
+        .decode_prompt_tokens(&tokens)
+        .expect("live prompt prefill into LlamaContext before HTTP capture");
+
+    let snapshot_len = prefill_port.state_byte_len();
+    assert!(
+        snapshot_len > 0,
+        "live llama.cpp state after prefill must be non-empty before HTTP"
+    );
+    let max_state_bytes = (snapshot_len as u64)
+        .saturating_mul(2)
+        .max(snapshot_len as u64);
+
+    let decode_ctx = model
+        .new_context(
+            backend,
+            LlamaContextParams::default().with_n_ctx(Some(n_ctx)),
+        )
+        .expect("decode live context for HTTP");
+    let decode_port = SharedLlamaCppContextStateApi::from_context(decode_ctx);
+
+    let prefill_profile = live_profile(
+        DisaggregatedServingRole::Prefill,
+        layout.clone(),
+        max_state_bytes,
+    );
+    let decode_profile = live_profile(DisaggregatedServingRole::Decode, layout, max_state_bytes);
+
+    let prefill_transfer =
+        Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&prefill_profile).unwrap());
+    let decode_transfer =
+        Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&decode_profile).unwrap());
+    let prefill_ownership = Arc::new(LlamaCppBackendPhaseStateOwnership::from_layout_facts(
+        facts.clone(),
+        Some(digest('1')),
+        Some(digest('2')),
+        Some(digest('3')),
+    ));
+    let decode_ownership = Arc::new(LlamaCppBackendPhaseStateOwnership::from_layout_facts(
+        facts,
+        Some(digest('1')),
+        Some(digest('2')),
+        Some(digest('3')),
+    ));
+
+    let live_decode_port = decode_port.clone();
+    let replay_token = *tokens
+        .last()
+        .expect("live prompt tokenization produced at least one token");
+    let replay_position = i32::try_from(tokens.len()).expect("next position after restored KV");
+    let decode_tokens = Arc::new(LlamaCppLiveDecodeTokenPort::new(Arc::new(move || {
+        live_decode_port.decode_token_at(replay_token, replay_position)?;
+        let chunk = live_greedy_decode_chunk_after_restore(&live_decode_port)?;
+        let stream =
+            futures::stream::iter(std::iter::once(Ok(PhaseResponseChunk::Completion(chunk))));
+        Ok(Box::pin(stream) as a3s_power::serving::PhaseResponseStream)
+    })));
+
+    let prefill = live_http_app(
+        DisaggregatedServingRole::Prefill,
+        prefill_profile,
+        prefill_port,
+        prefill_ownership,
+        prefill_transfer,
+        None,
+        None,
+    );
+    let decode = live_http_app(
+        DisaggregatedServingRole::Decode,
+        decode_profile,
+        decode_port.clone(),
+        decode_ownership,
+        decode_transfer,
+        Some(decode_tokens),
+        Some(snapshot_len as u64),
+    );
+    // Fresh LlamaContext still reports a non-zero llama_get_state_size
+    // (serializer footprint). Opaque restore evidence is the HTTP Ready
+    // NDJSON path + post-execute non-empty state below, not a zero start.
+
+    let execution_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::seconds(30);
+
+    let prepared = post_internal(
+        &decode.app,
+        "/internal/v1/distributed-serving/decode/prepare",
+        serde_json::json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": execution_id,
+            "worker_epoch": decode.epoch,
+            "execution_profile_sha256": decode.profile.sha256().unwrap(),
+            "expires_at": expires_at,
+            "request": live_completion_payload()
+        }),
+    )
+    .await;
+    assert_eq!(prepared.status(), StatusCode::OK);
+    let prepared: DistributedPhaseResponse<PreparedDecodeResult> = parse_json(prepared).await;
+    let target = match prepared.outcome {
+        DistributedPhaseDecision::Ready { result } => result.target,
+        other => panic!("expected Ready decode prepare over HTTP, got {other:?}"),
+    };
+
+    let published = post_internal(
+        &prefill.app,
+        "/internal/v1/distributed-serving/prefill/execute",
+        serde_json::json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": execution_id,
+            "worker_epoch": prefill.epoch,
+            "execution_profile_sha256": prefill.profile.sha256().unwrap(),
+            "expires_at": expires_at,
+            "request": live_completion_payload(),
+            "target": target
+        }),
+    )
+    .await;
+    assert_eq!(published.status(), StatusCode::OK);
+    let content_type = published
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        content_type.starts_with("application/json"),
+        "live HTTP Ready prefill must be typed JSON, got {content_type}"
+    );
+    assert!(!content_type.contains("ndjson"));
+    let published: DistributedPhaseResponse<PublishedPrefillResult> = parse_json(published).await;
+    let source = match published.outcome {
+        DistributedPhaseDecision::Ready { result } => result.source,
+        other => panic!("expected Ready prefill after live capture over HTTP, got {other:?}"),
+    };
+    assert_eq!(source.binding.state_bytes, snapshot_len as u64);
+
+    let streamed = post_internal(
+        &decode.app,
+        "/internal/v1/distributed-serving/decode/execute",
+        serde_json::json!({
+            "schema": DISTRIBUTED_SERVING_SCHEMA,
+            "execution_id": execution_id,
+            "worker_epoch": decode.epoch,
+            "execution_profile_sha256": decode.profile.sha256().unwrap(),
+            "source": source
+        }),
+    )
+    .await;
+    assert_eq!(streamed.status(), StatusCode::OK);
+    assert_eq!(
+        streamed.headers()["content-type"],
+        "application/x-ndjson",
+        "live HTTP Ready decode after restore+greedy sample must open NDJSON"
+    );
+    let bytes = axum::body::to_bytes(streamed.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let frames = bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice::<DistributedDecodeStreamFrame>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(frames.len() >= 2);
+    assert!(matches!(
+        frames[0].payload,
+        DistributedDecodeStreamEvent::Ready
+    ));
+    let chunk = frames.iter().find_map(|frame| match &frame.payload {
+        DistributedDecodeStreamEvent::Chunk { response, .. } => Some(response),
+        _ => None,
+    });
+    let Some(DistributedResponseChunk::Completions(chunk)) = chunk else {
+        panic!("expected completion chunk from LlamaCppLiveDecodeTokenPort over HTTP");
+    };
+    assert!(
+        chunk.token_id.is_some(),
+        "live HTTP NDJSON must carry a llama.cpp token id (not invented from transfer)"
+    );
+    assert!(frames.iter().all(|frame| {
+        frame.schema == DISTRIBUTED_SERVING_STREAM_SCHEMA
+            && frame.execution_id == execution_id
+            && frame.worker_epoch == decode.epoch
+    }));
+    let restored_len = decode.context_port.state_byte_len();
+    assert!(
+        restored_len > 0,
+        "live HTTP Ready NDJSON must follow consume + set_state_data restore"
+    );
+    assert!(prefill.runtime.accepts_work());
+    assert!(decode.runtime.accepts_work());
+    assert!(prefill.runtime.execution_admissible());
+    assert!(decode.runtime.execution_admissible());
+
     let _keep_loaded = (backend, &model);
 }

@@ -372,17 +372,18 @@ list P/D. Pending Ready-unlock still suppresses worker advertising
 `LlamaContext` snapshot APIs (`SharedLlamaCppContextStateApi`). Set
 `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL` to a GGUF to run
 `tests/llamacpp_phase_state_live.rs` (fails if the path is missing). That
-proves capture → buffered-host → restore on a real context and optional
-Ready decode via live greedy sample after restore. Fixture authenticated
-HTTP typed-outcome evidence
+proves capture → buffered-host → restore on a real context, Ready decode via
+live greedy sample after restore, and authenticated HTTP Ready prefill +
+Ready NDJSON decode after restore (`LlamaCppLiveDecodeTokenPort`). Fixture
+authenticated HTTP typed-outcome evidence
 (`distributed_serving_llamacpp_http_tests`) proves Ready prefill and
 Ready NDJSON decode after consume+restore+`ControlledLlamaCppDecodeTokenPort`.
 Worker `ready_phases` may list P/D for that honest product pair when runtime
 is Injected+REQUIRED+Ready and (decode) a decode-token port is bound;
 DirectDeviceMemoryPull and Empty/Pending hollow Ready never advertise.
 Neither closes the ROADMAP opaque-state /
-typed-outcome checkboxes (live GGUF over HTTP and honest advertisement
-remain open).
+typed-outcome checkboxes (reuse under live P/D lifecycle, HSN
+DirectDeviceMemoryPull evidence, and attested-fabric readiness remain open).
 The composition root wraps and
 assembles injected pairs into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and
