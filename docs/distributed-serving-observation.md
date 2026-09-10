@@ -86,6 +86,16 @@ Empty, but health stays Unavailable, data-path methods refuse work, and
 `ready_phases` never lists prefill/decode. This is the high-speed product
 surface, not high-speed-network evidence.
 
+For the open concrete backend phase path, Power ships
+`BackendOwnedPhaseExecutor` via ACL `transport = "buffered-host-loopback"` with
+`phase_executor = "backend-owned"` (or
+`with_backend_owned_phase_on_buffered_host_loopback`). It pairs with Ready
+`BufferedHostLoopbackStateTransfer`, reports Injected + required contract, stays
+Unavailable, refuses Ready prepare/execute (transfer alone is never decode
+success), refuses DirectDeviceMemoryPull / wrong protocol, and never advertises
+P/D. This is the named backend phase product port until llama.cpp / picolm bind
+real state-layout + KV ownership—not model-semantic P/D evidence.
+
 ## State-transfer port
 
 Power owns a model-neutral, pull-oriented transfer lifecycle:

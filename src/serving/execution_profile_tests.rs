@@ -30,6 +30,7 @@ fn profile(role: DisaggregatedServingRole) -> ServingExecutionProfile {
         session_pool: PhaseSessionPoolMode::SharedSessionPool,
         session_pool_policy_sha256: None,
         transport: None,
+        phase_executor: None,
     })
     .unwrap()
 }
@@ -151,6 +152,37 @@ fn buffered_host_loopback_may_advertise_prefill_decode_when_protocol_matches() {
     loopback.validate().unwrap();
     assert!(loopback.may_advertise_prefill_decode());
     assert!(profile(DisaggregatedServingRole::Decode).may_advertise_prefill_decode());
+}
+
+#[test]
+fn backend_owned_phase_executor_never_advertises_prefill_decode() {
+    let mut backend_owned = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut backend_owned {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.transport = Some(ServingCompositionTransport::BufferedHostLoopback);
+        execution.phase_executor = Some(ServingCompositionPhaseExecutor::BackendOwned);
+    }
+    backend_owned.validate().unwrap();
+    assert!(!backend_owned.may_advertise_prefill_decode());
+    assert_eq!(
+        backend_owned.composition_phase_executor(),
+        Some(ServingCompositionPhaseExecutor::BackendOwned)
+    );
+
+    let mut missing_transport = profile(DisaggregatedServingRole::Decode);
+    if let ServingExecutionProfile::PrefillDecode { execution } = &mut missing_transport {
+        execution.protocol = StateTransferProtocol::BufferedHostMemoryPullV1;
+        execution.phase_executor = Some(ServingCompositionPhaseExecutor::BackendOwned);
+    }
+    let err = missing_transport.validate().unwrap_err();
+    assert!(err.to_string().contains("buffered-host-loopback"));
+}
+
+#[test]
+fn unknown_composition_phase_executor_fails_closed_at_deserialization() {
+    let mut document = serde_json::to_value(profile(DisaggregatedServingRole::Decode)).unwrap();
+    document["phase_executor"] = serde_json::json!("llama-cpp-ready");
+    assert!(serde_json::from_value::<ServingExecutionProfile>(document).is_err());
 }
 
 #[test]
@@ -307,4 +339,5 @@ fn execution_profile_is_send_and_sync() {
     assert_send_sync::<PhaseWeightCacheMode>();
     assert_send_sync::<PhaseSessionPoolMode>();
     assert_send_sync::<ServingCompositionTransport>();
+    assert_send_sync::<ServingCompositionPhaseExecutor>();
 }

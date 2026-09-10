@@ -3,19 +3,22 @@ use std::sync::Arc;
 use crate::config::PowerConfig;
 use crate::error::{PowerError, Result};
 use crate::serving::{
-    validate_injected_production_adapters, BufferedHostLoopbackPhaseExecutor,
-    DirectDeviceMemoryPullPhaseExecutor, ServingCompositionTransport, ServingPhaseExecutor,
+    validate_injected_production_adapters, BackendOwnedPhaseExecutor,
+    BufferedHostLoopbackPhaseExecutor, DirectDeviceMemoryPullPhaseExecutor,
+    ServingCompositionPhaseExecutor, ServingCompositionTransport, ServingPhaseExecutor,
     StateTransferService, TransferHealth,
 };
 
-/// Resolve ACL composition transport into injectable adapters before startup
-/// validation.
+/// Resolve ACL composition transport / phase-executor into injectable adapters
+/// before startup validation.
 ///
 /// `serving_execution.transport` is an honest opt-in that installs a product
-/// pair. It refuses silent auto-wire from protocol alone and refuses mixing
-/// with builder-injected adapters. Incomplete external pairs remain a
-/// validation error. DirectDeviceMemoryPull installs an Unavailable HSN port
-/// and never claims high-speed evidence.
+/// pair. Optional `phase_executor = backend-owned` replaces the Ready loopback
+/// conformance executor with Unavailable `BackendOwnedPhaseExecutor` (requires
+/// buffered-host-loopback transport). Silent auto-wire from protocol alone is
+/// refused, as is mixing with builder-injected adapters. Incomplete external
+/// pairs remain a validation error. DirectDeviceMemoryPull installs an
+/// Unavailable HSN port and never claims high-speed evidence.
 pub(super) fn resolve(
     config: &PowerConfig,
     state_transfer: Option<Arc<dyn StateTransferService>>,
@@ -25,15 +28,43 @@ pub(super) fn resolve(
     Option<Arc<dyn ServingPhaseExecutor>>,
 )> {
     match config.serving_execution.composition_transport() {
-        None => Ok((state_transfer, phase_executor)),
+        None => {
+            if config
+                .serving_execution
+                .composition_phase_executor()
+                .is_some()
+            {
+                // Profile validation already requires transport for backend-owned;
+                // keep resolve fail-closed if that invariant is ever bypassed.
+                return Err(PowerError::Config(
+                    "serving_execution.phase_executor requires serving_execution.transport"
+                        .to_string(),
+                ));
+            }
+            Ok((state_transfer, phase_executor))
+        }
         Some(transport) => {
             if state_transfer.is_some() || phase_executor.is_some() {
                 return Err(PowerError::Config(format!(
                     "serving_execution.transport = {transport} cannot combine with builder-injected distributed adapters"
                 )));
             }
-            match transport {
-                ServingCompositionTransport::BufferedHostLoopback => {
+            match (
+                transport,
+                config.serving_execution.composition_phase_executor(),
+            ) {
+                (
+                    ServingCompositionTransport::BufferedHostLoopback,
+                    Some(ServingCompositionPhaseExecutor::BackendOwned),
+                ) => {
+                    let (transfer, executor) =
+                        BackendOwnedPhaseExecutor::paired_for_profile(&config.serving_execution)?;
+                    Ok((
+                        Some(transfer as Arc<dyn StateTransferService>),
+                        Some(executor as Arc<dyn ServingPhaseExecutor>),
+                    ))
+                }
+                (ServingCompositionTransport::BufferedHostLoopback, None) => {
                     let (transfer, executor) =
                         BufferedHostLoopbackPhaseExecutor::paired_for_profile(
                             &config.serving_execution,
@@ -43,7 +74,7 @@ pub(super) fn resolve(
                         Some(executor as Arc<dyn ServingPhaseExecutor>),
                     ))
                 }
-                ServingCompositionTransport::DirectDeviceMemoryPull => {
+                (ServingCompositionTransport::DirectDeviceMemoryPull, None) => {
                     let (transfer, executor) =
                         DirectDeviceMemoryPullPhaseExecutor::paired_for_profile(
                             &config.serving_execution,
@@ -53,6 +84,13 @@ pub(super) fn resolve(
                         Some(executor as Arc<dyn ServingPhaseExecutor>),
                     ))
                 }
+                (
+                    ServingCompositionTransport::DirectDeviceMemoryPull,
+                    Some(ServingCompositionPhaseExecutor::BackendOwned),
+                ) => Err(PowerError::Config(
+                    "serving_execution.phase_executor = backend-owned refuses transport = direct-device-memory-pull"
+                        .to_string(),
+                )),
             }
         }
     }
@@ -218,6 +256,7 @@ mod tests {
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
             transport: None,
+            phase_executor: None,
         })
         .unwrap()
     }
@@ -270,6 +309,7 @@ mod tests {
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
             transport,
+            phase_executor: None,
         })
         .unwrap()
     }
@@ -461,6 +501,47 @@ mod tests {
     }
 
     #[test]
+    fn backend_owned_phase_opt_in_wires_unavailable_pair_and_never_advertises() {
+        let mut profile =
+            buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
+        if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
+            execution.phase_executor =
+                Some(crate::serving::ServingCompositionPhaseExecutor::BackendOwned);
+        }
+        profile.validate().unwrap();
+        assert!(!profile.may_advertise_prefill_decode());
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            api_keys: vec!["service-key".to_string()],
+            ..PowerConfig::default()
+        };
+        let (transfer, executor) = resolve(&config, None, None).unwrap();
+        validate(&config, transfer.as_deref(), executor.as_deref()).unwrap();
+        let transfer = transfer.expect("backend-owned installs transfer");
+        let executor = executor.expect("backend-owned installs phase executor");
+        assert_eq!(transfer.health(), TransferHealth::Ready);
+        assert_eq!(executor.health(), PhaseExecutorHealth::Unavailable);
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
+                .unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile, bounded, executor).unwrap();
+        assert!(!runtime.accepts_work());
+    }
+
+    #[test]
+    fn backend_owned_phase_refuses_direct_device_memory_pull_transport() {
+        let mut profile =
+            direct_device_profile(Some(ServingCompositionTransport::DirectDeviceMemoryPull));
+        if let ServingExecutionProfile::PrefillDecode { execution } = &mut profile {
+            execution.phase_executor =
+                Some(crate::serving::ServingCompositionPhaseExecutor::BackendOwned);
+        }
+        let err = profile.validate().unwrap_err();
+        assert!(err.to_string().contains("buffered-host-loopback"));
+    }
+
+    #[test]
     fn transport_opt_in_refuses_builder_injected_partial_or_complete_pair() {
         let profile =
             buffered_host_profile(Some(ServingCompositionTransport::BufferedHostLoopback));
@@ -520,6 +601,7 @@ mod tests {
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
             transport: Some(ServingCompositionTransport::BufferedHostLoopback),
+            phase_executor: None,
         })
         .unwrap_err();
         assert!(err.to_string().contains("buffered-host-memory-pull-v1"));
@@ -553,6 +635,7 @@ mod tests {
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
             transport,
+            phase_executor: None,
         })
         .unwrap()
     }
@@ -636,6 +719,7 @@ mod tests {
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
             transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
+            phase_executor: None,
         })
         .unwrap_err();
         assert!(err.to_string().contains("direct-device-memory-pull-v1"));

@@ -36,6 +36,7 @@ fn profile(role: DisaggregatedServingRole) -> ServingExecutionProfile {
         session_pool: PhaseSessionPoolMode::SharedSessionPool,
         session_pool_policy_sha256: None,
         transport: None,
+        phase_executor: None,
     })
     .unwrap()
 }

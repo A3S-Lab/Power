@@ -136,6 +136,27 @@ impl PowerServerBuilder {
         Ok(self)
     }
 
+    /// Install buffered-host loopback transfer + Unavailable backend-owned phase.
+    ///
+    /// Prefer ACL `transport = "buffered-host-loopback"` with
+    /// `phase_executor = "backend-owned"`. The phase port is Injected + required
+    /// contract but stays Unavailable until a real state-layout + KV ownership
+    /// adapter is bound; transfer alone never yields Ready decode.
+    pub fn with_backend_owned_phase_on_buffered_host_loopback(mut self) -> Result<Self> {
+        if self.options.state_transfer_service.is_some() || self.options.phase_executor.is_some() {
+            return Err(crate::error::PowerError::Config(
+                "with_backend_owned_phase_on_buffered_host_loopback cannot combine with separately injected distributed adapters"
+                    .to_string(),
+            ));
+        }
+        let (transfer, executor) = crate::serving::BackendOwnedPhaseExecutor::paired_for_profile(
+            &self.options.config.serving_execution,
+        )?;
+        self.options.state_transfer_service = Some(transfer);
+        self.options.phase_executor = Some(executor);
+        Ok(self)
+    }
+
     /// Start with only caller-injected backends.
     pub fn without_default_backends(mut self) -> Self {
         self.options.include_default_backends = false;

@@ -330,7 +330,10 @@ model-semantics owner.
   loopback transfer injection is available without claiming backend readiness).
   A matching product-surface `BufferedHostLoopbackPhaseExecutor` now pairs with
   the loopback transfer for opaque conformance composition; it still does not
-  close model-semantic or HSN readiness.
+  close model-semantic or HSN readiness. A separate product-surface
+  `BackendOwnedPhaseExecutor` (`phase_executor = backend-owned` with buffered-host
+  transport) is the Unavailable Injected port for real layout/KV binding and
+  also does not close that checkbox.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support. The product-pair loopback
@@ -406,6 +409,16 @@ model-semantics owner.
   transport opt-in and exercises the product pair end-to-end (success stream,
   peer-loss, restart, stale deployment / peer-set) instead of a test-only
   fixture adapter; claims remain loopback conformance only.
+  Power now also ships a product-surface `BackendOwnedPhaseExecutor` for the
+  open concrete backend phase path: ACL
+  `transport = "buffered-host-loopback"` + `phase_executor = "backend-owned"`
+  (or `with_backend_owned_phase_on_buffered_host_loopback`) installs Ready
+  buffered-host loopback transfer with an Injected + required-contract phase
+  port that stays Unavailable and refuses Ready work until a real state-layout
+  + KV ownership adapter is bound. It refuses DirectDeviceMemoryPull / wrong
+  transport, never claims cache hit or decode success from transfer alone, and
+  never advertises P/D. This is the named backend phase product port, not
+  llama.cpp / picolm P/D evidence.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
@@ -420,9 +433,10 @@ Remaining before any open P6 checkbox can close (not claimed here):
 - Reuse: live session-replica / weight-hierarchy lifecycle under a real
   backend P/D executor (software reuse of those ports is already bound).
 - Opaque state: model-owned KV/recurrent layout and import/export in
-  llama.cpp or picolm; DirectDeviceMemoryPull phase is not that executor.
+  llama.cpp or picolm; `BackendOwnedPhaseExecutor` and DirectDeviceMemoryPull
+  phase are product ports, not that layout binding.
 - Typed outcomes: production phase executors bound to that layout; the
-  Unavailable DirectDeviceMemoryPull companion is not a backend executor.
+  Unavailable `BackendOwnedPhaseExecutor` companion is not a ready backend.
 - HSN: a real DirectDeviceMemoryPull adapter with high-speed-path evidence
   (cancellation, peer loss, stale generation, corrupt state, pressure,
   restart, cleanup). The named Unavailable product port is not that evidence.

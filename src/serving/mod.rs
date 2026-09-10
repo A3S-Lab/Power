@@ -4,6 +4,7 @@
 //! do not choose endpoints, create replicas, or define model-owned KV layouts.
 
 mod adapter_contract;
+mod backend_owned_phase;
 mod bounded_state_transfer;
 mod buffered_host_loopback;
 mod buffered_host_loopback_phase;
@@ -23,6 +24,7 @@ pub use adapter_contract::{
     AdapterCleanupObligation, AdapterMemoryOwnership, AdapterProvisionState,
     AdapterTransportIntegrity, ProductionAdapterContract,
 };
+pub use backend_owned_phase::BackendOwnedPhaseExecutor;
 pub use bounded_state_transfer::{BoundedStateTransferService, StateTransferRuntimeSnapshot};
 pub use buffered_host_loopback::BufferedHostLoopbackStateTransfer;
 pub use buffered_host_loopback_phase::BufferedHostLoopbackPhaseExecutor;
@@ -41,8 +43,8 @@ pub use empty_adapters::{
 };
 pub use execution_profile::{
     DisaggregatedServingRole, PhaseSessionPoolMode, PhaseWeightCacheMode,
-    PrefillDecodeExecutionProfile, ServingCompositionTransport, ServingDeploymentIdentity,
-    ServingExecutionProfile, ServingPrivacyMode,
+    PrefillDecodeExecutionProfile, ServingCompositionPhaseExecutor, ServingCompositionTransport,
+    ServingDeploymentIdentity, ServingExecutionProfile, ServingPrivacyMode,
 };
 pub use observation::{
     AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,

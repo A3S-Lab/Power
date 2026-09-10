@@ -54,7 +54,8 @@ pub enum ServingPrivacyMode {
 #[serde(rename_all = "kebab-case")]
 pub enum ServingCompositionTransport {
     /// Install `BufferedHostLoopbackStateTransfer` +
-    /// `BufferedHostLoopbackPhaseExecutor` for the immutable profile.
+    /// `BufferedHostLoopbackPhaseExecutor` for the immutable profile
+    /// (unless `phase_executor = backend-owned` overrides the phase port).
     BufferedHostLoopback,
     /// Install `DirectDeviceMemoryPullStateTransfer` +
     /// `DirectDeviceMemoryPullPhaseExecutor` for `DirectDeviceMemoryPullV1`.
@@ -84,6 +85,37 @@ impl fmt::Display for ServingCompositionTransport {
         match self {
             Self::BufferedHostLoopback => formatter.write_str("buffered-host-loopback"),
             Self::DirectDeviceMemoryPull => formatter.write_str("direct-device-memory-pull"),
+        }
+    }
+}
+
+/// Optional honest composition phase-executor product port.
+///
+/// Absent keeps the transport's default phase companion (Ready loopback
+/// conformance or Unavailable DirectDeviceMemoryPull). `backend-owned`
+/// installs [`crate::serving::BackendOwnedPhaseExecutor`]: Injected + required
+/// contract, Unavailable until a real state-layout + KV ownership adapter is
+/// bound. It pairs only with buffered-host loopback transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServingCompositionPhaseExecutor {
+    /// Install `BackendOwnedPhaseExecutor` with buffered-host loopback transfer.
+    BackendOwned,
+}
+
+impl ServingCompositionPhaseExecutor {
+    /// Backend-owned product port never advertises P/D readiness.
+    pub fn may_advertise_prefill_decode(self) -> bool {
+        match self {
+            Self::BackendOwned => false,
+        }
+    }
+}
+
+impl fmt::Display for ServingCompositionPhaseExecutor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BackendOwned => formatter.write_str("backend-owned"),
         }
     }
 }
@@ -198,8 +230,6 @@ pub struct PrefillDecodeExecutionProfile {
     pub session_pool_policy_sha256: Option<String>,
     /// Honest composition opt-in for a product-surface adapter pair.
     ///
-    /// Honest composition opt-in for a product-surface adapter pair.
-    ///
     /// Absent keeps fail-closed external injection. `buffered-host-loopback`
     /// installs the product loopback pair only when protocol/privacy match.
     /// `direct-device-memory-pull` installs the Unavailable HSN product port
@@ -207,6 +237,14 @@ pub struct PrefillDecodeExecutionProfile {
     /// auto-wires and neither opt-in claims HSN evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<ServingCompositionTransport>,
+    /// Honest composition opt-in for a product-surface phase executor.
+    ///
+    /// Absent keeps the transport's default phase companion.
+    /// `backend-owned` requires `transport = buffered-host-loopback` and
+    /// installs Unavailable `BackendOwnedPhaseExecutor` instead of the Ready
+    /// loopback conformance executor. Never claims model-semantic P/D.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_executor: Option<ServingCompositionPhaseExecutor>,
 }
 
 /// Immutable execution profile for one Power process generation.
@@ -267,6 +305,7 @@ impl ServingExecutionProfile {
             residency_policy_sha256,
             session_pool_policy_sha256,
             transport,
+            phase_executor,
             protocol,
             ..
         } = execution.as_ref();
@@ -325,6 +364,20 @@ impl ServingExecutionProfile {
             }
             None => {}
         }
+        match phase_executor {
+            Some(ServingCompositionPhaseExecutor::BackendOwned) => {
+                if !matches!(
+                    transport,
+                    Some(ServingCompositionTransport::BufferedHostLoopback)
+                ) {
+                    return Err(PowerError::Config(
+                        "serving_execution.phase_executor = backend-owned requires transport = buffered-host-loopback"
+                            .to_string(),
+                    ));
+                }
+            }
+            None => {}
+        }
         if *generation == 0 || *generation > MAX_EXACT_ACL_INTEGER {
             return Err(PowerError::Config(format!(
                 "serving generation must be within 1..={MAX_EXACT_ACL_INTEGER}"
@@ -366,12 +419,26 @@ impl ServingExecutionProfile {
         }
     }
 
+    /// Explicit product-surface composition phase executor, when opted in by ACL.
+    pub fn composition_phase_executor(&self) -> Option<ServingCompositionPhaseExecutor> {
+        match self {
+            Self::Aggregated {} => None,
+            Self::PrefillDecode { execution } => execution.phase_executor,
+        }
+    }
+
     /// Whether worker observation may list this profile's P/D phase as ready.
     ///
     /// Builder-injected adapters (no composition transport) remain gated only
-    /// by provision, contract, and health. Product DirectDeviceMemoryPull
-    /// never advertises until a real HSN adapter exists.
+    /// by provision, contract, and health. Product DirectDeviceMemoryPull and
+    /// `phase_executor = backend-owned` never advertise until a real adapter
+    /// exists.
     pub fn may_advertise_prefill_decode(&self) -> bool {
+        if let Some(phase_executor) = self.composition_phase_executor() {
+            if !phase_executor.may_advertise_prefill_decode() {
+                return false;
+            }
+        }
         match self.composition_transport() {
             None => true,
             Some(transport) => transport.may_advertise_prefill_decode(),

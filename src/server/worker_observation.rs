@@ -259,6 +259,7 @@ mod tests {
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
             transport: None,
+            phase_executor: None,
         })
         .unwrap()
     }
@@ -410,6 +411,7 @@ mod tests {
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
             transport: None,
+            phase_executor: None,
         })
         .unwrap()
     }
@@ -473,6 +475,7 @@ mod tests {
             session_pool: PhaseSessionPoolMode::SharedSessionPool,
             session_pool_policy_sha256: None,
             transport: Some(ServingCompositionTransport::DirectDeviceMemoryPull),
+            phase_executor: None,
         })
         .unwrap();
         let (transfer, executor) =

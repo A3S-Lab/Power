@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Product-surface `BackendOwnedPhaseExecutor` for concrete backend phase work:
+  reports `AdapterProvisionState::Injected` under
+  `ProductionAdapterContract::REQUIRED`, pairs only with
+  `BufferedHostLoopbackStateTransfer` (refuses DirectDeviceMemoryPull / wrong
+  protocol), stays Unavailable, and refuse Ready prepare/execute until a real
+  state-layout + KV ownership adapter is bound. Transfer completion alone never
+  yields cache-hit or decode success; this does not invent model-semantic P/D.
+  ACL opt-in: `serving_execution.transport = "buffered-host-loopback"` with
+  `phase_executor = "backend-owned"` (programmatic equivalent:
+  `PowerServerBuilder::with_backend_owned_phase_on_buffered_host_loopback`).
+  `accepts_work` / worker `ready_phases` never advertise P/D for this
+  composition. Advances the P6 backend phase-executor product port only; llama.cpp
+  / picolm layout binding and HSN remain open.
 - Product-surface DirectDeviceMemoryPull port for `DirectDeviceMemoryPullV1`:
   `DirectDeviceMemoryPullStateTransfer` + `DirectDeviceMemoryPullPhaseExecutor`
   (`paired_for_profile`). ACL

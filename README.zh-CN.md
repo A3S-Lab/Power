@@ -314,6 +314,12 @@ decode 成功；不完整配对与 Empty 占位仍失败关闭。这不是 HSN�
 （ACL `transport = "direct-device-memory-pull"`）：Injected + 必需合约以便组合，
 但健康度保持 Unavailable，数据路径拒绝工作，worker `ready_phases` 在真实高速
 适配器绑定前从不列出 prefill/decode。这是 HSN 产品端口，不是 HSN 证据。
+面向开放的具体后端阶段路径，ACL `transport = "buffered-host-loopback"` 配合
+`phase_executor = "backend-owned"`（或
+`with_backend_owned_phase_on_buffered_host_loopback`）安装 Ready 缓冲主机回环
+传输与 Unavailable 的 `BackendOwnedPhaseExecutor`（Injected + 必需合约）。该阶段
+端口在真实 state-layout + KV 所有权适配器绑定前拒绝 Ready 工作，拒绝错误传输，
+且从不宣称 P/D——这不是 llama.cpp / picolm 就绪证据。
 组合根将该对包装并组装为单一 `DistributedServingRuntime`，它是唯一的请求级生命周期与就绪源。
 仅当运行时匹配不可变配置且可接受工作时，Power 才发布已配置的 P/D 角色。仅传输完成
 从不计为成功 decode。每个注入的传输适配器由 `BoundedStateTransferService` 包装，
