@@ -15,6 +15,12 @@
 //! registration alone is not decode success and does not invent model-semantic
 //! P/D.
 //!
+//! [`super::ProfileBoundBackendPhaseStateOwnership`] is the honest interim
+//! product surface: it mirrors closed profile digests (including the closed
+//! backend artifact digest) without owning KV or inventing layout semantics.
+//! Opaque import/export on that surface fail closed. It is not a real
+//! llama.cpp / picolm adapter.
+//!
 //! Pairs only with [`BufferedHostLoopbackStateTransfer`] (or refuses wrong
 //! transport). Transfer completion alone never yields cache-hit or decode
 //! success.
@@ -243,8 +249,9 @@ mod tests {
         BoundedStateTransferService, DirectDeviceMemoryPullPhaseExecutor, DisaggregatedServingRole,
         DistributedServingRuntime, EmptyServingPhaseExecutor, ModelStateHandle, PhaseRequest,
         PhaseSessionPoolMode, PhaseWeightCacheMode, PrefillDecodeExecutionProfile,
-        ServingCompositionPhaseExecutor, ServingCompositionTransport, ServingPhase,
-        ServingPrivacyMode, StateKind, StateTransferProtocol,
+        ProfileBoundBackendPhaseStateOwnership, ServingCompositionPhaseExecutor,
+        ServingCompositionTransport, ServingPhase, ServingPrivacyMode, StateKind,
+        StateTransferProtocol,
     };
 
     fn digest(character: char) -> String {
@@ -500,6 +507,75 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("Eligible"));
         assert!(err.to_string().contains("execute adapter"));
+
+        let bounded = Arc::new(
+            BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)
+                .unwrap(),
+        );
+        let runtime = DistributedServingRuntime::new(profile, bounded, Arc::new(executor)).unwrap();
+        assert!(!runtime.accepts_work());
+    }
+
+    #[tokio::test]
+    async fn profile_bound_ownership_is_eligible_without_ready_or_kv() {
+        let profile = buffered_profile(
+            Some(ServingCompositionTransport::BufferedHostLoopback),
+            Some(ServingCompositionPhaseExecutor::BackendOwned),
+        );
+        let ownership: Arc<dyn BackendPhaseStateOwnership> = Arc::new(
+            ProfileBoundBackendPhaseStateOwnership::for_profile(&profile).unwrap(),
+        );
+        let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
+        let executor = BackendOwnedPhaseExecutor::pair_with_ownership(
+            &profile,
+            Arc::clone(&transfer),
+            ownership,
+        )
+        .unwrap();
+
+        assert_eq!(executor.health(), PhaseExecutorHealth::Eligible);
+        assert!(!executor.health().accepts_work());
+        assert_eq!(
+            executor.ownership().state_layout_sha256(),
+            Some(digest('5').as_str())
+        );
+        assert_eq!(
+            executor.ownership().backend_sha256(),
+            Some(digest('2').as_str())
+        );
+        assert!(executor
+            .ownership()
+            .import_opaque_state(b"opaque")
+            .unwrap_err()
+            .to_string()
+            .contains("ProfileBoundBackendPhaseStateOwnership"));
+
+        let decision = executor
+            .prepare(PreparePhaseExecution {
+                execution_id: uuid::Uuid::new_v4(),
+                local_worker_epoch: uuid::Uuid::new_v4(),
+                model: "internal/model-v1".to_string(),
+                expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+                request: PhaseRequest::Completion(
+                    serde_json::from_value(serde_json::json!({ "prompt": "unused" })).unwrap(),
+                ),
+            })
+            .await
+            .unwrap();
+        match decision {
+            PhaseDecision::RetryableUnavailable { reason, .. } => {
+                assert_eq!(reason, RetryableUnavailableReason::ExecutorUnavailable);
+            }
+            PhaseDecision::Ready(_) => {
+                panic!("profile-bound digest ownership must never emit Ready decode")
+            }
+            PhaseDecision::Recompute { .. } => {
+                panic!("expected retryable unavailable, got Recompute")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected retryable unavailable, got TerminalFailure")
+            }
+        }
 
         let bounded = Arc::new(
             BoundedStateTransferService::new(profile.clone(), uuid::Uuid::new_v4(), transfer)

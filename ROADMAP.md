@@ -334,8 +334,9 @@ model-semantics owner.
   `BackendOwnedPhaseExecutor` (`phase_executor = backend-owned` with buffered-host
   transport) is the Injected port for real layout/KV binding: Empty ownership
   stays Unavailable; matching `BackendPhaseStateOwnership` becomes Eligible
-  after fail-closed layout validation, still without Ready execute. It does not
-  close that checkbox.
+  after fail-closed layout validation, still without Ready execute.
+  `ProfileBoundBackendPhaseStateOwnership` is the interim digest-only bind
+  surface (not a real backend). It does not close that checkbox.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support. The product-pair loopback
@@ -425,9 +426,15 @@ model-semantics owner.
   registration alone is never cache-hit or decode success, and
   `accepts_work` / `ready_phases` never advertise P/D. Import/export hooks on
   the trait are opaque byte↔handle only; this does not invent llama.cpp KV
-  semantics. This advances the named backend phase product port toward real
-  backends; llama.cpp / picolm layout implementors and Ready execute remain
-  open.
+  semantics. Power now also ships
+  [`ProfileBoundBackendPhaseStateOwnership`]: an honest interim product
+  surface that mirrors exact closed profile digests (layout, model, closed
+  backend artifact, execution) so the backend-owned executor can bind to
+  Eligible without a real KV owner. Opaque import/export on that surface fail
+  closed; it is **not** a llama.cpp / picolm ownership adapter and does not
+  claim model-semantic P/D. This advances the named backend phase product
+  port toward real backends; concrete llama.cpp / picolm layout implementors
+  and Ready execute remain open.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
@@ -443,7 +450,9 @@ Remaining before any open P6 checkbox can close (not claimed here):
   backend P/D executor (software reuse of those ports is already bound).
 - Opaque state: model-owned KV/recurrent layout and import/export in
   llama.cpp or picolm; `BackendPhaseStateOwnership` is the thin opaque
-  bind surface (layout digest + byte hooks), not that implementor.
+  bind surface (layout digest + byte hooks).
+  `ProfileBoundBackendPhaseStateOwnership` only mirrors closed profile
+  digests (Eligible without KV)—it is not that implementor.
   `BackendOwnedPhaseExecutor` Eligible after matching registration still
   lacks Ready execute.
 - Typed outcomes: production phase execute path bound to that ownership;

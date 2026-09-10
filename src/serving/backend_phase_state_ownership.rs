@@ -4,6 +4,11 @@
 //! later. Power only validates opaque layout identity and related bindings
 //! against the immutable serving profile. This module does **not** invent KV
 //! tensor layout or model-semantic import/export.
+//!
+//! [`ProfileBoundBackendPhaseStateOwnership`] is an honest interim product
+//! surface: it mirrors closed profile digests (including the closed backend
+//! artifact digest) so [`super::BackendOwnedPhaseExecutor`] can become
+//! Eligible without claiming a real backend or KV layout.
 
 use crate::error::{PowerError, Result};
 
@@ -70,6 +75,86 @@ impl BackendPhaseStateOwnership for EmptyBackendPhaseStateOwnership {
     fn export_opaque_state(&self, _handle: &ModelStateHandle) -> Result<Vec<u8>> {
         Err(PowerError::BackendNotAvailable(
             "EmptyBackendPhaseStateOwnership refuses opaque export until a real backend ownership adapter is bound"
+                .to_string(),
+        ))
+    }
+}
+
+/// Profile-digest ownership surface for backend-owned phase composition.
+///
+/// Binds exact `layout_sha256`, `model_sha256`, `backend_sha256` (closed backend
+/// artifact digest), and `execution_sha256` from the immutable serving profile.
+/// This is **not** a real llama.cpp / picolm ownership adapter: it does not own
+/// KV tensors, does not invent layout semantics, and opaque import/export fail
+/// closed until a concrete backend implementor exists.
+///
+/// Binding this surface to [`super::BackendOwnedPhaseExecutor`] advances health
+/// to [`PhaseExecutorHealth::Eligible`] after fail-closed digest validation.
+/// Eligible still refuses Ready prepare/execute and never advertises
+/// model-semantic P/D.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileBoundBackendPhaseStateOwnership {
+    layout_sha256: String,
+    model_sha256: String,
+    /// Closed backend artifact digest from the immutable profile.
+    backend_sha256: String,
+    execution_sha256: String,
+}
+
+impl ProfileBoundBackendPhaseStateOwnership {
+    /// Mirror digests from a prefill-decode serving profile.
+    ///
+    /// Fails closed when the profile is not prefill-decode. Digests are copied
+    /// verbatim; this constructor does not validate SHA-256 shape (bind-time
+    /// validation remains in [`bind_backend_phase_state_ownership`]).
+    pub fn for_profile(profile: &ServingExecutionProfile) -> Result<Self> {
+        let ServingExecutionProfile::PrefillDecode { execution } = profile else {
+            return Err(PowerError::Config(
+                "ProfileBoundBackendPhaseStateOwnership requires a prefill-decode serving profile"
+                    .to_string(),
+            ));
+        };
+        Ok(Self {
+            layout_sha256: execution.layout_sha256.clone(),
+            model_sha256: execution.model_sha256.clone(),
+            backend_sha256: execution.backend_sha256.clone(),
+            execution_sha256: execution.execution_sha256.clone(),
+        })
+    }
+
+    /// Closed backend artifact digest mirrored from the profile.
+    pub fn closed_backend_artifact_sha256(&self) -> &str {
+        &self.backend_sha256
+    }
+}
+
+impl BackendPhaseStateOwnership for ProfileBoundBackendPhaseStateOwnership {
+    fn state_layout_sha256(&self) -> Option<&str> {
+        Some(&self.layout_sha256)
+    }
+
+    fn model_sha256(&self) -> Option<&str> {
+        Some(&self.model_sha256)
+    }
+
+    fn backend_sha256(&self) -> Option<&str> {
+        Some(&self.backend_sha256)
+    }
+
+    fn execution_sha256(&self) -> Option<&str> {
+        Some(&self.execution_sha256)
+    }
+
+    fn import_opaque_state(&self, _opaque: &[u8]) -> Result<ModelStateHandle> {
+        Err(PowerError::BackendNotAvailable(
+            "ProfileBoundBackendPhaseStateOwnership refuses opaque import: profile digest binding is not a real backend KV ownership adapter"
+                .to_string(),
+        ))
+    }
+
+    fn export_opaque_state(&self, _handle: &ModelStateHandle) -> Result<Vec<u8>> {
+        Err(PowerError::BackendNotAvailable(
+            "ProfileBoundBackendPhaseStateOwnership refuses opaque export: profile digest binding is not a real backend KV ownership adapter"
                 .to_string(),
         ))
     }
@@ -275,5 +360,46 @@ mod tests {
         };
         let err = bind_backend_phase_state_ownership(&ownership, &profile()).unwrap_err();
         assert!(err.to_string().contains("model_sha256"));
+    }
+
+    #[test]
+    fn profile_bound_mirrors_closed_digests_and_becomes_eligible() {
+        let profile = profile();
+        let ownership = ProfileBoundBackendPhaseStateOwnership::for_profile(&profile).unwrap();
+        assert_eq!(ownership.state_layout_sha256(), Some(digest('5').as_str()));
+        assert_eq!(ownership.model_sha256(), Some(digest('1').as_str()));
+        assert_eq!(
+            ownership.closed_backend_artifact_sha256(),
+            digest('2').as_str()
+        );
+        assert_eq!(ownership.backend_sha256(), Some(digest('2').as_str()));
+        assert_eq!(ownership.execution_sha256(), Some(digest('3').as_str()));
+        assert!(!ownership.is_empty());
+
+        let health = bind_backend_phase_state_ownership(&ownership, &profile).unwrap();
+        assert_eq!(health, PhaseExecutorHealth::Eligible);
+        assert!(!health.accepts_work());
+    }
+
+    #[test]
+    fn profile_bound_opaque_hooks_fail_closed_without_kv_semantics() {
+        let ownership = ProfileBoundBackendPhaseStateOwnership::for_profile(&profile()).unwrap();
+        let import_err = ownership.import_opaque_state(b"bytes").unwrap_err();
+        assert!(import_err.to_string().contains("refuses opaque import"));
+        assert!(import_err.to_string().contains("not a real backend"));
+
+        let handle = ModelStateHandle::new("local-slot").unwrap();
+        let export_err = ownership.export_opaque_state(&handle).unwrap_err();
+        assert!(export_err.to_string().contains("refuses opaque export"));
+        assert!(export_err.to_string().contains("not a real backend"));
+    }
+
+    #[test]
+    fn profile_bound_rejects_non_prefill_decode_profile() {
+        let err = ProfileBoundBackendPhaseStateOwnership::for_profile(
+            &ServingExecutionProfile::default(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("prefill-decode"));
     }
 }

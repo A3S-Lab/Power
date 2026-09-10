@@ -356,7 +356,11 @@ binding `BackendPhaseStateOwnership` validates opaque `state_layout_sha256`
 against profile `layout_sha256` fail-closed before Eligible. Eligible still
 refuses Ready work until a real execute adapter exists, refuses wrong
 transport, and never advertises P/D—layout registration alone is not llama.cpp
-/ picolm readiness. The composition root wraps and
+/ picolm readiness. `ProfileBoundBackendPhaseStateOwnership` is the honest
+interim product surface: it mirrors closed profile digests (including the
+closed backend artifact digest) so composition can reach Eligible without a
+real KV owner; opaque import/export fail closed and it is not a backend
+adapter. The composition root wraps and
 assembles injected pairs into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and
 readiness source. Power publishes the configured P/D role only when the runtime

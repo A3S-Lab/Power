@@ -97,9 +97,14 @@ profile `layout_sha256` (plus optional related digests) fail-closed, then
 advances to Eligible. Eligible still refuses Ready prepare/execute until a real
 execute adapter exists; transfer alone and matching layout registration alone
 are never decode success. The trait's import/export hooks are opaque
-byte↔handle only—not llama.cpp KV semantics. Wrong transport is refused and
-P/D is never advertised. This advances the named backend phase product port;
-model-backend Ready P/D remains open.
+byte↔handle only—not llama.cpp KV semantics. Power also ships
+`ProfileBoundBackendPhaseStateOwnership` as an honest interim product
+surface: it mirrors exact closed profile digests (including the closed
+backend artifact digest) so the executor can bind to Eligible without a real
+KV owner. Opaque import/export on that surface fail closed; it is not a
+llama.cpp / picolm adapter and does not claim model-semantic P/D. Wrong
+transport is refused and P/D is never advertised. This advances the named
+backend phase product port; model-backend Ready P/D remains open.
 
 ## State-transfer port
 

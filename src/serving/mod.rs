@@ -28,6 +28,7 @@ pub use adapter_contract::{
 pub use backend_owned_phase::BackendOwnedPhaseExecutor;
 pub use backend_phase_state_ownership::{
     bind_backend_phase_state_ownership, BackendPhaseStateOwnership, EmptyBackendPhaseStateOwnership,
+    ProfileBoundBackendPhaseStateOwnership,
 };
 pub use bounded_state_transfer::{BoundedStateTransferService, StateTransferRuntimeSnapshot};
 pub use buffered_host_loopback::BufferedHostLoopbackStateTransfer;

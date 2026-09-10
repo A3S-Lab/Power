@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Eligible still refuses Ready prepare/execute and never advertises P/D—
   layout registration alone is not decode success and does not invent
   llama.cpp KV semantics. Ready execute adapter path remains open.
+- Interim product-surface `ProfileBoundBackendPhaseStateOwnership`: mirrors
+  exact closed serving-profile digests (`layout_sha256`, `model_sha256`,
+  closed `backend_sha256` artifact, `execution_sha256`) so
+  `BackendOwnedPhaseExecutor` can bind to Eligible without a real backend.
+  Opaque import/export fail closed; this is **not** llama.cpp / picolm KV
+  ownership and does not claim model-semantic P/D or Ready execute.
 - Product-surface `BackendOwnedPhaseExecutor` for concrete backend phase work:
   reports `AdapterProvisionState::Injected` under
   `ProductionAdapterContract::REQUIRED`, pairs only with
