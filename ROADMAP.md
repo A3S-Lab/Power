@@ -244,14 +244,17 @@ model-semantics owner.
   storage and peer tiers must not create a second cache or persistence format.
   A process-bound transfer lifecycle now enforces fail-fast capacity,
   idempotent leases, content-free counters, monotonic expiry, bounded abort and
-  fail-closed cleanup health around every injected data-path adapter; backend
-  memory ownership and production-adapter evidence remain open. A request-level
-  runtime now composes that lifecycle with phase execution under one bounded
-  execution lease and is the server's single source of distributed readiness.
-  A deterministic conformance test launches independent prefill and decode
-  Power processes, moves backend-owned fixture state over an authenticated
-  encrypted loopback data path, and verifies the public HTTP lifecycle without
-  making the fixture adapter part of the product surface.
+  fail-closed cleanup health around every injected data-path adapter. The
+  wrapper also accounts declared adapter-owned registration bytes per lease,
+  rejects a second lease for an already-registered opaque handle, and reclaims
+  that registration on consume/abort/timeout without copying KV into Power.
+  Production-adapter and high-speed-transport evidence remain open. A
+  request-level runtime now composes that lifecycle with phase execution under
+  one bounded execution lease and is the server's single source of distributed
+  readiness. A deterministic conformance test launches independent prefill and
+  decode Power processes, moves backend-owned fixture state over an
+  authenticated encrypted loopback data path, and verifies the public HTTP
+  lifecycle without making the fixture adapter part of the product surface.
 - [ ] Keep tokenization, KV/recurrent layout, serialization, phase arithmetic and
   semantic parity in the owning model/backend adapter. Power moves only opaque,
   bounded authenticated state and never claims a cache hit or successful

@@ -33,6 +33,12 @@ use lifecycle::{
 pub struct StateTransferRuntimeSnapshot {
     pub active_transfers: u32,
     pub maximum_inflight_transfers: u32,
+    /// Declared adapter-owned bytes still registered under active leases.
+    ///
+    /// Power accounts the binding sizes only; it never copies or retains KV
+    /// payloads. Reclaim happens when a lease leaves the local map (consume,
+    /// abort, timeout, or compensating cleanup).
+    pub registered_adapter_bytes: u64,
     pub prepared_destinations: u64,
     pub published_sources: u64,
     pub completed_consumes: u64,
@@ -47,6 +53,11 @@ pub struct StateTransferRuntimeSnapshot {
 /// The wrapped adapter still owns memory registration and transport. This
 /// guard binds it to one immutable Power process generation and adds the
 /// bounded, idempotent lifecycle that every concrete adapter must obey.
+/// Active leases register declared `state_bytes` against
+/// `registered_adapter_bytes` and pin one opaque adapter handle; Power never
+/// copies KV payloads, rejects a second lease for an already-registered
+/// handle, and reclaims the byte/handle registration on consume, abort,
+/// timeout, or compensating cleanup.
 #[derive(Clone)]
 pub struct BoundedStateTransferService {
     inner: Arc<Inner>,
@@ -115,6 +126,7 @@ impl BoundedStateTransferService {
                 capacity: Arc::new(Semaphore::new(maximum)),
                 leases: Mutex::new(HashMap::with_capacity(maximum)),
                 tainted: AtomicBool::new(false),
+                registered_adapter_bytes: AtomicU64::new(0),
                 prepared_destinations: AtomicU64::new(0),
                 published_sources: AtomicU64::new(0),
                 completed_consumes: AtomicU64::new(0),
@@ -143,6 +155,7 @@ impl BoundedStateTransferService {
         StateTransferRuntimeSnapshot {
             active_transfers,
             maximum_inflight_transfers: self.inner.capabilities.max_inflight_transfers,
+            registered_adapter_bytes: self.inner.registered_adapter_bytes.load(Ordering::Relaxed),
             prepared_destinations: self.inner.prepared_destinations.load(Ordering::Relaxed),
             published_sources: self.inner.published_sources.load(Ordering::Relaxed),
             completed_consumes: self.inner.completed_consumes.load(Ordering::Relaxed),
@@ -299,16 +312,16 @@ impl StateTransferService for BoundedStateTransferService {
             if let Some(target) = Inner::replay_destination_locked(&leases, &command)? {
                 return Ok(target);
             }
-            leases.insert(
-                command.transfer_id,
-                TransferLease {
-                    command: LeaseCommand::Destination(command.clone()),
-                    state: LeaseState::Preparing,
-                    cancellation: cancellation.clone(),
-                    expiry_cancellation: expiry_cancellation.clone(),
-                    _permit: permit,
-                },
-            );
+            Inner::ensure_handle_unregistered(&leases, &command.destination)?;
+            let lease = TransferLease {
+                command: LeaseCommand::Destination(command.clone()),
+                state: LeaseState::Preparing,
+                cancellation: cancellation.clone(),
+                expiry_cancellation: expiry_cancellation.clone(),
+                _permit: permit,
+            };
+            self.inner.register_lease_bytes(&lease);
+            leases.insert(command.transfer_id, lease);
         }
         self.spawn_expiry(command.transfer_id, deadline, expiry_cancellation);
         let mut guard = OperationDropGuard::new(Arc::clone(&self.inner), command.transfer_id);
@@ -374,16 +387,16 @@ impl StateTransferService for BoundedStateTransferService {
             if let Some(source) = Inner::replay_source_locked(&leases, &command)? {
                 return Ok(source);
             }
-            leases.insert(
-                command.target.transfer_id,
-                TransferLease {
-                    command: LeaseCommand::Source(command.clone()),
-                    state: LeaseState::Preparing,
-                    cancellation: cancellation.clone(),
-                    expiry_cancellation: expiry_cancellation.clone(),
-                    _permit: permit,
-                },
-            );
+            Inner::ensure_handle_unregistered(&leases, &command.source)?;
+            let lease = TransferLease {
+                command: LeaseCommand::Source(command.clone()),
+                state: LeaseState::Preparing,
+                cancellation: cancellation.clone(),
+                expiry_cancellation: expiry_cancellation.clone(),
+                _permit: permit,
+            };
+            self.inner.register_lease_bytes(&lease);
+            leases.insert(command.target.transfer_id, lease);
         }
         self.spawn_expiry(command.target.transfer_id, deadline, expiry_cancellation);
         let mut guard =

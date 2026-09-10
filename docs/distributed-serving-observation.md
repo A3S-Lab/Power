@@ -45,19 +45,23 @@ role and ACL limits even when the underlying transport supports more. It binds
 commands to the current random worker epoch, admits no more than the configured
 in-flight count, makes identical prepare/publish retries idempotent, retains
 registered leases until consume or compensating abort, and reaps them at their
-monotonic deadline without requiring another request. Operation drop, timeout,
-explicit abort, and invalid adapter output all trigger abort under the separate
-cancellation timeout. An unconfirmed cleanup marks the wrapper unavailable for
-the rest of the process generation. Its snapshot contains only bounded,
-content-free counters.
+monotonic deadline without requiring another request. Each active lease registers
+the binding's declared `state_bytes` as adapter-owned memory and pins one opaque
+local handle; a second lease for the same handle fails closed, and consume,
+abort, timeout, or compensating cleanup reclaim the registration. Power never
+copies KV payloads into the wrapper — only handles and content-free counters.
+Operation drop, timeout, explicit abort, and invalid adapter output all trigger
+abort under the separate cancellation timeout. An unconfirmed cleanup marks the
+wrapper unavailable for the rest of the process generation. Its snapshot contains
+only bounded, content-free counters, including `registeredAdapterBytes`.
 
 The protocol distinguishes direct device-memory pull from buffered host-memory
 pull without making the Power core depend on NIXL, UCX, libfabric, or another
 transport library. A concrete adapter owns memory registration, transport
 integrity, and driver cleanup. The Power wrapper owns the common admission,
-deadline, lease, and cleanup-verification policy. Gateway selects and
-orchestrates workers; Cloud certifies compatible deployment generations.
-Neither receives KV bytes.
+deadline, lease, registration-accounting, and cleanup-verification policy.
+Gateway selects and orchestrates workers; Cloud certifies compatible deployment
+generations. Neither receives KV bytes.
 
 When both ports are injected, the composition root assembles one
 `DistributedServingRuntime`; AppState and worker observation retain that runtime

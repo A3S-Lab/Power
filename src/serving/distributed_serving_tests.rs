@@ -256,10 +256,9 @@ async fn transfer_receipt_then_non_ready_execute_never_opens_a_decode_stream() {
             .unwrap_or_else(|error| panic!("{label}: execute should return a decision: {error}"));
 
         match (decode_execute, decision) {
-            (
-                DecodeExecuteFixture::Recompute(expected),
-                PhaseDecision::Recompute { reason },
-            ) => assert_eq!(reason, expected, "{label}"),
+            (DecodeExecuteFixture::Recompute(expected), PhaseDecision::Recompute { reason }) => {
+                assert_eq!(reason, expected, "{label}")
+            }
             (
                 DecodeExecuteFixture::RetryableUnavailable {
                     reason: expected_reason,

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added process-local adapter memory-registration accounting on
+  `BoundedStateTransferService`: each active lease registers declared
+  `state_bytes` as adapter-owned, pins one opaque handle, rejects a second
+  lease for the same handle, and reclaims that registration on consume, abort,
+  timeout, or compensating cleanup. The runtime snapshot exposes content-free
+  `registeredAdapterBytes`. Power still never copies KV payloads; this does not
+  claim a production backend or high-speed transport.
 - Added first-principles distributed-serving evidence that a successful
   transfer consume/receipt never upgrades into an NDJSON decode success stream
   when phase `execute` returns `Recompute`, `RetryableUnavailable`, or

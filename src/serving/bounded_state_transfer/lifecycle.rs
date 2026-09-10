@@ -12,10 +12,10 @@ use uuid::Uuid;
 use crate::error::{PowerError, Result};
 
 use super::super::{
-    AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole, PrepareStateTransfer,
-    PublishStateTransfer, ServingExecutionProfile, StateTransferBinding, StateTransferCapabilities,
-    StateTransferProtocol, StateTransferReceipt, StateTransferService, StateTransferSource,
-    StateTransferTarget,
+    AbortStateTransfer, ConsumeStateTransfer, DisaggregatedServingRole, ModelStateHandle,
+    PrepareStateTransfer, PublishStateTransfer, ServingExecutionProfile, StateTransferBinding,
+    StateTransferCapabilities, StateTransferProtocol, StateTransferReceipt, StateTransferService,
+    StateTransferSource, StateTransferTarget,
 };
 
 pub(super) struct Inner {
@@ -30,6 +30,7 @@ pub(super) struct Inner {
     pub(super) capacity: Arc<Semaphore>,
     pub(super) leases: Mutex<HashMap<Uuid, TransferLease>>,
     pub(super) tainted: AtomicBool,
+    pub(super) registered_adapter_bytes: AtomicU64,
     pub(super) prepared_destinations: AtomicU64,
     pub(super) published_sources: AtomicU64,
     pub(super) completed_consumes: AtomicU64,
@@ -47,9 +48,35 @@ pub(super) struct TransferLease {
     pub(super) _permit: OwnedSemaphorePermit,
 }
 
+impl TransferLease {
+    pub(super) fn registered_bytes(&self) -> u64 {
+        self.command.registered_bytes()
+    }
+
+    pub(super) fn owned_handle(&self) -> &ModelStateHandle {
+        self.command.owned_handle()
+    }
+}
+
 pub(super) enum LeaseCommand {
     Destination(PrepareStateTransfer),
     Source(PublishStateTransfer),
+}
+
+impl LeaseCommand {
+    fn registered_bytes(&self) -> u64 {
+        match self {
+            Self::Destination(command) => command.binding.state_bytes,
+            Self::Source(command) => command.target.binding.state_bytes,
+        }
+    }
+
+    fn owned_handle(&self) -> &ModelStateHandle {
+        match self {
+            Self::Destination(command) => &command.destination,
+            Self::Source(command) => &command.source,
+        }
+    }
 }
 
 pub(super) enum LeaseState {
@@ -157,6 +184,38 @@ impl Drop for OperationDropGuard {
 }
 
 impl Inner {
+    pub(super) fn ensure_handle_unregistered(
+        leases: &HashMap<Uuid, TransferLease>,
+        handle: &ModelStateHandle,
+    ) -> Result<()> {
+        for lease in leases.values() {
+            if lease.owned_handle() == handle {
+                return Err(PowerError::InvalidRequest(
+                    "state-transfer adapter memory handle is already registered to another lease"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn register_lease_bytes(&self, lease: &TransferLease) {
+        self.registered_adapter_bytes
+            .fetch_add(lease.registered_bytes(), Ordering::Relaxed);
+    }
+
+    pub(super) fn reclaim_registration(&self, lease: &TransferLease) {
+        let bytes = lease.registered_bytes();
+        match self.registered_adapter_bytes.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(bytes)),
+        ) {
+            Ok(previous) if previous < bytes => self.mark_cleanup_failure(),
+            Ok(_) | Err(_) => {}
+        }
+    }
+
     pub(super) fn profile_validate_binding(&self, binding: &StateTransferBinding) -> Result<()> {
         self.profile.validate_state_binding(binding)
     }
@@ -320,6 +379,7 @@ impl Inner {
         }
         if let Some(lease) = leases.remove(&transfer_id) {
             lease.expiry_cancellation.cancel();
+            self.reclaim_registration(&lease);
         }
         Ok(())
     }
@@ -398,6 +458,7 @@ impl Inner {
         match self.leases.lock() {
             Ok(mut leases) => leases.remove(&transfer_id).inspect(|lease| {
                 lease.expiry_cancellation.cancel();
+                self.reclaim_registration(lease);
             }),
             Err(_) => {
                 self.mark_cleanup_failure();

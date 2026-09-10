@@ -175,11 +175,15 @@ fn service(
 }
 
 fn prepare(epoch: Uuid, lifetime_ms: i64) -> PrepareStateTransfer {
+    prepare_with_handle(epoch, lifetime_ms, "destination")
+}
+
+fn prepare_with_handle(epoch: Uuid, lifetime_ms: i64, destination: &str) -> PrepareStateTransfer {
     PrepareStateTransfer {
         transfer_id: Uuid::new_v4(),
         local_worker_epoch: epoch,
         binding: binding(),
-        destination: ModelStateHandle::new("destination").unwrap(),
+        destination: ModelStateHandle::new(destination).unwrap(),
         expires_at: Utc::now() + Duration::milliseconds(lifetime_ms),
     }
 }
@@ -247,6 +251,7 @@ async fn destination_lease_is_idempotent_and_holds_capacity_until_abort() {
     assert_eq!(target, replay);
     assert_eq!(control.prepare_calls.load(Ordering::SeqCst), 1);
     assert_eq!(service.snapshot().active_transfers, 1);
+    assert_eq!(service.snapshot().registered_adapter_bytes, 512);
 
     let second = prepare(epoch, 200);
     assert!(matches!(
@@ -260,7 +265,110 @@ async fn destination_lease_is_idempotent_and_holds_capacity_until_abort() {
         })
         .await
         .unwrap();
+    assert_eq!(service.snapshot().registered_adapter_bytes, 0);
     service.prepare_destination(second).await.unwrap();
+}
+
+#[tokio::test]
+async fn lease_registers_adapter_owned_bytes_and_abort_reclaims_them() {
+    let profile = profile(DisaggregatedServingRole::Decode, 2, 250);
+    let epoch = Uuid::new_v4();
+    let service = service(&profile, epoch, Arc::new(DriverControl::default()));
+    let first = prepare_with_handle(epoch, 200, "dest-a");
+    let second = prepare_with_handle(epoch, 200, "dest-b");
+
+    service.prepare_destination(first.clone()).await.unwrap();
+    assert_eq!(service.snapshot().registered_adapter_bytes, 512);
+    service.prepare_destination(second.clone()).await.unwrap();
+    assert_eq!(service.snapshot().registered_adapter_bytes, 1024);
+
+    service
+        .abort(AbortStateTransfer {
+            transfer_id: first.transfer_id,
+            local_worker_epoch: epoch,
+        })
+        .await
+        .unwrap();
+    assert_eq!(service.snapshot().registered_adapter_bytes, 512);
+    assert_eq!(service.snapshot().active_transfers, 1);
+
+    service
+        .abort(AbortStateTransfer {
+            transfer_id: second.transfer_id,
+            local_worker_epoch: epoch,
+        })
+        .await
+        .unwrap();
+    assert_eq!(service.snapshot().registered_adapter_bytes, 0);
+    assert_eq!(service.snapshot().active_transfers, 0);
+}
+
+#[tokio::test]
+async fn double_registering_the_same_adapter_handle_fails_closed() {
+    let profile = profile(DisaggregatedServingRole::Decode, 2, 250);
+    let epoch = Uuid::new_v4();
+    let control = Arc::new(DriverControl::default());
+    let service = service(&profile, epoch, control.clone());
+    let first = prepare_with_handle(epoch, 200, "shared-dest");
+    let conflict = prepare_with_handle(epoch, 200, "shared-dest");
+
+    service.prepare_destination(first.clone()).await.unwrap();
+    assert!(matches!(
+        service.prepare_destination(conflict).await,
+        Err(PowerError::InvalidRequest(message))
+            if message.contains("already registered to another lease")
+    ));
+    assert_eq!(control.prepare_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(service.snapshot().active_transfers, 1);
+    assert_eq!(service.snapshot().registered_adapter_bytes, 512);
+    assert_eq!(service.health(), TransferHealth::Ready);
+}
+
+#[tokio::test]
+async fn consume_reclaims_registered_adapter_bytes_without_copying_kv() {
+    let profile = profile(DisaggregatedServingRole::Decode, 1, 250);
+    let epoch = Uuid::new_v4();
+    let source_epoch = Uuid::new_v4();
+    let control = Arc::new(DriverControl::default());
+    let service = service(&profile, epoch, control.clone());
+    let command = prepare_with_handle(epoch, 200, "opaque-fixture-handle-7f3a");
+    let target = service.prepare_destination(command.clone()).await.unwrap();
+    assert_eq!(service.snapshot().registered_adapter_bytes, 512);
+
+    // While the lease is live, Power Debug exposes counters only — never the
+    // opaque handle value, tickets, or any KV payload.
+    let live_debug = format!("{service:?}");
+    assert!(live_debug.contains("registered_adapter_bytes: 512"));
+    assert!(!live_debug.contains("opaque-fixture-handle-7f3a"));
+    assert!(!live_debug.contains("target-ticket"));
+    assert_eq!(
+        format!("{:?}", command.destination),
+        "ModelStateHandle([REDACTED])"
+    );
+
+    let source = StateTransferSource {
+        schema: STATE_TRANSFER_SOURCE_SCHEMA.to_string(),
+        transfer_id: target.transfer_id,
+        source_worker_epoch: source_epoch,
+        destination_worker_epoch: epoch,
+        binding: target.binding,
+        protocol: target.protocol,
+        published_at: Utc::now(),
+        expires_at: target.expires_at,
+        ticket: "source-ticket".to_string(),
+    };
+
+    let receipt = service
+        .consume_source(ConsumeStateTransfer {
+            local_worker_epoch: epoch,
+            destination: command.destination.clone(),
+            source,
+        })
+        .await
+        .unwrap();
+    assert_eq!(receipt.bytes_transferred, 512);
+    assert_eq!(service.snapshot().registered_adapter_bytes, 0);
+    assert_eq!(service.snapshot().active_transfers, 0);
 }
 
 #[tokio::test]
@@ -466,6 +574,7 @@ async fn dropping_an_operation_triggers_bounded_cleanup() {
     .await
     .expect("dropped operation must trigger cleanup");
     assert_eq!(service.snapshot().active_transfers, 0);
+    assert_eq!(service.snapshot().registered_adapter_bytes, 0);
 }
 
 #[test]
@@ -473,4 +582,30 @@ fn bounded_service_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<BoundedStateTransferService>();
     assert_send_sync::<StateTransferRuntimeSnapshot>();
+}
+
+#[test]
+fn runtime_snapshot_accounts_bytes_without_kv_payload_fields() {
+    let snapshot = StateTransferRuntimeSnapshot {
+        active_transfers: 1,
+        maximum_inflight_transfers: 2,
+        registered_adapter_bytes: 512,
+        prepared_destinations: 1,
+        published_sources: 0,
+        completed_consumes: 0,
+        aborted_transfers: 0,
+        timeout_expirations: 0,
+        capacity_rejections: 0,
+        cleanup_failures: 0,
+    };
+    let value = serde_json::to_value(snapshot).unwrap();
+    let object = value.as_object().unwrap();
+    assert_eq!(
+        object.get("registeredAdapterBytes"),
+        Some(&serde_json::json!(512))
+    );
+    assert!(!object.contains_key("kv"));
+    assert!(!object.contains_key("state"));
+    assert!(!object.contains_key("payload"));
+    assert!(!object.contains_key("handle"));
 }
