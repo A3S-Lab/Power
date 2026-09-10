@@ -18,10 +18,13 @@ The default server advertises only the `aggregated` phase. A disaggregated
 composition root must inject both a typed `StateTransferService` and a typed
 `ServingPhaseExecutor`, and both must bind the exact execution-profile digest
 and configured role. Only that complete pair projects `prefill` or `decode` as
-a capability. The phase is ready only while both services can accept work. A
-missing, mismatched, invalid, unsupported, or Empty placeholder member fails
+a capability. The phase is ready only while both services can accept work and both report
+`AdapterProvisionState::Injected` under `ProductionAdapterContract::REQUIRED`.
+A missing, mismatched, invalid, unsupported, or Empty placeholder member fails
 closed without falling back to an aggregated capability that the process was
-not configured to execute.
+not configured to execute. Worker observation therefore never lists `prefill`
+or `decode` in `ready_phases` when composition or readiness contracts are
+unmet.
 
 ## Production adapter capability contract
 

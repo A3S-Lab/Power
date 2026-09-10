@@ -255,7 +255,14 @@ impl DistributedServingRuntime {
     }
 
     pub fn accepts_work(&self) -> bool {
+        // Defense in depth: composition already refuses Empty / non-REQUIRED
+        // contracts, but readiness must never project prefill/decode while either
+        // port is still an Empty placeholder or declares a non-required contract.
         !self.inner.tainted.load(Ordering::Acquire)
+            && self.inner.transfer.provision().is_injected()
+            && self.inner.executor.provision().is_injected()
+            && self.inner.transfer.production_contract().validate().is_ok()
+            && self.inner.executor.production_contract().validate().is_ok()
             && self.inner.executor.health().accepts_work()
             && matches!(
                 self.transfer_health(),

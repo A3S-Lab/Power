@@ -2035,6 +2035,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn effective_prompt_digest_rejects_reserved_multimodal_kind() {
+        let app = axum::Router::new().route(
+            "/v1/chat/effective-prompt-digest",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "effective_prompt": {
+                        "backend": "vllm",
+                        "kind": "chat.multimodal-rendered-prompt",
+                        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    }
+                }))
+            }),
+        );
+        let (upstream, server) = spawn_test_server(app).await;
+        let backend = ProxyBackend::new(Arc::new(PowerConfig {
+            proxy_effective_prompt_digest: true,
+            ..proxy_config(upstream)
+        }));
+
+        let err = backend
+            .effective_chat_prompt_digest("llama-70b", &chat_req())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("chat.multimodal-rendered-prompt")
+                || err.to_string().contains("reserved")
+                || err.to_string().contains("chat.rendered-prompt"),
+            "unexpected error: {err}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn effective_prompt_digest_malformed_sha_fails() {
         let app = axum::Router::new().route(
             "/v1/chat/effective-prompt-digest",

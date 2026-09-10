@@ -292,6 +292,19 @@ fn construction_binds_epoch_and_projects_only_configured_limits() {
 }
 
 #[test]
+fn construction_refuses_empty_placeholder_even_when_capabilities_match() {
+    let profile = profile(DisaggregatedServingRole::Decode, 2, 100);
+    let empty = EmptyStateTransferService::for_profile(&profile).unwrap();
+    assert_eq!(empty.health(), TransferHealth::Unavailable);
+    assert!(empty.provision().is_empty());
+    // Capabilities may mirror the profile shape for inspection, but wrapping an
+    // Empty placeholder must fail closed before any ready_phases projection.
+    let err =
+        BoundedStateTransferService::new(profile, Uuid::new_v4(), Arc::new(empty)).unwrap_err();
+    assert!(err.to_string().contains("Empty placeholder"));
+}
+
+#[test]
 fn construction_reuses_fail_fast_admission_and_rejects_a_second_queue_policy() {
     let profile = profile(DisaggregatedServingRole::Decode, 2, 100);
     let epoch = Uuid::new_v4();

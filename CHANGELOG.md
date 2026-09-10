@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Hardened distributed readiness against Empty / non-required adapter contracts:
+  `DistributedServingRuntime::accepts_work` now requires both ports to report
+  `AdapterProvisionState::Injected` and `ProductionAdapterContract::REQUIRED`
+  before worker observation can list `prefill`/`decode` in `ready_phases`.
+  Construction already refused Empty placeholders at composition, bounded
+  transfer wrap, and runtime assembly; tests now pin those refusals and prove
+  proxy upstream digests cannot bind reserved `chat.multimodal-rendered-prompt`.
+  This strengthens P6 observation honesty only and does not claim production
+  adapters, high-speed transport, or emitible multimodal digests.
 - Cross-process distributed-serving conformance now covers stale Cloud
   deployment generation and foreign peer-set rejection end-to-end: independent
   prefill/decode HTTP workers fail closed with typed `InvalidRequest` when the

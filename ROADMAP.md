@@ -338,9 +338,13 @@ model-semantics owner.
   memory ownership (`AdapterOwnedRegistration`), transport integrity, and
   confirmed-reclaim cleanup obligations; Empty/Unavailable
   `EmptyStateTransferService` / `EmptyServingPhaseExecutor` placeholders refuse
-  work and fail composition until a concrete adapter is injected. That contract
-  strengthens the P6 injection boundary only and is not high-speed-network or
-  production-adapter evidence.
+  work and fail composition, bounded-transfer wrap, and distributed-runtime
+  construction until a concrete adapter is injected. Matching runtimes also
+  require Injected provision plus the required production contract inside
+  `accepts_work`, so worker observation never lists prefill/decode readiness
+  for Empty or non-required contracts. That contract strengthens the P6
+  injection boundary only and is not high-speed-network or production-adapter
+  evidence.
 
 ## Cross-repository delivery order
 

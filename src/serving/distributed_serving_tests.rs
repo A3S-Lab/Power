@@ -10,7 +10,36 @@ use uuid::Uuid;
 use super::*;
 use crate::error::PowerError;
 use support::*;
-use support::{CorruptConsumeReceipt, DecodeExecuteFixture, TransferHooks};
+use support::{CorruptConsumeReceipt, DecodeExecuteFixture, TestTransferDriver, TransferHooks};
+
+#[test]
+fn runtime_construction_refuses_empty_phase_executor() {
+    let profile = profile(DisaggregatedServingRole::Decode, 100);
+    let epoch = Uuid::new_v4();
+    let calls = Arc::new(Calls::default());
+    let capabilities = StateTransferCapabilities {
+        execution_profile_sha256: profile.sha256().unwrap(),
+        phases: vec![ServingPhase::Prefill, ServingPhase::Decode],
+        protocols: vec![StateTransferProtocol::DirectDeviceMemoryPullV1],
+        max_transfer_bytes: 1024,
+        max_inflight_transfers: 2,
+    };
+    let transfer = BoundedStateTransferService::new(
+        profile.clone(),
+        epoch,
+        Arc::new(TestTransferDriver {
+            capabilities,
+            calls: calls.clone(),
+            corrupt_consume_receipt: CorruptConsumeReceipt::None,
+            hooks: Arc::new(TransferHooks::default()),
+        }),
+    )
+    .unwrap();
+    let empty_executor = EmptyServingPhaseExecutor::for_profile(&profile).unwrap();
+    let err = DistributedServingRuntime::new(profile, Arc::new(transfer), Arc::new(empty_executor))
+        .unwrap_err();
+    assert!(err.to_string().contains("Empty placeholders"));
+}
 
 #[tokio::test]
 async fn decode_prepares_destination_then_consumes_before_returning_stream() {

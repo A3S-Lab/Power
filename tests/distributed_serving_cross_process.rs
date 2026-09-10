@@ -270,8 +270,7 @@ async fn cross_process_rejects_stale_deployment_generation_and_foreign_peer_set(
     // the fixture adapter data path runs, even when model/layout bindings match.
     let stale_generation_id = Uuid::new_v4();
     let expires_at = Utc::now() + Duration::seconds(10);
-    let mut stale_target =
-        prepare_decode(&client, &decode, stale_generation_id, expires_at).await;
+    let mut stale_target = prepare_decode(&client, &decode, stale_generation_id, expires_at).await;
     assert_eq!(stale_target.deployment.generation, 7);
     stale_target.deployment.generation = 8;
     assert_invalid_prefill(

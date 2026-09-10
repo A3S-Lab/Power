@@ -144,11 +144,11 @@ impl Calls {
     }
 }
 
-struct TestTransferDriver {
-    capabilities: StateTransferCapabilities,
-    calls: Arc<Calls>,
-    corrupt_consume_receipt: CorruptConsumeReceipt,
-    hooks: Arc<TransferHooks>,
+pub(crate) struct TestTransferDriver {
+    pub(crate) capabilities: StateTransferCapabilities,
+    pub(crate) calls: Arc<Calls>,
+    pub(crate) corrupt_consume_receipt: CorruptConsumeReceipt,
+    pub(crate) hooks: Arc<TransferHooks>,
 }
 
 #[async_trait]
