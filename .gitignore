@@ -37,3 +37,6 @@ Thumbs.db
 .claude/settings.local.json
 .claude/sessions/
 .claude/cache/
+
+# Local short Cargo home (never commit)
+.cargo-home-short/

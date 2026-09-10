@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Injectable product-surface buffered-host / loopback state-transfer adapter:
+  `BufferedHostLoopbackStateTransfer` binds prefill/decode profiles that pin
+  `BufferedHostMemoryPullV1` and `AuthenticatedEncryptedTransport`, reports
+  `AdapterProvisionState::Injected` under `ProductionAdapterContract::REQUIRED`,
+  moves opaque adapter-owned host buffers over authenticated AES-GCM loopback
+  TCP, and confirms abort reclaim of destination reservations. Composition and
+  bounded-transfer wrap accept it as a concrete injection (Empty placeholders
+  still fail closed); aggregated defaults still refuse transfer injection.
+  Distinct from the cross-process conformance fixture. This advances the P6
+  injectable adapter path only and does not claim high-speed transport,
+  sealed wire tickets, production phase executors, or HSN readiness.
 - Hardened distributed readiness against Empty / non-required adapter contracts:
   `DistributedServingRuntime::accepts_work` now requires both ports to report
   `AdapterProvisionState::Injected` and `ProductionAdapterContract::REQUIRED`

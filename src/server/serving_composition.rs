@@ -282,4 +282,59 @@ mod tests {
                 .contains("Empty placeholders")
         );
     }
+
+    fn buffered_host_profile() -> ServingExecutionProfile {
+        ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
+            role: DisaggregatedServingRole::Decode,
+            model: "internal/model-v1".to_string(),
+            model_sha256: "1".repeat(64),
+            backend: "buffered-host-loopback".to_string(),
+            backend_sha256: "2".repeat(64),
+            execution_sha256: "3".repeat(64),
+            device_sha256: "4".repeat(64),
+            layout_sha256: "5".repeat(64),
+            peer_set_sha256: "6".repeat(64),
+            generation: 7,
+            protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
+            state_kind: StateKind::KvCache,
+            max_state_bytes: 1024,
+            max_inflight_transfers: 2,
+            transfer_timeout_ms: 30_000,
+            cancellation_timeout_ms: 5_000,
+            privacy: ServingPrivacyMode::AuthenticatedEncryptedTransport,
+            privacy_policy_sha256: "7".repeat(64),
+            attestation_policy_sha256: None,
+            weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
+            residency_policy_sha256: None,
+            session_pool: PhaseSessionPoolMode::SharedSessionPool,
+            session_pool_policy_sha256: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn product_buffered_host_loopback_satisfies_startup_gate() {
+        let profile = buffered_host_profile();
+        let config = PowerConfig {
+            serving_execution: profile.clone(),
+            ..PowerConfig::default()
+        };
+        let transfer =
+            crate::serving::BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap();
+        validate(&config, Some(&transfer), Some(&executor(&profile))).unwrap();
+    }
+
+    #[test]
+    fn aggregated_default_still_rejects_product_buffered_host_injection() {
+        let profile = buffered_host_profile();
+        let transfer =
+            crate::serving::BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap();
+        let err = validate(
+            &PowerConfig::default(),
+            Some(&transfer),
+            Some(&executor(&profile)),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("aggregated serving"));
+    }
 }

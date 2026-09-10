@@ -303,7 +303,9 @@ model-semantics owner.
   Authenticated unit and HTTP evidence now proves a successful transfer
   consume/receipt followed by non-`Ready` `execute` returns a typed decision
   (never an NDJSON token stream) and runs compensating cleanup; production
-  backend adapters and high-speed transport remain open.
+  backend phase executors and high-speed transport remain open. An injectable
+  product-surface buffered-host loopback transfer adapter now exists for
+  software composition; it does not close model-semantic ownership.
 - [ ] Report a typed recompute, retryable-unavailable, or terminal-failure outcome
   before response generation. Endpoint choice, flow control, request replay,
   desired replicas, placement, rollout and autoscaling remain Gateway or Cloud
@@ -313,7 +315,8 @@ model-semantics owner.
   peer-loss, cleanup, restart and stale-epoch evidence. Post-consume
   `Recompute` / `RetryableUnavailable` / `TerminalFailure` mapping over the
   authenticated HTTP boundary is covered by first-principles fixture tests;
-  concrete production backend adapters remain open.
+  concrete production backend phase executors remain open (buffered-host
+  loopback transfer injection is available without claiming backend readiness).
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support. The loopback conformance
@@ -344,7 +347,16 @@ model-semantics owner.
   `accepts_work`, so worker observation never lists prefill/decode readiness
   for Empty or non-required contracts. That contract strengthens the P6
   injection boundary only and is not high-speed-network or production-adapter
-  evidence.
+  evidence. Power now also ships an injectable product-surface
+  `BufferedHostLoopbackStateTransfer` for profiles that pin
+  `BufferedHostMemoryPullV1` and `AuthenticatedEncryptedTransport`: opaque
+  adapter-owned host buffers move over authenticated AES-GCM loopback TCP under
+  `Injected` + `ProductionAdapterContract::REQUIRED`, with confirmed abort
+  reclaim. This is a real composition path (distinct from the cross-process
+  test fixture) and still not high-speed-network, sealed wire-ticket, or
+  model-backend evidence; concrete production phase executors and HSN remain
+  open. Aggregated defaults still refuse transfer injection and never advertise
+  P/D.
 
 ## Cross-repository delivery order
 

@@ -51,6 +51,17 @@ contract documents ownership obligations only; it does not claim high-speed
 network evidence, sealed wire tickets, live replica lifecycle reuse, or
 production readiness.
 
+Power ships one injectable product-surface transfer path,
+`BufferedHostLoopbackStateTransfer`, for profiles that pin
+`BufferedHostMemoryPullV1` and `AuthenticatedEncryptedTransport`. It moves
+opaque adapter-owned host buffers over authenticated AES-GCM loopback TCP,
+reports `Injected` + `ProductionAdapterContract::REQUIRED`, and reclaims
+reservations on abort. It is a real composition injection—not the cross-process
+conformance fixture—and still is not high-speed-network or model-backend
+evidence. Prefill/decode startup continues to require a separately injected
+`ServingPhaseExecutor`; the aggregated default still refuses any transfer
+injection and never advertises P/D readiness.
+
 ## State-transfer port
 
 Power owns a model-neutral, pull-oriented transfer lifecycle:
