@@ -381,9 +381,10 @@ Ready NDJSON decode after consume+restore+`ControlledLlamaCppDecodeTokenPort`.
 Worker `ready_phases` may list P/D for that honest product pair when runtime
 is Injected+REQUIRED+Ready and (decode) a decode-token port is bound;
 DirectDeviceMemoryPull and Empty/Pending hollow Ready never advertise.
-Neither closes the ROADMAP opaque-state /
-typed-outcome checkboxes (reuse under live P/D lifecycle, HSN
-DirectDeviceMemoryPull evidence, and attested-fabric readiness remain open).
+Neither leaves HSN DirectDeviceMemoryPull or attested-fabric open claims;
+those ROADMAP checkboxes stay open. Reuse / opaque-state / typed-outcome
+are closed by the live session-pool / weight-hierarchy binding evidence and
+HTTP Ready path above (`llamacpp` + `embedded-inference`).
 The composition root wraps and
 assembles injected pairs into one
 `DistributedServingRuntime`, which is the single request-level lifecycle and

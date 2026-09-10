@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Live P/D reuse evidence under shared session-pool + weight-hierarchy ports
+  (`llamacpp` + `embedded-inference`, `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`):
+  `tests/llamacpp_phase_state_live.rs` pins `session_pool_policy_sha256` /
+  `residency_policy_sha256`, binds them through
+  `DistributedServingRuntime::validate_session_pool` /
+  `validate_weight_hierarchy`, exercises `ModelSessionPool::get_or_load`,
+  reclaims `BoundedStateTransferService` leases after live consume, and binds
+  digest-only `DistributedOperationEvidence` via
+  `ImportedModelState::consume_with_receipt_at`. Closes ROADMAP reuse /
+  opaque-state / typed-outcome checkboxes. Does **not** close HSN
+  DirectDeviceMemoryPull or attested-fabric.
 - Env-gated live authenticated HTTP typed-outcome / opaque-state evidence
   (`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`, `llamacpp` feature):
   `tests/llamacpp_phase_state_live.rs` →
@@ -16,10 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   composes BackendOwned + buffered-host + llamacpp ownership/execution +
   `LlamaCppLiveDecodeTokenPort` over `/internal/v1/distributed-serving/*`
   (Ready prefill JSON after live capture; Ready NDJSON decode after
-  consume+restore+live greedy sample). Does **not** close ROADMAP
-  opaque-state / typed-outcome / HSN checkboxes (reuse under live P/D
-  lifecycle, HSN DirectDeviceMemoryPull evidence, and attested-fabric
-  readiness remain open).
+  consume+restore+live greedy sample). Together with the reuse brick above,
+  this closes ROADMAP opaque-state / typed-outcome (HSN DirectDeviceMemoryPull
+  evidence and attested-fabric readiness remain open).
 - Honest `may_advertise_prefill_decode` / worker `ready_phases` for
   BackendOwned + buffered-host + llamacpp ownership/execution: profile ACL
   admits advertise only for that full pair; runtime `accepts_work` still

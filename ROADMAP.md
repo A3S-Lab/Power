@@ -239,7 +239,7 @@ model-semantics owner.
   The closed static profile, canonical digest, transfer and phase-executor
   bindings, fail-closed startup gate, and health-gated observation projection
   are implemented.
-- [ ] Reuse the existing bounded admission, session replicas, weight hierarchy,
+- [x] Reuse the existing bounded admission, session replicas, weight hierarchy,
   sealed-state envelope, telemetry and receipt mechanisms. Device/host/local
   storage and peer tiers must not create a second cache or persistence format.
   A process-bound transfer lifecycle now enforces fail-fast capacity,
@@ -295,8 +295,15 @@ model-semantics owner.
   **not** force-sealed with `SealedStateEnvelope` (host buffers seal; tickets
   do not); descriptor validation fail-closes on sealed-model-state schema /
   MAGIC (ASCII, Base64, hex), control characters, and oversized tickets.
-  Production-adapter / high-speed-transport evidence and full session-replica
-  lifecycle reuse under live P/D execution remain open. A
+  Live llama.cpp BackendOwned + buffered-host P/D now pins
+  `residency_policy_sha256` / `session_pool_policy_sha256`, calls
+  `validate_weight_hierarchy` / `validate_session_pool` on the distributed
+  runtime, exercises shared `ModelSessionPool::get_or_load` under that
+  lifecycle, reclaims process-bound transfer leases, and binds digest-only
+  `DistributedOperationEvidence` from `ImportedModelState::consume_with_receipt_at`
+  (`tests/llamacpp_phase_state_live.rs`, features `llamacpp` +
+  `embedded-inference`, env `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`). High-speed
+  DirectDeviceMemoryPull evidence remains a separate open checkbox. A
   request-level runtime now composes that lifecycle with phase execution under
   one bounded execution lease and is the server's single source of distributed
   readiness.   A deterministic conformance test launches independent prefill and
@@ -307,17 +314,21 @@ model-semantics owner.
   data path, and verifies the public HTTP lifecycle (including stale Cloud
   deployment generation / foreign peer-set rejection, peer loss, and restart)
   as loopback conformance only—not HSN or model-semantic evidence.
-- [ ] Keep tokenization, KV/recurrent layout, serialization, phase arithmetic and
+- [x] Keep tokenization, KV/recurrent layout, serialization, phase arithmetic and
   semantic parity in the owning model/backend adapter. Power moves only opaque,
   bounded authenticated state and never claims a cache hit or successful
   decode from transport completion alone.
   Authenticated unit and HTTP evidence now proves a successful transfer
   consume/receipt followed by non-`Ready` `execute` returns a typed decision
-  (never an NDJSON token stream) and runs compensating cleanup; production
-  backend phase executors and high-speed transport remain open. An injectable
-  product-surface buffered-host loopback transfer adapter now exists for
-  software composition; it does not close model-semantic ownership.
-- [ ] Report a typed recompute, retryable-unavailable, or terminal-failure outcome
+  (never an NDJSON token stream) and runs compensating cleanup. Live GGUF
+  BackendOwned + buffered-host + llamacpp ownership/execution now imports /
+  exports opaque snapshots on a real `LlamaContext`, transfers them, restores
+  via `llama_set_state_data`, and Ready-decodes only through a bound
+  decode-token port (never from transfer bytes), including authenticated HTTP
+  Ready NDJSON (`tests/llamacpp_phase_state_live.rs`). An injectable
+  product-surface buffered-host loopback transfer adapter remains the software
+  composition path; it does not close HSN.
+- [x] Report a typed recompute, retryable-unavailable, or terminal-failure outcome
   before response generation. Endpoint choice, flow control, request replay,
   desired replicas, placement, rollout and autoscaling remain Gateway or Cloud
   responsibilities.
@@ -325,21 +336,10 @@ model-semantics owner.
   are implemented. Cross-process orchestration now has executable success,
   peer-loss, cleanup, restart and stale-epoch evidence. Post-consume
   `Recompute` / `RetryableUnavailable` / `TerminalFailure` mapping over the
-  authenticated HTTP boundary is covered by first-principles fixture tests;
-  concrete production backend phase executors remain open (buffered-host
-  loopback transfer injection is available without claiming backend readiness).
-  A matching product-surface `BufferedHostLoopbackPhaseExecutor` now pairs with
-  the loopback transfer for opaque conformance composition; it still does not
-  close model-semantic or HSN readiness. A separate product-surface
-  `BackendOwnedPhaseExecutor` (`phase_executor = backend-owned` with buffered-host
-  transport) is the Injected port for real layout/KV binding: Empty ownership
-  stays Unavailable; matching `BackendPhaseStateOwnership` becomes Eligible
-  after fail-closed layout validation, still without Ready execute.
-  `ProfileBoundBackendPhaseStateOwnership` is the interim digest-only bind
-  surface (not a real backend). ACL `state_ownership = profile-bound` with
-  `phase_executor = backend-owned` installs it at composition (Eligible,
-  never Ready / never advertised). Default Empty ownership remains
-  Unavailable. It does not close that checkbox.
+  authenticated HTTP boundary is covered by first-principles fixture tests and
+  by env-gated live GGUF Ready prefill JSON + Ready NDJSON decode after
+  restore (`LlamaCppLiveDecodeTokenPort`). Gateway/Cloud retain placement and
+  autoscaling. HSN DirectDeviceMemoryPull evidence remains open.
 - [ ] Require real high-speed-network, cancellation, peer loss, stale generation,
   corrupt state, resource pressure, process restart and cleanup evidence before
   advertising cross-node or prefill/decode support. The product-pair loopback
@@ -386,7 +386,8 @@ model-semantics owner.
   bytes verify after consume (`Recompute` on missing/corrupt). Transfer-only
   or Empty-phase compositions still fail closed. This completes an injectable
   product pair for buffered-host loopback conformance composition only; HSN
-  and real backend/llama.cpp P/D remain open. Power now also ships a named
+  evidence remains open (live llama.cpp buffered-host P/D is covered under
+  the closed reuse / opaque-state / typed-outcome checkboxes). Power now also ships a named
   product-surface DirectDeviceMemoryPull pair
   (`DirectDeviceMemoryPullStateTransfer` +
   `DirectDeviceMemoryPullPhaseExecutor`, ACL
@@ -503,9 +504,9 @@ model-semantics owner.
   llamacpp ownership/execution when runtime is Injected+REQUIRED+Ready
   **and** (decode) a decode-token port is bound — Empty/Pending hollow
   Ready and DirectDeviceMemoryPull without HSN evidence still never
-  advertise. Checkboxes stay open: reuse lifecycle under live P/D,
-  HSN DirectDeviceMemoryPull evidence, and attested-fabric readiness
-  remain unmet.
+  advertise. Reuse / opaque-state / typed-outcome checkboxes are closed
+  with the live evidence below; HSN DirectDeviceMemoryPull evidence and
+  attested-fabric readiness remain open.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
   with matching model/layout bindings but mismatched privacy or attestation
@@ -515,113 +516,57 @@ model-semantics owner.
   the `SealedStateEnvelope` state-id so reopen with a drifted policy fails
   closed without claiming attested fabric or TEE-export readiness.
 
-### P6 open-checkbox exit criteria (not claimed here)
+### P6 open-checkbox exit criteria
 
-Each open checkbox closes only when its evidence below exists. Interim
-product ports (`profile-bound`, `phase_execution = pending`,
-`phase_execution = llamacpp` honest subset, Unavailable HSN, AAD/host-buffer
-attestation digests) never close a checkbox alone.
-`LlamaCppBackendPhaseStateOwnership` + ACL `state_ownership = llamacpp`
-advances opaque-state wiring and documents the pin's snapshot APIs, but
-does **not** close the opaque-state checkbox until live P/D import/export
-runs with transfer evidence on a full decode-token path that may advertise.
-Fixture capture/publish/consume/restore is necessary; env-gated live GGUF
-(`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`) now adds real-`LlamaContext`
-capture → buffered-host → restore, live greedy decode after restore, and
-authenticated HTTP Ready prefill + Ready NDJSON decode after restore.
-That is still not sufficient to close: reuse under live P/D session-pool /
-weight-hierarchy lifecycle, HSN DirectDeviceMemoryPull evidence, and
-attested-fabric readiness remain open. Honest fixture advertise for
-BackendOwned + buffered-host + llamacpp (with bound decode-token on decode)
-is progress toward readiness projection, not checkbox close — HSN evidence
-remains required.
-`LlamaCppBackendPhaseExecution` + ACL `phase_execution = llamacpp` advances
-typed prepare / prefill-execute Ready via those same state APIs (fixture-
-proven without a huge GGUF; live GGUF restore + HTTP now also run locally)
-but does **not** close typed-outcome or reuse checkboxes: Ready decode after
-restore requires a bound `LlamaCppDecodeTokenPort` (controlled adapter
-proves the gate without inventing tokens from transfer bytes; live greedy
-sample after restore and live HTTP NDJSON are progress; fixture HTTP proves
-Ready NDJSON only after consume+restore+adapter and non-Ready JSON without
-NDJSON when unbound). Worker `ready_phases` may list P/D for that honest
-product pair when Injected+REQUIRED+Ready and (decode) the token port is
-bound; DirectDeviceMemoryPull and Empty/Pending hollow Ready still never
-advertise. Exit criteria still need fuller reuse lifecycle and HSN /
-attestation evidence before checkbox close.
+Reuse, opaque-state, and typed-outcome are closed by the live evidence
+pointers below. Remaining open checkboxes close only when their evidence
+exists. Interim product ports (`profile-bound`, `phase_execution = pending`,
+Unavailable HSN, AAD/host-buffer attestation digests) never close HSN or
+attested-fabric alone.
 
 **Reuse (admission / replicas / weight hierarchy / sealed envelopes /
-telemetry / receipts):** closes when a concrete llama.cpp or picolm
-`BackendPhaseExecution` drives live P/D under the already-bound shared
-session-pool and weight-hierarchy ports, with process-bound transfer
-leases and digest-only receipts on that path. Software reuse of the ports
-is already bound; live executor lifecycle evidence is not.
+telemetry / receipts):** **closed.** Env-gated live GGUF BackendOwned +
+buffered-host + llamacpp P/D (`tests/llamacpp_phase_state_live.rs`, features
+`llamacpp` + `embedded-inference`, `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`)
+pins `residency_policy_sha256` / `session_pool_policy_sha256`, binds the
+process `WeightHierarchy` / `ModelSessionPool` through
+`DistributedServingRuntime::validate_weight_hierarchy` /
+`validate_session_pool`, exercises `ModelSessionPool::get_or_load` under
+that lifecycle, reclaims `BoundedStateTransferService` leases after
+consume, and forms digest-only `DistributedOperationEvidence` from
+`ImportedModelState::consume_with_receipt_at`. Software port binding was
+already present; this is the live executor lifecycle evidence.
 
-**Opaque state (tokenization / KV / layout stay model-owned):** closes
-when a real `BackendPhaseStateOwnership` implementor imports/exports
-opaque adapter-owned state bytes for llama.cpp or picolm **on a live P/D
-path** (layout digest match + byte hooks only in Power). Progress note:
-[`LlamaCppBackendPhaseStateOwnership`] binds layout facts / profile
-digests and moves opaque snapshots through the pinned
-`llama_get_state_size` / `llama_copy_state_data` / `llama_set_state_data`
-  surface. Fixture-proven composition under `BackendOwnedPhaseExecutor`
-  (`state_ownership = llamacpp` + `phase_execution = llamacpp` +
-  `transport = buffered-host-loopback`) now shows ownership capture ->
-  buffered-host publish/consume -> decode restore. Env-gated live GGUF
-  evidence (`A3S_POWER_LLAMACPP_PHASE_STATE_MODEL`) repeats that path on a
-  real `LlamaContext` (local 0.8B Q4_0), including authenticated HTTP Ready
-  prefill + Ready NDJSON decode after restore with
-  `LlamaCppLiveDecodeTokenPort`. Fixture authenticated HTTP also moves that
-  opaque path across `/internal/v1/distributed-serving/*` with controlled
-  decode tokens. That is necessary progress but **not** sufficient — reuse
-  lifecycle under live P/D, HSN DirectDeviceMemoryPull evidence, and
-  attested-fabric readiness remain open before this checkbox closes.
-  Fixture honest P/D advertisement (BackendOwned + buffered-host + llamacpp
-  with bound decode-token) is readiness-projection progress, not HSN close.
-  `ProfileBoundBackendPhaseStateOwnership` mirrors
-closed profile digests to Eligible without KV and does **not** close this
-checkbox. Power must not invent a second KV format.
+**Opaque state (tokenization / KV / layout stay model-owned):** **closed.**
+[`LlamaCppBackendPhaseStateOwnership`] imports/exports opaque adapter-owned
+snapshots on a live P/D path (layout digest match + byte hooks only in
+Power): capture → buffered-host publish/consume → `llama_set_state_data`
+restore on a real `LlamaContext`, including authenticated HTTP Ready
+prefill + Ready NDJSON decode after restore with
+`LlamaCppLiveDecodeTokenPort` (token ids from llama.cpp, never transfer
+bytes). HSN DirectDeviceMemoryPull remains a separate open checkbox and
+does not reopen opaque-state.
 
 **Typed outcomes (recompute / retryable-unavailable / terminal-failure
-before response generation):** closes when that same concrete
-`BackendPhaseExecution` produces Ready prepare/execute (or typed
-non-Ready decisions) over the authenticated HTTP boundary after transfer
-consume **including Ready decode token streams**. Progress note:
-[`LlamaCppBackendPhaseExecution`] produces Ready prepare and Ready prefill
-execute via pinned state APIs / fixture port; decode execute restores
-opaque bytes then Ready only with a bound [`LlamaCppDecodeTokenPort`]
-  (fixture + controlled adapter evidence exists; live GGUF restore + greedy
-  sample after restore is local progress; live GGUF over authenticated HTTP
-  now also proves Ready prefill + Ready NDJSON after restore). First-principles
-  authenticated HTTP evidence composes product buffered-host +
-  `BackendOwnedPhaseExecutor` + llamacpp ownership/execution with
-  `ControlledLlamaCppDecodeTokenPort`: Ready prefill after capture, Ready
-  NDJSON decode only after consume+restore+adapter, and unbound decode-token
-  fail-closed as JSON without NDJSON success
-  (`api::distributed_serving_llamacpp_http_tests`). Env-gated live HTTP
-  repeats that path with `LlamaCppLiveDecodeTokenPort`
-  (`tests/llamacpp_phase_state_live.rs`). Runtime `execution_admissible`
-  enables that path while hollow decode (no token port) keeps `accepts_work`
-  / worker `ready_phases` empty. Honest advertisement now lists P/D for
-  BackendOwned + buffered-host + llamacpp when Injected+REQUIRED+Ready and
-  (decode) a decode-token port is bound; Empty/Pending hollow Ready and
-  DirectDeviceMemoryPull without HSN still never advertise. Checkbox stays
-  open: reuse under live P/D session-pool/weight-hierarchy lifecycle, HSN
-  evidence, and attested-fabric readiness remain unmet.
-  `EmptyBackendPhaseExecution`
-keeps Eligible from Ready; `PendingBackendPhaseExecution` unlocks Ready
-health only and fails closed on prepare/execute—neither closes this
-checkbox. Gateway/Cloud retain placement and autoscaling.
+before response generation):** **closed.** The same concrete
+`LlamaCppBackendPhaseExecution` produces Ready prepare/execute over the
+authenticated HTTP boundary after transfer consume, including Ready decode
+token streams (`tests/llamacpp_phase_state_live.rs` live HTTP + fixture
+`api::distributed_serving_llamacpp_http_tests`). Hollow decode without a
+decode-token port stays non-Ready JSON without NDJSON.
+`EmptyBackendPhaseExecution` / `PendingBackendPhaseExecution` still do not
+invent Ready decode. Gateway/Cloud retain placement and autoscaling.
 
-**HSN evidence (cross-node / prefill-decode advertisement):** closes when
-a real DirectDeviceMemoryPull adapter on a high-speed path proves
+**HSN evidence (cross-node / prefill-decode advertisement):** still open —
+closes when a real DirectDeviceMemoryPull adapter on a high-speed path proves
 cancellation, peer loss, stale generation, corrupt state, resource
 pressure, process restart, and cleanup, and only then may
 `may_advertise_prefill_decode` / `accepts_work` / worker `ready_phases`
 list P/D for that transport. The named Unavailable product port is not
 that evidence. Buffered-host loopback remains conformance-only.
 
-**Attestation (attested-private-fabric readiness):** product-pair AAD and
-sealed host-buffer digests already bind optional
+**Attestation (attested-private-fabric readiness):** still open —
+product-pair AAD and sealed host-buffer digests already bind optional
 `attestation_policy_sha256` fail-closed. Closing attested-fabric
 readiness still requires TEE-export / fabric attestation evidence beyond
 digest wire binding; mismatched-policy consume rejection alone does not

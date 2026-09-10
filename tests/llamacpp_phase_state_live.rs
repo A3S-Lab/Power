@@ -7,7 +7,9 @@
 //! Evidence:
 //! 1. `LlamaCppContextStateApi` capture → restore on a real `LlamaContext`.
 //! 2. Live ownership + `BackendOwnedPhaseExecutor` capture → buffered-host
-//!    publish/consume → `set_state_data` restore.
+//!    publish/consume → `set_state_data` restore, with process-bound
+//!    `BoundedStateTransferService` leases and digest-only
+//!    `DistributedOperationEvidence` from the consume receipt.
 //! 3. Ready decode only via `LlamaCppLiveDecodeTokenPort` calling live
 //!    llama.cpp greedy sample after restore. Transfer bytes never become
 //!    tokens. If sampling cannot complete honestly, restore evidence still
@@ -15,9 +17,12 @@
 //! 4. Authenticated HTTP boundary (`/internal/v1/distributed-serving/*`) with
 //!    the same BackendOwned + buffered-host + llamacpp pair and live decode
 //!    token port: Ready prefill JSON after capture, Ready NDJSON decode after
-//!    consume + restore + live greedy sample.
+//!    consume + restore + live greedy sample. The distributed runtime also
+//!    pins and validates shared `ModelSessionPool` + `WeightHierarchy`
+//!    (`validate_session_pool` / `validate_weight_hierarchy`) and exercises
+//!    those ports under the live P/D lifecycle.
 
-#![cfg(feature = "llamacpp")]
+#![cfg(all(feature = "llamacpp", feature = "embedded-inference"))]
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -30,6 +35,11 @@ use a3s_power::api::distributed_serving::{
 };
 use a3s_power::backend::BackendRegistry;
 use a3s_power::config::PowerConfig;
+use a3s_power::inference::{
+    DevicePreference, EmbeddedRuntime, InferenceLimits, ModelIdentity, ModelSessionBinding,
+    ModelSessionPool, ModelSessionPoolPolicy, ModelSessionSpec, ResidencyPolicy, WeightHierarchy,
+    WeightStore, WeightStoreConfig,
+};
 use a3s_power::model::registry::ModelRegistry;
 use a3s_power::server::auth::ApiKeyAuth;
 use a3s_power::server::router;
@@ -37,17 +47,17 @@ use a3s_power::server::state::AppState;
 use a3s_power::serving::{
     live_greedy_decode_chunk_after_restore, BackendOwnedPhaseExecutor, BackendPhaseStateOwnership,
     BoundedStateTransferService, BufferedHostLoopbackStateTransfer, ConsumeStateTransfer,
-    DisaggregatedServingRole, DistributedServingRuntime, ExecutePhaseExecution,
-    ImportedModelState, LlamaCppBackendPhaseExecution, LlamaCppBackendPhaseStateOwnership,
-    LlamaCppContextStateApi, LlamaCppContextStatePort, LlamaCppLayoutFacts,
-    LlamaCppLiveDecodeTokenPort, PhaseDecision, PhaseExecutionOutput, PhaseExecutorHealth,
-    PhaseRequest, PhaseResponseChunk, PhaseSessionPoolMode, PhaseWeightCacheMode,
-    PrefillDecodeExecutionProfile, PreparePhaseExecution, PrepareStateTransfer,
-    PreparedPhaseExecution, PublishStateTransfer, ServingCompositionPhaseExecution,
-    ServingCompositionPhaseExecutor, ServingCompositionStateOwnership,
-    ServingCompositionTransport, ServingExecutionProfile, ServingPhaseExecutor,
-    ServingPrivacyMode, SharedLlamaCppContextStateApi, StateKind, StateTransferProtocol,
-    StateTransferService,
+    DisaggregatedServingRole, DistributedOperationEvidence, DistributedServingRuntime,
+    ExecutePhaseExecution, ImportedModelState, LlamaCppBackendPhaseExecution,
+    LlamaCppBackendPhaseStateOwnership, LlamaCppContextStateApi, LlamaCppContextStatePort,
+    LlamaCppLayoutFacts, LlamaCppLiveDecodeTokenPort, PhaseDecision, PhaseExecutionOutput,
+    PhaseExecutorHealth, PhaseRequest, PhaseResponseChunk, PhaseSessionPoolMode,
+    PhaseWeightCacheMode, PrefillDecodeExecutionProfile, PreparePhaseExecution,
+    PrepareStateTransfer, PreparedPhaseExecution, PublishStateTransfer,
+    ServingCompositionPhaseExecution, ServingCompositionPhaseExecutor,
+    ServingCompositionStateOwnership, ServingCompositionTransport, ServingExecutionProfile,
+    ServingPhaseExecutor, ServingPrivacyMode, SharedLlamaCppContextStateApi, StateKind,
+    StateTransferProtocol, StateTransferService,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -59,8 +69,10 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
+use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
 use serde::de::DeserializeOwned;
 use serial_test::serial;
+use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -100,6 +112,8 @@ fn live_profile(
     role: DisaggregatedServingRole,
     layout_sha256: String,
     max_state_bytes: u64,
+    residency_policy_sha256: String,
+    session_pool_policy_sha256: String,
 ) -> ServingExecutionProfile {
     ServingExecutionProfile::prefill_decode(PrefillDecodeExecutionProfile {
         role,
@@ -122,15 +136,86 @@ fn live_profile(
         privacy_policy_sha256: digest('7'),
         attestation_policy_sha256: None,
         weight_cache: PhaseWeightCacheMode::SharedWeightHierarchy,
-        residency_policy_sha256: None,
+        residency_policy_sha256: Some(residency_policy_sha256),
         session_pool: PhaseSessionPoolMode::SharedSessionPool,
-        session_pool_policy_sha256: None,
+        session_pool_policy_sha256: Some(session_pool_policy_sha256),
         transport: Some(ServingCompositionTransport::BufferedHostLoopback),
         phase_executor: Some(ServingCompositionPhaseExecutor::BackendOwned),
         state_ownership: Some(ServingCompositionStateOwnership::LlamaCpp),
         phase_execution: Some(ServingCompositionPhaseExecution::LlamaCpp),
     })
     .unwrap()
+}
+
+fn live_reuse_policies() -> (ResidencyPolicy, ModelSessionPoolPolicy, String, String) {
+    let residency = ResidencyPolicy {
+        host_cache_bytes: 8,
+        ..ResidencyPolicy::default()
+    };
+    let session_pool = ModelSessionPoolPolicy::new(2, 64, 1, 1)
+        .unwrap()
+        .with_max_replicas_per_session(1)
+        .unwrap();
+    let residency_digest = residency.sha256().expect("residency policy digest");
+    let session_digest = session_pool.sha256().expect("session pool policy digest");
+    (residency, session_pool, residency_digest, session_digest)
+}
+
+fn live_weight_hierarchy(policy: ResidencyPolicy) -> (tempfile::TempDir, WeightHierarchy) {
+    let directory = tempfile::TempDir::new().expect("temp weight directory");
+    let view = TensorView::new(Dtype::F32, vec![2], &[0; 8]).expect("tensor view");
+    serialize_to_file(
+        vec![("layer.0.w", view)],
+        None,
+        &directory.path().join("model.safetensors"),
+    )
+    .expect("write fixture safetensors for hierarchy binding");
+    let store = WeightStore::open_config(
+        &WeightStoreConfig::new(directory.path()),
+        &InferenceLimits::default(),
+    )
+    .expect("open weight store");
+    let runtime =
+        EmbeddedRuntime::new(DevicePreference::Cpu, InferenceLimits::default()).expect("runtime");
+    (
+        directory,
+        WeightHierarchy::new(Arc::new(store), runtime, policy).expect("weight hierarchy"),
+    )
+}
+
+async fn exercise_shared_session_pool(pool: &ModelSessionPool<u32>) {
+    let binding = ModelSessionBinding::new(
+        ModelIdentity::new("qwen35-live", "0.8b-q4", digest('1')),
+        digest('3'),
+    );
+    let spec = ModelSessionSpec::new(binding, InferenceLimits::default(), 8).expect("session spec");
+    let cancellation = CancellationToken::new();
+    let session = pool
+        .get_or_load(spec, &cancellation, |_runtime, _cancel| async move { Ok(42_u32) })
+        .await
+        .expect("shared session pool get_or_load under live P/D");
+    assert_eq!(*session.value(), 42);
+    let snapshot = pool.snapshot();
+    assert!(snapshot.ready_sessions >= 1);
+    assert_eq!(snapshot.maximum_sessions, pool.policy().max_sessions);
+}
+
+fn bind_shared_reuse_ports(
+    runtime: &DistributedServingRuntime,
+    hierarchy: &WeightHierarchy,
+    pool: &ModelSessionPool<u32>,
+) {
+    runtime
+        .validate_weight_hierarchy(hierarchy)
+        .expect("live P/D must bind shared weight hierarchy");
+    runtime
+        .validate_session_pool(pool)
+        .expect("live P/D must bind shared session pool");
+    let admission = runtime.admission_snapshot();
+    let transfer_admission = runtime.transfer_admission_snapshot();
+    assert_eq!(admission.active_limit, transfer_admission.active_limit);
+    assert_eq!(admission.waiting_limit, Some(0));
+    assert_eq!(transfer_admission.waiting_limit, Some(0));
 }
 
 #[test]
@@ -224,17 +309,48 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
         .expect("decode live context");
     let decode_port = SharedLlamaCppContextStateApi::from_context(decode_ctx);
 
+    let (residency_policy, session_policy, residency_digest, session_digest) = live_reuse_policies();
+    let (_weights_dir, hierarchy) = live_weight_hierarchy(residency_policy);
+    let pool = ModelSessionPool::<u32>::new(DevicePreference::Cpu, session_policy)
+        .expect("shared session pool for live reuse");
+
     let prefill_profile = live_profile(
         DisaggregatedServingRole::Prefill,
         layout.clone(),
         max_state_bytes,
+        residency_digest.clone(),
+        session_digest.clone(),
     );
-    let decode_profile = live_profile(DisaggregatedServingRole::Decode, layout, max_state_bytes);
+    let decode_profile = live_profile(
+        DisaggregatedServingRole::Decode,
+        layout,
+        max_state_bytes,
+        residency_digest.clone(),
+        session_digest,
+    );
 
-    let prefill_transfer =
+    let prefill_loopback =
         Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&prefill_profile).unwrap());
-    let decode_transfer =
+    let decode_loopback =
         Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&decode_profile).unwrap());
+    let prefill_epoch = Uuid::new_v4();
+    let decode_epoch = Uuid::new_v4();
+    let prefill_transfer = Arc::new(
+        BoundedStateTransferService::new(
+            prefill_profile.clone(),
+            prefill_epoch,
+            Arc::clone(&prefill_loopback) as Arc<dyn StateTransferService>,
+        )
+        .unwrap(),
+    );
+    let decode_transfer = Arc::new(
+        BoundedStateTransferService::new(
+            decode_profile.clone(),
+            decode_epoch,
+            Arc::clone(&decode_loopback) as Arc<dyn StateTransferService>,
+        )
+        .unwrap(),
+    );
     let prefill_ownership = Arc::new(LlamaCppBackendPhaseStateOwnership::from_layout_facts(
         facts.clone(),
         Some(digest('1')),
@@ -267,10 +383,13 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
     })));
 
     let prefill_execution = Arc::new(
-        LlamaCppBackendPhaseExecution::with_port(&prefill_profile, Box::new(prefill_port.clone()))
-            .unwrap()
-            .with_ownership(Arc::clone(&prefill_ownership))
-            .with_transfer(Arc::clone(&prefill_transfer)),
+        LlamaCppBackendPhaseExecution::with_port(
+            &prefill_profile,
+            Box::new(prefill_port.clone()),
+        )
+        .unwrap()
+        .with_ownership(Arc::clone(&prefill_ownership))
+        .with_transfer(Arc::clone(&prefill_loopback)),
     );
     let decode_execution = Arc::new(
         LlamaCppBackendPhaseExecution::with_port(&decode_profile, Box::new(decode_port.clone()))
@@ -278,32 +397,52 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
             .with_captured_state_bytes(snapshot_len as u64)
             .unwrap()
             .with_ownership(Arc::clone(&decode_ownership))
-            .with_transfer(Arc::clone(&decode_transfer))
+            .with_transfer(Arc::clone(&decode_loopback))
             .with_decode_tokens(decode_tokens),
     );
 
-    let prefill_executor = BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
-        &prefill_profile,
-        Arc::clone(&prefill_transfer),
-        prefill_ownership,
-        prefill_execution,
-    )
-    .unwrap();
-    let decode_executor = BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
-        &decode_profile,
-        Arc::clone(&decode_transfer),
-        decode_ownership,
-        decode_execution,
-    )
-    .unwrap();
+    let prefill_executor = Arc::new(
+        BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+            &prefill_profile,
+            Arc::clone(&prefill_loopback),
+            prefill_ownership,
+            prefill_execution,
+        )
+        .unwrap(),
+    );
+    let decode_executor = Arc::new(
+        BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+            &decode_profile,
+            Arc::clone(&decode_loopback),
+            decode_ownership,
+            decode_execution,
+        )
+        .unwrap(),
+    );
     assert_eq!(prefill_executor.health(), PhaseExecutorHealth::Ready);
     assert_eq!(decode_executor.health(), PhaseExecutorHealth::Ready);
     assert!(prefill_profile.may_advertise_prefill_decode());
     assert!(decode_profile.may_advertise_prefill_decode());
 
+    let prefill_runtime = DistributedServingRuntime::new(
+        prefill_profile.clone(),
+        Arc::clone(&prefill_transfer),
+        Arc::clone(&prefill_executor) as Arc<dyn ServingPhaseExecutor>,
+    )
+    .unwrap();
+    let decode_runtime = DistributedServingRuntime::new(
+        decode_profile.clone(),
+        Arc::clone(&decode_transfer),
+        Arc::clone(&decode_executor) as Arc<dyn ServingPhaseExecutor>,
+    )
+    .unwrap();
+    bind_shared_reuse_ports(&prefill_runtime, &hierarchy, &pool);
+    bind_shared_reuse_ports(&decode_runtime, &hierarchy, &pool);
+    exercise_shared_session_pool(&pool).await;
+    assert_eq!(hierarchy.policy().sha256().unwrap(), residency_digest);
+    let _ = hierarchy.telemetry();
+
     let execution_id = Uuid::new_v4();
-    let source_epoch = Uuid::new_v4();
-    let destination_epoch = Uuid::new_v4();
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(30);
     let completion_request = || {
         PhaseRequest::Completion(
@@ -314,7 +453,7 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
     let prepared = match prefill_executor
         .prepare(PreparePhaseExecution {
             execution_id,
-            local_worker_epoch: source_epoch,
+            local_worker_epoch: prefill_epoch,
             model: "internal/qwen35-0.8b-live".to_string(),
             expires_at,
             request: completion_request(),
@@ -352,7 +491,7 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
     let decode_prepared = match decode_executor
         .prepare(PreparePhaseExecution {
             execution_id,
-            local_worker_epoch: destination_epoch,
+            local_worker_epoch: decode_epoch,
             model: "internal/qwen35-0.8b-live".to_string(),
             expires_at,
             request: completion_request(),
@@ -374,7 +513,7 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
     let target = decode_transfer
         .prepare_destination(PrepareStateTransfer {
             transfer_id: execution_id,
-            local_worker_epoch: destination_epoch,
+            local_worker_epoch: decode_epoch,
             binding: produced.binding().clone(),
             destination: decode_prepared.destination().clone(),
             expires_at,
@@ -383,16 +522,16 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
         .unwrap();
     let published = prefill_transfer
         .publish_source(PublishStateTransfer {
-            local_worker_epoch: source_epoch,
+            local_worker_epoch: prefill_epoch,
             source: produced.source().clone(),
             target,
         })
         .await
         .unwrap();
-    let imported = ImportedModelState::consume_at(
+    let (imported, receipt) = ImportedModelState::consume_with_receipt_at(
         decode_transfer.as_ref(),
         ConsumeStateTransfer {
-            local_worker_epoch: destination_epoch,
+            local_worker_epoch: decode_epoch,
             destination: decode_prepared.destination().clone(),
             source: published,
         },
@@ -400,7 +539,16 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
         &decode_profile,
     )
     .await
-    .expect("buffered-host consume of live opaque state");
+    .expect("bounded buffered-host consume of live opaque state");
+    let evidence = DistributedOperationEvidence::from_transfer_receipt(&receipt)
+        .expect("digest-only evidence from live transfer receipt");
+    evidence
+        .validate()
+        .expect("live distributed-operation evidence must validate");
+    let transfer_snapshot = decode_runtime.transfer_runtime_snapshot();
+    assert_eq!(transfer_snapshot.active_transfers, 0);
+    assert!(transfer_snapshot.completed_consumes >= 1);
+    assert_eq!(transfer_snapshot.registered_adapter_bytes, 0);
 
     let output = decode_executor
         .execute(ExecutePhaseExecution::decode(decode_prepared, imported).unwrap())
@@ -610,12 +758,25 @@ async fn live_llamacpp_authenticated_http_ready_prefill_and_ndjson_decode_after_
         .expect("decode live context for HTTP");
     let decode_port = SharedLlamaCppContextStateApi::from_context(decode_ctx);
 
+    let (residency_policy, session_policy, residency_digest, session_digest) = live_reuse_policies();
+    let (_weights_dir, hierarchy) = live_weight_hierarchy(residency_policy);
+    let pool = ModelSessionPool::<u32>::new(DevicePreference::Cpu, session_policy)
+        .expect("shared session pool for live HTTP reuse");
+
     let prefill_profile = live_profile(
         DisaggregatedServingRole::Prefill,
         layout.clone(),
         max_state_bytes,
+        residency_digest.clone(),
+        session_digest.clone(),
     );
-    let decode_profile = live_profile(DisaggregatedServingRole::Decode, layout, max_state_bytes);
+    let decode_profile = live_profile(
+        DisaggregatedServingRole::Decode,
+        layout,
+        max_state_bytes,
+        residency_digest.clone(),
+        session_digest,
+    );
 
     let prefill_transfer =
         Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&prefill_profile).unwrap());
@@ -665,6 +826,11 @@ async fn live_llamacpp_authenticated_http_ready_prefill_and_ndjson_decode_after_
         Some(decode_tokens),
         Some(snapshot_len as u64),
     );
+    bind_shared_reuse_ports(&prefill.runtime, &hierarchy, &pool);
+    bind_shared_reuse_ports(&decode.runtime, &hierarchy, &pool);
+    exercise_shared_session_pool(&pool).await;
+    assert_eq!(hierarchy.policy().sha256().unwrap(), residency_digest);
+    let _ = hierarchy.telemetry();
     // Fresh LlamaContext still reports a non-zero llama_get_state_size
     // (serializer footprint). Opaque restore evidence is the HTTP Ready
     // NDJSON path + post-execute non-empty state below, not a zero start.
@@ -780,6 +946,11 @@ async fn live_llamacpp_authenticated_http_ready_prefill_and_ndjson_decode_after_
     assert!(decode.runtime.accepts_work());
     assert!(prefill.runtime.execution_admissible());
     assert!(decode.runtime.execution_admissible());
+    let decode_transfer = decode.runtime.transfer_runtime_snapshot();
+    assert_eq!(decode_transfer.active_transfers, 0);
+    assert!(decode_transfer.completed_consumes >= 1);
+    assert_eq!(decode_transfer.registered_adapter_bytes, 0);
+    bind_shared_reuse_ports(&decode.runtime, &hierarchy, &pool);
 
     let _keep_loaded = (backend, &model);
 }

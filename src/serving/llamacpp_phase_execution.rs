@@ -44,8 +44,10 @@
 //!   Ready decode when a live hook materializes logits (this pin omits
 //!   them) via llama.cpp decode at the next M-RoPE position and greedy-
 //!   samples. Authenticated HTTP typed-outcome evidence is separate (see
-//!   API distributed-serving llamacpp HTTP tests). That still does not close
-//!   ROADMAP opaque-state / typed-outcome checkboxes.
+//!   API distributed-serving llamacpp HTTP tests). Live GGUF evidence plus
+//!   shared session-pool / weight-hierarchy binding under the distributed
+//!   runtime closes ROADMAP reuse / opaque-state / typed-outcome; HSN and
+//!   attested-fabric remain open.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -988,11 +990,11 @@ mod tests {
 
     #[tokio::test]
     async fn backend_owned_llamacpp_buffered_host_captures_publishes_restores_then_fail_closes() {
-        // First-principles composition evidence for opaque-state / typed-outcome
-        // progress: BackendOwnedPhaseExecutor + llamacpp ownership/execution +
-        // buffered-host product pair. Fixture port only — live GGUF still
-        // required before ROADMAP checkboxes close. Without a decode-token
-        // adapter, decode stays fail-closed after restore.
+        // Fixture composition evidence: BackendOwnedPhaseExecutor + llamacpp
+        // ownership/execution + buffered-host product pair. Live GGUF + shared
+        // session-pool / weight-hierarchy binding close ROADMAP reuse /
+        // opaque-state / typed-outcome (`tests/llamacpp_phase_state_live.rs`).
+        // Without a decode-token adapter, decode stays fail-closed after restore.
         let snapshot = fixture_snapshot();
         let prefill_profile = prefill_profile();
         let decode_profile = decode_profile(
@@ -1180,8 +1182,8 @@ mod tests {
     #[tokio::test]
     async fn backend_owned_llamacpp_buffered_host_restores_then_ready_decode_with_adapter() {
         // Same composition as fail-closed restore evidence, plus a controlled
-        // decode-token adapter (not transfer-byte invention). Live GGUF still
-        // required before ROADMAP opaque-state / typed-outcome close.
+        // decode-token adapter (not transfer-byte invention). Live GGUF + reuse
+        // binding evidence closes ROADMAP opaque-state / typed-outcome.
         let snapshot = fixture_snapshot();
         let prefill_profile = prefill_profile();
         let decode_profile = decode_profile(

@@ -270,6 +270,20 @@ impl ImportedModelState {
         now: DateTime<Utc>,
         profile: &ServingExecutionProfile,
     ) -> Result<Self> {
+        Ok(Self::consume_with_receipt_at(service, command, now, profile)
+            .await?
+            .0)
+    }
+
+    /// Same as [`Self::consume_at`], but also returns the validated
+    /// content-free transfer receipt so callers can bind digest-only
+    /// [`super::super::DistributedOperationEvidence`] without a second pull.
+    pub async fn consume_with_receipt_at(
+        service: &dyn StateTransferService,
+        command: ConsumeStateTransfer,
+        now: DateTime<Utc>,
+        profile: &ServingExecutionProfile,
+    ) -> Result<(Self, StateTransferReceipt)> {
         let capabilities = service.capabilities();
         profile.validate_state_transfer_capabilities(&capabilities)?;
         profile.validate_deployment_identity(&command.source.deployment)?;
@@ -318,7 +332,9 @@ impl ImportedModelState {
                 };
             }
         };
-        Self::verify_receipt_at(&command, receipt, now, Utc::now(), profile, &capabilities)
+        let imported =
+            Self::verify_receipt_at(&command, receipt.clone(), now, Utc::now(), profile, &capabilities)?;
+        Ok((imported, receipt))
     }
 
     fn verify_receipt_at(

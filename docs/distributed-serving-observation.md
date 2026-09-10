@@ -220,13 +220,16 @@ deployment generation or a foreign peer set before the adapter data path runs;
 process epoch alone cannot admit cross-generation transfers when model /
 execution / layout bindings still match. Wire tickets stay intentionally
 unsealed opaque metadata (host buffers seal; sealed-persistence markers fail
-closed). High-speed transport, production adapters, and full session-replica
-lifecycle reuse under live P/D execution remain open.
+closed). High-speed DirectDeviceMemoryPull evidence and attested-fabric
+readiness remain open. Live buffered-host llama.cpp P/D now also binds and
+exercises the shared session-pool / weight-hierarchy ports
+(`validate_session_pool` / `validate_weight_hierarchy`) under
+`DistributedServingRuntime` (`tests/llamacpp_phase_state_live.rs`).
 
 The default Power backends inject neither port, and this repository does not yet
-ship a concrete distributed backend/transport pair. The internal request-flow
+ship a concrete high-speed distributed backend/transport pair. The internal request-flow
 endpoint is present but fails closed without a matching composed runtime.
-Gateway must therefore continue to reject P/D dispatch until a selected
+Gateway must therefore continue to reject HSN P/D dispatch until a selected
 deployment truthfully supplies that complete path.
 
 ## Cross-process conformance boundary
