@@ -48,8 +48,8 @@ capability shape but always report Unavailable and refuse work.
 `AdapterProvisionState::Empty` fails composition and runtime construction —
 Empty is the fail-closed default until a concrete adapter is injected. This
 contract documents ownership obligations only; it does not claim high-speed
-network evidence, sealed wire tickets, live replica lifecycle reuse, or
-production readiness.
+network evidence, live replica lifecycle reuse, or production readiness.
+Wire tickets stay intentionally unsealed opaque metadata (host buffers seal).
 
 Power ships one injectable product-surface buffered-host loopback pair for
 profiles that pin `BufferedHostMemoryPullV1` and
@@ -89,11 +89,14 @@ count, protocol, and a maximum five-minute expiry. Adapter-owned connection
 metadata is carried only in a trimmed, control-free, 16 KiB ticket. Local model
 state handles are not serializable, and both local handles and wire tickets
 redact their debug representation. Tickets must not embed sealed-model-state
-persistence bytes (schema name or envelope magic); host-buffered opaque transfer
-state reuses `SealedStateEnvelope` / `SealedStateStore` through
+persistence bytes (schema name or envelope MAGIC in ASCII / Base64 / hex) or
+oversized / control-bearing payloads that could smuggle KV bytes. Host-buffered
+opaque transfer state reuses `SealedStateEnvelope` / `SealedStateStore` through
 `seal_transfer_host_buffer` / `open_transfer_host_buffer` (when
 `embedded-inference` is enabled) so Power does not invent a second peer-tier
-ciphertext format. Wire transport encryption remains adapter-owned.
+ciphertext format. Wire tickets are intentionally **not** force-sealed with
+`SealedStateEnvelope`: host buffers seal; tickets stay opaque adapter connection
+metadata. Wire transport encryption remains adapter-owned.
 
 Server composition wraps every injected data path in
 `BoundedStateTransferService`. The wrapper projects only the configured local
@@ -169,9 +172,10 @@ receipt-v4. State-transfer targets, sources, and receipts now carry
 `a3s.power.state-transfer-*.v2` schemas so peers fail closed on stale Cloud
 deployment generation or a foreign peer set before the adapter data path runs;
 process epoch alone cannot admit cross-generation transfers when model /
-execution / layout bindings still match. Sealed wire tickets, high-speed
-transport, production adapters, and full session-replica lifecycle reuse under
-live P/D execution remain open.
+execution / layout bindings still match. Wire tickets stay intentionally
+unsealed opaque metadata (host buffers seal; sealed-persistence markers fail
+closed). High-speed transport, production adapters, and full session-replica
+lifecycle reuse under live P/D execution remain open.
 
 The default Power backends inject neither port, and this repository does not yet
 ship a concrete distributed backend/transport pair. The internal request-flow

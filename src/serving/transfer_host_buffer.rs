@@ -2,10 +2,12 @@
 //!
 //! Available when the `embedded-inference` feature is enabled. Wire tickets
 //! remain opaque adapter connection metadata and must not carry a second sealed
-//! persistence format (always enforced). When a buffered-host (or local staging)
-//! adapter needs to persist opaque transfer bytes, it seals them through this
-//! helper so Power does not invent a peer-tier ciphertext schema beside
-//! `a3s.power.sealed-model-state.v1`.
+//! persistence format (always enforced). Tickets are intentionally **not**
+//! force-sealed with [`SealedStateEnvelope`]: the host buffers this helper seals
+//! are the persistence boundary; tickets only carry connection metadata.
+//! When a buffered-host (or local staging) adapter needs to persist opaque
+//! transfer bytes, it seals them through this helper so Power does not invent a
+//! peer-tier ciphertext schema beside `a3s.power.sealed-model-state.v1`.
 //!
 //! This is not high-speed transport, production-adapter, or TEE-export
 //! evidence. Tickets stay adapter-owned; receipts stay content-free proofs.

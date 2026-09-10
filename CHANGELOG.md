@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Documented and expanded the intentional wire-ticket fail-closed property:
+  tickets remain opaque adapter connection metadata and are **not**
+  force-sealed with `SealedStateEnvelope` (host buffers seal; tickets do not).
+  Descriptor validation now also rejects hex-encoded sealed-model-state MAGIC
+  alongside schema / ASCII / Base64 markers, control characters, and oversized
+  tickets. First-principles property tests cover forbidden embeddings, corrupt
+  shapes, honest opaque tickets, and committed host-buffer persistence bytes
+  that must never validate as tickets. This closes the ticket-opacity contract
+  only and does not claim HSN or production adapters.
 - Cross-process distributed-serving conformance now uses the product-surface
   `BufferedHostLoopback` pair via ACL
   `serving_execution.transport = "buffered-host-loopback"` instead of a

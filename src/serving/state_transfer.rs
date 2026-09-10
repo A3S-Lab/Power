@@ -425,21 +425,29 @@ fn validate_opaque(value: &str, maximum_bytes: usize, label: &str) -> Result<()>
     Ok(())
 }
 
-/// Tickets are adapter connection metadata, not a second sealed persistence format.
+/// Tickets are opaque adapter connection metadata — intentionally **not**
+/// [`crate::inference::SealedStateEnvelope`] ciphertext.
 ///
-/// Host-buffered transfer bytes must reuse [`crate::inference::SealedStateEnvelope`]
-/// via `transfer_host_buffer`. Embedding the sealed-model-state schema or magic
-/// in a ticket fails closed so Power does not grow a peer-tier ciphertext alias.
+/// Host buffers seal; wire tickets do not. Prefill/decode peers exchange
+/// connection handles (address, keys, digests) inside a bounded ticket. The
+/// host-buffered payload path reuses `SealedStateEnvelope` via
+/// `transfer_host_buffer` when `embedded-inference` is enabled. Force-sealing
+/// tickets would invent a second peer-tier persistence alias and conflate
+/// connection metadata with model-state bytes. Embedding the sealed-model-state
+/// schema name or envelope MAGIC (ASCII / Base64 / hex) therefore fails closed.
 fn reject_ticket_as_sealed_persistence(ticket: &str) -> Result<()> {
     const SEALED_SCHEMA: &str = "a3s.power.sealed-model-state";
     // ASCII prefix of MAGIC `A3SPST1\0` (NUL already rejected by validate_opaque).
     const SEALED_MAGIC_ASCII: &str = "A3SPST1";
     // Standard/URL-safe Base64 of the eight-byte MAGIC including the trailing NUL.
     const SEALED_MAGIC_BASE64: &str = "QTNTUFNUMQA";
+    // Lowercase hex of the eight-byte MAGIC including the trailing NUL.
+    const SEALED_MAGIC_HEX: &str = "4133535053543100";
 
     if ticket.contains(SEALED_SCHEMA)
         || ticket.contains(SEALED_MAGIC_ASCII)
         || ticket.contains(SEALED_MAGIC_BASE64)
+        || ticket.to_ascii_lowercase().contains(SEALED_MAGIC_HEX)
     {
         return Err(PowerError::InvalidRequest(
             "state-transfer ticket must not carry sealed-model-state persistence bytes; reuse SealedStateEnvelope for host buffers"

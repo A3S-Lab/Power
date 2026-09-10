@@ -260,9 +260,13 @@ model-semantics owner.
   clears. When `embedded-inference` is enabled,
   host-buffered transfer payloads reuse `SealedStateEnvelope` via
   `seal_transfer_host_buffer` / `open_transfer_host_buffer` (domain-separated
-  binding over transfer identity and profile generation). Wire tickets fail
-  closed if they carry sealed-model-state schema or envelope magic so tickets
-  cannot become a second persistence format. DistributedServingRuntime and the
+  binding over transfer identity and profile generation). Wire tickets remain
+  opaque adapter metadata by design and are intentionally not force-sealed with
+  `SealedStateEnvelope` (host buffers seal; tickets do not). Descriptor
+  validation fail-closes if tickets carry sealed-model-state schema or envelope
+  MAGIC (ASCII / Base64 / hex), control characters, or oversized payloads so
+  tickets cannot become a second persistence or KV-byte channel.
+  DistributedServingRuntime and the
   phase-executor port do not construct a second session-replica pool or weight
   hierarchy; the immutable prefill/decode profile and phase-executor
   capabilities now bind `weight_cache = shared-weight-hierarchy` (unknown
@@ -286,9 +290,12 @@ model-semantics owner.
   (`generation`, `peer_set_sha256`) so peer publish/consume fail closed on
   stale Cloud deployment generation or foreign peer set even when model /
   execution / layout bindings still match; process epoch alone is not enough.
-  Sealing of wire tickets themselves, production-adapter /
-  high-speed-transport evidence, and full session-replica lifecycle reuse under
-  live P/D execution remain open. A
+  Wire tickets stay opaque adapter metadata by design and are intentionally
+  **not** force-sealed with `SealedStateEnvelope` (host buffers seal; tickets
+  do not); descriptor validation fail-closes on sealed-model-state schema /
+  MAGIC (ASCII, Base64, hex), control characters, and oversized tickets.
+  Production-adapter / high-speed-transport evidence and full session-replica
+  lifecycle reuse under live P/D execution remain open. A
   request-level runtime now composes that lifecycle with phase execution under
   one bounded execution lease and is the server's single source of distributed
   readiness.   A deterministic conformance test launches independent prefill and
@@ -359,8 +366,8 @@ model-semantics owner.
   adapter-owned host buffers move over authenticated AES-GCM loopback TCP under
   `Injected` + `ProductionAdapterContract::REQUIRED`, with confirmed abort
   reclaim. This is a real composition path (also exercised by the cross-process
-  ACL-transport conformance suite) and still not high-speed-network, sealed
-  wire-ticket, or model-backend evidence; concrete production phase executors
+  ACL-transport conformance suite) and still not high-speed-network or
+  model-backend evidence; concrete production phase executors
   and HSN remain open. Aggregated defaults still refuse transfer injection and
   never advertise P/D. Power now also ships a matching product-surface
   `BufferedHostLoopbackPhaseExecutor` that pairs with the loopback transfer
@@ -368,8 +375,10 @@ model-semantics owner.
   (not model-semantic layout), and refuses Ready decode until adapter-owned
   bytes verify after consume (`Recompute` on missing/corrupt). Transfer-only
   or Empty-phase compositions still fail closed. This completes an injectable
-  product pair for buffered-host loopback conformance composition only; HSN,
-  sealed wire tickets, and real backend/llama.cpp P/D remain open.
+  product pair for buffered-host loopback conformance composition only; HSN
+  and real backend/llama.cpp P/D remain open. Force-sealing wire tickets with
+  `SealedStateEnvelope` is an intentional non-goal (opaque metadata + fail-closed
+  sealed-persistence rejection; host buffers seal instead).
   ACL/composition now accepts an honest opt-in
   `serving_execution.transport = "buffered-host-loopback"` (or
   `PowerServerBuilder::with_buffered_host_loopback_transport`) that wires the

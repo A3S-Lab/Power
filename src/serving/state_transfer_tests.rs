@@ -256,6 +256,199 @@ fn tickets_must_not_carry_sealed_model_state_persistence() {
         .is_err());
 }
 
+/// First-principles property: wire tickets stay opaque adapter metadata.
+///
+/// They are intentionally **not** force-sealed with `SealedStateEnvelope`
+/// (host buffers seal; tickets do not). Every sealed-persistence marker,
+/// control character, padding, and oversize encoding must fail closed on both
+/// target and source descriptors, while honest connection-metadata tickets
+/// continue to validate without any sealed-envelope round trip.
+#[test]
+fn wire_ticket_opaque_metadata_fail_closed_property() {
+    const MAX_TICKET_BYTES: usize = 16 * 1024;
+    let capabilities = capabilities();
+    let validate_now = now() + Duration::seconds(1);
+
+    let forbidden_markers = [
+        "a3s.power.sealed-model-state",
+        "a3s.power.sealed-model-state.v1",
+        "A3SPST1",
+        "QTNTUFNUMQA",
+        "QTNTUFNUMQA=",
+        "4133535053543100",
+        "4133535053543100AbC",
+    ];
+    for marker in forbidden_markers {
+        for ticket in [
+            marker.to_string(),
+            format!("head-{marker}"),
+            format!("{marker}-tail"),
+            format!("x{marker}y"),
+        ] {
+            let mut probe = target();
+            probe.ticket = ticket.clone();
+            assert!(
+                probe.validate_at(now(), &capabilities).is_err(),
+                "target must reject sealed-persistence marker in {ticket:?}"
+            );
+
+            let mut probe = source();
+            probe.ticket = ticket.clone();
+            assert!(
+                probe
+                    .validate_for(&target(), validate_now, &capabilities)
+                    .is_err(),
+                "source must reject sealed-persistence marker in {ticket:?}"
+            );
+        }
+    }
+
+    for control in ['\0', '\n', '\r', '\t', '\u{7f}'] {
+        let ticket = format!("ticket{control}meta");
+        let mut probe = target();
+        probe.ticket = ticket.clone();
+        assert!(
+            probe.validate_at(now(), &capabilities).is_err(),
+            "target must reject control {control:?}"
+        );
+        let mut probe = source();
+        probe.ticket = ticket;
+        assert!(
+            probe
+                .validate_for(&target(), validate_now, &capabilities)
+                .is_err(),
+            "source must reject control {control:?}"
+        );
+    }
+
+    for ticket in [
+        String::new(),
+        " leading".to_string(),
+        "trailing ".to_string(),
+        "t".repeat(MAX_TICKET_BYTES + 1),
+        // Oversized payloads must not become a KV-byte smuggling channel.
+        "k".repeat(MAX_TICKET_BYTES + 64),
+    ] {
+        let mut probe = target();
+        probe.ticket = ticket.clone();
+        assert!(
+            probe.validate_at(now(), &capabilities).is_err(),
+            "target must reject corrupt shape {ticket:?}"
+        );
+        let mut probe = source();
+        probe.ticket = ticket;
+        assert!(
+            probe
+                .validate_for(&target(), validate_now, &capabilities)
+                .is_err(),
+            "source must reject corrupt ticket shape"
+        );
+    }
+
+    // Honest opaque connection metadata — no SealedStateEnvelope required.
+    for ticket in [
+        "decode-adapter-ticket".to_string(),
+        "prefill-adapter-ticket".to_string(),
+        "buffered-host-loopback-target:00000000-0000-0000-0000-000000000001".to_string(),
+        format!(
+            "{{\"schema\":\"a3s.power.buffered-host-loopback-source.v1\",\"address\":\"127.0.0.1:9\"}}"
+        ),
+        "a".repeat(MAX_TICKET_BYTES),
+        "near-miss-A3SPST-without-final-1".to_string(),
+        "near-miss-QTNTUFNUMQ-truncated".to_string(),
+        "near-miss-41335350535431-without-00".to_string(),
+    ] {
+        let mut probe = target();
+        probe.ticket = ticket.clone();
+        assert!(
+            probe.validate_at(now(), &capabilities).is_ok(),
+            "honest opaque target ticket must validate: {ticket}"
+        );
+        let mut probe = source();
+        probe.ticket = ticket;
+        assert!(
+            probe
+                .validate_for(&target(), validate_now, &capabilities)
+                .is_ok(),
+            "honest opaque source ticket must validate without force-sealing"
+        );
+    }
+}
+
+#[cfg(feature = "embedded-inference")]
+#[test]
+fn sealed_host_buffer_persistence_bytes_never_validate_as_wire_tickets() {
+    use crate::inference::{
+        InferenceLimits, SealedStateKey, SealedStateRollbackPolicy, SealedStateScope,
+        SealedStateStore,
+    };
+    use crate::serving::{
+        seal_transfer_host_buffer, sealed_binding_for_transfer_host_buffer, StateTransferBinding,
+        TransferHostBufferIdentity,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    let capabilities = capabilities();
+    let small_binding = StateTransferBinding {
+        model_sha256: "1".repeat(64),
+        execution_sha256: "2".repeat(64),
+        layout_sha256: "3".repeat(64),
+        state_kind: StateKind::KvCache,
+        token_count: 16,
+        state_bytes: 32,
+    };
+    let identity = TransferHostBufferIdentity {
+        transfer_id: Uuid::from_u128(11),
+        source_worker_epoch: Uuid::from_u128(22),
+        destination_worker_epoch: Uuid::from_u128(33),
+        binding: small_binding.clone(),
+        generation: 7,
+    };
+    let limits = InferenceLimits {
+        max_state_bytes: 1_024,
+        ..InferenceLimits::default()
+    };
+    let key = SealedStateKey::from_bytes([0x71; 32]);
+    let state = vec![0xab; 32];
+    let cancellation = CancellationToken::new();
+    let envelope =
+        seal_transfer_host_buffer(&identity, &state, &key, &limits, &cancellation).unwrap();
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("must-not-become-ticket.bin");
+    let store = SealedStateStore::new(&path).unwrap();
+    let sealed_binding = sealed_binding_for_transfer_host_buffer(&identity, &limits).unwrap();
+    store
+        .commit(
+            &envelope,
+            &sealed_binding,
+            &key,
+            SealedStateScope::TeeLocal,
+            SealedStateRollbackPolicy::new(7),
+            &limits,
+            &cancellation,
+        )
+        .unwrap();
+    let sealed_bytes = std::fs::read(&path).expect("committed host-buffer bytes");
+    assert!(
+        sealed_bytes.windows(7).any(|window| window == b"A3SPST1"),
+        "committed host-buffer file must carry sealed-model-state MAGIC"
+    );
+
+    // Hex-encoded sealed persistence must not validate as a wire ticket.
+    let mut hex_ticket = target();
+    hex_ticket.ticket = hex::encode(&sealed_bytes[..sealed_bytes.len().min(64)]);
+    assert!(
+        hex_ticket.validate_at(now(), &capabilities).is_err(),
+        "hex-encoded sealed host-buffer bytes must fail closed as a ticket"
+    );
+
+    // Schema name alone is also rejected (tickets are not sealed envelopes).
+    let mut schema_ticket = target();
+    schema_ticket.ticket = "a3s.power.sealed-model-state.v1".to_string();
+    assert!(schema_ticket.validate_at(now(), &capabilities).is_err());
+}
+
 #[test]
 fn commands_enforce_phase_epoch_size_and_expiry_before_adapter_use() {
     let adapter_capabilities = capabilities();
