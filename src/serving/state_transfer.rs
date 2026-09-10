@@ -370,6 +370,7 @@ fn validate_descriptor(
         ));
     }
     validate_opaque(ticket, MAX_OPAQUE_TICKET_BYTES, "state-transfer ticket")?;
+    reject_ticket_as_sealed_persistence(ticket)?;
     let maximum_expiry = issued_at
         .checked_add_signed(Duration::seconds(MAX_TRANSFER_LIFETIME_SECONDS))
         .ok_or_else(|| {
@@ -407,6 +408,30 @@ fn validate_opaque(value: &str, maximum_bytes: usize, label: &str) -> Result<()>
         return Err(PowerError::InvalidRequest(format!(
             "{label} must be non-empty, trimmed, control-free, and at most {maximum_bytes} bytes"
         )));
+    }
+    Ok(())
+}
+
+/// Tickets are adapter connection metadata, not a second sealed persistence format.
+///
+/// Host-buffered transfer bytes must reuse [`crate::inference::SealedStateEnvelope`]
+/// via `transfer_host_buffer`. Embedding the sealed-model-state schema or magic
+/// in a ticket fails closed so Power does not grow a peer-tier ciphertext alias.
+fn reject_ticket_as_sealed_persistence(ticket: &str) -> Result<()> {
+    const SEALED_SCHEMA: &str = "a3s.power.sealed-model-state";
+    // ASCII prefix of MAGIC `A3SPST1\0` (NUL already rejected by validate_opaque).
+    const SEALED_MAGIC_ASCII: &str = "A3SPST1";
+    // Standard/URL-safe Base64 of the eight-byte MAGIC including the trailing NUL.
+    const SEALED_MAGIC_BASE64: &str = "QTNTUFNUMQA";
+
+    if ticket.contains(SEALED_SCHEMA)
+        || ticket.contains(SEALED_MAGIC_ASCII)
+        || ticket.contains(SEALED_MAGIC_BASE64)
+    {
+        return Err(PowerError::InvalidRequest(
+            "state-transfer ticket must not carry sealed-model-state persistence bytes; reuse SealedStateEnvelope for host buffers"
+                .to_string(),
+        ));
     }
     Ok(())
 }

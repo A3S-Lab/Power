@@ -253,10 +253,15 @@ model-semantics owner.
   fail-fast mode (`waiting_limit == 0`) bound to the ACL
   `max_inflight_transfers` limit; construction refuses a waiting queue or
   mismatched active limit as a second admission policy, and capacity rejections
-  project from that controller. Session-replica reuse, weight-hierarchy reuse,
-  sealed-state envelope reuse for transfer tickets, and telemetry/receipt
-  consolidation remain open. Production-adapter and high-speed-transport
-  evidence remain open. A
+  project from that controller. When `embedded-inference` is enabled,
+  host-buffered transfer payloads reuse `SealedStateEnvelope` via
+  `seal_transfer_host_buffer` / `open_transfer_host_buffer` (domain-separated
+  binding over transfer identity and profile generation). Wire tickets fail
+  closed if they carry sealed-model-state schema or envelope magic so tickets
+  cannot become a second persistence format. Session-replica reuse,
+  weight-hierarchy reuse, sealing of wire tickets themselves, telemetry/receipt
+  consolidation, and production-adapter / high-speed-transport evidence remain
+  open. A
   request-level runtime now composes that lifecycle with phase execution under
   one bounded execution lease and is the server's single source of distributed
   readiness. A deterministic conformance test launches independent prefill and

@@ -9,14 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reused `SealedStateEnvelope` / `SealedStateStore` for host-buffered transfer
+  payloads through `seal_transfer_host_buffer` and `open_transfer_host_buffer`
+  (requires the `embedded-inference` feature). The helper domain-separates
+  transfer id, worker epochs, binding digests, and serving-profile generation
+  into the existing sealed-model-state format (`TeeLocal`) so buffered-host
+  adapters do not invent a second ciphertext schema. Wire tickets remain opaque
+  adapter metadata and always fail closed if they embed sealed-model-state
+  schema or envelope magic. This advances P6 sealed-state reuse only and does
+  not claim sealed wire tickets, session replicas, high-speed transport, or
+  production adapters.
 - Reused Power's shared `AdmissionController` for distributed phase and
   state-transfer inflight leases in fail-fast mode (`waiting_limit == 0`).
   Construction refuses a waiting queue or mismatched active limit as a second
   admission policy; capacity rejections come from
   `AdmissionSnapshot::queue_rejections`. Phase and transfer remain separate
   lease domains but bind one ACL `max_inflight_transfers` policy source. This
-  is a P6 reuse brick only and does not claim sealed-state envelope reuse,
-  session replicas, high-speed transport, or production adapters.
+  is a P6 admission-reuse brick only and does not claim session replicas,
+  high-speed transport, or production adapters.
 - Fail-closed OpenAI chat attestation receipts for opaque multimodal inputs:
   image-bearing requests (`image_url` content parts or message-level `images`)
   reject any backend-invented text-only `effective_prompt` digest instead of

@@ -37,7 +37,12 @@ execution and state-layout SHA-256 identities, state kind, token count, byte
 count, protocol, and a maximum five-minute expiry. Adapter-owned connection
 metadata is carried only in a trimmed, control-free, 16 KiB ticket. Local model
 state handles are not serializable, and both local handles and wire tickets
-redact their debug representation.
+redact their debug representation. Tickets must not embed sealed-model-state
+persistence bytes (schema name or envelope magic); host-buffered opaque transfer
+state reuses `SealedStateEnvelope` / `SealedStateStore` through
+`seal_transfer_host_buffer` / `open_transfer_host_buffer` (when
+`embedded-inference` is enabled) so Power does not invent a second peer-tier
+ciphertext format. Wire transport encryption remains adapter-owned.
 
 Server composition wraps every injected data path in
 `BoundedStateTransferService`. The wrapper projects only the configured local

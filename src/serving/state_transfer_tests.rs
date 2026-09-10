@@ -189,6 +189,28 @@ fn corrupt_ticket_bytes_never_validate_as_authenticated_descriptors() {
 }
 
 #[test]
+fn tickets_must_not_carry_sealed_model_state_persistence() {
+    let capabilities = capabilities();
+    let mut schema = target();
+    schema.ticket = "prefix-a3s.power.sealed-model-state.v1-suffix".to_string();
+    assert!(schema.validate_at(now(), &capabilities).is_err());
+
+    let mut magic = target();
+    magic.ticket = "adapter-A3SPST1-meta".to_string();
+    assert!(magic.validate_at(now(), &capabilities).is_err());
+
+    let mut base64_magic = target();
+    base64_magic.ticket = "QTNTUFNUMQA=opaque".to_string();
+    assert!(base64_magic.validate_at(now(), &capabilities).is_err());
+
+    let mut source = source();
+    source.ticket = "a3s.power.sealed-model-state".to_string();
+    assert!(source
+        .validate_for(&target(), now() + Duration::seconds(1), &capabilities)
+        .is_err());
+}
+
+#[test]
 fn commands_enforce_phase_epoch_size_and_expiry_before_adapter_use() {
     let adapter_capabilities = capabilities();
     let prepare = PrepareStateTransfer {
