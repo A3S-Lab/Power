@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bound Cloud deployment generation and peer set into state-transfer wire
+  descriptors beyond process epoch: `ServingDeploymentIdentity` stamps
+  `generation` and `peer_set_sha256` onto `StateTransferTarget` /
+  `StateTransferSource` / `StateTransferReceipt` (schemas bumped to
+  `a3s.power.state-transfer-*.v2`). Prefill and decode roles keep distinct full
+  profile digests, but publish/consume fail closed when a peer descriptor
+  carries a stale generation or foreign peer set before the adapter data path
+  runs. Legacy `*.v1` schemas fail closed. Distributed operation evidence folds
+  the deployment identity into its domain-separated digest. This strengthens P6
+  stale-generation peer binding only and does not claim high-speed transport,
+  production adapters, sealed wire tickets, or live replica lifecycle reuse.
 - Consolidated P/D telemetry onto existing Service surfaces without folding
   transfer receipts into microbatch receipt-v4: matching
   `DistributedServingRuntime` compositions now project content-free transfer

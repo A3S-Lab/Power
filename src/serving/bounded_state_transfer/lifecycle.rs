@@ -391,6 +391,8 @@ impl Inner {
         verified_at: DateTime<Utc>,
     ) -> Result<()> {
         target.validate_at(verified_at, &self.capabilities)?;
+        self.profile
+            .validate_deployment_identity(&target.deployment)?;
         if target.transfer_id != command.transfer_id
             || target.destination_worker_epoch != command.local_worker_epoch
             || target.binding != command.binding
@@ -413,7 +415,11 @@ impl Inner {
         started_at: DateTime<Utc>,
         verified_at: DateTime<Utc>,
     ) -> Result<()> {
+        self.profile
+            .validate_deployment_identity(&command.target.deployment)?;
         source.validate_for(&command.target, verified_at, &self.capabilities)?;
+        self.profile
+            .validate_deployment_identity(&source.deployment)?;
         if source.source_worker_epoch != command.local_worker_epoch
             || source.published_at < started_at
             || source.published_at > verified_at
@@ -432,7 +438,11 @@ impl Inner {
         started_at: DateTime<Utc>,
         verified_at: DateTime<Utc>,
     ) -> Result<()> {
+        self.profile
+            .validate_deployment_identity(&command.source.deployment)?;
         receipt.validate_for(&command.source, &self.capabilities)?;
+        self.profile
+            .validate_deployment_identity(&receipt.deployment)?;
         if receipt.destination_worker_epoch != self.local_worker_epoch
             || receipt.completed_at < started_at
             || receipt.completed_at > verified_at

@@ -410,6 +410,9 @@ impl StateTransferService for BoundedStateTransferService {
         self.ensure_local_epoch(command.local_worker_epoch)?;
         let started_at = Utc::now();
         self.inner
+            .profile
+            .validate_deployment_identity(&command.target.deployment)?;
+        self.inner
             .profile_validate_binding(&command.target.binding)?;
         command.validate_at(started_at, &self.inner.capabilities)?;
         self.validate_expiry(started_at, command.target.expires_at)?;
@@ -483,6 +486,9 @@ impl StateTransferService for BoundedStateTransferService {
         self.ensure_phase(DisaggregatedServingRole::Decode)?;
         self.ensure_local_epoch(command.local_worker_epoch)?;
         let started_at = Utc::now();
+        self.inner
+            .profile
+            .validate_deployment_identity(&command.source.deployment)?;
         self.inner
             .profile_validate_binding(&command.source.binding)?;
         command.validate_at(started_at, &self.inner.capabilities)?;

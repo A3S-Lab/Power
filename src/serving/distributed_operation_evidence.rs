@@ -101,6 +101,9 @@ fn hash_transfer_consume(receipt: &StateTransferReceipt) -> [u8; 32] {
     update_uuid(&mut hasher, receipt.transfer_id);
     update_uuid(&mut hasher, receipt.source_worker_epoch);
     update_uuid(&mut hasher, receipt.destination_worker_epoch);
+    hasher.update(receipt.deployment.generation.to_le_bytes());
+    hasher.update(receipt.deployment.peer_set_sha256.as_bytes());
+    hasher.update(b"\0");
     hasher.update(receipt.binding.model_sha256.as_bytes());
     hasher.update(b"\0");
     hasher.update(receipt.binding.execution_sha256.as_bytes());
@@ -173,6 +176,10 @@ mod tests {
             transfer_id: Uuid::from_u128(1),
             source_worker_epoch: Uuid::from_u128(2),
             destination_worker_epoch: Uuid::from_u128(3),
+            deployment: crate::serving::ServingDeploymentIdentity {
+                generation: 7,
+                peer_set_sha256: "6".repeat(64),
+            },
             binding: StateTransferBinding {
                 model_sha256: "1".repeat(64),
                 execution_sha256: "3".repeat(64),
@@ -222,6 +229,19 @@ mod tests {
             .sha256;
         let mut mutated = receipt();
         mutated.binding.layout_sha256 = "9".repeat(64);
+        let changed = DistributedOperationEvidence::from_transfer_receipt(&mutated)
+            .unwrap()
+            .sha256;
+        assert_ne!(baseline, changed);
+    }
+
+    #[test]
+    fn evidence_digest_changes_when_deployment_generation_changes() {
+        let baseline = DistributedOperationEvidence::from_transfer_receipt(&receipt())
+            .unwrap()
+            .sha256;
+        let mut mutated = receipt();
+        mutated.deployment.generation = 8;
         let changed = DistributedOperationEvidence::from_transfer_receipt(&mutated)
             .unwrap()
             .sha256;

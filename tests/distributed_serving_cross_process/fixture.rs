@@ -14,11 +14,11 @@ use a3s_power::serving::{
     AbortStateTransfer, BoundedStateTransferService, ConsumeStateTransfer,
     DisaggregatedServingRole, ModelStateHandle, PhaseExecutorCapabilities, PhaseSessionPoolMode,
     PhaseWeightCacheMode, PrefillDecodeExecutionProfile, PrepareStateTransfer,
-    PublishStateTransfer, ServingExecutionProfile, ServingPrivacyMode, StateKind,
-    StateTransferBinding, StateTransferCapabilities, StateTransferIntegrity, StateTransferProtocol,
-    StateTransferReceipt, StateTransferService, StateTransferSource, StateTransferTarget,
-    TransferHealth, STATE_TRANSFER_RECEIPT_SCHEMA, STATE_TRANSFER_SOURCE_SCHEMA,
-    STATE_TRANSFER_TARGET_SCHEMA,
+    PublishStateTransfer, ServingDeploymentIdentity, ServingExecutionProfile, ServingPrivacyMode,
+    StateKind, StateTransferBinding, StateTransferCapabilities, StateTransferIntegrity,
+    StateTransferProtocol, StateTransferReceipt, StateTransferService, StateTransferSource,
+    StateTransferTarget, TransferHealth, STATE_TRANSFER_RECEIPT_SCHEMA,
+    STATE_TRANSFER_SOURCE_SCHEMA, STATE_TRANSFER_TARGET_SCHEMA,
 };
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit};
@@ -180,6 +180,10 @@ impl StateTransferService for FixtureTransferService {
             schema: STATE_TRANSFER_TARGET_SCHEMA.to_string(),
             transfer_id: command.transfer_id,
             destination_worker_epoch: command.local_worker_epoch,
+            deployment: ServingDeploymentIdentity {
+                generation: 7,
+                peer_set_sha256: digest('6'),
+            },
             binding: command.binding,
             protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
             prepared_at: Utc::now(),
@@ -236,6 +240,7 @@ impl StateTransferService for FixtureTransferService {
             transfer_id,
             source_worker_epoch: command.local_worker_epoch,
             destination_worker_epoch: command.target.destination_worker_epoch,
+            deployment: command.target.deployment.clone(),
             binding: command.target.binding,
             protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
             published_at,
@@ -317,6 +322,7 @@ impl StateTransferService for FixtureTransferService {
             transfer_id: command.source.transfer_id,
             source_worker_epoch: command.source.source_worker_epoch,
             destination_worker_epoch: command.local_worker_epoch,
+            deployment: command.source.deployment.clone(),
             binding: command.source.binding,
             protocol: StateTransferProtocol::BufferedHostMemoryPullV1,
             bytes_transferred: STATE_BYTES as u64,

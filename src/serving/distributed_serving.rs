@@ -347,6 +347,9 @@ impl DistributedServingRuntime {
         let now = Utc::now();
         self.inner
             .profile
+            .validate_deployment_identity(&request.target.deployment)?;
+        self.inner
+            .profile
             .validate_state_binding(&request.target.binding)?;
         request
             .target

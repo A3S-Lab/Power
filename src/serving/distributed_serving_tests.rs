@@ -190,6 +190,10 @@ async fn prefill_publishes_state_and_compensating_abort_reclaims_both_owners() {
                 schema: STATE_TRANSFER_TARGET_SCHEMA.to_string(),
                 transfer_id: execution_id,
                 destination_worker_epoch: Uuid::new_v4(),
+                deployment: ServingDeploymentIdentity {
+                    generation: 7,
+                    peer_set_sha256: "6".repeat(64),
+                },
                 binding: binding(),
                 protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
                 prepared_at: Utc::now(),

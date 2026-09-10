@@ -274,14 +274,19 @@ model-semantics owner.
   closed) and may pin `session_pool_policy_sha256`. When `embedded-inference` is
   enabled, `validate_session_pool` requires that digest to match
   `ModelSessionPoolPolicy::sha256` before a process pool is accepted, so P/D
-  cannot mint a second session-replica pool. Matching distributed runtimes now
+  cannot mint a second session-replica pool.   Matching distributed runtimes now
   project content-free transfer and fail-fast phase-admission counters through
   the existing Service `GET /metrics` text format as label-free series (no
   transfer/execution/tenant/model labels); aggregated profiles omit them.
   Optional digest-only `DistributedOperationEvidence`
   (`a3s.power.distributed-operation.v1`) domain-separates a validated
   `StateTransferReceipt` without folding transfer proofs into microbatch
-  receipt-v4. Sealing of wire tickets themselves, production-adapter /
+  receipt-v4. State-transfer target/source/receipt schemas are now
+  `a3s.power.state-transfer-*.v2` and carry `ServingDeploymentIdentity`
+  (`generation`, `peer_set_sha256`) so peer publish/consume fail closed on
+  stale Cloud deployment generation or foreign peer set even when model /
+  execution / layout bindings still match; process epoch alone is not enough.
+  Sealing of wire tickets themselves, production-adapter /
   high-speed-transport evidence, and full session-replica lifecycle reuse under
   live P/D execution remain open. A
   request-level runtime now composes that lifecycle with phase execution under
@@ -321,8 +326,10 @@ model-semantics owner.
   caller-cancel and deadline abort contract to in-flight transfer
   prepare/publish/consume as to phase work; fixture evidence covers mid-transfer
   and mid-stream abort without Ready/NDJSON success, with compensating cleanup
-  and reclaimed leases. High-speed-network transport and production adapters
-  remain open.
+  and reclaimed leases. Peer publish/consume now also fail closed on stale
+  deployment generation or foreign peer set carried by transfer descriptors
+  (beyond process-epoch checks). High-speed-network transport and production
+  adapters remain open.
 
 ## Cross-repository delivery order
 

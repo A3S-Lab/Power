@@ -28,11 +28,19 @@ fn capabilities() -> StateTransferCapabilities {
     }
 }
 
+fn deployment() -> ServingDeploymentIdentity {
+    ServingDeploymentIdentity {
+        generation: 7,
+        peer_set_sha256: "6".repeat(64),
+    }
+}
+
 fn target() -> StateTransferTarget {
     StateTransferTarget {
         schema: STATE_TRANSFER_TARGET_SCHEMA.to_string(),
         transfer_id: Uuid::from_u128(1),
         destination_worker_epoch: Uuid::from_u128(2),
+        deployment: deployment(),
         binding: binding(),
         protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
         prepared_at: now(),
@@ -48,6 +56,7 @@ fn source() -> StateTransferSource {
         transfer_id: target.transfer_id,
         source_worker_epoch: Uuid::from_u128(3),
         destination_worker_epoch: target.destination_worker_epoch,
+        deployment: target.deployment.clone(),
         binding: target.binding,
         protocol: target.protocol,
         published_at: now() + Duration::seconds(1),
@@ -137,6 +146,7 @@ fn receipt_proves_exact_source_identity_size_and_integrity() {
         transfer_id: source.transfer_id,
         source_worker_epoch: source.source_worker_epoch,
         destination_worker_epoch: source.destination_worker_epoch,
+        deployment: source.deployment.clone(),
         binding: source.binding.clone(),
         protocol: source.protocol,
         bytes_transferred: source.binding.state_bytes,
@@ -160,6 +170,42 @@ fn receipt_proves_exact_source_identity_size_and_integrity() {
     let mut wrong_id = receipt;
     wrong_id.transfer_id = Uuid::from_u128(99);
     assert!(wrong_id.validate_for(&source, &capabilities()).is_err());
+}
+
+#[test]
+fn deployment_identity_must_agree_across_target_source_and_receipt() {
+    let capabilities = capabilities();
+    let target = target();
+    let source = source();
+    source
+        .validate_for(&target, now() + Duration::seconds(1), &capabilities)
+        .unwrap();
+
+    let mut stale = source.clone();
+    stale.deployment.generation = 8;
+    assert!(stale
+        .validate_for(&target, now() + Duration::seconds(1), &capabilities)
+        .is_err());
+
+    let mut foreign = source;
+    foreign.deployment.peer_set_sha256 = "a".repeat(64);
+    assert!(foreign
+        .validate_for(&target, now() + Duration::seconds(1), &capabilities)
+        .is_err());
+}
+
+#[test]
+fn legacy_v1_transfer_schemas_fail_closed() {
+    let capabilities = capabilities();
+    let mut legacy_target = target();
+    legacy_target.schema = "a3s.power.state-transfer-target.v1".to_string();
+    assert!(legacy_target.validate_at(now(), &capabilities).is_err());
+
+    let mut legacy_source = source();
+    legacy_source.schema = "a3s.power.state-transfer-source.v1".to_string();
+    assert!(legacy_source
+        .validate_for(&target(), now() + Duration::seconds(1), &capabilities)
+        .is_err());
 }
 
 #[test]

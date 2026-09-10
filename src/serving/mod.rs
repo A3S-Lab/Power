@@ -24,7 +24,8 @@ pub use distributed_serving::{
 };
 pub use execution_profile::{
     DisaggregatedServingRole, PhaseSessionPoolMode, PhaseWeightCacheMode,
-    PrefillDecodeExecutionProfile, ServingExecutionProfile, ServingPrivacyMode,
+    PrefillDecodeExecutionProfile, ServingDeploymentIdentity, ServingExecutionProfile,
+    ServingPrivacyMode,
 };
 pub use observation::{
     AdmissionObservation, PromptCacheObservation, ServingPhase, TransferHealth, WorkerCapabilities,

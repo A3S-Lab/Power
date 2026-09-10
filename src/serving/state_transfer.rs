@@ -6,11 +6,11 @@ use uuid::Uuid;
 
 use crate::error::{PowerError, Result};
 
-use super::ServingPhase;
+use super::{ServingDeploymentIdentity, ServingPhase};
 
-pub const STATE_TRANSFER_TARGET_SCHEMA: &str = "a3s.power.state-transfer-target.v1";
-pub const STATE_TRANSFER_SOURCE_SCHEMA: &str = "a3s.power.state-transfer-source.v1";
-pub const STATE_TRANSFER_RECEIPT_SCHEMA: &str = "a3s.power.state-transfer-receipt.v1";
+pub const STATE_TRANSFER_TARGET_SCHEMA: &str = "a3s.power.state-transfer-target.v2";
+pub const STATE_TRANSFER_SOURCE_SCHEMA: &str = "a3s.power.state-transfer-source.v2";
+pub const STATE_TRANSFER_RECEIPT_SCHEMA: &str = "a3s.power.state-transfer-receipt.v2";
 
 const SHA256_HEX_BYTES: usize = 64;
 const MAX_OPAQUE_TICKET_BYTES: usize = 16 * 1024;
@@ -134,6 +134,8 @@ pub struct StateTransferTarget {
     pub schema: String,
     pub transfer_id: Uuid,
     pub destination_worker_epoch: Uuid,
+    /// Cloud deployment generation and peer set; must match peer workers.
+    pub deployment: ServingDeploymentIdentity,
     pub binding: StateTransferBinding,
     pub protocol: StateTransferProtocol,
     pub prepared_at: DateTime<Utc>,
@@ -148,6 +150,7 @@ impl fmt::Debug for StateTransferTarget {
             .field("schema", &self.schema)
             .field("transfer_id", &self.transfer_id)
             .field("destination_worker_epoch", &self.destination_worker_epoch)
+            .field("deployment", &self.deployment)
             .field("binding", &self.binding)
             .field("protocol", &self.protocol)
             .field("prepared_at", &self.prepared_at)
@@ -163,6 +166,7 @@ impl StateTransferTarget {
         now: DateTime<Utc>,
         capabilities: &StateTransferCapabilities,
     ) -> Result<()> {
+        self.deployment.validate()?;
         validate_descriptor(
             DescriptorValidation {
                 schema: &self.schema,
@@ -189,6 +193,8 @@ pub struct StateTransferSource {
     pub transfer_id: Uuid,
     pub source_worker_epoch: Uuid,
     pub destination_worker_epoch: Uuid,
+    /// Must equal the prepared destination deployment identity.
+    pub deployment: ServingDeploymentIdentity,
     pub binding: StateTransferBinding,
     pub protocol: StateTransferProtocol,
     pub published_at: DateTime<Utc>,
@@ -204,6 +210,7 @@ impl fmt::Debug for StateTransferSource {
             .field("transfer_id", &self.transfer_id)
             .field("source_worker_epoch", &self.source_worker_epoch)
             .field("destination_worker_epoch", &self.destination_worker_epoch)
+            .field("deployment", &self.deployment)
             .field("binding", &self.binding)
             .field("protocol", &self.protocol)
             .field("published_at", &self.published_at)
@@ -219,6 +226,7 @@ impl StateTransferSource {
         now: DateTime<Utc>,
         capabilities: &StateTransferCapabilities,
     ) -> Result<()> {
+        self.deployment.validate()?;
         validate_descriptor(
             DescriptorValidation {
                 schema: &self.schema,
@@ -246,6 +254,7 @@ impl StateTransferSource {
         self.validate_at(now, capabilities)?;
         if self.transfer_id != target.transfer_id
             || self.destination_worker_epoch != target.destination_worker_epoch
+            || self.deployment != target.deployment
             || self.binding != target.binding
             || self.protocol != target.protocol
             || self.published_at < target.prepared_at
@@ -284,6 +293,8 @@ pub struct StateTransferReceipt {
     pub transfer_id: Uuid,
     pub source_worker_epoch: Uuid,
     pub destination_worker_epoch: Uuid,
+    /// Must equal the published source deployment identity.
+    pub deployment: ServingDeploymentIdentity,
     pub binding: StateTransferBinding,
     pub protocol: StateTransferProtocol,
     pub bytes_transferred: u64,
@@ -307,11 +318,13 @@ impl StateTransferReceipt {
                 "state-transfer receipt identity or schema is invalid".to_string(),
             ));
         }
+        self.deployment.validate()?;
         self.binding.validate()?;
         self.integrity.validate()?;
         if self.transfer_id != source.transfer_id
             || self.source_worker_epoch != source.source_worker_epoch
             || self.destination_worker_epoch != source.destination_worker_epoch
+            || self.deployment != source.deployment
             || self.binding != source.binding
             || self.protocol != source.protocol
             || self.bytes_transferred != source.binding.state_bytes

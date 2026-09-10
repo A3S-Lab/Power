@@ -270,6 +270,10 @@ async fn decode_can_run_only_with_state_consumed_into_its_prepared_destination()
         transfer_id: Uuid::new_v4(),
         source_worker_epoch: source_epoch,
         destination_worker_epoch: destination_epoch,
+        deployment: ServingDeploymentIdentity {
+            generation: 7,
+            peer_set_sha256: digest('6'),
+        },
         binding: binding(),
         protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
         published_at: now - Duration::seconds(1),
@@ -286,6 +290,7 @@ async fn decode_can_run_only_with_state_consumed_into_its_prepared_destination()
         transfer_id: source.transfer_id,
         source_worker_epoch: source_epoch,
         destination_worker_epoch: destination_epoch,
+        deployment: source.deployment.clone(),
         binding: binding(),
         protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
         bytes_transferred: 512,

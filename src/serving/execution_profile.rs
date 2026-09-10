@@ -76,6 +76,31 @@ impl PhaseSessionPoolMode {
     }
 }
 
+/// Cloud-certified deployment identity shared by compatible prefill/decode peers.
+///
+/// Prefill and decode roles differ, so full profile digests differ across peers.
+/// Compatible workers must still agree on deployment generation and peer set
+/// before opaque state may cross the process boundary. Process epoch alone is
+/// insufficient: a restarted peer under a newer generation must fail closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServingDeploymentIdentity {
+    pub generation: u64,
+    pub peer_set_sha256: String,
+}
+
+impl ServingDeploymentIdentity {
+    pub fn validate(&self) -> Result<()> {
+        if self.generation == 0 || self.generation > MAX_EXACT_ACL_INTEGER {
+            return Err(PowerError::InvalidRequest(format!(
+                "serving deployment generation must be within 1..={MAX_EXACT_ACL_INTEGER}"
+            )));
+        }
+        validate_sha256(&self.peer_set_sha256, "serving deployment peer set")?;
+        Ok(())
+    }
+}
+
 /// Static facts required by a prefill or decode process generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -256,6 +281,36 @@ impl ServingExecutionProfile {
         digest.update(b"a3s.power.serving-execution-profile.v1\0");
         digest.update(document);
         Ok(hex::encode(digest.finalize()))
+    }
+
+    /// Deployment generation and peer set pinned by this process profile.
+    pub fn deployment_identity(&self) -> Result<ServingDeploymentIdentity> {
+        self.validate()?;
+        let Self::PrefillDecode { execution } = self else {
+            return Err(PowerError::Config(
+                "aggregated serving does not expose a deployment identity".to_string(),
+            ));
+        };
+        let identity = ServingDeploymentIdentity {
+            generation: execution.generation,
+            peer_set_sha256: execution.peer_set_sha256.clone(),
+        };
+        identity.validate()?;
+        Ok(identity)
+    }
+
+    /// Reject peer descriptors from a different Cloud deployment generation or
+    /// peer set. Roles may differ; generation and peer set must not.
+    pub fn validate_deployment_identity(&self, identity: &ServingDeploymentIdentity) -> Result<()> {
+        identity.validate()?;
+        let expected = self.deployment_identity()?;
+        if identity != &expected {
+            return Err(PowerError::InvalidRequest(
+                "state-transfer deployment identity does not match this process generation"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Validate one request-specific state identity against the static profile.

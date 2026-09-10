@@ -272,6 +272,7 @@ impl ImportedModelState {
     ) -> Result<Self> {
         let capabilities = service.capabilities();
         profile.validate_state_transfer_capabilities(&capabilities)?;
+        profile.validate_deployment_identity(&command.source.deployment)?;
         profile.validate_state_binding(&command.source.binding)?;
         command.validate_at(now, &capabilities)?;
         let configured_timeout_ms = configured_transfer_timeout_ms(profile)?;

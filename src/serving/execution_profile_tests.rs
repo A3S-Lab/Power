@@ -118,6 +118,26 @@ fn state_binding_must_match_model_execution_layout_kind_and_byte_limit() {
 }
 
 #[test]
+fn deployment_identity_is_shared_across_roles_but_rejects_stale_generation_and_peer_set() {
+    let decode = profile(DisaggregatedServingRole::Decode);
+    let prefill = profile(DisaggregatedServingRole::Prefill);
+    let identity = decode.deployment_identity().unwrap();
+    assert_eq!(identity.generation, 7);
+    assert_eq!(identity.peer_set_sha256, digest('6'));
+    // Roles differ, so full profile digests differ, but deployment identity matches.
+    assert_ne!(decode.sha256().unwrap(), prefill.sha256().unwrap());
+    prefill.validate_deployment_identity(&identity).unwrap();
+
+    let mut stale = identity.clone();
+    stale.generation = 8;
+    assert!(decode.validate_deployment_identity(&stale).is_err());
+
+    let mut foreign_peers = identity;
+    foreign_peers.peer_set_sha256 = digest('a');
+    assert!(decode.validate_deployment_identity(&foreign_peers).is_err());
+}
+
+#[test]
 fn adapter_capabilities_must_be_bound_to_the_exact_profile() {
     let profile = profile(DisaggregatedServingRole::Decode);
     let capabilities = StateTransferCapabilities {

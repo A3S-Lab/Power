@@ -113,8 +113,14 @@ as label-free Prometheus series; aggregated profiles omit those series so P/D
 does not invent a second labeled metrics schema. Optional digest-only
 `DistributedOperationEvidence` (`a3s.power.distributed-operation.v1`) may bind a
 validated transfer consume receipt without folding it into microbatch
-receipt-v4. Sealed wire tickets, high-speed transport, production adapters, and
-full session-replica lifecycle reuse under live P/D execution remain open.
+receipt-v4. State-transfer targets, sources, and receipts now carry
+`ServingDeploymentIdentity` (`generation`, `peer_set_sha256`) on the
+`a3s.power.state-transfer-*.v2` schemas so peers fail closed on stale Cloud
+deployment generation or a foreign peer set before the adapter data path runs;
+process epoch alone cannot admit cross-generation transfers when model /
+execution / layout bindings still match. Sealed wire tickets, high-speed
+transport, production adapters, and full session-replica lifecycle reuse under
+live P/D execution remain open.
 
 The default Power backends inject neither port, and this repository does not yet
 ship a concrete distributed backend/transport pair. The internal request-flow

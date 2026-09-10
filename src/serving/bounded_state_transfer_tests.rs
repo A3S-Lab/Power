@@ -126,6 +126,10 @@ impl StateTransferService for TestDriver {
                     command.transfer_id
                 },
                 destination_worker_epoch: command.local_worker_epoch,
+                deployment: ServingDeploymentIdentity {
+                    generation: 7,
+                    peer_set_sha256: digest('6'),
+                },
                 binding: command.binding,
                 protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
                 prepared_at: Utc::now(),
@@ -146,6 +150,7 @@ impl StateTransferService for TestDriver {
             transfer_id: command.target.transfer_id,
             source_worker_epoch: command.local_worker_epoch,
             destination_worker_epoch: command.target.destination_worker_epoch,
+            deployment: command.target.deployment.clone(),
             binding: command.target.binding,
             protocol: command.target.protocol,
             published_at: Utc::now(),
@@ -181,6 +186,7 @@ impl StateTransferService for TestDriver {
             transfer_id,
             source_worker_epoch: command.source.source_worker_epoch,
             destination_worker_epoch: command.local_worker_epoch,
+            deployment: command.source.deployment.clone(),
             binding: command.source.binding,
             protocol: command.source.protocol,
             bytes_transferred,
@@ -237,6 +243,10 @@ fn target(transfer_id: Uuid, destination_epoch: Uuid, lifetime_ms: i64) -> State
         schema: STATE_TRANSFER_TARGET_SCHEMA.to_string(),
         transfer_id,
         destination_worker_epoch: destination_epoch,
+        deployment: ServingDeploymentIdentity {
+            generation: 7,
+            peer_set_sha256: digest('6'),
+        },
         binding: binding(),
         protocol: StateTransferProtocol::DirectDeviceMemoryPullV1,
         prepared_at: now,
@@ -441,7 +451,7 @@ async fn consume_reclaims_registered_adapter_bytes_without_copying_kv() {
     let target = service.prepare_destination(command.clone()).await.unwrap();
     assert_eq!(service.snapshot().registered_adapter_bytes, 512);
 
-    // While the lease is live, Power Debug exposes counters only — never the
+    // While the lease is live, Power Debug exposes counters only - never the
     // opaque handle value, tickets, or any KV payload.
     let live_debug = format!("{service:?}");
     assert!(live_debug.contains("registered_adapter_bytes: 512"));
@@ -457,6 +467,7 @@ async fn consume_reclaims_registered_adapter_bytes_without_copying_kv() {
         transfer_id: target.transfer_id,
         source_worker_epoch: source_epoch,
         destination_worker_epoch: epoch,
+        deployment: target.deployment.clone(),
         binding: target.binding,
         protocol: target.protocol,
         published_at: Utc::now(),
@@ -500,6 +511,43 @@ async fn immutable_binding_and_process_epoch_fail_before_driver_use() {
 }
 
 #[tokio::test]
+async fn stale_deployment_generation_and_peer_set_fail_closed_before_publish() {
+    let profile = profile(DisaggregatedServingRole::Prefill, 1, 100);
+    let epoch = Uuid::new_v4();
+    let control = Arc::new(DriverControl::default());
+    let service = service(&profile, epoch, control.clone());
+
+    let mut stale_generation = target(Uuid::new_v4(), Uuid::new_v4(), 80);
+    stale_generation.deployment.generation = 8;
+    let stale = service
+        .publish_source(PublishStateTransfer {
+            local_worker_epoch: epoch,
+            source: ModelStateHandle::new("source").unwrap(),
+            target: stale_generation,
+        })
+        .await;
+    assert!(
+        matches!(stale, Err(PowerError::InvalidRequest(ref message)) if message.contains("deployment")),
+        "stale generation must fail closed: {stale:?}"
+    );
+
+    let mut foreign_peers = target(Uuid::new_v4(), Uuid::new_v4(), 80);
+    foreign_peers.deployment.peer_set_sha256 = digest('a');
+    let foreign = service
+        .publish_source(PublishStateTransfer {
+            local_worker_epoch: epoch,
+            source: ModelStateHandle::new("source").unwrap(),
+            target: foreign_peers,
+        })
+        .await;
+    assert!(
+        matches!(foreign, Err(PowerError::InvalidRequest(ref message)) if message.contains("deployment")),
+        "foreign peer set must fail closed: {foreign:?}"
+    );
+    assert_eq!(control.publish_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn decode_consume_requires_its_exact_prepared_destination() {
     let profile = profile(DisaggregatedServingRole::Decode, 1, 250);
     let epoch = Uuid::new_v4();
@@ -513,6 +561,7 @@ async fn decode_consume_requires_its_exact_prepared_destination() {
         transfer_id: target.transfer_id,
         source_worker_epoch: source_epoch,
         destination_worker_epoch: epoch,
+        deployment: target.deployment.clone(),
         binding: target.binding,
         protocol: target.protocol,
         published_at: Utc::now(),
@@ -647,6 +696,7 @@ async fn corrupt_consume_receipt_bytes_fail_closed_and_reclaim_registration() {
             transfer_id: target.transfer_id,
             source_worker_epoch: source_epoch,
             destination_worker_epoch: epoch,
+            deployment: target.deployment.clone(),
             binding: target.binding,
             protocol: target.protocol,
             published_at: Utc::now(),
