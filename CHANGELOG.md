@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Decode Ready path for `LlamaCppBackendPhaseExecution` after opaque restore:
+  bind a distinct `LlamaCppDecodeTokenPort` (production:
+  `LlamaCppLiveDecodeTokenPort` under `llamacpp` wrapping existing completion /
+  decode on the restored context; tests: `ControlledLlamaCppDecodeTokenPort`
+  with explicit chunks). Restore via `set_state_data` remains required first —
+  transfer bytes and decode-adapter binding alone never invent Ready tokens.
+  Fixture composition evidence
+  (`backend_owned_llamacpp_buffered_host_restores_then_ready_decode_with_adapter`)
+  proves capture → buffered-host publish/consume → restore → Ready decode
+  stream. Env-gated live state API round-trip:
+  `A3S_POWER_LLAMACPP_PHASE_STATE_MODEL` (`tests/llamacpp_phase_state_live.rs`,
+  `llamacpp` feature). Does **not** close ROADMAP opaque-state / typed-outcome
+  checkboxes until live GGUF P/D evidence drives the full path.
 - Composed `BackendOwnedPhaseExecutor` product pair for llama.cpp opaque
   state: ACL `state_ownership = "llamacpp"` + `phase_execution = "llamacpp"`
   + `transport = "buffered-host-loopback"` now wires the shared
@@ -17,9 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`backend_owned_llamacpp_buffered_host_captures_publishes_restores_then_fail_closes`
   via `SharedFixtureLlamaCppContextStatePort`) shows prefill ownership
   capture -> buffered-host publish/consume -> decode `set_state_data`
-  restore -> fail-closed tokens. Existing llamacpp completion APIs need a
-  live session/model graph, so Ready decode is not invented under the
-  fixture path. Does **not** close ROADMAP opaque-state / typed-outcome
+  restore -> fail-closed tokens when no decode-token port is bound.
+  Does **not** close ROADMAP opaque-state / typed-outcome
   checkboxes until live GGUF P/D evidence exists.
 - Product-surface `LlamaCppBackendPhaseExecution` for backend-owned
   prepare/execute: ACL/composition opt-in `phase_execution = "llamacpp"`

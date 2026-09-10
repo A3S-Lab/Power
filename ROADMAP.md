@@ -462,20 +462,22 @@ model-semantics owner.
   [`LlamaCppBackendPhaseExecution`]: Ready health after Eligible ownership;
   prepare returns Ready reservations; prefill execute returns Ready via the
   pinned state snapshot APIs / fixture port paired with
-  [`LlamaCppBackendPhaseStateOwnership`]; decode execute may restore via
-  `llama_set_state_data` then fail-closes — transfer completion alone never
-  Ready decode tokens. Backend-owned composition continues to suppress
+  [`LlamaCppBackendPhaseStateOwnership`]; decode execute restores via
+  `llama_set_state_data` then Ready only when a [`LlamaCppDecodeTokenPort`]
+  is bound (production: `LlamaCppLiveDecodeTokenPort` calling existing
+  llamacpp completion/decode after restore; tests:
+  `ControlledLlamaCppDecodeTokenPort` with explicit chunks — never invent
+  tokens from transfer bytes). Without a decode-token port, decode stays
+  fail-closed. Backend-owned composition continues to suppress
   worker `ready_phases` via `may_advertise_prefill_decode`. Composed
   `BackendOwnedPhaseExecutor` with `state_ownership = llamacpp` +
   `phase_execution = llamacpp` + `transport = buffered-host-loopback` now
   wires the shared ownership Arc and buffered-host transfer into the
   llamacpp execution surface; fixture-proven evidence shows prefill capture
   -> buffered-host publish/consume -> decode `set_state_data` restore ->
-  fail-closed tokens (`SharedFixtureLlamaCppContextStatePort`). Existing
-  llamacpp completion APIs require a live session/model graph, so Ready
-  decode tokens are not invented under the fixture path. This advances
-  the named backend phase product port; live GGUF P/D evidence and decode
-  token ownership remain open — fixture-only does **not** close the
+  fail-closed without a decode-token port, or Ready decode when a
+  controlled decode adapter is bound. Live GGUF P/D evidence remains open —
+  fixture / controlled-adapter paths do **not** close the
   opaque-state or typed-outcome checkboxes.
   The product loopback transfer AAD (v2) now also binds privacy mode,
   `privacy_policy_sha256`, and optional `attestation_policy_sha256` so peers
@@ -501,8 +503,10 @@ sufficient to close).
 `LlamaCppBackendPhaseExecution` + ACL `phase_execution = llamacpp` advances
 typed prepare / prefill-execute Ready via those same state APIs (fixture-
 proven without a huge GGUF) but does **not** close typed-outcome or reuse
-checkboxes: decode token generation remains fail-closed (honest completion
-APIs need a live session; fixture layout must not invent tokens), and
+checkboxes: Ready decode after restore requires a bound
+`LlamaCppDecodeTokenPort` (controlled adapter proves the gate without
+inventing tokens from transfer bytes; live GGUF + session completion hook
+still required for checkbox close), and
 `may_advertise_prefill_decode` stays false.
 
 **Reuse (admission / replicas / weight hierarchy / sealed envelopes /
@@ -535,8 +539,9 @@ non-Ready decisions) over the authenticated HTTP boundary after transfer
 consume **including Ready decode token streams**. Progress note:
 [`LlamaCppBackendPhaseExecution`] produces Ready prepare and Ready prefill
 execute via pinned state APIs / fixture port; decode execute restores
-opaque bytes then fail-closes until token generation is owned on a live
-session (fixture path must not invent tokens). `EmptyBackendPhaseExecution`
+opaque bytes then Ready only with a bound [`LlamaCppDecodeTokenPort`]
+(fixture + controlled adapter evidence exists; live GGUF session
+completion still required before this checkbox closes). `EmptyBackendPhaseExecution`
 keeps Eligible from Ready; `PendingBackendPhaseExecution` unlocks Ready
 health only and fails closed on prepare/execute—neither closes this
 checkbox. Gateway/Cloud retain placement and autoscaling.

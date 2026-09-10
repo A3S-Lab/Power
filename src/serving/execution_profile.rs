@@ -163,7 +163,9 @@ impl fmt::Display for ServingCompositionStateOwnership {
 /// `llamacpp` requires `phase_executor = backend-owned` and installs
 /// [`crate::serving::LlamaCppBackendPhaseExecution`] (prepare Ready; prefill
 /// execute Ready via pinned state snapshot APIs / fixture port; decode execute
-/// fail-closed until token generation is owned). Worker `ready_phases` stay
+/// restores via set_state_data then Ready only when a
+/// [`crate::serving::LlamaCppDecodeTokenPort`] is bound — transfer bytes alone
+/// never invent tokens). Worker `ready_phases` stay
 /// suppressed via backend-owned `may_advertise_prefill_decode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -172,7 +174,7 @@ pub enum ServingCompositionPhaseExecution {
     /// prepare/execute adapter).
     Pending,
     /// Real llama.cpp prepare/execute adapter (opaque session state APIs;
-    /// decode tokens still fail closed).
+    /// Ready decode requires a bound decode-token port after restore).
     LlamaCpp,
 }
 
@@ -332,7 +334,7 @@ pub struct PrefillDecodeExecutionProfile {
     /// model-semantic P/D. `llamacpp` requires `phase_executor = backend-owned`
     /// and binds `LlamaCppBackendPhaseExecution` (prepare Ready; prefill
     /// execute via pinned llama.cpp state APIs / fixture port; decode execute
-    /// fail-closed until tokens are owned).
+    /// restores then Ready only with a bound decode-token port).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_execution: Option<ServingCompositionPhaseExecution>,
 }

@@ -59,7 +59,11 @@ pub use execution_profile::{
     ServingCompositionPhaseExecutor, ServingCompositionStateOwnership, ServingCompositionTransport,
     ServingDeploymentIdentity, ServingExecutionProfile, ServingPrivacyMode,
 };
-pub use llamacpp_phase_execution::LlamaCppBackendPhaseExecution;
+pub use llamacpp_phase_execution::{
+    ControlledLlamaCppDecodeTokenPort, LlamaCppBackendPhaseExecution, LlamaCppDecodeTokenPort,
+};
+#[cfg(feature = "llamacpp")]
+pub use llamacpp_phase_execution::{LlamaCppLiveDecodeHook, LlamaCppLiveDecodeTokenPort};
 #[cfg(feature = "llamacpp")]
 pub use llamacpp_phase_state_ownership::LlamaCppContextStateApi;
 pub use llamacpp_phase_state_ownership::{

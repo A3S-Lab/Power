@@ -17,16 +17,20 @@
 //! - Prefill `execute` returns Ready when a [`LlamaCppContextStatePort`] is
 //!   bound: captures opaque snapshot bytes via get/copy and optionally
 //!   registers them on a paired buffered-host transfer / ownership slots.
-//! - Decode `execute` may restore via set_state_data, then fail-closes:
-//!   transfer completion / imported opaque bytes alone never yield a Ready
-//!   token stream. Token generation remains unowned: existing llamacpp
-//!   completion APIs require a live session/model graph, not fixture layout
-//!   invention. Backend-owned composition still suppresses
+//! - Decode `execute` restores via set_state_data, then:
+//!   - Without a bound [`LlamaCppDecodeTokenPort`]: fail-closes. Transfer
+//!     completion / opaque snapshot bytes alone never yield Ready tokens.
+//!   - With a bound decode-token port (production: live session calling
+//!     existing llamacpp completion/decode after restore; tests:
+//!     [`ControlledLlamaCppDecodeTokenPort`]): returns Ready decode stream.
+//!     The decode adapter must not invent tokens from transfer bytes.
+//! - Backend-owned composition still suppresses
 //!   [`super::ServingExecutionProfile::may_advertise_prefill_decode`].
 //! - Composed with [`super::BackendOwnedPhaseExecutor`] under
 //!   `state_ownership = llamacpp` + `phase_execution = llamacpp` +
 //!   `transport = buffered-host-loopback`, prefill capture → buffered-host
-//!   publish/consume → decode restore is fixture-proven; live GGUF evidence
+//!   publish/consume → decode restore is fixture-proven; Ready decode is
+//!   proven only when a decode-token adapter is bound. Live GGUF evidence
 //!   remains required before ROADMAP opaque-state / typed-outcome close.
 
 use std::collections::HashMap;
@@ -36,6 +40,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use async_trait::async_trait;
 use uuid::Uuid;
 
+use crate::backend::types::CompletionResponseChunk;
 use crate::error::{PowerError, Result};
 
 use super::backend_phase_execution::BackendPhaseExecution;
@@ -46,9 +51,107 @@ use super::llamacpp_phase_state_ownership::{
 use super::{
     AbortPhaseExecution, BufferedHostLoopbackStateTransfer, ExecutePhaseExecution,
     ModelStateHandle, PhaseDecision, PhaseExecutionHandle, PhaseExecutionOutput,
-    PreparePhaseExecution, PreparedDecodePhase, PreparedPhaseExecution, PreparedPrefillPhase,
-    ProducedModelState, ServingExecutionProfile, ServingPhase, StateKind, StateTransferBinding,
+    PhaseResponseChunk, PhaseResponseStream, PreparePhaseExecution, PreparedDecodePhase,
+    PreparedPhaseExecution, PreparedPrefillPhase, ProducedModelState, ServingExecutionProfile,
+    ServingPhase, StateKind, StateTransferBinding,
 };
+
+/// Token generation after opaque context restore.
+///
+/// Distinct from [`LlamaCppContextStatePort`]: get/copy/set move opaque
+/// snapshot bytes only. This port owns decode token streams (production:
+/// existing llamacpp completion/decode on the restored session; tests: a
+/// controlled adapter). Transfer bytes must never become invented tokens.
+pub trait LlamaCppDecodeTokenPort: Send + Sync {
+    /// Produce a decode response after restore succeeded on the bound context.
+    ///
+    /// Callers must invoke this only after `set_state_from` applied transferred
+    /// opaque bytes. Implementations must not parse or hash those bytes into
+    /// token text.
+    fn decode_stream_after_restore(&self) -> Result<PhaseResponseStream>;
+}
+
+/// Test/production-safe decode adapter with an explicit controlled stream.
+///
+/// Chunks are supplied by the caller (not derived from opaque transfer bytes).
+/// Use this to prove Ready decode after restore without a live GGUF, or to
+/// wrap a live session hook that already called llamacpp completion APIs.
+#[derive(Clone, Debug)]
+pub struct ControlledLlamaCppDecodeTokenPort {
+    chunks: Arc<Vec<CompletionResponseChunk>>,
+}
+
+impl ControlledLlamaCppDecodeTokenPort {
+    /// Bind a fixed completion stream. Empty chunks fail closed at decode time.
+    #[must_use]
+    pub fn from_chunks(chunks: Vec<CompletionResponseChunk>) -> Self {
+        Self {
+            chunks: Arc::new(chunks),
+        }
+    }
+
+    /// Single done chunk with explicit token text (never from transfer bytes).
+    #[must_use]
+    pub fn single_completion(text: impl Into<String>, token_id: u32) -> Self {
+        Self::from_chunks(vec![CompletionResponseChunk {
+            text: text.into(),
+            done: true,
+            prompt_tokens: Some(1),
+            done_reason: Some("stop".to_string()),
+            prompt_eval_duration_ns: None,
+            token_id: Some(token_id),
+        }])
+    }
+}
+
+impl LlamaCppDecodeTokenPort for ControlledLlamaCppDecodeTokenPort {
+    fn decode_stream_after_restore(&self) -> Result<PhaseResponseStream> {
+        if self.chunks.is_empty() {
+            return Err(PowerError::BackendNotAvailable(
+                "ControlledLlamaCppDecodeTokenPort refuses empty decode stream (bind real completion chunks or a live llamacpp session hook)"
+                    .to_string(),
+            ));
+        }
+        let chunks = (*self.chunks).clone();
+        let stream = futures::stream::iter(
+            chunks
+                .into_iter()
+                .map(|chunk| Ok(PhaseResponseChunk::Completion(chunk))),
+        );
+        Ok(Box::pin(stream))
+    }
+}
+
+/// Live-session decode hook under the `llamacpp` feature.
+///
+/// Production binds a closure that runs existing llamacpp completion/decode
+/// against the same `LlamaContext` previously restored via
+/// [`super::LlamaCppContextStateApi`]. The hook must not invent tokens from
+/// opaque snapshot bytes.
+#[cfg(feature = "llamacpp")]
+pub type LlamaCppLiveDecodeHook =
+    Arc<dyn Fn() -> Result<PhaseResponseStream> + Send + Sync>;
+
+/// Feature-gated adapter that defers token generation to a live session hook.
+#[cfg(feature = "llamacpp")]
+pub struct LlamaCppLiveDecodeTokenPort {
+    hook: LlamaCppLiveDecodeHook,
+}
+
+#[cfg(feature = "llamacpp")]
+impl LlamaCppLiveDecodeTokenPort {
+    #[must_use]
+    pub fn new(hook: LlamaCppLiveDecodeHook) -> Self {
+        Self { hook }
+    }
+}
+
+#[cfg(feature = "llamacpp")]
+impl LlamaCppDecodeTokenPort for LlamaCppLiveDecodeTokenPort {
+    fn decode_stream_after_restore(&self) -> Result<PhaseResponseStream> {
+        (self.hook)()
+    }
+}
 
 /// Default reserved token_count for prepare bindings when no live session
 /// token census is available. Not a claim about prompt length.
@@ -102,6 +205,7 @@ pub struct LlamaCppBackendPhaseExecution {
     port: Mutex<Option<Box<dyn LlamaCppContextStatePort>>>,
     ownership: Option<Arc<LlamaCppBackendPhaseStateOwnership>>,
     transfer: Option<Arc<BufferedHostLoopbackStateTransfer>>,
+    decode_tokens: Option<Arc<dyn LlamaCppDecodeTokenPort>>,
     leases: PreparedLeaseStore,
 }
 
@@ -118,6 +222,7 @@ impl fmt::Debug for LlamaCppBackendPhaseExecution {
             )
             .field("has_ownership", &self.ownership.is_some())
             .field("has_transfer", &self.transfer.is_some())
+            .field("has_decode_tokens", &self.decode_tokens.is_some())
             .finish()
     }
 }
@@ -151,6 +256,18 @@ impl LlamaCppBackendPhaseExecution {
         self
     }
 
+    /// Bind a decode-token adapter used only after opaque restore succeeds.
+    ///
+    /// Production: wrap existing llamacpp completion/decode on the restored
+    /// context ([`LlamaCppLiveDecodeTokenPort`] under `llamacpp`). Tests:
+    /// [`ControlledLlamaCppDecodeTokenPort`] with explicit chunks — never
+    /// derive token text from transferred snapshot bytes.
+    #[must_use]
+    pub fn with_decode_tokens(mut self, decode_tokens: Arc<dyn LlamaCppDecodeTokenPort>) -> Self {
+        self.decode_tokens = Some(decode_tokens);
+        self
+    }
+
     /// Install or replace the context state port (fixture or live session).
     pub fn bind_port(&self, port: Box<dyn LlamaCppContextStatePort>) -> Result<()> {
         *self.port.lock().map_err(|_| {
@@ -159,6 +276,11 @@ impl LlamaCppBackendPhaseExecution {
             )
         })? = Some(port);
         Ok(())
+    }
+
+    /// Install or replace the decode-token adapter after construction.
+    pub fn bind_decode_tokens(&mut self, decode_tokens: Arc<dyn LlamaCppDecodeTokenPort>) {
+        self.decode_tokens = Some(decode_tokens);
     }
 
     fn build(
@@ -209,6 +331,7 @@ impl LlamaCppBackendPhaseExecution {
             port: Mutex::new(port),
             ownership,
             transfer,
+            decode_tokens: None,
             leases: PreparedLeaseStore::default(),
         })
     }
@@ -273,9 +396,27 @@ impl LlamaCppBackendPhaseExecution {
 
     fn decode_tokens_unowned() -> PowerError {
         PowerError::BackendNotAvailable(
-            "LlamaCppBackendPhaseExecution refuses decode execute: opaque state restore may use llama_set_state_data, but decode token generation is not yet owned; transfer completion alone never yields Ready decode"
+            "LlamaCppBackendPhaseExecution refuses decode execute: opaque state restore may use llama_set_state_data, but decode token generation requires a bound LlamaCppDecodeTokenPort (live llamacpp completion/decode after restore, or ControlledLlamaCppDecodeTokenPort); transfer completion alone never yields Ready decode"
                 .to_string(),
         )
+    }
+
+    fn restore_opaque_decode_state(&self, bytes: &[u8]) -> Result<()> {
+        let mut guard = self.lock_port()?;
+        let port = guard.as_mut().ok_or_else(|| {
+            PowerError::BackendNotAvailable(
+                "LlamaCppBackendPhaseExecution refuses decode restore: no LlamaCppContextStatePort bound"
+                    .to_string(),
+            )
+        })?;
+        let applied = port.set_state_from(bytes)?;
+        if applied != bytes.len() {
+            return Err(PowerError::InferenceFailed(format!(
+                "llama.cpp state import size mismatch: expected {}, got {applied}",
+                bytes.len()
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -357,29 +498,29 @@ impl BackendPhaseExecution for LlamaCppBackendPhaseExecution {
             }
             ExecutePhaseExecution::Decode { prepared, state } => {
                 let _ = self.leases.remove(prepared.execution_id());
-                // Transfer receipt alone is never decode success. Optionally
-                // restore opaque bytes through set_state_data, then fail closed
-                // until token generation is owned.
+                // Transfer receipt alone is never decode success. Restore
+                // opaque bytes through set_state_data, then either Ready via a
+                // bound decode-token adapter or fail closed.
                 let opaque = if let Some(transfer) = &self.transfer {
                     transfer.take_owned_state(state.destination()).ok()
                 } else {
                     None
                 };
-                if let Some(bytes) = opaque {
-                    let mut guard = self.lock_port()?;
-                    if let Some(port) = guard.as_mut() {
-                        let applied = port.set_state_from(&bytes)?;
-                        if applied != bytes.len() {
-                            return Err(PowerError::InferenceFailed(format!(
-                                "llama.cpp state import size mismatch: expected {}, got {applied}",
-                                bytes.len()
-                            )));
-                        }
-                    }
-                }
+                let Some(bytes) = opaque else {
+                    drop(prepared);
+                    drop(state);
+                    return Err(Self::decode_tokens_unowned());
+                };
+                self.restore_opaque_decode_state(&bytes)?;
+                let Some(decode_tokens) = &self.decode_tokens else {
+                    drop(prepared);
+                    drop(state);
+                    return Err(Self::decode_tokens_unowned());
+                };
+                let stream = decode_tokens.decode_stream_after_restore()?;
                 drop(prepared);
                 drop(state);
-                Err(Self::decode_tokens_unowned())
+                Ok(PhaseDecision::ready(PhaseExecutionOutput::Decode(stream)))
             }
         }
     }
@@ -624,7 +765,167 @@ mod tests {
         };
         assert!(err
             .to_string()
-            .contains("decode token generation is not yet owned"));
+            .contains("requires a bound LlamaCppDecodeTokenPort"));
+        assert!(err
+            .to_string()
+            .contains("transfer completion alone never yields Ready decode"));
+    }
+
+    #[tokio::test]
+    async fn decode_execute_ready_after_restore_with_controlled_decode_adapter() {
+        let profile = decode_profile(
+            Some(ServingCompositionStateOwnership::LlamaCpp),
+            Some(ServingCompositionPhaseExecution::LlamaCpp),
+        );
+        let ownership =
+            Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&profile).unwrap());
+        let snapshot = fixture_snapshot();
+        let port = Box::new(FixtureLlamaCppContextStatePort::with_snapshot(
+            snapshot.clone(),
+        ));
+        let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
+        // Controlled adapter supplies explicit tokens — not derived from snapshot.
+        let decode_tokens = Arc::new(ControlledLlamaCppDecodeTokenPort::single_completion(
+            "adapter-owned-token",
+            42,
+        ));
+        let execution = LlamaCppBackendPhaseExecution::with_port(&profile, port)
+            .unwrap()
+            .with_ownership(ownership)
+            .with_transfer(Arc::clone(&transfer))
+            .with_decode_tokens(decode_tokens);
+
+        let local_worker_epoch = Uuid::new_v4();
+        let decision = execution
+            .prepare(PreparePhaseExecution {
+                execution_id: Uuid::new_v4(),
+                local_worker_epoch,
+                model: "internal/model-v1".to_string(),
+                expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+                request: PhaseRequest::Completion(
+                    serde_json::from_value(serde_json::json!({ "prompt": "hi" })).unwrap(),
+                ),
+            })
+            .await
+            .unwrap();
+        let prepared = match decision {
+            PhaseDecision::Ready(PreparedPhaseExecution::Decode(prepared)) => prepared,
+            PhaseDecision::Ready(_) => panic!("expected Ready decode reservation"),
+            PhaseDecision::Recompute { .. } => panic!("expected Ready decode, got Recompute"),
+            PhaseDecision::RetryableUnavailable { .. } => {
+                panic!("expected Ready decode, got RetryableUnavailable")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected Ready decode, got TerminalFailure")
+            }
+        };
+
+        let destination = prepared.destination().clone();
+        transfer
+            .register_owned_state(&destination, snapshot)
+            .unwrap();
+        let imported = ImportedModelState::from_parts_for_test(
+            Uuid::new_v4(),
+            local_worker_epoch,
+            profile.sha256().unwrap(),
+            destination,
+            prepared.binding().clone(),
+        );
+        let output = execution
+            .execute(ExecutePhaseExecution::decode(prepared, imported).unwrap())
+            .await
+            .unwrap();
+        match output {
+            PhaseDecision::Ready(PhaseExecutionOutput::Decode(mut stream)) => {
+                use futures::StreamExt;
+                let chunk = stream.next().await.expect("one chunk").unwrap();
+                match chunk {
+                    PhaseResponseChunk::Completion(chunk) => {
+                        assert_eq!(chunk.text, "adapter-owned-token");
+                        assert_eq!(chunk.token_id, Some(42));
+                        assert!(chunk.done);
+                        assert_ne!(
+                            chunk.text.as_bytes(),
+                            &fixture_snapshot()[..],
+                            "decode adapter must not invent tokens from transfer bytes"
+                        );
+                    }
+                    PhaseResponseChunk::Chat(_) => panic!("expected completion chunk"),
+                }
+                assert!(stream.next().await.is_none());
+            }
+            PhaseDecision::Ready(_) => panic!("expected Ready decode stream"),
+            PhaseDecision::Recompute { .. } => panic!("expected Ready decode, got Recompute"),
+            PhaseDecision::RetryableUnavailable { .. } => {
+                panic!("expected Ready decode, got RetryableUnavailable")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected Ready decode, got TerminalFailure")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn decode_adapter_alone_without_restored_opaque_never_ready() {
+        let profile = decode_profile(
+            Some(ServingCompositionStateOwnership::LlamaCpp),
+            Some(ServingCompositionPhaseExecution::LlamaCpp),
+        );
+        let ownership =
+            Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&profile).unwrap());
+        let port = Box::new(FixtureLlamaCppContextStatePort::with_snapshot(
+            fixture_snapshot(),
+        ));
+        let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
+        let decode_tokens = Arc::new(ControlledLlamaCppDecodeTokenPort::single_completion(
+            "must-not-emit",
+            1,
+        ));
+        let execution = LlamaCppBackendPhaseExecution::with_port(&profile, port)
+            .unwrap()
+            .with_ownership(ownership)
+            .with_transfer(transfer)
+            .with_decode_tokens(decode_tokens);
+
+        let local_worker_epoch = Uuid::new_v4();
+        let prepared = match execution
+            .prepare(PreparePhaseExecution {
+                execution_id: Uuid::new_v4(),
+                local_worker_epoch,
+                model: "internal/model-v1".to_string(),
+                expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+                request: PhaseRequest::Completion(
+                    serde_json::from_value(serde_json::json!({ "prompt": "hi" })).unwrap(),
+                ),
+            })
+            .await
+            .unwrap()
+        {
+            PhaseDecision::Ready(PreparedPhaseExecution::Decode(prepared)) => prepared,
+            PhaseDecision::Ready(_) => panic!("expected Ready decode reservation"),
+            PhaseDecision::Recompute { .. } => panic!("expected Ready decode, got Recompute"),
+            PhaseDecision::RetryableUnavailable { .. } => {
+                panic!("expected Ready decode, got RetryableUnavailable")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected Ready decode, got TerminalFailure")
+            }
+        };
+        // No register_owned_state — decode adapter must not Ready without restore.
+        let imported = ImportedModelState::from_parts_for_test(
+            Uuid::new_v4(),
+            local_worker_epoch,
+            profile.sha256().unwrap(),
+            prepared.destination().clone(),
+            prepared.binding().clone(),
+        );
+        let err = match execution
+            .execute(ExecutePhaseExecution::decode(prepared, imported).unwrap())
+            .await
+        {
+            Ok(_) => panic!("decode adapter without restored opaque must not Ready"),
+            Err(error) => error,
+        };
         assert!(err
             .to_string()
             .contains("transfer completion alone never yields Ready decode"));
@@ -635,8 +936,8 @@ mod tests {
         // First-principles composition evidence for opaque-state / typed-outcome
         // progress: BackendOwnedPhaseExecutor + llamacpp ownership/execution +
         // buffered-host product pair. Fixture port only — live GGUF still
-        // required before ROADMAP checkboxes close. Decode stays fail-closed:
-        // completion APIs need a live session, not invented fixture tokens.
+        // required before ROADMAP checkboxes close. Without a decode-token
+        // adapter, decode stays fail-closed after restore.
         let snapshot = fixture_snapshot();
         let prefill_profile = prefill_profile();
         let decode_profile = decode_profile(
@@ -811,7 +1112,7 @@ mod tests {
         };
         assert!(
             err.to_string()
-                .contains("decode token generation is not yet owned"),
+                .contains("requires a bound LlamaCppDecodeTokenPort"),
             "{err}"
         );
         assert_eq!(
@@ -819,6 +1120,199 @@ mod tests {
             snapshot,
             "decode execute must restore opaque bytes via set_state_data before fail-closed tokens"
         );
+    }
+
+    #[tokio::test]
+    async fn backend_owned_llamacpp_buffered_host_restores_then_ready_decode_with_adapter() {
+        // Same composition as fail-closed restore evidence, plus a controlled
+        // decode-token adapter (not transfer-byte invention). Live GGUF still
+        // required before ROADMAP opaque-state / typed-outcome close.
+        let snapshot = fixture_snapshot();
+        let prefill_profile = prefill_profile();
+        let decode_profile = decode_profile(
+            Some(ServingCompositionStateOwnership::LlamaCpp),
+            Some(ServingCompositionPhaseExecution::LlamaCpp),
+        );
+
+        let prefill_transfer =
+            Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&prefill_profile).unwrap());
+        let decode_transfer =
+            Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&decode_profile).unwrap());
+
+        let prefill_ownership =
+            Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&prefill_profile).unwrap());
+        let decode_ownership =
+            Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&decode_profile).unwrap());
+
+        let prefill_port = SharedFixtureLlamaCppContextStatePort::with_snapshot(snapshot.clone());
+        let decode_port = SharedFixtureLlamaCppContextStatePort::empty();
+        let decode_tokens = Arc::new(ControlledLlamaCppDecodeTokenPort::single_completion(
+            "composed-adapter-token",
+            7,
+        ));
+
+        let prefill_execution = Arc::new(
+            LlamaCppBackendPhaseExecution::with_port(
+                &prefill_profile,
+                Box::new(prefill_port.clone()),
+            )
+            .unwrap()
+            .with_ownership(Arc::clone(&prefill_ownership))
+            .with_transfer(Arc::clone(&prefill_transfer)),
+        );
+        let decode_execution = Arc::new(
+            LlamaCppBackendPhaseExecution::with_port(
+                &decode_profile,
+                Box::new(decode_port.clone()),
+            )
+            .unwrap()
+            .with_ownership(Arc::clone(&decode_ownership))
+            .with_transfer(Arc::clone(&decode_transfer))
+            .with_decode_tokens(decode_tokens),
+        );
+
+        let prefill_executor = BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+            &prefill_profile,
+            Arc::clone(&prefill_transfer),
+            prefill_ownership,
+            prefill_execution,
+        )
+        .unwrap();
+        let decode_executor = BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(
+            &decode_profile,
+            Arc::clone(&decode_transfer),
+            decode_ownership,
+            decode_execution,
+        )
+        .unwrap();
+
+        let execution_id = Uuid::new_v4();
+        let source_epoch = Uuid::new_v4();
+        let destination_epoch = Uuid::new_v4();
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(30);
+        let completion_request = || {
+            PhaseRequest::Completion(
+                serde_json::from_value(serde_json::json!({ "prompt": "hi" })).unwrap(),
+            )
+        };
+
+        let prepared = match prefill_executor
+            .prepare(PreparePhaseExecution {
+                execution_id,
+                local_worker_epoch: source_epoch,
+                model: "internal/model-v1".to_string(),
+                expires_at,
+                request: completion_request(),
+            })
+            .await
+            .unwrap()
+        {
+            PhaseDecision::Ready(PreparedPhaseExecution::Prefill(prepared)) => prepared,
+            PhaseDecision::Ready(_) => panic!("expected Ready prefill reservation"),
+            PhaseDecision::Recompute { .. } => panic!("expected Ready prefill, got Recompute"),
+            PhaseDecision::RetryableUnavailable { .. } => {
+                panic!("expected Ready prefill, got RetryableUnavailable")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected Ready prefill, got TerminalFailure")
+            }
+        };
+        let produced = match prefill_executor
+            .execute(ExecutePhaseExecution::prefill(prepared))
+            .await
+            .unwrap()
+        {
+            PhaseDecision::Ready(PhaseExecutionOutput::Prefill(produced)) => produced,
+            PhaseDecision::Ready(_) => panic!("expected Ready prefill produce"),
+            PhaseDecision::Recompute { .. } => panic!("expected Ready produce, got Recompute"),
+            PhaseDecision::RetryableUnavailable { .. } => {
+                panic!("expected Ready produce, got RetryableUnavailable")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected Ready produce, got TerminalFailure")
+            }
+        };
+
+        let decode_prepared = match decode_executor
+            .prepare(PreparePhaseExecution {
+                execution_id,
+                local_worker_epoch: destination_epoch,
+                model: "internal/model-v1".to_string(),
+                expires_at,
+                request: completion_request(),
+            })
+            .await
+            .unwrap()
+        {
+            PhaseDecision::Ready(PreparedPhaseExecution::Decode(prepared)) => prepared,
+            PhaseDecision::Ready(_) => panic!("expected Ready decode reservation"),
+            PhaseDecision::Recompute { .. } => panic!("expected Ready decode, got Recompute"),
+            PhaseDecision::RetryableUnavailable { .. } => {
+                panic!("expected Ready decode, got RetryableUnavailable")
+            }
+            PhaseDecision::TerminalFailure { .. } => {
+                panic!("expected Ready decode, got TerminalFailure")
+            }
+        };
+
+        let target = decode_transfer
+            .prepare_destination(PrepareStateTransfer {
+                transfer_id: execution_id,
+                local_worker_epoch: destination_epoch,
+                binding: produced.binding().clone(),
+                destination: decode_prepared.destination().clone(),
+                expires_at,
+            })
+            .await
+            .unwrap();
+        let published = prefill_transfer
+            .publish_source(PublishStateTransfer {
+                local_worker_epoch: source_epoch,
+                source: produced.source().clone(),
+                target,
+            })
+            .await
+            .unwrap();
+        let _receipt = decode_transfer
+            .consume_source(ConsumeStateTransfer {
+                local_worker_epoch: destination_epoch,
+                destination: decode_prepared.destination().clone(),
+                source: published,
+            })
+            .await
+            .unwrap();
+
+        let imported = ImportedModelState::from_parts_for_test(
+            execution_id,
+            destination_epoch,
+            decode_profile.sha256().unwrap(),
+            decode_prepared.destination().clone(),
+            decode_prepared.binding().clone(),
+        );
+        let output = decode_executor
+            .execute(ExecutePhaseExecution::decode(decode_prepared, imported).unwrap())
+            .await
+            .unwrap();
+        match output {
+            PhaseDecision::Ready(PhaseExecutionOutput::Decode(mut stream)) => {
+                use futures::StreamExt;
+                let chunk = stream.next().await.expect("one chunk").unwrap();
+                match chunk {
+                    PhaseResponseChunk::Completion(chunk) => {
+                        assert_eq!(chunk.text, "composed-adapter-token");
+                        assert_eq!(chunk.token_id, Some(7));
+                    }
+                    PhaseResponseChunk::Chat(_) => panic!("expected completion chunk"),
+                }
+            }
+            _ => panic!("expected Ready decode after restore+adapter"),
+        }
+        assert_eq!(
+            decode_port.snapshot().unwrap(),
+            snapshot,
+            "Ready decode still requires set_state_data restore first"
+        );
+        assert!(!decode_profile.may_advertise_prefill_decode());
     }
 
     #[test]

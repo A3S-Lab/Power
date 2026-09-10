@@ -261,6 +261,10 @@ name = "layer_stream"
 harness = false
 required-features = ["picolm"]
 
+[[test]]
+name = "llamacpp_phase_state_live"
+required-features = ["llamacpp"]
+
 [profile.release]
 opt-level = "z"
 lto = "fat"
