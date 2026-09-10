@@ -550,11 +550,13 @@ Landed in the current working tree:
 
 Still open:
 
-- Expose exact post-template prompt representations for remaining opaque
-  multimodal paths. Until a multimodal claim kind exists, the OpenAI chat
-  receipt path fail-closes when a backend returns any `effective_prompt` for
-  image-bearing requests (image_url parts or message `images`), and honest
-  backends continue to leave the field absent.
+- Emit exact post-template multimodal prompt digests once backends expose that
+  representation. The closed `EffectivePromptClaimKind` enum now names reserved
+  `chat.multimodal-rendered-prompt`, but digests of that kind are not emitible;
+  OpenAI chat receipts and verifier well-formedness abstain / fail closed until
+  the exact representation exists. Honest backends continue to leave
+  `effective_prompt` absent for image-bearing requests, and text-only stand-in
+  digests remain rejected.
 - Native NVIDIA GPU confidential-computing NRAS SDK integration. The current
   implementation supports configured evidence/verdict bytes, live
   `nvattest-cli` collection, and direct `nras-rest` attestation, hashes the
@@ -1043,12 +1045,14 @@ Remaining gap:
 - Effective prompt digests are implemented for local deterministic text-only
   chat renderers (llama.cpp and picolm), and for proxy upstreams that implement
   the explicit chat/completion digest endpoint. mistralrs text chat is covered
-  by prompt-token-ID digest. llama.cpp, picolm, and mistralrs vision/multimodal
-  paths, plus proxy image-bearing chat/completion paths, still leave
-  `effective_prompt` absent until they can expose the exact prompt
-  representation submitted to the model. The OpenAI chat API additionally
-  fail-closes if a backend invents a text-only digest for image-bearing chat
-  instead of attaching that claim to the receipt.
+  by prompt-token-ID digest. A closed `EffectivePromptClaimKind` enum names
+  reserved `chat.multimodal-rendered-prompt`, but that kind is not emitible yet.
+  llama.cpp, picolm, and mistralrs vision/multimodal paths, plus proxy
+  image-bearing chat/completion paths, still leave `effective_prompt` absent
+  until they can expose the exact prompt representation submitted to the model.
+  The OpenAI chat API additionally fail-closes if a backend invents a text-only
+  digest for image-bearing chat or tries to bind the reserved multimodal kind
+  before it is emitible.
 
 Remaining code changes:
 
@@ -1075,6 +1079,9 @@ Tests:
 - OpenAI chat receipts reject invented text-only `effective_prompt` digests for
   image-bearing requests (`image_url` parts and message `images`) while text-only
   digests continue to appear when backends expose an exact representation.
+- Reserved `chat.multimodal-rendered-prompt` cannot be receipt-bound until it is
+  emitible; `EffectivePromptDigest::try_new`, OpenAI chat binding, and verifier
+  well-formedness abstain / fail closed rather than inventing digests.
 - Shared image-input detection covers top-level request images, per-message
   image arrays, and OpenAI `image_url` content parts.
 

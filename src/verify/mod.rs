@@ -2048,10 +2048,11 @@ pub fn verify_receipt_well_formed(receipt: &AttestationReceipt) -> Result<()> {
                 "receipt.effective_prompt.backend must not be empty".to_string(),
             ));
         }
-        if effective_prompt.kind.trim().is_empty() {
-            return Err(PowerError::AttestationVerificationFailed(
-                "receipt.effective_prompt.kind must not be empty".to_string(),
-            ));
+        if !effective_prompt.kind.digest_emitible() {
+            return Err(PowerError::AttestationVerificationFailed(format!(
+                "receipt.effective_prompt.kind '{}' is reserved; receipts must abstain until the exact representation exists",
+                effective_prompt.kind
+            )));
         }
         require_sha256_hex("receipt.effective_prompt.sha256", &effective_prompt.sha256)?;
     }
@@ -2249,6 +2250,9 @@ pub fn verify_receipt_policy(
             }
         }
         if let Some(expected_kind) = expected_effective_prompt_kind {
+            let expected_kind =
+                crate::backend::types::EffectivePromptClaimKind::parse(expected_kind)
+                    .map_err(PowerError::AttestationVerificationFailed)?;
             if effective_prompt.kind != expected_kind {
                 return Err(PowerError::AttestationVerificationFailed(format!(
                     "receipt effective prompt kind mismatch: receipt.effective_prompt.kind = {}, expected {}",
@@ -3306,6 +3310,18 @@ mod tests {
         let err = verify_receipt_well_formed(&receipt).unwrap_err();
 
         assert!(err.to_string().contains("receipt.effective_prompt.sha256"));
+    }
+
+    #[test]
+    fn test_verify_receipt_well_formed_rejects_reserved_multimodal_claim_kind() {
+        let mut receipt = make_receipt_with_effective_prompt();
+        receipt.effective_prompt.as_mut().unwrap().kind =
+            crate::backend::types::EffectivePromptClaimKind::ChatMultimodalRenderedPrompt;
+
+        let err = verify_receipt_well_formed(&receipt).unwrap_err();
+
+        assert!(err.to_string().contains("reserved"));
+        assert!(err.to_string().contains("chat.multimodal-rendered-prompt"));
     }
 
     #[test]

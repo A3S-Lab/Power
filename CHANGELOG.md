@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Closed `EffectivePromptClaimKind` enum for receipt `effective_prompt` claims:
+  emitible text kinds (`chat.rendered-prompt`, `chat.prompt-token-ids`,
+  `text.prompt`) plus reserved `chat.multimodal-rendered-prompt`. Digests of the
+  reserved multimodal kind cannot be constructed (`try_new` / receipt
+  well-formedness / OpenAI chat binding fail closed); image-bearing chat still
+  abstains with typed absence instead of inventing text-only digests. This does
+  not claim multimodal post-template renderer coverage or Phase completion.
 - Production ServingPhaseExecutor / StateTransferService capability contract:
   closed `ProductionAdapterContract::REQUIRED` documents adapter-owned memory
   registration, adapter-owned transport integrity, and confirmed-reclaim

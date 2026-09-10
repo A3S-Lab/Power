@@ -422,26 +422,117 @@ impl ChatRequest {
     }
 }
 
+/// Closed claim kinds for `effective_prompt` receipt fields.
+///
+/// Multimodal kinds are reserved so APIs and verifiers can name the future
+/// exact representation without inventing digests today. Image-bearing chat
+/// receipts must abstain (`effective_prompt` absent) until a backend can emit
+/// an emitible multimodal claim over the exact post-template representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EffectivePromptClaimKind {
+    /// Exact rendered chat-template prompt bytes (text-only).
+    #[serde(rename = "chat.rendered-prompt")]
+    ChatRenderedPrompt,
+    /// Domain-separated digest of chat prompt token IDs (text-only).
+    #[serde(rename = "chat.prompt-token-ids")]
+    ChatPromptTokenIds,
+    /// Exact text-completion prompt bytes.
+    #[serde(rename = "text.prompt")]
+    TextPrompt,
+    /// Exact post-template multimodal chat prompt representation.
+    ///
+    /// Reserved: digests of this kind are not emitible until a backend exposes
+    /// the exact bytes or token sequence submitted to the model. Receipts must
+    /// abstain rather than attach a text-only stand-in.
+    #[serde(rename = "chat.multimodal-rendered-prompt")]
+    ChatMultimodalRenderedPrompt,
+}
+
+impl EffectivePromptClaimKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatRenderedPrompt => "chat.rendered-prompt",
+            Self::ChatPromptTokenIds => "chat.prompt-token-ids",
+            Self::TextPrompt => "text.prompt",
+            Self::ChatMultimodalRenderedPrompt => "chat.multimodal-rendered-prompt",
+        }
+    }
+
+    pub fn parse(value: &str) -> std::result::Result<Self, String> {
+        match value.trim() {
+            "chat.rendered-prompt" => Ok(Self::ChatRenderedPrompt),
+            "chat.prompt-token-ids" => Ok(Self::ChatPromptTokenIds),
+            "text.prompt" => Ok(Self::TextPrompt),
+            "chat.multimodal-rendered-prompt" => Ok(Self::ChatMultimodalRenderedPrompt),
+            other => Err(format!("unknown effective prompt claim kind '{other}'")),
+        }
+    }
+
+    /// Whether a digest of this kind may appear on a receipt today.
+    pub const fn digest_emitible(self) -> bool {
+        !matches!(self, Self::ChatMultimodalRenderedPrompt)
+    }
+
+    /// Text-only chat kinds that must not bind image-bearing chat receipts.
+    pub const fn is_text_only_chat_claim(self) -> bool {
+        matches!(self, Self::ChatRenderedPrompt | Self::ChatPromptTokenIds)
+    }
+
+    /// Reserved multimodal chat claim kinds.
+    pub const fn is_multimodal_chat_claim(self) -> bool {
+        matches!(self, Self::ChatMultimodalRenderedPrompt)
+    }
+}
+
+impl std::fmt::Display for EffectivePromptClaimKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Digest of the exact prompt representation a backend submits to the model.
 ///
 /// This is optional because not every backend exposes or owns prompt rendering.
 /// Backends should only emit this when they can compute the same prompt bytes
-/// or token IDs that are used for inference.
+/// or token IDs that are used for inference. Multimodal claim kinds exist as
+/// typed names but are not emitible until that exact representation exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectivePromptDigest {
     /// Backend that produced the prompt representation, e.g. `llama.cpp`.
     pub backend: String,
     /// Semantic kind of the digested prompt representation.
-    pub kind: String,
+    pub kind: EffectivePromptClaimKind,
     /// SHA-256 of the effective prompt representation as lowercase hex.
     pub sha256: String,
 }
 
 impl EffectivePromptDigest {
+    /// Build a digest only for emitible claim kinds.
+    ///
+    /// Reserved multimodal kinds fail closed so callers abstain instead of
+    /// inventing digests before the exact representation exists.
+    pub fn try_new(
+        backend: impl Into<String>,
+        kind: EffectivePromptClaimKind,
+        sha256: impl Into<String>,
+    ) -> std::result::Result<Self, String> {
+        if !kind.digest_emitible() {
+            return Err(format!(
+                "effective prompt claim kind '{}' is reserved; receipts must abstain until the exact representation exists",
+                kind.as_str()
+            ));
+        }
+        Ok(Self {
+            backend: backend.into(),
+            kind,
+            sha256: sha256.into(),
+        })
+    }
+
     pub fn chat_rendered_prompt(backend: impl Into<String>, prompt: &str) -> Self {
         Self {
             backend: backend.into(),
-            kind: "chat.rendered-prompt".to_string(),
+            kind: EffectivePromptClaimKind::ChatRenderedPrompt,
             sha256: hex::encode(Sha256::digest(prompt.as_bytes())),
         }
     }
@@ -449,7 +540,7 @@ impl EffectivePromptDigest {
     pub fn text_prompt(backend: impl Into<String>, prompt: &str) -> Self {
         Self {
             backend: backend.into(),
-            kind: "text.prompt".to_string(),
+            kind: EffectivePromptClaimKind::TextPrompt,
             sha256: hex::encode(Sha256::digest(prompt.as_bytes())),
         }
     }
@@ -462,7 +553,7 @@ impl EffectivePromptDigest {
         }
         Self {
             backend: backend.into(),
-            kind: "chat.prompt-token-ids".to_string(),
+            kind: EffectivePromptClaimKind::ChatPromptTokenIds,
             sha256: hex::encode(hasher.finalize()),
         }
     }
@@ -694,7 +785,7 @@ mod tests {
     fn test_effective_prompt_token_ids_digest_is_domain_separated() {
         let rendered = EffectivePromptDigest::chat_rendered_prompt("test", "\x01\0\0\0");
         let tokens = EffectivePromptDigest::chat_prompt_token_ids("test", &[1]);
-        assert_eq!(tokens.kind, "chat.prompt-token-ids");
+        assert_eq!(tokens.kind, EffectivePromptClaimKind::ChatPromptTokenIds);
         assert_eq!(tokens.sha256.len(), 64);
         assert_ne!(tokens.sha256, rendered.sha256);
     }
@@ -711,11 +802,48 @@ mod tests {
         let digest = EffectivePromptDigest::text_prompt("test", "hello");
 
         assert_eq!(digest.backend, "test");
-        assert_eq!(digest.kind, "text.prompt");
+        assert_eq!(digest.kind, EffectivePromptClaimKind::TextPrompt);
         assert_eq!(
             digest.sha256,
             hex::encode(Sha256::digest("hello".as_bytes()))
         );
+    }
+
+    #[test]
+    fn test_multimodal_claim_kind_is_reserved_not_emitible() {
+        assert!(!EffectivePromptClaimKind::ChatMultimodalRenderedPrompt.digest_emitible());
+        assert!(EffectivePromptClaimKind::ChatMultimodalRenderedPrompt.is_multimodal_chat_claim());
+        assert!(EffectivePromptClaimKind::ChatRenderedPrompt.is_text_only_chat_claim());
+
+        let err = EffectivePromptDigest::try_new(
+            "test",
+            EffectivePromptClaimKind::ChatMultimodalRenderedPrompt,
+            "aa".repeat(32),
+        )
+        .unwrap_err();
+        assert!(err.contains("reserved"));
+        assert!(err.contains("abstain"));
+    }
+
+    #[test]
+    fn test_effective_prompt_claim_kind_round_trips_wire_names() {
+        for kind in [
+            EffectivePromptClaimKind::ChatRenderedPrompt,
+            EffectivePromptClaimKind::ChatPromptTokenIds,
+            EffectivePromptClaimKind::TextPrompt,
+            EffectivePromptClaimKind::ChatMultimodalRenderedPrompt,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+            let parsed: EffectivePromptClaimKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, kind);
+            assert_eq!(
+                EffectivePromptClaimKind::parse(kind.as_str()).unwrap(),
+                kind
+            );
+        }
+
+        assert!(EffectivePromptClaimKind::parse("chat.invented").is_err());
     }
 
     #[test]

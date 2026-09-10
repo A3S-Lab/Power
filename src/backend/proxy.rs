@@ -229,8 +229,8 @@ impl Backend for ProxyBackend {
             &url,
             &body,
             self.config.proxy_effective_prompt_digest_required,
-            &["chat.rendered-prompt"],
-            "chat.rendered-prompt",
+            &[crate::backend::types::EffectivePromptClaimKind::ChatRenderedPrompt],
+            crate::backend::types::EffectivePromptClaimKind::ChatRenderedPrompt,
         )
         .await
     }
@@ -341,8 +341,8 @@ impl Backend for ProxyBackend {
             &url,
             &body,
             self.config.proxy_effective_prompt_digest_required,
-            &["text.prompt"],
-            "text.prompt",
+            &[crate::backend::types::EffectivePromptClaimKind::TextPrompt],
+            crate::backend::types::EffectivePromptClaimKind::TextPrompt,
         )
         .await
     }
@@ -818,8 +818,8 @@ async fn request_effective_prompt_digest(
     url: &str,
     body: &serde_json::Value,
     required: bool,
-    allowed_kinds: &[&str],
-    default_kind: &str,
+    allowed_kinds: &[crate::backend::types::EffectivePromptClaimKind],
+    default_kind: crate::backend::types::EffectivePromptClaimKind,
 ) -> Result<Option<EffectivePromptDigest>> {
     let resp = http.post(url).json(body).send().await.map_err(|e| {
         PowerError::InferenceFailed(format!(
@@ -1039,8 +1039,8 @@ fn configured_proxy_path_segments(path: &str) -> Result<Vec<&str>> {
 
 fn parse_effective_prompt_digest_response(
     json: &serde_json::Value,
-    allowed_kinds: &[&str],
-    default_kind: &str,
+    allowed_kinds: &[crate::backend::types::EffectivePromptClaimKind],
+    default_kind: crate::backend::types::EffectivePromptClaimKind,
 ) -> Result<EffectivePromptDigest> {
     let claim = json.get("effective_prompt").unwrap_or(json);
     let sha256 = claim
@@ -1058,16 +1058,32 @@ fn parse_effective_prompt_digest_response(
         ));
     }
 
-    let kind = claim
+    let kind = match claim
         .get("kind")
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(default_kind);
+    {
+        Some(raw) => {
+            crate::backend::types::EffectivePromptClaimKind::parse(raw).map_err(|err| {
+                PowerError::InferenceFailed(format!("proxy effective prompt digest {err}"))
+            })?
+        }
+        None => default_kind,
+    };
     if !allowed_kinds.contains(&kind) {
         return Err(PowerError::InferenceFailed(format!(
             "proxy effective prompt digest kind must be one of {}, got {kind}",
-            allowed_kinds.join(", ")
+            allowed_kinds
+                .iter()
+                .map(|kind| kind.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    if !kind.digest_emitible() {
+        return Err(PowerError::InferenceFailed(format!(
+            "proxy effective prompt digest kind '{kind}' is reserved; leave effective_prompt absent until the exact representation exists"
         )));
     }
 
@@ -1078,11 +1094,8 @@ fn parse_effective_prompt_digest_response(
         .filter(|s| !s.is_empty())
         .unwrap_or("proxy-upstream");
 
-    Ok(EffectivePromptDigest {
-        backend: backend.to_string(),
-        kind: kind.to_string(),
-        sha256: sha256.to_ascii_lowercase(),
-    })
+    EffectivePromptDigest::try_new(backend, kind, sha256.to_ascii_lowercase())
+        .map_err(PowerError::InferenceFailed)
 }
 
 /// POST a streaming request body and return the response, erroring on non-2xx.
@@ -1928,7 +1941,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(digest.backend, "vllm");
-        assert_eq!(digest.kind, "chat.rendered-prompt");
+        assert_eq!(
+            digest.kind,
+            crate::backend::types::EffectivePromptClaimKind::ChatRenderedPrompt
+        );
         assert_eq!(
             digest.sha256,
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -1975,7 +1991,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(digest.backend, "vllm");
-        assert_eq!(digest.kind, "text.prompt");
+        assert_eq!(
+            digest.kind,
+            crate::backend::types::EffectivePromptClaimKind::TextPrompt
+        );
         assert_eq!(
             digest.sha256,
             "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"

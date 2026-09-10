@@ -93,11 +93,14 @@ exposes verifier policy checks for those device claims, and supports
 deployment-specific GPU/NVSwitch topology, NVIDIA claims-version, UEID,
 OEM ID, hwmodel, driver, firmware, secure-boot, debug-state, and NVSwitch
 identity/version pinning, with RIM schema validation enforced for accepted
-device claims. A native NRAS SDK client and remaining opaque multimodal renderer
-prompt digests still remain to be implemented. Until those
-paths are complete, Phase 6 should be read as local TEE runtime hardening plus
-substantial attestation remediation, not as a complete production attestation
-soundness claim.
+device claims. A native NRAS SDK client remains open. Multimodal prompt claims
+now have a closed `EffectivePromptClaimKind` (reserved
+`chat.multimodal-rendered-prompt`) with fail-closed receipt binding that
+abstains until backends expose the exact representation; inventing text-only
+stand-in digests for image-bearing chat remains rejected. Until native NRAS and
+emitible multimodal digests land, Phase 6 should be read as local TEE runtime
+hardening plus substantial attestation remediation, not as a complete production
+attestation soundness claim.
 
 ### First Principles Question: What Should We Build Next?
 

@@ -15,24 +15,39 @@ use crate::backend::types::EffectivePromptDigest;
 use crate::model::manifest::ModelFormat;
 use crate::server::state::AppState;
 
-/// Opaque multimodal chat has no exact post-template claim type yet.
+/// Bind chat `effective_prompt` with the closed claim-kind enum.
 ///
-/// Image-bearing requests must leave `effective_prompt` absent. Never attach a
+/// Text-only requests may carry emitible digests. Image-bearing requests must
+/// abstain until an emitible multimodal claim kind exists; never attach a
 /// text-only digest invented from rendered prompt bytes or prompt token IDs.
 pub(super) fn chat_effective_prompt_for_receipt(
     request: &ChatCompletionRequest,
     effective_prompt: Option<EffectivePromptDigest>,
 ) -> Result<Option<EffectivePromptDigest>, String> {
+    if let Some(digest) = effective_prompt.as_ref() {
+        if !digest.kind.digest_emitible() {
+            return Err(format!(
+                "effective prompt claim kind '{}' is reserved; receipts must abstain until the exact multimodal representation is exposed",
+                digest.kind
+            ));
+        }
+    }
+
     if !request.has_image_inputs() {
         return Ok(effective_prompt);
     }
-    if let Some(digest) = effective_prompt {
-        return Err(format!(
+
+    match effective_prompt {
+        None => Ok(None),
+        Some(digest) if digest.kind.is_multimodal_chat_claim() => {
+            // Reachable only after a multimodal kind becomes emitible.
+            Ok(Some(digest))
+        }
+        Some(digest) => Err(format!(
             "image-bearing chat requests must leave effective_prompt absent unless the exact multimodal prompt representation is exposed; refusing claim kind '{}'",
             digest.kind
-        ));
+        )),
     }
-    Ok(None)
 }
 
 /// Build the OpenAI-compatible API routes.
@@ -320,6 +335,24 @@ mod tests {
         assert!(err.contains("effective_prompt"));
         assert!(err.contains("chat.prompt-token-ids"));
         assert!(!err.contains("aGVsbG8="));
+    }
+
+    #[test]
+    fn test_chat_effective_prompt_for_receipt_rejects_reserved_multimodal_kind() {
+        let request: ChatCompletionRequest =
+            serde_json::from_str(r#"{"model":"test","messages":[{"role":"user","content":"hi"}]}"#)
+                .unwrap();
+        let digest = EffectivePromptDigest {
+            backend: "mock".to_string(),
+            kind: crate::backend::types::EffectivePromptClaimKind::ChatMultimodalRenderedPrompt,
+            sha256: "aa".repeat(32),
+        };
+
+        let err = chat_effective_prompt_for_receipt(&request, Some(digest)).unwrap_err();
+
+        assert!(err.contains("reserved"));
+        assert!(err.contains("chat.multimodal-rendered-prompt"));
+        assert!(err.contains("abstain"));
     }
 
     #[test]
