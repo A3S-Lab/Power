@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `useless_format`, `field_reassign_with_default`) so open release and hosting
   PRs are not blocked by toolchain drift on `main`.
 
+### Changed
+
+- Release-capture scripts now default-fail unless `HEAD` is the v1.0.0 freeze
+  parent `514031dc74edd72da7c3bfee40144a38d2d91434` (override only when
+  intentionally recutting a new evidence parent).
+
 ## [1.0.0] - 2026-09-10
 
 ### Fixed

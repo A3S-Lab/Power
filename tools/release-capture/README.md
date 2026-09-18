@@ -14,6 +14,12 @@ Frozen source parent for the 2026-09-10 Windows CPU/CUDA pair:
 
 `514031dc74edd72da7c3bfee40144a38d2d91434`
 
+Capture scripts default to that parent and fail closed on any other `HEAD`.
+Override only when intentionally recutting evidence:
+
+- macOS: `A3S_POWER_RELEASE_SOURCE_PARENT=<40-hex>`
+- Windows: `-ExpectedSourceParent <40-hex>` or `-AllowAnySourceParent`
+
 Checked-in partial evidence:
 [`docs/benchmarks/release-contract-windows-20260910/`](../../docs/benchmarks/release-contract-windows-20260910/).
 
