@@ -27,6 +27,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+. (Join-Path $PSScriptRoot "ensure-nvcc-ccbin.ps1")
+
 if (git status --porcelain) {
     throw "capture requires a clean git worktree"
 }
@@ -87,6 +89,8 @@ cargo run --locked --release --no-default-features `
 if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
     throw "CUDA capture requires cl.exe on PATH (open an x64 VS developer shell)"
 }
+
+Ensure-A3SPowerNvccCcbIn
 
 Write-Host "Capturing CUDA against $PowerCommit ..."
 cargo run --locked --release --no-default-features `

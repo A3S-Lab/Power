@@ -8,6 +8,7 @@ for Metal hardware, SEV-SNP/NRAS promotion, or a signed annotated tag.
 | [`capture-windows-cpu-cuda.ps1`](capture-windows-cpu-cuda.ps1) | Windows + CUDA + VS x64 | `cpu.json`, `cuda.json` |
 | [`capture-macos-metal.sh`](capture-macos-metal.sh) | Apple Silicon macOS | `metal.json` + host inventory |
 | [`capture-confidential-source.ps1`](capture-confidential-source.ps1) | Windows CUDA (dev) | local CUDA source + declaration (**not** confidential-gpu) |
+| [`ensure-nvcc-ccbin.ps1`](ensure-nvcc-ccbin.ps1) | Windows VS Build Tools | sets `NVCC_CCBIN` via space-free `C:\vsbt` junction |
 | [`assemble-evidence-child.sh`](assemble-evidence-child.sh) | Review host at frozen `S` | `release/v*/release-evidence.{json,sha256}` |
 
 Frozen source parent for the 2026-09-10 Windows CPU/CUDA pair:
@@ -19,6 +20,17 @@ other `HEAD`. Override only when intentionally recutting evidence:
 
 - macOS / assemble: `A3S_POWER_RELEASE_SOURCE_PARENT=<40-hex>`
 - Windows: `-ExpectedSourceParent <40-hex>` or `-AllowAnySourceParent`
+
+### Freeze-parent checkout note
+
+Helper scripts and the checked-in policy/captures under
+`docs/benchmarks/release-contract-windows-20260910/` landed **after** the freeze
+parent. On a clean detached checkout of `514031dc…`, prefer the cargo CLI in
+[`docs/external-release-capture.md`](../../docs/external-release-capture.md).
+Export the policy blob from `main` into the capture output directory (do not
+dirty the freeze-parent tree). For `embedded-cuda` on VS Build Tools, set
+`NVCC_CCBIN` (or run `ensure-nvcc-ccbin.ps1`) and **do not** nest an outer
+`VsDevCmd` before `cargo` — nested `vcvars` fails with a too-long environment.
 
 Checked-in partial evidence:
 [`docs/benchmarks/release-contract-windows-20260910/`](../../docs/benchmarks/release-contract-windows-20260910/).
