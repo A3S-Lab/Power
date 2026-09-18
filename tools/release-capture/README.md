@@ -21,16 +21,29 @@ other `HEAD`. Override only when intentionally recutting evidence:
 - macOS / assemble: `A3S_POWER_RELEASE_SOURCE_PARENT=<40-hex>`
 - Windows: `-ExpectedSourceParent <40-hex>` or `-AllowAnySourceParent`
 
-### Freeze-parent checkout note
+### Freeze-parent checkout
 
-Helper scripts and the checked-in policy/captures under
-`docs/benchmarks/release-contract-windows-20260910/` landed **after** the freeze
-parent. On a clean detached checkout of `514031dc…`, prefer the cargo CLI in
-[`docs/external-release-capture.md`](../../docs/external-release-capture.md).
-Export the policy blob from `main` into the capture output directory (do not
-dirty the freeze-parent tree). For `embedded-cuda` on VS Build Tools, set
-`NVCC_CCBIN` (or run `ensure-nvcc-ccbin.ps1`) and **do not** nest an outer
-`VsDevCmd` before `cargo` — nested `vcvars` fails with a too-long environment.
+Helper scripts and
+`docs/benchmarks/release-contract-windows-20260910/local-execution-policy.json`
+landed **after** the freeze parent. A clean checkout of `514031dc…` therefore
+does not contain them. Do not copy the scripts into that tree.
+
+Use a second worktree. Build and capture only in the freeze-parent worktree;
+invoke the scripts by path from `main`:
+
+```bash
+git worktree add ../power-freeze 514031dc74edd72da7c3bfee40144a38d2d91434
+git show main:docs/benchmarks/release-contract-windows-20260910/local-execution-policy.json \
+  > /outside/local-execution-policy.json
+cd ../power-freeze
+POLICY_PATH=/outside/local-execution-policy.json \
+  bash /path/to/main/tools/release-capture/capture-macos-metal.sh /path/to/output
+```
+
+Windows is the same shape: `cd` the freeze-parent worktree, pass
+`-PolicyPath` to the exported blob, and run the `.ps1` from the `main`
+checkout. For `embedded-cuda` on VS Build Tools, `ensure-nvcc-ccbin.ps1` sets
+`NVCC_CCBIN` via `C:\vsbt`. Do not nest an outer `VsDevCmd` before `cargo`.
 
 Checked-in partial evidence:
 [`docs/benchmarks/release-contract-windows-20260910/`](../../docs/benchmarks/release-contract-windows-20260910/).

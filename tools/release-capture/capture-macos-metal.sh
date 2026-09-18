@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Capture an exact-parent Metal release fixture on real Apple Silicon.
 #
-# Usage (clean detached checkout of the frozen source parent):
-#   bash tools/release-capture/capture-macos-metal.sh /path/to/output-root
+# Usage (cwd = clean detached freeze-parent worktree; script may live on main):
+#   git worktree add ../power-freeze 514031dc74edd72da7c3bfee40144a38d2d91434
+#   git show main:docs/benchmarks/release-contract-windows-20260910/local-execution-policy.json \
+#     > /outside/local-execution-policy.json
+#   cd ../power-freeze
+#   POLICY_PATH=/outside/local-execution-policy.json \
+#     bash /path/to/main/tools/release-capture/capture-macos-metal.sh /path/to/output-root
 #
 # Rejects dirty trees and refuses to run when HEAD is not a 40-char SHA.
 # By default HEAD must equal the v1.0.0 freeze parent
@@ -43,6 +48,9 @@ test "$power_commit" = "$expected_parent" || {
 
 test -f "$policy_path" || {
   echo "missing policy file: $policy_path" >&2
+  echo "The freeze parent does not contain this file. Export it outside the worktree:" >&2
+  echo "  git show main:docs/benchmarks/release-contract-windows-20260910/local-execution-policy.json > /outside/local-execution-policy.json" >&2
+  echo "  POLICY_PATH=/outside/local-execution-policy.json bash <script-from-main> <output-root>" >&2
   exit 1
 }
 policy_hash="$(shasum -a 256 "$policy_path" | awk '{print $1}')"
