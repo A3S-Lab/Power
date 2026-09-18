@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Force LF for `*.sh` via `.gitattributes` so Windows `core.autocrlf` checkouts
+  cannot break Phase R bash capture/assemble scripts with CR line endings.
 - Satisfy Rust 1.98 `cargo fmt --check` and Clippy `-D warnings` for the
   tee-minimal and release-promotion profiles (`manual_contains`, `manual_clamp`,
   `useless_format`, `field_reassign_with_default`) so open release and hosting
@@ -20,15 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated `PLAN.md` issue/PR triage after landing #58/#59/#60 and closing #57;
+  open queue is Metal (#55) and SEV-SNP (#56) hardware evidence only.
 - Default `worker_observation_ttl_seconds` is now 120 (still capped at 300) so
   Cloud/Gateway managed-snapshot apply plus a real dataplane request can finish
   inside the observation freshness bound.
 - Documented the post-software-exit development plan (Phase R evidence publish,
   then Phase A Box hosting) and rejected overfitting / out-of-order work in
   `PLAN.md`.
-
-### Changed
-
 - Release-capture and assemble scripts now default-fail unless `HEAD` is the
   v1.0.0 freeze parent `514031dc74edd72da7c3bfee40144a38d2d91434` (override
   only when intentionally recutting a new evidence parent).
