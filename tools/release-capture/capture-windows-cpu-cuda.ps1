@@ -1,8 +1,13 @@
 # Capture exact-parent Windows CPU + CUDA release fixtures for a frozen Power tip.
 #
-# Usage (from a clean Power checkout of the intended source parent):
-#   powershell -File tools/release-capture/capture-windows-cpu-cuda.ps1 `
-#     -OutputRoot D:\captures\a3s-power-<shortsha>
+# Usage (cwd = clean freeze-parent worktree; this script lives on main):
+#   git worktree add ..\power-freeze 514031dc74edd72da7c3bfee40144a38d2d91434
+#   git show main:docs/benchmarks/release-contract-windows-20260910/local-execution-policy.json `
+#     > D:\captures\local-execution-policy.json
+#   Set-Location ..\power-freeze
+#   powershell -File ..\power\tools\release-capture\capture-windows-cpu-cuda.ps1 `
+#     -OutputRoot D:\captures\a3s-power-514031dc `
+#     -PolicyPath D:\captures\local-execution-policy.json
 #
 # Requires: clean git tree, rustc, CUDA toolkit, and an x64 VS developer
 # environment for the CUDA step (cl.exe on PATH). Does not claim Metal or

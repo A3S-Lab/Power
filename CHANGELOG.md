@@ -10,8 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Windows CUDA capture helpers now set `NVCC_CCBIN` through a space-free
-  `C:\vsbt` junction (`ensure-nvcc-ccbin.ps1`) so VS 2022 Build Tools can
-  host-compile without a nested `VsDevCmd` / too-long `vcvars` environment.
+  `C:\vsbt` junction (`ensure-nvcc-ccbin.ps1`) and put that host-compiler
+  directory on `PATH`, so VS 2022 Build Tools can host-compile without a
+  nested `VsDevCmd` / too-long `vcvars` environment.
 - Force LF for `*.sh` via `.gitattributes` so Windows `core.autocrlf` checkouts
   cannot break Phase R bash capture/assemble scripts with CR line endings.
 - Satisfy Rust 1.98 `cargo fmt --check` and Clippy `-D warnings` for the
