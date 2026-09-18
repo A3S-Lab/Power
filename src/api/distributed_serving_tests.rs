@@ -767,10 +767,7 @@ async fn corrupt_source_ticket_over_http_fails_closed_as_invalid_request() {
     assert_eq!(error.code, DistributedProtocolErrorCode::InvalidRequest);
     wait_for_count(&calls.phase_aborts, 1).await;
     assert!(
-        !calls
-            .values()
-            .iter()
-            .any(|value| *value == "transfer.consume"),
+        !calls.values().contains(&"transfer.consume"),
         "HTTP corrupt ticket must fail before consume"
     );
 }
@@ -845,7 +842,7 @@ async fn corrupt_consume_receipt_over_http_fails_closed_without_ndjson() {
     assert_eq!(error.code, DistributedProtocolErrorCode::InvalidRequest);
     wait_for_count(&calls.phase_aborts, 1).await;
     assert!(
-        !calls.values().iter().any(|value| *value == "phase.execute"),
+        !calls.values().contains(&"phase.execute"),
         "corrupt receipt must never reach phase execute"
     );
 }

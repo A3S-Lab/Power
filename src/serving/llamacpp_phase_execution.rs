@@ -1417,7 +1417,8 @@ mod tests {
             Some(ServingCompositionPhaseExecution::LlamaCpp),
         );
         let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
-        let ownership = Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&profile).unwrap());
+        let ownership =
+            Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&profile).unwrap());
         let decode_tokens = Arc::new(ControlledLlamaCppDecodeTokenPort::single_completion(
             "advertise-token",
             3,

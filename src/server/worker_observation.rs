@@ -748,16 +748,16 @@ mod tests {
         assert!(state_hollow.worker_observation().ready_phases.is_empty());
 
         let transfer = Arc::new(BufferedHostLoopbackStateTransfer::for_profile(&profile).unwrap());
-        let ownership = Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&profile).unwrap());
+        let ownership =
+            Arc::new(LlamaCppBackendPhaseStateOwnership::for_profile(&profile).unwrap());
         let execution = Arc::new(
             LlamaCppBackendPhaseExecution::for_profile(&profile)
                 .unwrap()
                 .with_ownership(Arc::clone(&ownership))
                 .with_transfer(Arc::clone(&transfer))
-                .with_decode_tokens(Arc::new(ControlledLlamaCppDecodeTokenPort::single_completion(
-                    "observe-token",
-                    9,
-                ))),
+                .with_decode_tokens(Arc::new(
+                    ControlledLlamaCppDecodeTokenPort::single_completion("observe-token", 9),
+                )),
         );
         let executor = Arc::new(
             BackendOwnedPhaseExecutor::pair_with_ownership_and_execution(

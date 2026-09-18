@@ -270,9 +270,11 @@ impl ImportedModelState {
         now: DateTime<Utc>,
         profile: &ServingExecutionProfile,
     ) -> Result<Self> {
-        Ok(Self::consume_with_receipt_at(service, command, now, profile)
-            .await?
-            .0)
+        Ok(
+            Self::consume_with_receipt_at(service, command, now, profile)
+                .await?
+                .0,
+        )
     }
 
     /// Same as [`Self::consume_at`], but also returns the validated
@@ -332,8 +334,14 @@ impl ImportedModelState {
                 };
             }
         };
-        let imported =
-            Self::verify_receipt_at(&command, receipt.clone(), now, Utc::now(), profile, &capabilities)?;
+        let imported = Self::verify_receipt_at(
+            &command,
+            receipt.clone(),
+            now,
+            Utc::now(),
+            profile,
+            &capabilities,
+        )?;
         Ok((imported, receipt))
     }
 

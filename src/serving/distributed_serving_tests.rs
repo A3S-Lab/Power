@@ -381,14 +381,11 @@ async fn corrupt_source_ticket_bytes_fail_closed_without_opening_a_decode_stream
     assert!(matches!(error, PowerError::InvalidRequest(_)));
     wait_for_count(&calls.phase_aborts, 1).await;
     assert!(
-        !calls
-            .values()
-            .iter()
-            .any(|value| *value == "transfer.consume"),
+        !calls.values().contains(&"transfer.consume"),
         "corrupt ticket must fail before consume"
     );
     assert!(
-        !calls.values().iter().any(|value| *value == "phase.execute"),
+        !calls.values().contains(&"phase.execute"),
         "corrupt ticket must never reach phase execute"
     );
     assert!(runtime.execution_admissible());
@@ -426,14 +423,11 @@ async fn corrupt_consume_receipt_bytes_fail_closed_with_compensating_cleanup() {
             "{mode:?}: expected InvalidRequest, got {error:?}"
         );
         assert!(
-            calls
-                .values()
-                .iter()
-                .any(|value| *value == "transfer.consume"),
+            calls.values().contains(&"transfer.consume"),
             "{mode:?}: consume must run before integrity rejection"
         );
         assert!(
-            !calls.values().iter().any(|value| *value == "phase.execute"),
+            !calls.values().contains(&"phase.execute"),
             "{mode:?}: corrupt receipt must never reach phase execute"
         );
         wait_for_count(&calls.phase_aborts, 1).await;
@@ -579,7 +573,7 @@ async fn caller_abort_during_transfer_consume_never_opens_a_decode_stream() {
         "mid-consume abort must not return Ready/NDJSON success"
     );
     assert!(
-        !calls.values().iter().any(|value| *value == "phase.execute"),
+        !calls.values().contains(&"phase.execute"),
         "cancelled consume must never reach phase execute"
     );
     wait_for_count(&calls.phase_aborts, 1).await;
@@ -618,7 +612,7 @@ async fn deadline_abort_during_transfer_consume_never_opens_a_decode_stream() {
         matches!(outcome, Err(PowerError::BackendNotAvailable(_))),
         "deadline mid-consume must not return Ready/NDJSON success"
     );
-    assert!(!calls.values().iter().any(|value| *value == "phase.execute"));
+    assert!(!calls.values().contains(&"phase.execute"));
     wait_for_count(&calls.phase_aborts, 1).await;
     wait_for_count(&calls.transfer_aborts, 1).await;
     assert!(runtime.execution_admissible());

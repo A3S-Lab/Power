@@ -510,7 +510,7 @@ pub(crate) async fn assert_lease_capacity_reclaimed(
     timeout_ms: u64,
 ) {
     let probe = Uuid::new_v4();
-    let lifetime = timeout_ms.min(80).max(20);
+    let lifetime = timeout_ms.clamp(20, 80);
     runtime
         .prepare_decode(DecodePhaseRequest {
             execution_id: probe,

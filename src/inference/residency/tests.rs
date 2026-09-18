@@ -49,8 +49,10 @@ fn residency_policy_digest_is_stable_for_identical_policy() {
     assert_eq!(first, second);
     assert_eq!(first.len(), 64);
 
-    let mut changed = ResidencyPolicy::default();
-    changed.host_cache_bytes = 64;
+    let changed = ResidencyPolicy {
+        host_cache_bytes: 64,
+        ..ResidencyPolicy::default()
+    };
     assert_ne!(first, changed.sha256().unwrap());
 }
 

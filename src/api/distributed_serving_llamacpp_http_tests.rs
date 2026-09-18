@@ -118,8 +118,8 @@ fn product_pair_app(
     expected_state_bytes: Option<u64>,
 ) -> ProductPairApp {
     let profile = llamacpp_profile(role);
-    let expects_advertise = matches!(role, DisaggregatedServingRole::Prefill)
-        || decode_tokens.is_some();
+    let expects_advertise =
+        matches!(role, DisaggregatedServingRole::Prefill) || decode_tokens.is_some();
     assert!(
         profile.may_advertise_prefill_decode(),
         "buffered-host + BackendOwned + llamacpp ownership/execution may advertise at profile"

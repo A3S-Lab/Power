@@ -350,9 +350,8 @@ fn wire_ticket_opaque_metadata_fail_closed_property() {
         "decode-adapter-ticket".to_string(),
         "prefill-adapter-ticket".to_string(),
         "buffered-host-loopback-target:00000000-0000-0000-0000-000000000001".to_string(),
-        format!(
-            "{{\"schema\":\"a3s.power.buffered-host-loopback-source.v1\",\"address\":\"127.0.0.1:9\"}}"
-        ),
+        "{\"schema\":\"a3s.power.buffered-host-loopback-source.v1\",\"address\":\"127.0.0.1:9\"}"
+            .to_string(),
         "a".repeat(MAX_TICKET_BYTES),
         "near-miss-A3SPST-without-final-1".to_string(),
         "near-miss-QTNTUFNUMQ-truncated".to_string(),
