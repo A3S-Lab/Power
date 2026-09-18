@@ -23,7 +23,13 @@ differ. A release capture proves internal consistency and detects mutation; it
 does not prove who ran the command. The final bundle digest must be authenticated
 by a caller-owned signing or attestation trust root.
 
-Use a clean, detached checkout for every hardware run:
+Use a clean, detached checkout of the frozen source parent for every hardware
+run. That parent (`514031dc74edd72da7c3bfee40144a38d2d91434` for v1.0.0) does
+not contain `tools/release-capture/` or the checked-in local execution policy.
+Keep those on a second `main` checkout, export the policy outside the
+freeze-parent tree, and invoke the helper by absolute path so the capture
+worktree stays clean. See
+[`tools/release-capture/README.md`](../tools/release-capture/README.md).
 
 ```bash
 set -euo pipefail

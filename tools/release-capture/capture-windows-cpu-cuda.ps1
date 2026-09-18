@@ -60,8 +60,14 @@ if (-not $AllowAnySourceParent) {
     }
 }
 
-if (-not (Test-Path $PolicyPath)) {
-    throw "missing policy file: $PolicyPath"
+if (-not (Test-Path -LiteralPath $PolicyPath)) {
+    throw @"
+missing policy file: $PolicyPath
+The freeze parent does not contain this file. Export it outside the worktree:
+  git show main:docs/benchmarks/release-contract-windows-20260910/local-execution-policy.json > D:\captures\local-execution-policy.json
+Then re-run with -PolicyPath D:\captures\local-execution-policy.json from a clean detached freeze-parent worktree.
+The script itself may live on a main checkout; do not copy it into the freeze-parent tree.
+"@
 }
 $policyHash = (Get-FileHash $PolicyPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
