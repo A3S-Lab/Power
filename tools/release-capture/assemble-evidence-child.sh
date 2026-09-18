@@ -10,6 +10,11 @@
 #     --metal /path/metal.json \
 #     --confidential-gpu /path/confidential-gpu.json
 #
+# By default HEAD must equal the v1.0.0 freeze parent
+# (514031dc74edd72da7c3bfee40144a38d2d91434). Override only when intentionally
+# recutting a new evidence parent:
+#   A3S_POWER_RELEASE_SOURCE_PARENT=<40-hex> bash ...
+#
 # After success: review, git add the two release files, commit the evidence
 # child, push main, then create the annotated tag pointing at that child.
 
@@ -19,6 +24,7 @@ cpu=""
 cuda=""
 metal=""
 confidential=""
+expected_parent="${A3S_POWER_RELEASE_SOURCE_PARENT:-514031dc74edd72da7c3bfee40144a38d2d91434}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,6 +51,23 @@ test -z "$(git status --porcelain)" || {
 
 power_commit="$(git rev-parse HEAD)"
 test "${#power_commit}" -eq 40
+case "$power_commit" in
+  *[!0-9a-f]*)
+    echo "HEAD must be a lowercase 40-hex SHA (got ${power_commit})" >&2
+    exit 1
+    ;;
+esac
+
+test "${#expected_parent}" -eq 40 || {
+  echo "A3S_POWER_RELEASE_SOURCE_PARENT must be a 40-hex SHA" >&2
+  exit 1
+}
+test "$power_commit" = "$expected_parent" || {
+  echo "HEAD ${power_commit} is not release source parent ${expected_parent}" >&2
+  echo "Detach to that commit before assembly, or set A3S_POWER_RELEASE_SOURCE_PARENT only when recutting." >&2
+  exit 1
+}
+
 power_version="$(cargo metadata --locked --no-deps --format-version 1 \
   | python3 -c 'import json,sys; pkgs=json.load(sys.stdin)["packages"];
 print(next(p["version"] for p in pkgs if p["name"]=="a3s-power"))')"

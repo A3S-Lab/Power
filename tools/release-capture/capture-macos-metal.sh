@@ -5,12 +5,17 @@
 #   bash tools/release-capture/capture-macos-metal.sh /path/to/output-root
 #
 # Rejects dirty trees and refuses to run when HEAD is not a 40-char SHA.
+# By default HEAD must equal the v1.0.0 freeze parent
+# (514031dc74edd72da7c3bfee40144a38d2d91434). Override only when intentionally
+# recutting a new evidence parent:
+#   A3S_POWER_RELEASE_SOURCE_PARENT=<40-hex> bash ...
 # Emulated / paravirtual Metal devices are not production evidence.
 
 set -euo pipefail
 
 output_root="${1:?usage: capture-macos-metal.sh <output-root>}"
 policy_path="${POLICY_PATH:-docs/benchmarks/release-contract-windows-20260910/local-execution-policy.json}"
+expected_parent="${A3S_POWER_RELEASE_SOURCE_PARENT:-514031dc74edd72da7c3bfee40144a38d2d91434}"
 
 test -z "$(git status --porcelain)" || {
   echo "capture requires a clean git worktree" >&2
@@ -19,6 +24,22 @@ test -z "$(git status --porcelain)" || {
 
 power_commit="$(git rev-parse HEAD)"
 test "${#power_commit}" -eq 40
+case "$power_commit" in
+  *[!0-9a-f]*)
+    echo "HEAD must be a lowercase 40-hex SHA (got ${power_commit})" >&2
+    exit 1
+    ;;
+esac
+
+test "${#expected_parent}" -eq 40 || {
+  echo "A3S_POWER_RELEASE_SOURCE_PARENT must be a 40-hex SHA" >&2
+  exit 1
+}
+test "$power_commit" = "$expected_parent" || {
+  echo "HEAD ${power_commit} is not release source parent ${expected_parent}" >&2
+  echo "Detach to that commit before Metal capture, or set A3S_POWER_RELEASE_SOURCE_PARENT only when recutting." >&2
+  exit 1
+}
 
 test -f "$policy_path" || {
   echo "missing policy file: $policy_path" >&2
@@ -75,4 +96,5 @@ cargo -V >"${output_root}/cargo.txt"
 shasum -a 256 "${output_root}/metal.json" Cargo.lock >"${output_root}/metal-inputs.sha256"
 
 echo "Wrote Metal capture under ${output_root}"
+echo "Authenticated parent: ${power_commit}"
 echo "Authenticate apple-hardware.txt through the release trust root before assembly."

@@ -7,12 +7,17 @@
 # Usage (x64 VS developer shell, clean checkout of source parent):
 #   powershell -File tools/release-capture/capture-confidential-source.ps1 `
 #     -OutputRoot D:\captures\a3s-power-<shortsha>\confidential-source
+#
+# By default HEAD / -PowerCommit must equal the v1.0.0 freeze parent. Pass
+# -AllowAnySourceParent only when intentionally recutting a new evidence parent.
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$OutputRoot,
     [string]$PowerCommit = "",
+    [string]$ExpectedSourceParent = "514031dc74edd72da7c3bfee40144a38d2d91434",
+    [switch]$AllowAnySourceParent,
     [string]$PolicyPath = "docs/benchmarks/release-contract-windows-20260910/local-execution-policy.json",
     [string]$DeviceClassCuda = "NVIDIA GeForce RTX 4090 24 GiB; driver 610.74",
     [string]$CpuModel = "Intel(R) Xeon(R) w5-2445",
@@ -35,6 +40,18 @@ if (-not $PowerCommit) {
 $head = (git rev-parse HEAD).Trim()
 if ($head -ne $PowerCommit) {
     throw "HEAD does not match -PowerCommit; detach to the source parent first"
+}
+
+if (-not $AllowAnySourceParent) {
+    if ($ExpectedSourceParent.Length -ne 40) {
+        throw "-ExpectedSourceParent must be a 40-character lowercase SHA"
+    }
+    if ($ExpectedSourceParent -cne $ExpectedSourceParent.ToLowerInvariant()) {
+        throw "-ExpectedSourceParent must be lowercase"
+    }
+    if ($PowerCommit -ne $ExpectedSourceParent) {
+        throw "PowerCommit $PowerCommit is not release source parent $ExpectedSourceParent; detach first or pass -AllowAnySourceParent only when recutting"
+    }
 }
 
 $policyHash = (Get-FileHash $PolicyPath -Algorithm SHA256).Hash.ToLowerInvariant()
