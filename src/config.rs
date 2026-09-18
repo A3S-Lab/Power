@@ -25,7 +25,10 @@ pub const MAX_PROMPT_CACHE_ENTRIES: usize = 1024;
 pub const MAX_PROMPT_CACHE_TTL_SECONDS: u64 = 86_400;
 
 /// Default lifetime of one public worker observation.
-pub const DEFAULT_WORKER_OBSERVATION_TTL_SECONDS: u64 = 15;
+///
+/// 15s is too short for Cloud/Gateway managed-snapshot apply plus a real
+/// dataplane request. 120s stays well under `MAX_WORKER_OBSERVATION_TTL_SECONDS`.
+pub const DEFAULT_WORKER_OBSERVATION_TTL_SECONDS: u64 = 120;
 
 /// Hard upper bound for a public worker observation lifetime.
 pub const MAX_WORKER_OBSERVATION_TTL_SECONDS: u64 = 300;

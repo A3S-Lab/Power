@@ -709,6 +709,19 @@ fn parse_isq_type(s: &str) -> std::result::Result<mistralrs::IsqType, String> {
     }
 }
 
+/// Choose the mistral.rs builder id for a HuggingFace embedding manifest.
+///
+/// Local directories must be addressed by filesystem path so guests without
+/// egress do not treat the OpenAI registry alias as a Hugging Face repo id.
+#[cfg(feature = "mistralrs")]
+fn embedding_builder_model_id(manifest: &ModelManifest) -> String {
+    if manifest.path.is_dir() {
+        manifest.path.to_string_lossy().into_owned()
+    } else {
+        manifest.name.clone()
+    }
+}
+
 #[cfg(feature = "mistralrs")]
 fn manifest_isq_type(manifest: &ModelManifest) -> Result<mistralrs::IsqType> {
     let Some(value) = manifest
@@ -740,12 +753,25 @@ impl MistralRsBackend {
     ///
     /// `manifest.path` must point to the local model directory containing
     /// `config.json`, `tokenizer.json`, and safetensors weight files.
+    ///
+    /// When `path` is a local directory, pass that path as the mistral.rs
+    /// model id so air-gapped / `network: none` guests load from disk instead
+    /// of resolving the registry alias on Hugging Face. Keep the registry
+    /// alias (`manifest.name`) as the runtime map key for OpenAI requests.
     async fn load_embedding_model(&self, manifest: &ModelManifest) -> Result<()> {
-        let model_id = manifest.name.clone();
+        let builder_id = embedding_builder_model_id(manifest);
+        let tokenizer_json = manifest.path.join("tokenizer.json");
 
-        let mut builder = mistralrs::EmbeddingModelBuilder::new(&model_id)
-            .with_token_source(mistralrs::TokenSource::None)
-            .from_hf_cache_path(manifest.path.clone());
+        let mut builder = mistralrs::EmbeddingModelBuilder::new(&builder_id)
+            .with_token_source(mistralrs::TokenSource::None);
+
+        if manifest.path.is_dir() {
+            builder = builder.from_hf_cache_path(manifest.path.clone());
+        }
+
+        if tokenizer_json.is_file() {
+            builder = builder.with_tokenizer_json(tokenizer_json.to_string_lossy());
+        }
 
         if self.config.gpu.gpu_layers == 0 {
             builder = builder.with_force_cpu();
@@ -763,7 +789,11 @@ impl MistralRsBackend {
             .await
             .insert(manifest.name.clone(), Arc::new(model));
 
-        tracing::info!(model = %manifest.name, "Embedding model loaded successfully via mistral.rs");
+        tracing::info!(
+            model = %manifest.name,
+            path = %manifest.path.display(),
+            "Embedding model loaded successfully via mistral.rs"
+        );
         Ok(())
     }
 
@@ -998,6 +1028,46 @@ mod tests {
     fn test_new_creates_backend() {
         let backend = MistralRsBackend::new(test_config());
         assert_eq!(backend.name(), "mistral.rs");
+    }
+
+    #[cfg(feature = "mistralrs")]
+    #[test]
+    fn embedding_builder_uses_local_directory_path_not_registry_alias() {
+        use std::path::PathBuf;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = ModelManifest {
+            name: "lab/pw0-embed".to_string(),
+            format: ModelFormat::HuggingFace,
+            size: 0,
+            sha256: String::new(),
+            parameters: None,
+            created_at: chrono::Utc::now(),
+            path: dir.path().to_path_buf(),
+            system_prompt: None,
+            template_override: None,
+            default_parameters: None,
+            modelfile_content: None,
+            license: None,
+            adapter_path: None,
+            adapter_artifact: None,
+            external_draft: None,
+            projector_path: None,
+            projector_artifact: None,
+            messages: vec![],
+            family: None,
+            families: None,
+        };
+        assert_eq!(
+            embedding_builder_model_id(&manifest),
+            dir.path().to_string_lossy().as_ref()
+        );
+
+        let file_manifest = ModelManifest {
+            path: PathBuf::from("/tmp/missing-file.gguf"),
+            ..manifest
+        };
+        assert_eq!(embedding_builder_model_id(&file_manifest), "lab/pw0-embed");
     }
 
     #[test]
