@@ -441,16 +441,21 @@ These fail the filter. Do not schedule them as the next milestone.
 
 ### Issue and PR triage (2026-09-18)
 
-Authoritative queue check: `A3S-Lab/Power` had **zero** open issues and **zero**
-open pull requests. Closed Power#3 already delivered `PowerRuntimeServiceProfile`;
-cross-repo PW0 acceptance stays on Cloud#85. Tracking issues opened for the real
-blockers:
+Closed Power#3 already delivered `PowerRuntimeServiceProfile`; cross-repo PW0
+acceptance stays on Cloud#85. Software queue cleared on 2026-09-18:
+
+| Change | Landing |
+| --- | --- |
+| [#60](https://github.com/A3S-Lab/Power/pull/60) | Rust 1.98 fmt/Clippy unblock (merged) |
+| [#59](https://github.com/A3S-Lab/Power/pull/59) | Capture+assemble freeze-parent fail-closed pin (merged) |
+| [#58](https://github.com/A3S-Lab/Power/pull/58) / [#57](https://github.com/A3S-Lab/Power/issues/57) | Phase A prep: air-gapped embedding + observation TTL (merged; issue closed) |
+
+Open blockers (hardware only; no code substitute):
 
 | Issue | Role |
 | --- | --- |
 | [#55](https://github.com/A3S-Lab/Power/issues/55) | Phase R Metal capture on the freeze parent |
 | [#56](https://github.com/A3S-Lab/Power/issues/56) | Phase R SEV-SNP confidential-GPU promotion |
-| [#57](https://github.com/A3S-Lab/Power/issues/57) | Phase A prep: air-gapped embedding load + observation TTL |
 
 Rejected as overfitting or out of order:
 
