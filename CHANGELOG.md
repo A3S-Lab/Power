@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Windows CUDA capture helpers now set `NVCC_CCBIN` through a space-free
+  `C:\vsbt` junction (`ensure-nvcc-ccbin.ps1`) so VS 2022 Build Tools can
+  host-compile without a nested `VsDevCmd` / too-long `vcvars` environment.
 - Force LF for `*.sh` via `.gitattributes` so Windows `core.autocrlf` checkouts
   cannot break Phase R bash capture/assemble scripts with CR line endings.
 - Satisfy Rust 1.98 `cargo fmt --check` and Clippy `-D warnings` for the
@@ -22,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Documented freeze-parent vs post-freeze helper-script checkout for Phase R
+  CUDA/confidential-source captures in `tools/release-capture/README.md`.
 - Updated `PLAN.md` issue/PR triage after landing #58/#59/#60 and closing #57;
   open queue is Metal (#55) and SEV-SNP (#56) hardware evidence only.
 - Default `worker_observation_ttl_seconds` is now 120 (still capped at 300) so

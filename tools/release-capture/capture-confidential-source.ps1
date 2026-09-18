@@ -27,11 +27,14 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+. (Join-Path $PSScriptRoot "ensure-nvcc-ccbin.ps1")
+Ensure-A3SPowerNvccCcbIn
+
 if (git status --porcelain) {
     throw "capture requires a clean git worktree"
 }
 if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
-    throw "requires cl.exe on PATH (x64 VS developer shell)"
+    throw "requires cl.exe on PATH (add Hostx64\\x64 or let ensure-nvcc-ccbin.ps1 set NVCC_CCBIN)"
 }
 
 if (-not $PowerCommit) {
