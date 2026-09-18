@@ -116,6 +116,11 @@ Every candidate feature must pass this filter:
 
 Features that fail this filter get rejected, no matter how "nice to have" they are.
 
+Phases 4–7 below are completed history. The answer after the P0–P6 software
+exit is [Next Plan](#next-plan-after-the-software-exit): publish the frozen
+parent, then prove Cloud can host that revision. Do not open another execution
+milestone.
+
 ---
 
 ## Phase 4: TEE Runtime Components Complete; Remote Verification v1 Boundary Set
@@ -290,3 +295,168 @@ exists only when its signed evidence child proves that all of these gates pass:
 See [ROADMAP.md](ROADMAP.md) and
 [Production Release Evidence Gate](docs/release-evidence-gate.md) for the
 authoritative remaining acceptance evidence.
+
+---
+
+## Next Plan After the Software Exit
+
+Status date: 2026-09-18. This section is the development plan. It is not a
+production-release claim, and it is not permission to add runtime features.
+
+### What is already true
+
+The mission is a model-neutral, bounded, verifiable inference runtime. The
+software that serves that mission inside this repository has exited:
+
+- P0–P5 bounded execution, receipts, and the release-evidence machinery exist.
+- P6 distributed serving exited by shipping buffered-host loopback prefill/decode
+  and by excluding high-speed-network advertisement, attested-private-fabric
+  readiness, and Intel TDX from the v1 matrix. Exclusion is not capability.
+- `PowerRuntimeServiceProfile` already compiles one digest-pinned deployment
+  into the shared `a3s-runtime` Service contract. Placement, accelerator
+  leases, rollout, authorization, and routing stay outside Power.
+- Attestation v1 remediation is complete under the same exclusions: multimodal
+  prompt digests abstain, a native NRAS SDK is unnecessary, and private-fabric
+  readiness is not advertised.
+
+### What is not true
+
+Two gaps still fail the filter above. Both block the mission. Neither is a new
+kernel, backend, or protocol.
+
+| Gap | Evidence that it is still open | Why it blocks the mission |
+| --- | --- | --- |
+| Production verifiability | No `release/v1.0.0/` evidence child. No GitHub-verified `v1.0.0` tag. crates.io remains v0.9.0. Metal and SEV-SNP confidential-GPU captures are absent. | The verifier exists, but the moat is not a release fact until one immutable revision authenticates CPU, CUDA, Metal, and confidential GPU. |
+| Adoption | Cloud `PW0` is Planned. Clean-host audits print `power_revision=UNBOUND`. `compat/cloud-stack.acl` has no `power` component. | Power is not yet the sole local inference boundary. An OpenAI data plane cannot be claimed. |
+
+Windows CPU and CUDA complete-contract captures under
+`docs/benchmarks/release-contract-windows-20260910/` are regression evidence for
+frozen parent `514031dc74edd72da7c3bfee40144a38d2d91434` only. They do not
+authorize the tag, and they cannot be relabeled onto a later commit.
+
+### Freeze invariant
+
+v1.0.0 evidence binds that parent and no other. As of 2026-09-18, `main` is
+`3c92da571ecd533c7105ae716a6d6ec089f904a6`, two documentation commits after that
+parent. Phase R checks out the parent, not `HEAD`.
+
+- Do not commit documentation, refactors, or this plan onto that parent before
+  its evidence-only child exists. Any source commit after it invalidates the
+  checked-in CPU and CUDA captures. A new parent requires all four platforms
+  again, not the two missing ones.
+- Do not retag, amend, or rebuild v1.0.0 from a tree that contains post-freeze
+  edits.
+- Open the next source line only after the annotated tag exists, or accept
+  explicitly that v1.0.0 will not be cut from the current parent.
+
+Operator entry points already exist. Do not write a second capture CLI unless
+one of these commands fails closed on the frozen parent:
+
+- `tools/release-capture/capture-macos-metal.sh`
+- `tools/release-capture/capture-confidential-source.ps1` plus the proof-backed
+  promotion in `docs/external-release-capture.md`
+- `tools/release-capture/assemble-evidence-child.sh`
+- `tools/verify-release-candidate.sh`
+
+### Phase R — Publish the frozen parent
+
+Goal: make v1.0.0 a production release, or leave it untagged. No Power code.
+
+Work, in order:
+
+1. On a clean checkout of `514031dc74edd72da7c3bfee40144a38d2d91434`, capture
+   native Apple Silicon Metal evidence. Virtual, translated, or paravirtual
+   GPUs fail the existing gate and are not a shortcut.
+2. On confidential hardware, promote a distinct local CUDA capture with a
+   strict SEV-SNP report and NVIDIA NRAS proof. A raw report or a caller label
+   cannot mint the confidential-GPU class. Intel TDX stays unsupported.
+3. Assemble `release/v1.0.0/release-evidence.json` and the single-line SHA-256
+   pin as the only diff of an evidence-only child. Preserve the raw vendor
+   evidence outside that commit.
+4. Run the existing candidate verifier. Publish binaries from the frozen
+   parent. Point a GitHub-verified annotated tag at the evidence child.
+5. Update the root gitlink only to that tagged revision. Do not publish a
+   compatibility-lock entry in the same step.
+
+Exit: the support-matrix release decision is true for v1.0.0. If Metal or
+confidential hardware is unavailable, the honest state remains "source freeze,
+not a production release." Do not weaken `strict_v1` to ship.
+
+### Phase A — Host the tagged revision
+
+Goal: Cloud deploys the tagged Power revision as an ordinary Box-hosted
+Runtime Service. Start this phase only after Phase R, on a new post-tag
+revision. Do not rebuild the profile that already exists.
+
+Power may change code only when the current `PowerRuntimeServiceProfile`, ACL
+configuration, `/health`, and worker observation contract cannot satisfy the
+PW0.1 exit. Prove that hole with a failing Cloud/Box run before editing Power.
+
+Cloud-owned exit, which Power must not reimplement:
+
+- Compile the existing profile through Inference into the current Workload,
+  Flow, Fleet Claim, Runtime, Box, Gateway, and audit paths.
+- Deploy, become healthy, serve one bounded streaming request and one
+  non-streaming request, update, roll back, and stop.
+- Recover Power process death, Agent death, and Box VM loss.
+- Persist no prompt, response, secret, credential, or second configuration.
+- Then, and only then, add a sorted `power` component to
+  `compat/cloud-stack.acl` with the matching Cloud and Gateway pins, and write
+  `apps/cloud/tools/power-conformance/power-revision`. Absence of that pin is
+  intentional until this exit passes.
+
+Forbidden in Power: a second scheduler, node channel, device allocator, route
+authority, authorization authority, usage ledger, queue, or lifecycle store.
+Gateway consumes the existing observation facts. It does not import Power
+internals.
+
+`PW0.tee` is a stronger profile on top of this software exit plus the Phase R
+confidential-GPU evidence. It is not a substitute for Phase A, and it does not
+reopen TDX.
+
+### Rejected until a named deployment is blocked
+
+These fail the filter. Do not schedule them as the next milestone.
+
+| Proposal | Why it is rejected now |
+| --- | --- |
+| More CUDA fusion, speculative paths, or backends | Does not make the frozen revision releasable or hostable. |
+| High-speed `DirectDeviceMemoryPull` | v1 excluded it on purpose. Loopback prefill/decode is the supported software path. |
+| Intel TDX Quote/QVL | v1 excluded it on purpose. SEV-SNP is the confidential-GPU class. |
+| Attested-private-fabric advertisement | Digest binding exists. Advertising fabric without TEE-export evidence would weaken the moat. |
+| Native NRAS SDK | `nvattest-cli` and `nras-rest` already fail closed. |
+| Emitible multimodal prompt digests | v1 abstains until a backend exposes the exact representation. Inventing one is a false claim. |
+| picolm GPU, embeddings, vision, quantization, or LoRA | Already rejected. They weaken the minimal CPU TEE backend or move offline work into the enclave. |
+| A Power-owned deployment controller | Breaks the Runtime/Box boundary the profile was built to preserve. |
+
+### Order
+
+1. Phase R on the frozen parent, with no source changes.
+2. Phase A on the tagged revision, changing Power only to close a proven
+   contract hole.
+3. `PW0.tee` only after both exits.
+4. Reopen an excluded capability only when a named deployment is blocked by
+   that exclusion, and the replacement has the same machine-enforced evidence
+   bar the exclusion replaced.
+
+### Issue and PR triage (2026-09-18)
+
+Authoritative queue check: `A3S-Lab/Power` had **zero** open issues and **zero**
+open pull requests. Closed Power#3 already delivered `PowerRuntimeServiceProfile`;
+cross-repo PW0 acceptance stays on Cloud#85. Tracking issues opened for the real
+blockers:
+
+| Issue | Role |
+| --- | --- |
+| [#55](https://github.com/A3S-Lab/Power/issues/55) | Phase R Metal capture on the freeze parent |
+| [#56](https://github.com/A3S-Lab/Power/issues/56) | Phase R SEV-SNP confidential-GPU promotion |
+| [#57](https://github.com/A3S-Lab/Power/issues/57) | Phase A prep: air-gapped embedding load + observation TTL |
+
+Rejected as overfitting or out of order:
+
+| Candidate | Decision |
+| --- | --- |
+| Local `codex/v1-metal-capture-*` branches | Not ancestors of `514031dc…`; cannot authorize v1.0.0 |
+| Local `perf/*` CUDA fusion branches | Behind `main`; do not unblock release or hosting |
+| Renaming mistralrs `from_hf_cache_pathf` | Real upstream API name on text/vision builders; not a typo |
+| More speculative/CUDA micro-optimizations | Fail the three-question filter until Phase R exits |

@@ -611,7 +611,12 @@ or as a claim that HSN works.
 
 ## A3S Cloud substrate obligations
 
-**Status as of 2026-09-10.**
+**Status as of 2026-09-18.** Execution order is Phase R, then Phase A, in
+[PLAN.md](PLAN.md#next-plan-after-the-software-exit). Do not start these rows
+by adding Power features. Phase R publishes frozen parent
+`514031dc74edd72da7c3bfee40144a38d2d91434` with no source changes. Phase A
+hosts that tagged revision and changes Power only when a Cloud/Box run proves
+the existing service profile cannot satisfy the exit.
 
 **Cloud Wave 1 (`PW0` after `BX0`).** Power runs as an ordinary Box-hosted
 Runtime Service. Cloud may continue inference **control-plane** work with empty

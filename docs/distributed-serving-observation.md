@@ -447,7 +447,7 @@ compatibility, phase readiness, or expiry cannot be verified.
 ## Configuration
 
 `worker_observation_ttl_seconds` controls the exclusive validity interval. Its
-default is 15 seconds and the closed ACL validator accepts only `1..=300`.
+default is 120 seconds and the closed ACL validator accepts only `1..=300`.
 This is a freshness bound, not a polling interval or a lease: no consumer may
 extend it locally.
 

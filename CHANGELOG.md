@@ -13,6 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tee-minimal and release-promotion profiles (`manual_contains`, `manual_clamp`,
   `useless_format`, `field_reassign_with_default`) so open release and hosting
   PRs are not blocked by toolchain drift on `main`.
+- HuggingFace embedding loads through mistral.rs now address local directories by
+  filesystem path (plus `from_hf_cache_path` and optional `tokenizer.json`) so
+  air-gapped / `network: none` Box guests do not resolve the OpenAI registry
+  alias on Hugging Face. The registry alias remains the runtime map key.
+
+### Changed
+
+- Default `worker_observation_ttl_seconds` is now 120 (still capped at 300) so
+  Cloud/Gateway managed-snapshot apply plus a real dataplane request can finish
+  inside the observation freshness bound.
+- Documented the post-software-exit development plan (Phase R evidence publish,
+  then Phase A Box hosting) and rejected overfitting / out-of-order work in
+  `PLAN.md`.
 
 ### Changed
 

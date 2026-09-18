@@ -313,7 +313,7 @@ port = 11434
 max_loaded_models = 1
 prompt_cache_max_entries = 1
 prompt_cache_ttl_seconds = 300
-worker_observation_ttl_seconds = 15
+worker_observation_ttl_seconds = 120
 keep_alive = "5m"
 
 serving_execution {
