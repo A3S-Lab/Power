@@ -191,7 +191,9 @@ async fn exercise_shared_session_pool(pool: &ModelSessionPool<u32>) {
     let spec = ModelSessionSpec::new(binding, InferenceLimits::default(), 8).expect("session spec");
     let cancellation = CancellationToken::new();
     let session = pool
-        .get_or_load(spec, &cancellation, |_runtime, _cancel| async move { Ok(42_u32) })
+        .get_or_load(spec, &cancellation, |_runtime, _cancel| async move {
+            Ok(42_u32)
+        })
         .await
         .expect("shared session pool get_or_load under live P/D");
     assert_eq!(*session.value(), 42);
@@ -309,7 +311,8 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
         .expect("decode live context");
     let decode_port = SharedLlamaCppContextStateApi::from_context(decode_ctx);
 
-    let (residency_policy, session_policy, residency_digest, session_digest) = live_reuse_policies();
+    let (residency_policy, session_policy, residency_digest, session_digest) =
+        live_reuse_policies();
     let (_weights_dir, hierarchy) = live_weight_hierarchy(residency_policy);
     let pool = ModelSessionPool::<u32>::new(DevicePreference::Cpu, session_policy)
         .expect("shared session pool for live reuse");
@@ -383,13 +386,10 @@ async fn live_llamacpp_buffered_host_capture_restore_then_live_decode() {
     })));
 
     let prefill_execution = Arc::new(
-        LlamaCppBackendPhaseExecution::with_port(
-            &prefill_profile,
-            Box::new(prefill_port.clone()),
-        )
-        .unwrap()
-        .with_ownership(Arc::clone(&prefill_ownership))
-        .with_transfer(Arc::clone(&prefill_loopback)),
+        LlamaCppBackendPhaseExecution::with_port(&prefill_profile, Box::new(prefill_port.clone()))
+            .unwrap()
+            .with_ownership(Arc::clone(&prefill_ownership))
+            .with_transfer(Arc::clone(&prefill_loopback)),
     );
     let decode_execution = Arc::new(
         LlamaCppBackendPhaseExecution::with_port(&decode_profile, Box::new(decode_port.clone()))
@@ -618,7 +618,8 @@ fn live_http_app(
     decode_tokens: Option<Arc<LlamaCppLiveDecodeTokenPort>>,
     expected_state_bytes: Option<u64>,
 ) -> LiveHttpApp {
-    let expects_advertise = matches!(role, DisaggregatedServingRole::Prefill) || decode_tokens.is_some();
+    let expects_advertise =
+        matches!(role, DisaggregatedServingRole::Prefill) || decode_tokens.is_some();
     assert!(
         profile.may_advertise_prefill_decode(),
         "buffered-host + BackendOwned + llamacpp ownership/execution may advertise at profile"
@@ -758,7 +759,8 @@ async fn live_llamacpp_authenticated_http_ready_prefill_and_ndjson_decode_after_
         .expect("decode live context for HTTP");
     let decode_port = SharedLlamaCppContextStateApi::from_context(decode_ctx);
 
-    let (residency_policy, session_policy, residency_digest, session_digest) = live_reuse_policies();
+    let (residency_policy, session_policy, residency_digest, session_digest) =
+        live_reuse_policies();
     let (_weights_dir, hierarchy) = live_weight_hierarchy(residency_policy);
     let pool = ModelSessionPool::<u32>::new(DevicePreference::Cpu, session_policy)
         .expect("shared session pool for live HTTP reuse");

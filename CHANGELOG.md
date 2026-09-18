@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Satisfy Rust 1.98 `cargo fmt --check` and Clippy `-D warnings` for the
+  tee-minimal profile (`manual_contains`, `manual_clamp`, `useless_format`) so
+  open release and hosting PRs are not blocked by toolchain drift on `main`.
+
 ## [1.0.0] - 2026-09-10
 
 ### Fixed
