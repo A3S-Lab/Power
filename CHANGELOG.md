@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `PowerRuntimeServiceProfile` now compiles `a3s.runtime.unit-spec.v4` against
+  the Cloud stack Runtime pin (`a3s-runtime` 0.5.0,
+  `4c5fbd56bedd84d1007a7d9cd046a9f7083bbdcd`). The previous 0.2.0 pin could not
+  satisfy PW0.1. This does not add a `power` component to
+  `compat/cloud-stack.acl` and does not move the v1.0.0 freeze parent.
 - Documented freeze-parent vs post-freeze helper-script checkout for Phase R
   CUDA/confidential-source captures in `tools/release-capture/README.md`.
 - Capture helpers now say how to invoke them from a `main` checkout against a

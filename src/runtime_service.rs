@@ -117,9 +117,11 @@ impl PowerRuntimeServiceProfile {
                 success_threshold: 1,
                 failure_threshold: 3,
             }),
+            service_lifecycle: None,
             restart: RestartPolicy::Always,
             outputs: Vec::new(),
             semantics_profile_digest: Some(self.semantics_profile_digest.clone()),
+            identity_attachment_digest: None,
         };
         spec.validate()
             .map_err(PowerRuntimeServiceError::InvalidRuntimeSpec)?;
@@ -172,6 +174,9 @@ mod tests {
             &spec.secrets[0].target,
             SecretTarget::File { path, mode } if path == POWER_CONFIG_PATH && *mode == 0o400
         ));
+        assert_eq!(spec.schema, "a3s.runtime.unit-spec.v4");
+        assert!(spec.service_lifecycle.is_none());
+        assert!(spec.identity_attachment_digest.is_none());
     }
 
     #[test]
