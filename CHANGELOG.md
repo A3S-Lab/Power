@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Capture helpers now say how to invoke them from a `main` checkout against a
   clean freeze-parent worktree, including exporting the policy blob that is
   not on `514031dc…`.
+- `PLAN.md` no longer tells Phase R to run those helpers inside the freeze
+  parent, and it records that the [#56](https://github.com/A3S-Lab/Power/issues/56)
+  CUDA source already exists and must not be recaptured.
 - Updated `PLAN.md` issue/PR triage after landing #58/#59/#60 and closing #57;
   open queue is Metal (#55) and SEV-SNP (#56) hardware evidence only.
 - Default `worker_observation_ttl_seconds` is now 120 (still capped at 300) so
