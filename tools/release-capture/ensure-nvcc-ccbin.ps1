@@ -6,8 +6,24 @@
 #
 # Dot-source from CUDA capture scripts before `cargo ... --features embedded-cuda`.
 
+function Add-A3SPowerCcbinToPath {
+    param([Parameter(Mandatory = $true)][string]$Ccbin)
+    $needle = $Ccbin.TrimEnd('\')
+    $present = $false
+    foreach ($part in ($env:Path -split ';')) {
+        if ($part.TrimEnd('\') -eq $needle) {
+            $present = $true
+            break
+        }
+    }
+    if (-not $present) {
+        $env:Path = "$Ccbin;$env:Path"
+    }
+}
+
 function Ensure-A3SPowerNvccCcbIn {
-    if ($env:NVCC_CCBIN -and (Test-Path -LiteralPath $env:NVCC_CCBIN)) {
+    if ($env:NVCC_CCBIN -and (Test-Path -LiteralPath (Join-Path $env:NVCC_CCBIN "cl.exe"))) {
+        Add-A3SPowerCcbinToPath -Ccbin $env:NVCC_CCBIN
         Write-Host "Using existing NVCC_CCBIN=$env:NVCC_CCBIN"
         return
     }
@@ -47,6 +63,7 @@ function Ensure-A3SPowerNvccCcbIn {
     }
 
     $env:NVCC_CCBIN = $ccbin
+    Add-A3SPowerCcbinToPath -Ccbin $ccbin
     Write-Host "Set NVCC_CCBIN=$env:NVCC_CCBIN"
     Write-Host "Do not nest an outer VsDevCmd before cargo embedded-cuda; let nvcc call vcvars once."
 }

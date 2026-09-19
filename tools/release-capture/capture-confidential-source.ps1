@@ -4,9 +4,14 @@
 # Promotion to confidential-gpu requires real SEV-SNP + NVIDIA NRAS via
 # a3s-power-verify --promote-capture on confidential hardware.
 #
-# Usage (x64 VS developer shell, clean checkout of source parent):
-#   powershell -File tools/release-capture/capture-confidential-source.ps1 `
-#     -OutputRoot D:\captures\a3s-power-<shortsha>\confidential-source
+# Usage (cwd = clean freeze-parent worktree; this script lives on main):
+#   git worktree add ..\power-freeze 514031dc74edd72da7c3bfee40144a38d2d91434
+#   git show main:docs/benchmarks/release-contract-windows-20260910/local-execution-policy.json `
+#     > D:\captures\local-execution-policy.json
+#   Set-Location ..\power-freeze
+#   powershell -File ..\power\tools\release-capture\capture-confidential-source.ps1 `
+#     -OutputRoot D:\captures\a3s-power-514031dc-confidential-source `
+#     -PolicyPath D:\captures\local-execution-policy.json
 #
 # By default HEAD / -PowerCommit must equal the v1.0.0 freeze parent. Pass
 # -AllowAnySourceParent only when intentionally recutting a new evidence parent.
