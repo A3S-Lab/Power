@@ -336,9 +336,9 @@ authorize the tag, and they cannot be relabeled onto a later commit.
 
 ### Freeze invariant
 
-v1.0.0 evidence binds that parent and no other. As of 2026-09-18, `main` is
-`3c92da571ecd533c7105ae716a6d6ec089f904a6`, two documentation commits after that
-parent. Phase R checks out the parent, not `HEAD`.
+v1.0.0 evidence binds that parent and no other. `main` has moved past
+`514031dc74edd72da7c3bfee40144a38d2d91434`. Phase R builds in a clean worktree
+of the parent, not in `HEAD`.
 
 - Do not commit documentation, refactors, or this plan onto that parent before
   its evidence-only child exists. Any source commit after it invalidates the
@@ -349,8 +349,12 @@ parent. Phase R checks out the parent, not `HEAD`.
 - Open the next source line only after the annotated tag exists, or accept
   explicitly that v1.0.0 will not be cut from the current parent.
 
-Operator entry points already exist. Do not write a second capture CLI unless
-one of these commands fails closed on the frozen parent:
+The helper scripts and the local execution policy landed after the freeze
+parent, so they are not in that tree. Keep a second checkout of `main` for
+the scripts. Export the policy outside the freeze-parent worktree. Invoke the
+script by path with `cwd` on the clean parent. See
+[`tools/release-capture/README.md`](tools/release-capture/README.md). Do not
+write a second capture CLI.
 
 - `tools/release-capture/capture-macos-metal.sh`
 - `tools/release-capture/capture-confidential-source.ps1` plus the proof-backed
@@ -364,12 +368,14 @@ Goal: make v1.0.0 a production release, or leave it untagged. No Power code.
 
 Work, in order:
 
-1. On a clean checkout of `514031dc74edd72da7c3bfee40144a38d2d91434`, capture
-   native Apple Silicon Metal evidence. Virtual, translated, or paravirtual
-   GPUs fail the existing gate and are not a shortcut.
-2. On confidential hardware, promote a distinct local CUDA capture with a
-   strict SEV-SNP report and NVIDIA NRAS proof. A raw report or a caller label
-   cannot mint the confidential-GPU class. Intel TDX stays unsupported.
+1. On a clean worktree of `514031dc74edd72da7c3bfee40144a38d2d91434`, capture
+   native Apple Silicon Metal evidence by invoking `capture-macos-metal.sh`
+   from `main`. Virtual, translated, or paravirtual GPUs fail the existing
+   gate and are not a shortcut.
+2. On confidential hardware, promote the distinct local CUDA source already
+   captured for [#56](https://github.com/A3S-Lab/Power/issues/56). Do not
+   recapture it. A raw report or a caller label cannot mint the
+   confidential-GPU class. Intel TDX stays unsupported.
 3. Assemble `release/v1.0.0/release-evidence.json` and the single-line SHA-256
    pin as the only diff of an evidence-only child. Preserve the raw vendor
    evidence outside that commit.
@@ -449,6 +455,9 @@ acceptance stays on Cloud#85. Software queue cleared on 2026-09-18:
 | [#60](https://github.com/A3S-Lab/Power/pull/60) | Rust 1.98 fmt/Clippy unblock (merged) |
 | [#59](https://github.com/A3S-Lab/Power/pull/59) | Capture+assemble freeze-parent fail-closed pin (merged) |
 | [#58](https://github.com/A3S-Lab/Power/pull/58) / [#57](https://github.com/A3S-Lab/Power/issues/57) | Phase A prep: air-gapped embedding + observation TTL (merged; issue closed) |
+| [#61](https://github.com/A3S-Lab/Power/pull/61) | Force LF for `*.sh` so Windows checkouts do not break bash capture scripts (merged) |
+| [#62](https://github.com/A3S-Lab/Power/pull/62) / [#64](https://github.com/A3S-Lab/Power/pull/64) | VS Build Tools `NVCC_CCBIN` and host-compiler `PATH` (merged) |
+| [#63](https://github.com/A3S-Lab/Power/pull/63) | Invoke capture helpers from `main` against a clean freeze-parent worktree (merged) |
 
 Open blockers (hardware only; no code substitute):
 
