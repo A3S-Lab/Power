@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `PLAN.md` now states the production scale ladder: one evidence-backed
+  revision, one Box-hosted service, then replica width through Cloud. Kernel
+  fusion, high-speed networking, and Intel TDX stay off the ladder until a
+  named deployment is blocked and the replacement has the same evidence bar.
 - `PowerRuntimeServiceProfile` now compiles `a3s.runtime.unit-spec.v4` against
   the Cloud stack Runtime pin (`a3s-runtime` 0.5.0,
   `4c5fbd56bedd84d1007a7d9cd046a9f7083bbdcd`). The previous 0.2.0 pin could not

@@ -445,6 +445,69 @@ These fail the filter. Do not schedule them as the next milestone.
    that exclusion, and the replacement has the same machine-enforced evidence
    bar the exclusion replaced.
 
+The production scale ladder below is that order expanded. It does not insert
+a kernel, scheduler, or protocol milestone in front of Phase R.
+
+### Production scale roadmap
+
+Status date: 2026-09-19. This is how Power becomes production-scale. It is
+not a claim that any scale step has exited, and it is not permission to chase
+tokens/s parity with vLLM, SGLang, or TensorRT-LLM.
+
+Production scale means more concurrent bounded requests on one authenticated
+revision, then more Box-hosted copies of that same revision. A throughput
+engine owns continuous batching, paged attention, and NCCL. Power owns the
+verifiable process. Cloud owns how many of those processes exist. Gateway
+owns which fresh observation may receive a route.
+
+A step is on this ladder only when all three answers are yes:
+
+1. A named deployment can serve more bounded work without a new false claim.
+2. The evidence bar stays the same or gets stricter.
+3. The owner is already the right component. Power does not grow a second
+   scheduler, node channel, device allocator, route authority, authorization
+   authority, usage ledger, queue, or lifecycle store.
+
+`PowerRuntimeServiceProfile` already compiles `a3s.runtime.unit-spec.v4`
+against Runtime `0.5.0` (`4c5fbd56bedd84d1007a7d9cd046a9f7083bbdcd`). That
+alignment is a Scale 1 prerequisite. It is not Scale 1.
+
+| Step | Owner | What grows | Exit evidence | Power code |
+| --- | --- | --- | --- | --- |
+| Scale 0 — one production revision (Phase R) | Power release evidence | Nothing. One frozen parent becomes a tag. | `release/v1.0.0/` evidence child, GitHub-verified annotated tag, four-platform `strict_v1` replay. [#55](https://github.com/A3S-Lab/Power/issues/55) and [#56](https://github.com/A3S-Lab/Power/issues/56) are the open hardware blockers. | None on the freeze parent. |
+| Scale 1 — one hosted service (Phase A, `PW0.software`) | Cloud, after Scale 0 | One Box Runtime Service. | Deploy, health, one bounded stream, one non-stream, update, roll back, stop. Recover Power process death, Agent death, and Box VM loss. No prompt, response, secret, or second config persisted. Only then add sorted `power` to `compat/cloud-stack.acl` and write `apps/cloud/tools/power-conformance/power-revision`. | Only to close a hole proven by a failing Cloud/Box run. |
+| Scale 2 — replica width | Cloud Workloads, Fleet, Gateway | N identical Services of the tagged revision. | Add and remove a replica using the same profile. Gateway routes only to fresh `a3s.power.worker-observation.v1` facts (TTL at most 300 seconds). Stale, replayed, or missing observations fail closed. | None. Power does not learn peer identity. |
+| Scale 3 — single-host depth | Existing backend policy inside the pinned runtime-policy digest | Parallel slots, prompt-cache bounds, and the already-declared Flash Attention flag on one host that Scale 2 has saturated. | A receipt-backed capture on that named host shows the process, not a new kernel, was the limit. No `perf/*` branch. | None unless the pinned policy cannot express the bound. Prove that before editing. |
+| Scale 4 — same-host prefill/decode | Already-shipped buffered-host loopback | Two processes on one host, opaque state, authenticated loopback. | Conformance shows prefill and decode reuse without advertising high-speed network, fabric readiness, or cross-node KV. | None. This is not a cluster. |
+| Scale 5 — confidential profile (`PW0.tee`) | Cloud profile on the Scale 1 path, using the Scale 0 confidential-GPU capture | The same service under confidential isolation. | Scale 1's script passes with the promoted SEV-SNP capture replayed. Intel TDX stays unsupported. | None unless Scale 1's profile cannot select confidential isolation. |
+
+Scale 2 does not start before Scale 1's pin file exists. Scale 3 and Scale 4
+do not start before a named host is blocked by Scale 2. Scale 5 does not
+start before both Scale 0's confidential-GPU capture and Scale 1 exist.
+Distributed gang scheduling, KV-aware pools, and cross-node prefill/decode
+stay Cloud `I0` P2. They are not a Power milestone.
+
+#### Reopening an exclusion
+
+Not scheduled. A later step may replace an exclusion only when a named
+deployment is blocked by that exclusion, and the replacement carries the same
+machine-enforced evidence the exclusion replaced. Source changes after the
+frozen parent start a new parent and require every platform class again.
+
+| Exclusion | Stays closed until |
+| --- | --- |
+| High-speed `DirectDeviceMemoryPull` | A named deployment cannot meet its bound on Scale 4 loopback, and an in-tree adapter has an evidence suite. Advertising HSN without that suite is a false claim. |
+| Attested-private-fabric readiness | TEE-export evidence exists. Digest wire binding is not that evidence. Multi-node GPU meshes also need NVSwitch fabric claim indices matched to evidence. |
+| Intel TDX | Reviewed DCAP Quote generation, QVL, collateral freshness, and exact REPORTDATA/MRTD binding exist. A local TDREPORT cannot open this. |
+| CUDA fusion, new speculative paths, new backends | Scale 3's receipt shows the pinned backend policy cannot express the bound. `perf/*` branches do not. |
+| Emitible multimodal prompt digests | A backend exposes the exact representation. Inventing one is a false claim. |
+| picolm GPU, embeddings, vision, quantization, or LoRA | Rejected. They weaken the minimal CPU TEE backend or move offline work into the enclave. Use mistralrs outside that backend. |
+| Native NRAS SDK | `nvattest-cli` and `nras-rest` fail open. They do not today. |
+| Power-owned deployment controller | Never. Replica width is Scale 2, owned by Cloud. |
+
+Current position: before Scale 0. The profile and observation contract for
+Scale 1 already exist. Scale 2 through Scale 5 are not started.
+
 ### Issue and PR triage (2026-09-18)
 
 Closed Power#3 already delivered `PowerRuntimeServiceProfile`; cross-repo PW0
