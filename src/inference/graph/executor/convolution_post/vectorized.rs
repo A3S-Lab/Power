@@ -5,13 +5,23 @@ pub(super) fn apply(
     values: &mut [f32],
     convolution_bias: Option<f32>,
 ) {
-    let vectorized = if supported() && values.len() >= 8 {
-        // SAFETY: runtime feature admission guarantees AVX2 support, the
-        // helper processes complete eight-value blocks, and its return value
-        // identifies the untouched scalar tail.
-        unsafe { apply_avx2(operation, values, convolution_bias) }
-    } else {
-        0
+    let vectorized = {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            if supported() && values.len() >= 8 {
+                // SAFETY: runtime feature admission guarantees AVX2 support, the
+                // helper processes complete eight-value blocks, and its return value
+                // identifies the untouched scalar tail.
+                unsafe { apply_avx2(operation, values, convolution_bias) }
+            } else {
+                0
+            }
+        }
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            let _ = (operation, values.len(), convolution_bias);
+            0
+        }
     };
     for value in &mut values[vectorized..] {
         let biased = convolution_bias.map_or(*value, |bias| *value + bias);
@@ -25,12 +35,22 @@ pub(super) fn add_bias_and_residual(
     convolution_bias: Option<f32>,
 ) {
     debug_assert_eq!(values.len(), residual.len());
-    let vectorized = if supported() && values.len() >= 8 {
-        // SAFETY: runtime feature admission guarantees AVX2 support, both
-        // slices have the same length, and the helper touches complete blocks.
-        unsafe { add_bias_and_residual_avx2(values, residual, convolution_bias) }
-    } else {
-        0
+    let vectorized = {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            if supported() && values.len() >= 8 {
+                // SAFETY: runtime feature admission guarantees AVX2 support, both
+                // slices have the same length, and the helper touches complete blocks.
+                unsafe { add_bias_and_residual_avx2(values, residual, convolution_bias) }
+            } else {
+                0
+            }
+        }
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            let _ = (values.len(), residual.len(), convolution_bias);
+            0
+        }
     };
     for (value, residual) in values[vectorized..].iter_mut().zip(&residual[vectorized..]) {
         let biased = convolution_bias.map_or(*value, |bias| *value + bias);
