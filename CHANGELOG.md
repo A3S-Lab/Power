@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-21
+
+This is the current `main` release. It is not the production `v1.0.0` tag.
+That tag still requires an evidence-only child of
+`514031dc74edd72da7c3bfee40144a38d2d91434` with CPU, CUDA, Metal, and
+SEV-SNP confidential-GPU captures.
+
 ### Added
 
 - Prism backend for PrismML / Bonsai GGUF packs. Power admits only Prism-required

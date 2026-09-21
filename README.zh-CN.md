@@ -25,7 +25,7 @@
 </p>
 
 <p align="center">
-  <a href="#发布状态2026-09-10">发布状态</a> &middot;
+  <a href="#发布状态2026-09-21">发布状态</a> &middot;
   <a href="#实测而非承诺">证据</a> &middot;
   <a href="#选择边界">表面</a> &middot;
   <a href="#快速开始">快速开始</a> &middot;
@@ -43,23 +43,23 @@ A3S Power 是面向推理的模型无关 Rust 执行层。模型 crate 保留其
 以及最小的层流式 TEE 配置。运行时核心不对 Qwen 或任何其他模型族做分发。
 
 > [!IMPORTANT]
-> **v1.0.0 尚未生产发布。** `main` 仅承载冻结源码线。最新**已发布**的 crate
-> 与 API 文档仍为 [v0.9.0](https://crates.io/crates/a3s-power/0.9.0)。
+> **当前版本是 v0.10.0。** `main` 已包含 Prism 后端与 SystemOne 评分，并且已经越过冻结父提交。**v1.0.0 仍不是生产发布。**
 
-## 发布状态（2026-09-10）
+## 发布状态（2026-09-21）
 
 | 项 | 状态 |
 | --- | --- |
-| 包版本 / 变更日志 | `Cargo.toml` `1.0.0`；带日期的 `[1.0.0]`；冻结时 `[Unreleased]` 为空 |
-| 冻结源码父提交 `S` | `514031dc74edd72da7c3bfee40144a38d2d91434` |
-| 开发 / ROADMAP P0–P6 | `main` 上已完成（软件计划出口） |
+| 包版本 / 变更日志 | `Cargo.toml` `0.10.0`；带日期的 `[0.10.0] - 2026-09-21` |
+| v0.10.0 在 `main` 上新增 | PrismML / Bonsai 服务（`prism_upstream`、`prism_profile`）与 `POST /v1/systemone` |
+| 生产 v1 的冻结源码父提交 `S` | `514031dc74edd72da7c3bfee40144a38d2d91434` |
+| 开发 / ROADMAP P0–P6 | 软件计划已出口。Scale 0 / Phase R 尚未出口 |
 | Exact-parent CPU + CUDA 契约捕获 | 已检入 [release-contract-windows-20260910](docs/benchmarks/release-contract-windows-20260910/README.md) |
 | 捕获 / 组装操作脚本 | [tools/release-capture](tools/release-capture/README.md) |
 | Exact-parent Metal 捕获 | **缺失**（需真实 Apple Silicon） |
 | Exact-parent SEV-SNP confidential-GPU 捕获 | **缺失**（需机密硬件 + NRAS 晋升） |
 | `main` 上的 `release/v1.0.0/` 证据子提交 | **不存在** |
 | 附注生产标签 `v1.0.0` | **未发布** |
-| crates.io / docs.rs | 仍为 **v0.9.0** |
+| 本版本标签 | `v0.10.0`（v1 之前；不满足生产证据门） |
 
 生产 `v1.0.0` 标签仅在 `S` 的证据子提交恰好新增
 `release/v1.0.0/release-evidence.{json,sha256}`（四平台齐全），且 GitHub
@@ -110,10 +110,10 @@ Q4 文件仅在说明处作为辅助 proposer 出现。
 
 ### 运行当前托管服务
 
-从 `main` 安装冻结的 v1.0.0 **源码**线（不是生产标签）：
+安装当前 v0.10.0：
 
 ~~~bash
-cargo install --git https://github.com/A3S-Lab/Power.git --locked a3s-power
+cargo install a3s-power --version 0.10.0 --locked
 a3s-power serve --host 127.0.0.1 --port 11434
 ~~~
 
@@ -124,7 +124,7 @@ a3s-power models pull Qwen/Qwen2.5-0.5B-Instruct-GGUF:q4_k_m
 a3s-power chat Qwen/Qwen2.5-0.5B-Instruct-GGUF:q4_k_m
 ~~~
 
-若使用已发布的 v0.9.0 CLI：
+若使用上一已发布 CLI：
 
 ~~~bash
 cargo install a3s-power --version 0.9.0 --locked

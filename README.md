@@ -26,7 +26,7 @@
 </p>
 
 <p align="center">
-  <a href="#release-status-2026-09-10">Release status</a> &middot;
+  <a href="#release-status-2026-09-21">Release status</a> &middot;
   <a href="#measured-not-promised">Evidence</a> &middot;
   <a href="#choose-the-boundary">Surfaces</a> &middot;
   <a href="#quick-start">Quick start</a> &middot;
@@ -48,24 +48,25 @@ layer-streaming TEE profile. The runtime core does not dispatch on Qwen or any
 other model family.
 
 > [!IMPORTANT]
-> **v1.0.0 is not a production release yet.** `main` carries the frozen source
-> line only. The latest **published** crate and API docs remain
-> [v0.9.0](https://crates.io/crates/a3s-power/0.9.0).
+> **Current release is v0.10.0.** `main` includes the Prism backend and
+> SystemOne scoring, and it is past the frozen parent. **v1.0.0 is still not
+> a production release.**
 
-## Release status (2026-09-10)
+## Release status (2026-09-21)
 
 | Item | Status |
 | --- | --- |
-| Package / changelog | `Cargo.toml` `1.0.0`; dated `[1.0.0]`; `[Unreleased]` empty at freeze |
-| Frozen source parent `S` | `514031dc74edd72da7c3bfee40144a38d2d91434` |
-| Development / ROADMAP P0–P6 | Complete on `main` (software plan exit) |
+| Package / changelog | `Cargo.toml` `0.10.0`; dated `[0.10.0] - 2026-09-21` |
+| What v0.10.0 adds on `main` | PrismML / Bonsai serving (`prism_upstream`, `prism_profile`) and `POST /v1/systemone` |
+| Frozen source parent `S` for production v1 | `514031dc74edd72da7c3bfee40144a38d2d91434` |
+| Development / ROADMAP P0–P6 | Complete (software plan exit). Scale 0 / Phase R has not exited |
 | Exact-parent CPU + CUDA contract captures | Checked in under [release-contract-windows-20260910](docs/benchmarks/release-contract-windows-20260910/README.md) |
 | Capture / assemble operator scripts | [tools/release-capture](tools/release-capture/README.md) |
 | Exact-parent Metal capture | **Missing** (needs real Apple Silicon) |
 | Exact-parent SEV-SNP confidential-GPU capture | **Missing** (needs confidential hardware + NRAS promotion) |
 | `release/v1.0.0/` evidence child on `main` | **Absent** |
 | Annotated production tag `v1.0.0` | **Not published** |
-| crates.io / docs.rs | Still **v0.9.0** |
+| This release tag | `v0.10.0` (pre-v1; does not satisfy the production evidence gate) |
 
 A production `v1.0.0` tag exists only when an evidence-only child of `S` adds
 exactly `release/v1.0.0/release-evidence.{json,sha256}` for all four platforms
@@ -121,11 +122,10 @@ Pick the narrowest surface that fits the product.
 
 ### Run the current hosted service
 
-Install directly from `main` for the frozen v1.0.0 **source** line (not a
-production tag):
+Install the current v0.10.0 release:
 
 ~~~bash
-cargo install --git https://github.com/A3S-Lab/Power.git --locked a3s-power
+cargo install a3s-power --version 0.10.0 --locked
 a3s-power serve --host 127.0.0.1 --port 11434
 ~~~
 
@@ -136,7 +136,7 @@ a3s-power models pull Qwen/Qwen2.5-0.5B-Instruct-GGUF:q4_k_m
 a3s-power chat Qwen/Qwen2.5-0.5B-Instruct-GGUF:q4_k_m
 ~~~
 
-For the published v0.9.0 CLI instead:
+For the previous published CLI:
 
 ~~~bash
 cargo install a3s-power --version 0.9.0 --locked
