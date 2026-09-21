@@ -1,0 +1,14 @@
+host = "127.0.0.1"
+port = 11434
+max_loaded_models = 1
+max_concurrent_requests = 1
+keep_alive = "10m"
+use_mmap = true
+flash_attention = true
+num_parallel = 1
+spec_mode = "off"
+
+gpu {
+  gpu_layers = -1
+  main_gpu = 0
+}

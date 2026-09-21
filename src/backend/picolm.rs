@@ -810,6 +810,7 @@ fn forward_pass_streaming(
                         done_reason: Some("stop".to_string()),
                         prompt_eval_duration_ns: None,
                         tool_calls,
+                        upstream_timings: None,
                     }),
                 );
                 return;
@@ -835,6 +836,7 @@ fn forward_pass_streaming(
                                 done_reason: None,
                                 prompt_eval_duration_ns: None,
                                 tool_calls: None,
+                                upstream_timings: None,
                             }),
                         ) {
                             return;
@@ -861,6 +863,7 @@ fn forward_pass_streaming(
                                 done_reason: Some("stop".to_string()),
                                 prompt_eval_duration_ns: None,
                                 tool_calls: None,
+                                upstream_timings: None,
                             }),
                         );
                         return;
@@ -889,6 +892,7 @@ fn forward_pass_streaming(
                                     done_reason: None,
                                     prompt_eval_duration_ns: None,
                                     tool_calls: None,
+                                    upstream_timings: None,
                                 }),
                             )
                         {
@@ -927,6 +931,7 @@ fn forward_pass_streaming(
                             done_reason: Some("stop".to_string()),
                             prompt_eval_duration_ns: None,
                             tool_calls,
+                            upstream_timings: None,
                         }),
                     );
                     return;
@@ -942,6 +947,7 @@ fn forward_pass_streaming(
                         done_reason: None,
                         prompt_eval_duration_ns: None,
                         tool_calls: None,
+                        upstream_timings: None,
                     }),
                 ) {
                     return;
@@ -1211,6 +1217,7 @@ fn forward_pass_streaming(
                                     done_reason: Some("stop".to_string()),
                                     prompt_eval_duration_ns: None,
                                     tool_calls,
+                                    upstream_timings: None,
                                 }),
                             );
                             return;
@@ -1240,6 +1247,7 @@ fn forward_pass_streaming(
                                         done_reason: Some("stop".to_string()),
                                         prompt_eval_duration_ns: None,
                                         tool_calls,
+                                        upstream_timings: None,
                                     }),
                                 );
                                 return;
@@ -1254,6 +1262,7 @@ fn forward_pass_streaming(
                                     done_reason: None,
                                     prompt_eval_duration_ns: None,
                                     tool_calls: None,
+                                    upstream_timings: None,
                                 }),
                             ) {
                                 return;
@@ -1355,6 +1364,7 @@ fn forward_pass_streaming(
             done_reason: Some("length".to_string()),
             prompt_eval_duration_ns: None,
             tool_calls,
+            upstream_timings: None,
         }),
     );
 }
@@ -2558,6 +2568,7 @@ mod tests {
             done_reason: None,
             prompt_eval_duration_ns: None,
             tool_calls: None,
+            upstream_timings: None,
         }
     }
 

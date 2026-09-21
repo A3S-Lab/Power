@@ -711,6 +711,7 @@ pub async fn handler(
                 let mut prompt_tokens: u32 = 0;
                 let mut finish_reason = "stop".to_string();
                 let mut ttft_recorded = false;
+                let mut prism_upstream: Option<serde_json::Value> = None;
                 let mut stream = stream;
                 while let Some(chunk) = stream.next().await {
                     match chunk {
@@ -736,6 +737,9 @@ pub async fn handler(
                             }
                             if let Some(calls) = c.tool_calls {
                                 tool_calls.extend(calls);
+                            }
+                            if c.upstream_timings.is_some() {
+                                prism_upstream = c.upstream_timings;
                             }
                         }
                         Err(e) => {
@@ -794,6 +798,7 @@ pub async fn handler(
                             } else {
                                 Some(full_thinking.clone())
                             },
+                            reasoning_content: None,
                             unsupported: Default::default(),
                         },
                         finish_reason: Some(finish_reason),
@@ -806,6 +811,7 @@ pub async fn handler(
                     system_fingerprint: Some("fp_a3s_power".to_string()),
                     attestation_receipt: Some(attestation_receipt),
                     attestation_receipt_sha256: Some(attestation_receipt_sha256),
+                    prism_upstream,
                 };
 
                 // Privacy: zeroize inference buffers in TEE mode
@@ -876,6 +882,7 @@ mod tests {
             done_reason: Some("length".to_string()),
             prompt_eval_duration_ns: None,
             tool_calls: None,
+            upstream_timings: None,
         };
         let terminal_metadata = ChatResponseChunk {
             content: String::new(),
@@ -885,6 +892,7 @@ mod tests {
             done_reason: Some("length".to_string()),
             prompt_eval_duration_ns: None,
             tool_calls: None,
+            upstream_timings: None,
         };
         assert!(super::chunk_emits_token(&terminal_token));
         assert!(!super::chunk_emits_token(&terminal_metadata));

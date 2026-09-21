@@ -521,6 +521,10 @@ pub struct ChatCompletionMessage {
     /// Reasoning/thinking content from reasoning models (Ollama native wire format).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// OpenAI-compatible reasoning echo. Accepted and ignored so multi-turn
+    /// clients can replay assistant messages without failing closed.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "reasoning")]
+    pub reasoning_content: Option<String>,
     /// Unknown message fields are preserved so request handlers can reject
     /// unsupported prompt or output policy instead of silently dropping it.
     #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
@@ -554,7 +558,7 @@ impl ChatCompletionMessage {
             None
         } else {
             Some(format!(
-                "unsupported message field(s): {}; supported fields are role, content, name, tool_calls, tool_call_id, images, and thinking",
+                "unsupported message field(s): {}; supported fields are role, content, name, tool_calls, tool_call_id, images, thinking, and reasoning_content",
                 fields.join(", ")
             ))
         }
@@ -579,6 +583,9 @@ pub struct ChatCompletionResponse {
     /// SHA-256 digest of `attestation_receipt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_receipt_sha256: Option<String>,
+    /// Prism upstream timings (`source: upstream-reported`) when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prism_upstream: Option<serde_json::Value>,
 }
 
 /// A single choice in a chat completion response.
@@ -1222,6 +1229,7 @@ mod tests {
                     tool_call_id: None,
                     images: None,
                     thinking: None,
+                    reasoning_content: None,
                     unsupported: Default::default(),
                 },
                 finish_reason: Some("stop".to_string()),
@@ -1234,6 +1242,7 @@ mod tests {
             system_fingerprint: None,
             attestation_receipt: None,
             attestation_receipt_sha256: None,
+            prism_upstream: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("chatcmpl-123"));
@@ -1527,6 +1536,7 @@ mod tests {
             tool_call_id: None,
             images: None,
             thinking: None,
+            reasoning_content: None,
             unsupported: Default::default(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -1712,6 +1722,7 @@ mod tests {
             tool_call_id: None,
             images: None,
             thinking: Some("reasoning here".to_string()),
+            reasoning_content: None,
             unsupported: Default::default(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -1729,10 +1740,12 @@ mod tests {
             tool_call_id: None,
             images: None,
             thinking: None,
+            reasoning_content: None,
             unsupported: Default::default(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("thinking"));
+        assert!(!json.contains("reasoning_content"));
     }
 
     #[test]

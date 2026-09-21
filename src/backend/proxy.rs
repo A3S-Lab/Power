@@ -143,6 +143,7 @@ impl Backend for ProxyBackend {
                                     done_reason: None,
                                     prompt_eval_duration_ns: None,
                                     tool_calls: None,
+                                    upstream_timings: None,
                                 }))
                                 .await
                                 .is_err()
@@ -173,6 +174,7 @@ impl Backend for ProxyBackend {
                         done_reason: None,
                         prompt_eval_duration_ns: None,
                         tool_calls: Some(calls),
+                        upstream_timings: None,
                     }))
                     .await
                     .is_err()
@@ -189,6 +191,7 @@ impl Backend for ProxyBackend {
                     done_reason,
                     prompt_eval_duration_ns: None,
                     tool_calls: None,
+                    upstream_timings: None,
                 }))
                 .await;
         });

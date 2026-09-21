@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Prism backend for PrismML / Bonsai GGUF packs. Power admits only Prism-required
+  manifests, forwards chat and native tool calls to a Prism `llama-server`
+  (`prism_upstream`, `prism_profile` `baseline`|`dspark`|`kv4`), and leaves
+  Power `spec_mode` fail-closed. See `docs/prism-backend-plan.md` and
+  `docs/prism-acceleration-runbook.md`.
+- Jev-compatible `POST /v1/systemone` decision scoring on the llama.cpp
+  backend: one forward pass, option-label logits, subset softmax, and
+  `choice` / `noul` / `score` answers. Probabilities are conditional over
+  declared labels only and are not TypeSafe Jev calibration. The local
+  Qwen3.5-4B demo defaults to **Q8_0** for RTX 4090-class GPUs. See
+  `docs/systemone.md` and `docs/examples/systemone-qwen35-4b/`.
+
 ### Fixed
 
 - Windows CUDA capture helpers now set `NVCC_CCBIN` through a space-free

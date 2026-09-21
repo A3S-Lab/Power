@@ -5,6 +5,7 @@ pub mod openai;
 pub mod prompt_cache;
 pub mod prompt_policy;
 pub mod receipt;
+pub mod systemone_types;
 pub mod types;
 
 /// Format a UTC timestamp in RFC 3339 format.

@@ -1,0 +1,29 @@
+{
+  "model": "qwen35-4b-q8",
+  "state": "Customer: I was charged twice and I am furious.",
+  "questions": {
+    "topic": {
+      "type": "choice",
+      "instructions": "What is the issue about?",
+      "criteria": {
+        "billing": "money problems, charges, refunds",
+        "bug": "broken product or technical failure",
+        "account": "login or access"
+      }
+    },
+    "urgent": {
+      "type": "noul",
+      "instructions": "Escalate to a human now?"
+    },
+    "severity": {
+      "type": "score",
+      "instructions": "How urgent is this?",
+      "criteria": [
+        "routine",
+        "handle today",
+        "urgent",
+        "critical, about to churn"
+      ]
+    }
+  }
+}

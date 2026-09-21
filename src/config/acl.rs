@@ -53,6 +53,9 @@ const NORMAL_FIELDS: &[&str] = &[
     "proxy_effective_prompt_digest",
     "proxy_effective_prompt_digest_required",
     "proxy_effective_prompt_digest_path",
+    "prism_upstream",
+    "prism_profile",
+    "prism_drafter",
     "timing_padding_ms",
 ];
 
@@ -194,6 +197,9 @@ fn power_schema() -> Schema {
         "model_signing_key",
         "key_provider",
         "proxy_effective_prompt_digest_path",
+        "prism_upstream",
+        "prism_profile",
+        "prism_drafter",
     ] {
         schema = schema.attribute(name, AttributeSchema::optional(ValueSchema::string()));
     }

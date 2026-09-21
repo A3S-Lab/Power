@@ -145,6 +145,11 @@ cargo install a3s-power --version 0.9.0 --locked
 Models and content-addressed blobs live under `~/.a3s/power` by default. Set
 `A3S_POWER_HOME` to move the store.
 
+For Jev-shaped local decision scoring (`POST /v1/systemone`) with Qwen3.5-4B
+**Q8_0** on an RTX 4090-class GPU, see
+[`docs/systemone.md`](docs/systemone.md) and
+[`docs/examples/systemone-qwen35-4b/`](docs/examples/systemone-qwen35-4b/).
+
 ### Embed the current runtime
 
 ~~~toml
@@ -265,6 +270,7 @@ contracts. They do not define the architecture of the Power core.
 | --- | --- | --- |
 | `mistralrs` | Default GGUF, SafeTensors, vision, and embedding backend | No C++ inference engine |
 | `llamacpp` | Mature GGUF backend with native MTP support | CMake, C++ compiler, and libclang |
+| Prism (`prism_upstream` / `prism_profile`) | Fail-closed admission for PrismML / Bonsai packs; acceleration profiles `baseline`\|`dspark`\|`kv4` via upstream Prism `llama-server` | External Prism runtime (`docs/prism-acceleration-runbook.md`) |
 | `llamacpp-cuda` | CUDA execution for llama.cpp | CUDA toolkit |
 | `llamacpp-external-draft` | Typed DFlash, DFlash2, and DSpark artifact contracts | Reviewed patches for the pinned llama.cpp source |
 | `llamacpp-mtp-fr` | Experimental reduced-vocabulary draft projection | Reviewed patch for the pinned llama.cpp source |
@@ -456,6 +462,7 @@ llama.cpp P/D, or an end-to-end llm-d deployment claim.
 | `POST` | `/v1/chat/completions` | Chat, tools, structured output, vision, and SSE |
 | `POST` | `/v1/completions` | Text completion and SSE |
 | `POST` | `/v1/embeddings` | Embedding inference |
+| `POST` | `/v1/systemone` | Jev-shaped option-logit decision scoring (llama.cpp) |
 | `POST` | `/internal/v1/distributed-serving/decode/prepare` | Prepare a profile-bound decode destination |
 | `POST` | `/internal/v1/distributed-serving/prefill/execute` | Execute prefill and publish opaque model state |
 | `POST` | `/internal/v1/distributed-serving/decode/execute` | Consume state and return versioned NDJSON decode output |

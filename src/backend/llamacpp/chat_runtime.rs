@@ -147,6 +147,7 @@ pub(super) async fn chat(
                 },
                 prompt_eval_duration_ns: chunk.prompt_eval_duration_ns,
                 tool_calls,
+                upstream_timings: None,
             }
         })
     });

@@ -19,6 +19,83 @@ fn strftime_now(fmt: String) -> String {
     chrono::Local::now().format(&fmt).to_string()
 }
 
+/// Python/Jinja2-compatible string methods used by modern GGUF chat templates
+/// (Qwen3.5, etc.): `str.startswith` / `str.endswith`.
+fn unknown_method_callback(
+    _state: &minijinja::State,
+    value: &minijinja::Value,
+    method: &str,
+    args: &[minijinja::Value],
+) -> Result<minijinja::Value, minijinja::Error> {
+    use minijinja::value::{from_args, ValueKind};
+    use minijinja::{Error, ErrorKind, Value};
+
+    if value.kind() != ValueKind::String {
+        return Err(Error::from(ErrorKind::UnknownMethod));
+    }
+    let haystack = value.as_str().unwrap_or("");
+
+    match method {
+        "startswith" => {
+            let (prefix,): (Value,) = from_args(args)?;
+            Ok(Value::from(string_matches_prefix_or_suffix(
+                haystack, &prefix, true,
+            )?))
+        }
+        "endswith" => {
+            let (suffix,): (Value,) = from_args(args)?;
+            Ok(Value::from(string_matches_prefix_or_suffix(
+                haystack, &suffix, false,
+            )?))
+        }
+        _ => Err(Error::from(ErrorKind::UnknownMethod)),
+    }
+}
+
+fn string_matches_prefix_or_suffix(
+    haystack: &str,
+    needle: &minijinja::Value,
+    prefix: bool,
+) -> Result<bool, minijinja::Error> {
+    use minijinja::value::ValueKind;
+    use minijinja::{Error, ErrorKind};
+
+    match needle.kind() {
+        ValueKind::String => {
+            let needle = needle.as_str().unwrap_or("");
+            Ok(if prefix {
+                haystack.starts_with(needle)
+            } else {
+                haystack.ends_with(needle)
+            })
+        }
+        ValueKind::Seq => {
+            for item in needle.try_iter()? {
+                if item.kind() != ValueKind::String {
+                    return Err(Error::new(
+                        ErrorKind::InvalidOperation,
+                        "tuple for startswith/endswith must contain only strings",
+                    ));
+                }
+                let part = item.as_str().unwrap_or("");
+                let matched = if prefix {
+                    haystack.starts_with(part)
+                } else {
+                    haystack.ends_with(part)
+                };
+                if matched {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => Err(Error::new(
+            ErrorKind::InvalidOperation,
+            "startswith/endswith argument must be a string or a tuple of strings",
+        )),
+    }
+}
+
 /// Recognized chat template formats for prompt construction.
 ///
 /// Used as fallback when no raw Jinja2 template string is available.
@@ -69,6 +146,9 @@ pub fn render_jinja(
     // (e.g., Llama 3.x, Qwen, etc.)
     env.add_function("raise_exception", raise_exception);
     env.add_function("strftime_now", strftime_now);
+    // Qwen3.5 and other HF templates call Python string methods such as
+    // `content.startswith(...)` which minijinja does not expose by default.
+    env.set_unknown_method_callback(unknown_method_callback);
 
     // Build messages as simple Value objects for the template
     let msg_values: Vec<minijinja::Value> = messages
@@ -433,6 +513,23 @@ mod tests {
         let err = format_chat_prompt(&msgs, &ChatTemplateKind::ChatMl, Some(bad_template))
             .expect_err("raw Jinja template errors must fail closed");
         assert!(err.contains("Jinja2 chat template rendering failed"));
+    }
+
+    #[test]
+    fn test_render_jinja_supports_python_startswith() {
+        let template = "{% if messages[1].content.startswith('Hel') %}yes{% else %}no{% endif %}";
+        let msgs = sample_messages();
+        let rendered = render_jinja(template, &msgs, false).unwrap();
+        assert_eq!(rendered, "yes");
+    }
+
+    #[test]
+    fn test_render_jinja_supports_python_endswith_tuple() {
+        let template =
+            "{% if messages[1].content.endswith(('lo', 'xyz')) %}yes{% else %}no{% endif %}";
+        let msgs = sample_messages();
+        let rendered = render_jinja(template, &msgs, false).unwrap();
+        assert_eq!(rendered, "yes");
     }
 
     #[test]

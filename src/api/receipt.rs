@@ -580,6 +580,7 @@ mod tests {
                 tool_call_id: None,
                 images: None,
                 thinking: None,
+                reasoning_content: None,
                 unsupported: Default::default(),
             }],
             temperature: Some(0.2),

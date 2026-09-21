@@ -146,6 +146,13 @@ impl Backend for MistralRsBackend {
         )
     }
 
+    fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
+        if crate::backend::prism::is_prism_required_manifest(manifest) {
+            return false;
+        }
+        self.supports(&manifest.format)
+    }
+
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {
         tracing::info!(model = %manifest.name, path = %manifest.path.display(), "Loading model via mistral.rs");
 
@@ -432,6 +439,7 @@ impl Backend for MistralRsBackend {
                                 done_reason,
                                 prompt_eval_duration_ns: None,
                                 tool_calls,
+                                upstream_timings: None,
                             };
 
                             if !send_mistralrs_chat_result(&tx, Ok(chat_chunk)).await {
@@ -454,6 +462,7 @@ impl Backend for MistralRsBackend {
                                     done_reason: Some("stop".to_string()),
                                     prompt_eval_duration_ns: None,
                                     tool_calls: None,
+                                    upstream_timings: None,
                                 }),
                             )
                             .await
@@ -959,6 +968,13 @@ impl Backend for MistralRsBackend {
 
     fn supports(&self, format: &ModelFormat) -> bool {
         matches!(format, ModelFormat::Gguf | ModelFormat::SafeTensors)
+    }
+
+    fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
+        if crate::backend::prism::is_prism_required_manifest(manifest) {
+            return false;
+        }
+        self.supports(&manifest.format)
     }
 
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {
@@ -1498,6 +1514,7 @@ mod tests {
             done_reason: None,
             prompt_eval_duration_ns: None,
             tool_calls: None,
+            upstream_timings: None,
         }
     }
 

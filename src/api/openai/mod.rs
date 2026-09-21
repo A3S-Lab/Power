@@ -3,6 +3,7 @@ pub mod chat;
 pub mod completions;
 pub mod embeddings;
 pub mod models;
+pub mod systemone;
 
 use axum::http::StatusCode;
 use axum::response::sse::Event;
@@ -69,6 +70,7 @@ pub fn routes() -> Router<AppState> {
             get(models::get_handler).delete(models::delete_handler),
         )
         .route("/embeddings", post(embeddings::handler))
+        .route("/systemone", post(systemone::handler))
         .route("/attestation", get(attestation::handler))
         .route("/logs", get(logs_handler))
 }

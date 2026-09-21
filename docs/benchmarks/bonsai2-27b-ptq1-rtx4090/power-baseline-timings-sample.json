@@ -1,0 +1,81 @@
+{
+  "id": "chatcmpl-e446c14f-f9ea-4ff3-a27b-7ac9a79abef9",
+  "object": "chat.completion",
+  "created": 1789984660,
+  "model": "bonsai2-ptq1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "thinking": "We need answer user: \"Implement a Python function that returns the nth Fibonacci number. Reply with code only.\" Need final code only. Need decide implementation. Could be simple iterative. Need maybe handle n? nth Fibonacci number ambiguous: F(0)=0, F(1)=1. Return nth. Code only. Provide function. Maybe include type hints. Ensure no explanation. Final only code block? \"code only\" likely just code. Could be:\ndef fibonacci(n: int) -> int:\n    if n < 0: raise ValueError\n    a,b=0,1\n    for _ in range(n):"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 1,
+    "total_tokens": 1
+  },
+  "system_fingerprint": "fp_a3s_power",
+  "attestation_receipt": {
+    "schema": "a3s.power.inference-receipt.v2",
+    "request_type": "chat-completion",
+    "model": "bonsai2-ptq1",
+    "input": {
+      "kind": "chat.messages",
+      "sha256": "d1d4eb75f232bf268bf81dde4f6dabc20a021a3e8f99af70d8ea68e9addee11d"
+    },
+    "runtime_policy": {
+      "prompt": {
+        "chat_template_source": "gguf.tokenizer.chat_template",
+        "chat_template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+      },
+      "execution": {
+        "gpu_sha256": "8bb983eda8f529503d29d72224b54ec81c42b190c0caabc254ee95d1900d1b49",
+        "inference_sha256": "a364a10e04a114c92c92774bc1f121c7a0eb2800b829bcdf91f36e9406f54b52"
+      }
+    },
+    "decoding": {
+      "parameters": {
+        "frequency_penalty": null,
+        "max_completion_tokens": null,
+        "max_tokens": 128,
+        "min_p": null,
+        "mirostat": null,
+        "mirostat_eta": null,
+        "mirostat_tau": null,
+        "modalities": null,
+        "n": null,
+        "num_ctx": null,
+        "parallel_tool_calls": null,
+        "penalize_newline": null,
+        "presence_penalty": null,
+        "repeat_last_n": null,
+        "repeat_penalty": null,
+        "seed": null,
+        "stream": false,
+        "temperature": 0.20000000298023224,
+        "tfs_z": null,
+        "top_k": null,
+        "top_p": null,
+        "typical_p": null
+      }
+    }
+  },
+  "attestation_receipt_sha256": "bfb5e2382c68b90a2a77535de2664f966acd22a13c1977ad05dcd845f48b5a03",
+  "prism_upstream": {
+    "source": "upstream-reported",
+    "timings": {
+      "cache_n": 42,
+      "predicted_ms": 1685.627,
+      "predicted_n": 128,
+      "predicted_per_second": 75.34288427985551,
+      "prompt_ms": 251.09,
+      "prompt_n": 26,
+      "prompt_per_second": 103.54852841610575
+    }
+  }
+}

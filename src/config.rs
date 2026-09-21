@@ -598,6 +598,24 @@ pub struct PowerConfig {
     #[serde(default)]
     pub proxy_upstreams: HashMap<String, String>,
 
+    /// Base URL for a PrismML `llama-server` that serves Bonsai / Ternary packs
+    /// (`PTQ1_0` / `PQ2_0`). Used by the `prism` backend. Example:
+    /// `"http://127.0.0.1:8080"`. Override with env `A3S_PRISM_UPSTREAM`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prism_upstream: Option<String>,
+
+    /// Prism acceleration profile for the configured upstream: `baseline`
+    /// (default), `dspark`, or `kv4`. Distinct from Power `spec_mode` — see
+    /// `docs/prism-acceleration-plan.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prism_profile: Option<String>,
+
+    /// Absolute path to a Prism DSpark drafter GGUF (`*dspark-dflash*`).
+    /// Required when `prism_profile = "dspark"` so Power can fail closed if the
+    /// operator claims DSpark without a pinned drafter identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prism_drafter: Option<String>,
+
     /// Ask proxy upstreams for the exact rendered chat prompt digest before
     /// inference, using `proxy_effective_prompt_digest_path`.
     #[serde(default)]
@@ -828,6 +846,9 @@ impl Default for PowerConfig {
             rate_limit_rps: 0,
             max_concurrent_requests: 0,
             proxy_upstreams: HashMap::new(),
+            prism_upstream: None,
+            prism_profile: None,
+            prism_drafter: None,
             proxy_effective_prompt_digest: false,
             proxy_effective_prompt_digest_required: false,
             proxy_effective_prompt_digest_path: default_proxy_effective_prompt_digest_path(),

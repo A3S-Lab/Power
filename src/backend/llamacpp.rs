@@ -34,7 +34,7 @@ use super::prompt_cache::{
 use super::types::EffectivePromptDigest;
 use super::types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk, EmbeddingRequest,
-    EmbeddingResponse,
+    EmbeddingResponse, SystemOneRequest, SystemOneResponse,
 };
 use super::Backend;
 
@@ -50,6 +50,8 @@ mod external_draft;
 mod model_loading;
 #[cfg(feature = "llamacpp")]
 mod speculative_runtime;
+#[cfg(feature = "llamacpp")]
+mod systemone;
 #[cfg(feature = "llamacpp")]
 use external_draft::{
     external_draft_strategy, loads_mtp_weights as llamacpp_loads_mtp_weights,
@@ -685,6 +687,17 @@ impl Backend for LlamaCppBackend {
         matches!(format, ModelFormat::Gguf)
     }
 
+    fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
+        if crate::backend::prism::is_prism_required_manifest(manifest) {
+            return false;
+        }
+        self.supports(&manifest.format)
+    }
+
+    fn supports_systemone(&self) -> bool {
+        true
+    }
+
     fn prompt_cache_support(&self) -> PromptCacheSupport {
         PromptCacheSupport::PrefixMatch
     }
@@ -764,6 +777,14 @@ impl Backend for LlamaCppBackend {
     ) -> Result<EmbeddingResponse> {
         embedding::embed(self, model_name, request).await
     }
+
+    async fn systemone(
+        &self,
+        model_name: &str,
+        request: SystemOneRequest,
+    ) -> Result<SystemOneResponse> {
+        systemone::systemone(self, model_name, request).await
+    }
 }
 
 // ============================================================================
@@ -779,6 +800,13 @@ impl Backend for LlamaCppBackend {
 
     fn supports(&self, format: &ModelFormat) -> bool {
         matches!(format, ModelFormat::Gguf)
+    }
+
+    fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
+        if crate::backend::prism::is_prism_required_manifest(manifest) {
+            return false;
+        }
+        self.supports(&manifest.format)
     }
 
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {

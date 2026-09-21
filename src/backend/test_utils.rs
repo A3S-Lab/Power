@@ -8,7 +8,8 @@ use futures::Stream;
 use crate::backend::prompt_cache::PromptCacheSupport;
 use crate::backend::types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
-    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse, FunctionCall, ToolCall,
+    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse, FunctionCall, SystemOneAnswerSpec,
+    SystemOneQuestionSpec, SystemOneRequest, SystemOneResponse, ToolCall,
 };
 use crate::backend::{Backend, BackendRegistry};
 use crate::config::PowerConfig;
@@ -17,6 +18,7 @@ use crate::model::manifest::{ModelFormat, ModelManifest, ModelParameters};
 use crate::model::registry::ModelRegistry;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
+use std::collections::BTreeMap;
 
 /// A mock backend for testing handlers without real inference.
 pub struct MockBackend {
@@ -37,6 +39,8 @@ pub struct MockBackend {
     emit_tool_calls: bool,
     /// When true, the final chunk carries the generated token and metadata.
     terminal_payload: bool,
+    /// When false, `systemone` returns BackendNotAvailable.
+    systemone_supported: bool,
     effective_prompt: Option<EffectivePromptDigest>,
     loaded_speculative_artifacts: Vec<crate::backend::LoadedSpeculativeArtifact>,
     last_chat_request: Arc<Mutex<Option<ChatRequest>>>,
@@ -69,6 +73,7 @@ impl MockBackend {
             emit_thinking: false,
             emit_tool_calls: false,
             terminal_payload: false,
+            systemone_supported: true,
             effective_prompt: None,
             loaded_speculative_artifacts: Vec::new(),
             last_chat_request: Arc::new(Mutex::new(None)),
@@ -97,6 +102,7 @@ impl MockBackend {
             emit_thinking: false,
             emit_tool_calls: false,
             terminal_payload: false,
+            systemone_supported: true,
             effective_prompt: None,
             loaded_speculative_artifacts: Vec::new(),
             last_chat_request: Arc::new(Mutex::new(None)),
@@ -125,6 +131,7 @@ impl MockBackend {
             emit_thinking: false,
             emit_tool_calls: false,
             terminal_payload: false,
+            systemone_supported: true,
             effective_prompt: None,
             loaded_speculative_artifacts: Vec::new(),
             last_chat_request: Arc::new(Mutex::new(None)),
@@ -153,6 +160,7 @@ impl MockBackend {
             emit_thinking: false,
             emit_tool_calls: false,
             terminal_payload: false,
+            systemone_supported: true,
             effective_prompt: None,
             loaded_speculative_artifacts: Vec::new(),
             last_chat_request: Arc::new(Mutex::new(None)),
@@ -181,6 +189,7 @@ impl MockBackend {
             emit_thinking: true,
             emit_tool_calls: false,
             terminal_payload: false,
+            systemone_supported: true,
             effective_prompt: None,
             loaded_speculative_artifacts: Vec::new(),
             last_chat_request: Arc::new(Mutex::new(None)),
@@ -197,6 +206,12 @@ impl MockBackend {
         let mut mock = Self::success();
         mock.emit_tool_calls = true;
         mock
+    }
+
+    /// Disable System One scoring support on this mock.
+    pub fn without_systemone(mut self) -> Self {
+        self.systemone_supported = false;
+        self
     }
 
     /// Add an effective prompt digest claim to this mock backend.
@@ -289,6 +304,10 @@ impl Backend for MockBackend {
             }
     }
 
+    fn supports_systemone(&self) -> bool {
+        self.systemone_supported
+    }
+
     fn prompt_cache_support(&self) -> PromptCacheSupport {
         self.prompt_cache_support
     }
@@ -376,6 +395,7 @@ impl Backend for MockBackend {
                     done_reason: None,
                     prompt_eval_duration_ns: None,
                     tool_calls: None,
+                    upstream_timings: None,
                 }),
                 Ok(ChatResponseChunk {
                     content: "The answer is 42.".to_string(),
@@ -385,6 +405,7 @@ impl Backend for MockBackend {
                     done_reason: None,
                     prompt_eval_duration_ns: None,
                     tool_calls: None,
+                    upstream_timings: None,
                 }),
                 Ok(ChatResponseChunk {
                     content: "".to_string(),
@@ -394,6 +415,7 @@ impl Backend for MockBackend {
                     done_reason: Some("stop".to_string()),
                     prompt_eval_duration_ns: Some(1_000_000),
                     tool_calls: None,
+                    upstream_timings: None,
                 }),
             ]
         } else if self.emit_tool_calls {
@@ -414,6 +436,7 @@ impl Backend for MockBackend {
                         },
                         index: Some(0),
                     }]),
+                    upstream_timings: None,
                 }),
                 Ok(ChatResponseChunk {
                     content: String::new(),
@@ -423,6 +446,7 @@ impl Backend for MockBackend {
                     done_reason: Some("tool_calls".to_string()),
                     prompt_eval_duration_ns: Some(1_000_000),
                     tool_calls: None,
+                    upstream_timings: None,
                 }),
             ]
         } else if self.terminal_payload {
@@ -434,6 +458,7 @@ impl Backend for MockBackend {
                 done_reason: Some("length".to_string()),
                 prompt_eval_duration_ns: Some(1_000_000),
                 tool_calls: None,
+                upstream_timings: None,
             })]
         } else {
             vec![
@@ -445,6 +470,7 @@ impl Backend for MockBackend {
                     done_reason: None,
                     prompt_eval_duration_ns: None,
                     tool_calls: None,
+                    upstream_timings: None,
                 }),
                 Ok(ChatResponseChunk {
                     content: "".to_string(),
@@ -454,6 +480,7 @@ impl Backend for MockBackend {
                     done_reason: Some("stop".to_string()),
                     prompt_eval_duration_ns: Some(1_000_000),
                     tool_calls: None,
+                    upstream_timings: None,
                 }),
             ]
         };
@@ -525,6 +552,89 @@ impl Backend for MockBackend {
     ) -> Result<EmbeddingResponse> {
         let embeddings = request.input.iter().map(|_| vec![0.1, 0.2, 0.3]).collect();
         Ok(EmbeddingResponse { embeddings })
+    }
+
+    async fn systemone(
+        &self,
+        model_name: &str,
+        request: SystemOneRequest,
+    ) -> Result<SystemOneResponse> {
+        if !self.systemone_supported {
+            return Err(PowerError::BackendNotAvailable(format!(
+                "backend '{}' does not support System One decision scoring (model: '{model_name}')",
+                self.name()
+            )));
+        }
+
+        let mut answers = BTreeMap::new();
+        for (name, question) in request.questions {
+            let answer = match question {
+                SystemOneQuestionSpec::Choice { criteria, .. } => {
+                    let mut probabilities = BTreeMap::new();
+                    let mut first_key = None;
+                    let n = criteria.len().max(1) as f64;
+                    for (i, key) in criteria.keys().enumerate() {
+                        let p = if i == 0 {
+                            0.7
+                        } else {
+                            0.3 / (n - 1.0).max(1.0)
+                        };
+                        if i == 0 {
+                            first_key = Some(key.clone());
+                        }
+                        probabilities.insert(key.clone(), p);
+                    }
+                    // Normalize in case of floating drift.
+                    let sum: f64 = probabilities.values().sum();
+                    if sum > 0.0 {
+                        for v in probabilities.values_mut() {
+                            *v /= sum;
+                        }
+                    }
+                    SystemOneAnswerSpec::Choice {
+                        choice: first_key.unwrap_or_default(),
+                        confidence: 0.7,
+                        probabilities,
+                    }
+                }
+                SystemOneQuestionSpec::Noul { .. } => SystemOneAnswerSpec::Noul { noul: 0.65 },
+                SystemOneQuestionSpec::Score { criteria, .. } => {
+                    let mut probabilities = BTreeMap::new();
+                    let mut legend = BTreeMap::new();
+                    let n = criteria.len().max(1) as f64;
+                    for (i, level) in criteria.iter().enumerate() {
+                        let key = i.to_string();
+                        legend.insert(key.clone(), level.clone());
+                        probabilities.insert(
+                            key,
+                            if i == 0 {
+                                0.6
+                            } else {
+                                0.4 / (n - 1.0).max(1.0)
+                            },
+                        );
+                    }
+                    let sum: f64 = probabilities.values().sum();
+                    if sum > 0.0 {
+                        for v in probabilities.values_mut() {
+                            *v /= sum;
+                        }
+                    }
+                    SystemOneAnswerSpec::Score {
+                        score: 0.0,
+                        confidence: 0.55,
+                        legend,
+                        probabilities,
+                    }
+                }
+            };
+            answers.insert(name, answer);
+        }
+
+        Ok(SystemOneResponse {
+            answers,
+            input_tokens: (request.state.split_whitespace().count() as u32).max(1),
+        })
     }
 
     async fn cleanup_request(&self, _model_name: &str, _ctx: &RequestContext) -> Result<()> {

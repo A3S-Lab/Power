@@ -6,8 +6,10 @@ pub mod llamacpp;
 pub mod mistralrs_backend;
 pub mod picolm;
 pub mod picolm_ops;
+pub mod prism;
 pub mod prompt_cache;
 pub mod proxy;
+pub mod systemone_scoring;
 /// Test utilities for integration tests. Not part of the public API.
 #[doc(hidden)]
 pub mod test_utils;
@@ -32,7 +34,8 @@ use prompt_cache::{PromptCacheMetricsSnapshot, PromptCacheSupport};
 
 use types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
-    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse,
+    EffectivePromptDigest, EmbeddingRequest, EmbeddingResponse, SystemOneRequest,
+    SystemOneResponse,
 };
 
 /// Public proof that a content-addressed speculative artifact was verified and loaded.
@@ -91,6 +94,16 @@ pub trait Backend: Send + Sync {
     /// same container format can coexist without relying on raw backend names.
     fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
         self.supports(&manifest.format)
+    }
+
+    /// Whether this backend can score System One (Jev-shaped) decisions.
+    ///
+    /// Default: false. Only backends that can read next-token option-label
+    /// logits should override this. Callers must select via
+    /// [`BackendRegistry::find_for_systemone`] rather than format priority so
+    /// GGUF models are not loaded into a chat-only backend first.
+    fn supports_systemone(&self) -> bool {
+        false
     }
 
     /// Describe whether this backend guarantees keyed prompt-prefix KV reuse.
@@ -216,6 +229,22 @@ pub trait Backend: Send + Sync {
     async fn embed(&self, model_name: &str, request: EmbeddingRequest)
         -> Result<EmbeddingResponse>;
 
+    /// Score typed System One decisions from option-label logits (Jev-shaped).
+    ///
+    /// Default: not supported. Only backends that can read next-token logits for
+    /// a declared option subset should override this. This is intentionally
+    /// separate from OpenAI `logprobs`.
+    async fn systemone(
+        &self,
+        model_name: &str,
+        _request: SystemOneRequest,
+    ) -> Result<SystemOneResponse> {
+        Err(PowerError::BackendNotAvailable(format!(
+            "backend '{}' does not support System One decision scoring (model: '{model_name}')",
+            self.name()
+        )))
+    }
+
     /// Clean up request-scoped resources after inference completes.
     ///
     /// Default: no-op. Backends that support KV cache isolation should
@@ -281,6 +310,19 @@ impl BackendRegistry {
                     "No backend available for model '{}' with format {}",
                     manifest.name, manifest.format
                 ))
+            })
+    }
+
+    /// Find the highest-priority backend that can score System One decisions.
+    pub fn find_for_systemone(&self) -> Result<Arc<dyn Backend>> {
+        self.backends
+            .iter()
+            .find(|backend| backend.supports_systemone())
+            .cloned()
+            .ok_or_else(|| {
+                PowerError::BackendNotAvailable(
+                    "No backend available for System One decision scoring".to_string(),
+                )
             })
     }
 
@@ -427,15 +469,18 @@ impl Default for BackendRegistry {
 
 /// Create a `BackendRegistry` with all available backends pre-registered.
 ///
-/// Backends are registered in priority order: mistral.rs first (pure Rust),
-/// then llama.cpp. When both features are enabled, both backends are available
-/// and `find_for_format` returns the first match (mistral.rs).
-/// Use `find_by_name("llama.cpp")` to explicitly select the llama.cpp backend.
+/// Backends are registered in priority order: Prism (architecture-specific GGUF)
+/// first, then mistral.rs, then llama.cpp. Prism only claims Prism-required packs
+/// via `supports_manifest`; ordinary GGUF still falls through to mistral.rs /
+/// llama.cpp. Use `find_by_name("llama.cpp")` to explicitly select llama.cpp.
 pub fn default_backends(#[allow(unused)] config: Arc<PowerConfig>) -> BackendRegistry {
     #[allow(unused_mut)]
     let mut registry = BackendRegistry::new();
 
-    // Register mistral.rs backend first (pure Rust, higher priority)
+    // PrismML / Bonsai packs — must register before generic GGUF backends.
+    registry.register(Arc::new(prism::PrismBackend::new(config.clone())));
+
+    // Register mistral.rs backend (pure Rust)
     #[cfg(feature = "mistralrs")]
     registry.register(Arc::new(mistralrs_backend::MistralRsBackend::new(
         config.clone(),
@@ -536,6 +581,31 @@ mod tests {
         let mistral = registry.find_by_name("mistral.rs");
         assert!(mistral.is_ok());
         assert_eq!(mistral.unwrap().name(), "mistral.rs");
+    }
+
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn find_for_systemone_selects_llamacpp_over_format_priority() {
+        let mut registry = BackendRegistry::new();
+        registry.register(Arc::new(
+            MockBackend::success()
+                .with_name("chat-only")
+                .without_systemone(),
+        ));
+        registry.register(Arc::new(llamacpp::LlamaCppBackend::new(test_config())));
+
+        let backend = registry.find_for_systemone().unwrap();
+        assert_eq!(backend.name(), "llama.cpp");
+    }
+
+    #[test]
+    fn find_for_systemone_errors_when_none_support_it() {
+        let mut registry = BackendRegistry::new();
+        registry.register(Arc::new(MockBackend::success().without_systemone()));
+        match registry.find_for_systemone() {
+            Ok(_) => panic!("expected System One backend lookup to fail"),
+            Err(err) => assert!(err.to_string().contains("System One")),
+        }
     }
 
     #[test]
@@ -654,6 +724,32 @@ mod tests {
 
         let backend = registry.find_for_tee_manifest(&manifest).unwrap();
         assert_eq!(backend.name(), "generic");
+    }
+
+    #[test]
+    fn default_backends_route_prism_packs_fail_closed() {
+        let config = Arc::new(PowerConfig::default());
+        let registry = default_backends(config);
+
+        let mut prism = sample_manifest("bonsai2-ptq1");
+        prism.format = ModelFormat::Gguf;
+        prism.path = std::path::PathBuf::from(
+            "D:/Bonsai-demo/models/bonsai2-gguf/27B/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+        );
+        let backend = registry.find_for_manifest(&prism).unwrap();
+        assert_eq!(backend.name(), "prism");
+
+        let mut ordinary = sample_manifest("qwen-q6");
+        ordinary.format = ModelFormat::Gguf;
+        ordinary.path = std::path::PathBuf::from("Qwen3.8-27B-Q6_K.gguf");
+        // Without mistralrs/llamacpp features, only Prism is registered and must
+        // refuse ordinary GGUF so format-only callers do not get a false claim.
+        if registry.list_names() == ["prism"] {
+            assert!(registry.find_for_manifest(&ordinary).is_err());
+        } else {
+            let backend = registry.find_for_manifest(&ordinary).unwrap();
+            assert_ne!(backend.name(), "prism");
+        }
     }
 
     #[test]

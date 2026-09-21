@@ -578,6 +578,10 @@ pub struct ChatResponseChunk {
     pub prompt_eval_duration_ns: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// Upstream-reported Prism / llama-server timings (source labeled in JSON).
+    /// Not a Power-verified draft digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_timings: Option<serde_json::Value>,
 }
 
 // ============================================================================
@@ -714,6 +718,63 @@ pub struct EmbeddingRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingResponse {
     pub embeddings: Vec<Vec<f32>>,
+}
+
+// ============================================================================
+// System One (Jev-shaped) decision scoring
+// ============================================================================
+
+/// Backend request for typed System One decision scoring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemOneRequest {
+    pub state: String,
+    pub questions: BTreeMap<String, SystemOneQuestionSpec>,
+}
+
+/// Backend question specification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SystemOneQuestionSpec {
+    Choice {
+        instructions: String,
+        criteria: BTreeMap<String, String>,
+    },
+    Noul {
+        instructions: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        criteria: Option<BTreeMap<String, String>>,
+    },
+    Score {
+        instructions: String,
+        criteria: Vec<String>,
+    },
+}
+
+/// Backend response for System One scoring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemOneResponse {
+    pub answers: BTreeMap<String, SystemOneAnswerSpec>,
+    pub input_tokens: u32,
+}
+
+/// Backend answer specification (mirrors the Jev wire shape).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SystemOneAnswerSpec {
+    Choice {
+        choice: String,
+        confidence: f64,
+        probabilities: BTreeMap<String, f64>,
+    },
+    Noul {
+        noul: f64,
+    },
+    Score {
+        score: f64,
+        confidence: f64,
+        legend: BTreeMap<String, String>,
+        probabilities: BTreeMap<String, f64>,
+    },
 }
 
 #[cfg(test)]
@@ -932,6 +993,7 @@ mod tests {
             done_reason: None,
             prompt_eval_duration_ns: None,
             tool_calls: None,
+            upstream_timings: None,
         };
         let json = serde_json::to_string(&chunk).unwrap();
         let parsed: ChatResponseChunk = serde_json::from_str(&json).unwrap();
@@ -961,6 +1023,7 @@ mod tests {
                 },
                 index: Some(0),
             }]),
+            upstream_timings: None,
         };
         let json = serde_json::to_string(&chunk).unwrap();
         assert!(json.contains("get_weather"));
