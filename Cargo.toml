@@ -36,6 +36,16 @@ path = "src/bin/a3s-power-tensor-batch-bench.rs"
 required-features = ["embedded-inference"]
 
 [[bin]]
+name = "a3s-power-cuda-fusion-bench"
+path = "src/bin/a3s-power-cuda-fusion-bench.rs"
+required-features = ["embedded-cuda"]
+
+[[bin]]
+name = "a3s-power-cuda-resident-bench"
+path = "src/bin/a3s-power-cuda-resident-bench.rs"
+required-features = ["embedded-cuda"]
+
+[[bin]]
 name = "a3s-power-speculative-bench"
 path = "src/bin/a3s-power-speculative-bench.rs"
 required-features = ["server"]

@@ -1,0 +1,56 @@
+{
+  "schema": "a3s.power.prism-spec-compare.v1",
+  "profile": "baseline-nothink",
+  "model": "bonsai2-ptq1",
+  "power_url": "http://127.0.0.1:11435",
+  "prism_url": "http://127.0.0.1:8080",
+  "samples": 3,
+  "max_tokens": 128,
+  "prompt": "Write a Python function is_prime(n) that returns True if n is prime. Code only.",
+  "predicted_per_second_mean": 85.30820575625599,
+  "predicted_per_second_min": 84.30881757820111,
+  "predicted_per_second_max": 85.96514018048859,
+  "draft_accept_rate_mean": null,
+  "speculation_engaged": false,
+  "rows": [
+    {
+      "sample": 1,
+      "profile": "baseline-nothink",
+      "wall_ms": 5121,
+      "source": "upstream-reported",
+      "predicted_per_second": 84.30881757820111,
+      "predicted_n": 91,
+      "prompt_per_second": 208.9089561291192,
+      "draft_n": null,
+      "draft_n_accepted": null,
+      "draft_accept_rate": null,
+      "finish_reason": "stop"
+    },
+    {
+      "sample": 2,
+      "profile": "baseline-nothink",
+      "wall_ms": 3164,
+      "source": "upstream-reported",
+      "predicted_per_second": 85.65065951007823,
+      "predicted_n": 91,
+      "prompt_per_second": 38.728166995856085,
+      "draft_n": null,
+      "draft_n_accepted": null,
+      "draft_accept_rate": null,
+      "finish_reason": "stop"
+    },
+    {
+      "sample": 3,
+      "profile": "baseline-nothink",
+      "wall_ms": 3136,
+      "source": "upstream-reported",
+      "predicted_per_second": 85.96514018048859,
+      "predicted_n": 91,
+      "prompt_per_second": 33.11313101210285,
+      "draft_n": null,
+      "draft_n_accepted": null,
+      "draft_accept_rate": null,
+      "finish_reason": "stop"
+    }
+  ]
+}

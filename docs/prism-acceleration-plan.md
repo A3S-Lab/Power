@@ -348,7 +348,7 @@ Store under `docs/benchmarks/bonsai2-…/` (new), **not** under Qwen speculative
 | --- | --- | --- |
 | G1 First principles | A0 | This doc; Option D/E rejected in writing |
 | G2 Baseline profile documented | A1 | Runbook + packing advisory |
-| G3 DSpark profile measured | A1 | **Deferred** — no Bonsai-2 drafter pin; baseline bench + dspark fail-closed tests instead |
+| G3 DSpark / Bonsai-2 speculation | A1 | **Bonsai-2 DSpark deferred** (no official pin; fail-closed). **DFlash peak 137.7 tok/s** e2e on patched SM89 Prism+DFlash2 (1.86× vs PQ2 same-binary). Stock Prism MTP fallback **89.9 tok/s**. |
 | G4 Fail-closed Power speculative | A2 | Prism manifest + `spec_mode=mtp|dflash|…` errors |
 | G5 Receipt/telemetry honesty | A2 | Upstream timings labeled; no false Power draft digests |
 | G6 No llamacpp regress | A1–A4 | Existing speculative CI green without Prism feature coupling |

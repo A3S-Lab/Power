@@ -1,0 +1,96 @@
+{
+  "schema": "a3s.power.prism-ttft-bench.v1",
+  "profile": "baseline",
+  "model": "bonsai2-pq2",
+  "power_url": "http://127.0.0.1:11435",
+  "prism_url": "http://127.0.0.1:8080",
+  "samples": 5,
+  "max_tokens": 64,
+  "prompt": "Write a Python function is_prime(n) that returns True if n is prime. Code only.",
+  "stream_ttft_ms_median": 2107.0,
+  "stream_ttft_ms_mean": 2156.2,
+  "stream_ttft_ms_min": 2051.0,
+  "stream_ttft_ms_max": 2402.0,
+  "stream_wall_ms_median": 2916.0,
+  "buffered_wall_ms_median": 2918.0,
+  "note": "TTFT is client-observed first non-empty delta content|reasoning_content|thinking on Power SSE; buffered has no first-token until full JSON.",
+  "stream_rows": [
+    {
+      "sample": 1,
+      "mode": "stream",
+      "ttft_ms": 2402,
+      "wall_ms": 3216,
+      "content_chars": 268
+    },
+    {
+      "sample": 2,
+      "mode": "stream",
+      "ttft_ms": 2141,
+      "wall_ms": 2941,
+      "content_chars": 268
+    },
+    {
+      "sample": 3,
+      "mode": "stream",
+      "ttft_ms": 2051,
+      "wall_ms": 2872,
+      "content_chars": 268
+    },
+    {
+      "sample": 4,
+      "mode": "stream",
+      "ttft_ms": 2107,
+      "wall_ms": 2913,
+      "content_chars": 268
+    },
+    {
+      "sample": 5,
+      "mode": "stream",
+      "ttft_ms": 2080,
+      "wall_ms": 2916,
+      "content_chars": 268
+    }
+  ],
+  "buffered_rows": [
+    {
+      "sample": 1,
+      "mode": "buffered",
+      "ttft_ms": null,
+      "wall_ms": 2918,
+      "content_chars": 0,
+      "finish_reason": "length"
+    },
+    {
+      "sample": 2,
+      "mode": "buffered",
+      "ttft_ms": null,
+      "wall_ms": 2977,
+      "content_chars": 0,
+      "finish_reason": "length"
+    },
+    {
+      "sample": 3,
+      "mode": "buffered",
+      "ttft_ms": null,
+      "wall_ms": 2915,
+      "content_chars": 0,
+      "finish_reason": "length"
+    },
+    {
+      "sample": 4,
+      "mode": "buffered",
+      "ttft_ms": null,
+      "wall_ms": 2840,
+      "content_chars": 0,
+      "finish_reason": "length"
+    },
+    {
+      "sample": 5,
+      "mode": "buffered",
+      "ttft_ms": null,
+      "wall_ms": 2963,
+      "content_chars": 0,
+      "finish_reason": "length"
+    }
+  ]
+}

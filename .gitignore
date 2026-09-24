@@ -40,3 +40,5 @@ Thumbs.db
 
 # Local short Cargo home (never commit)
 .cargo-home-short/
+.cargo/config.toml
+.tmp-perf-goal/

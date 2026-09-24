@@ -96,6 +96,7 @@ artifact. A Q4 file appears only as an auxiliary proposer where stated.
 | Q6_K MTP/FR peak shape | **174.413 token/s median; 172.723 minimum** | Nine 1,024-token runs with one output digest; not a stable 175 token/s floor |
 | Target-only prefix reuse | **23.5299x backend prefill; 13.1593x TTFT** | Five cold/warm pairs reusing 9,740 prompt tokens; repeated-context latency only |
 | Q6_K + DFlash2 proposer | **144.453 decode; 63.182 end-to-end token/s** | Five exact synthetic pairs; broader 12-task run kept 12/12 answers but only 7/12 complete outputs |
+| Bonsai-2 27B ternary + DFlash2 (RTX 4090) | **137.72 request-wide token/s mean; 1.86×** vs same-binary PQ2 baseline (74.21); max 151.5; **98.6%** draft accept | Power OpenAI e2e, `prism_profile=dflash`, SM89 patched runtime, reasoning off; vendor ternary retains ~98.2% aggregate vs FP16 (~9× smaller weights) |
 
 These rows use different workload shapes and must not be compared as if they
 were one benchmark. Fixed-task scores are quality proxies, not intelligence
@@ -105,6 +106,9 @@ tokens; it does not promise byte-identical prose.
 [Benchmark index](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/README.md) ·
 [Q6_K-only offline evidence](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/quality/pure-q6-rtx4090-3x.evidence.json) ·
 [Exact reproduction](docs/benchmarks/qwen3.8-27b-q6k-rtx4090/REPRODUCE.md) ·
+[Bonsai-2 DFlash / MTP peak (RTX 4090)](docs/benchmarks/bonsai2-27b-ptq1-rtx4090/README.md) ·
+[Bonsai ternary packing / TTFT (RTX 4090)](docs/benchmarks/bonsai2-27b-packing-rtx4090/README.md) ·
+[Embedded CUDA fusion + resident chains](docs/benchmarks/cuda-fusion-rtx4090/README.md) ·
 [Performance documentation](https://a3s-lab.github.io/Power/en/performance)
 
 ## Choose the boundary
@@ -255,6 +259,7 @@ DFlash, DFlash2, and DSpark are alternative external-draft contracts, not
 stackable modes.
 
 [Optimization playbook](docs/optimization-playbook.md) ·
+[First-principles perf gate](docs/perf-first-principles.md) ·
 [Speculative decoding](docs/speculative-decoding.md) ·
 [Prompt-prefix cache](docs/prompt-prefix-cache.md) ·
 [Shape profiles](docs/shape-profiles.md) ·
@@ -270,7 +275,7 @@ contracts. They do not define the architecture of the Power core.
 | --- | --- | --- |
 | `mistralrs` | Default GGUF, SafeTensors, vision, and embedding backend | No C++ inference engine |
 | `llamacpp` | Mature GGUF backend with native MTP support | CMake, C++ compiler, and libclang |
-| Prism (`prism_upstream` / `prism_profile`) | Fail-closed admission for PrismML / Bonsai packs; acceleration profiles `baseline`\|`dspark`\|`kv4` via upstream Prism `llama-server` | External Prism runtime (`docs/prism-acceleration-runbook.md`) |
+| Prism (`prism_upstream` / `prism_profile`) | Fail-closed admission for PrismML / Bonsai packs; acceleration profiles `baseline`\|`dspark`\|`mtp`\|`dflash`\|`kv4` via upstream Prism `llama-server` | External Prism runtime (`docs/prism-acceleration-runbook.md`) |
 | `llamacpp-cuda` | CUDA execution for llama.cpp | CUDA toolkit |
 | `llamacpp-external-draft` | Typed DFlash, DFlash2, and DSpark artifact contracts | Reviewed patches for the pinned llama.cpp source |
 | `llamacpp-mtp-fr` | Experimental reduced-vocabulary draft projection | Reviewed patch for the pinned llama.cpp source |

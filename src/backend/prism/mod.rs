@@ -4,7 +4,7 @@
 //! 1. Claims only Prism-required GGUF manifests (`PTQ1_0` / `PQ2_0` / Bonsai 2 markers)
 //! 2. Forwards OpenAI chat/completions to a Prism `llama-server` upstream
 //! 3. Leaves Power's pinned `llamacpp` speculative stack untouched
-//! 4. Selects acceleration via `prism_profile` (baseline|dspark|kv4), never via
+//! 4. Selects acceleration via `prism_profile` (baseline|dspark|mtp|dflash|kv4), never via
 //!    Power `spec_mode = dspark|mtp|dflash`
 //!
 //! Configure with `prism_upstream = "http://127.0.0.1:8080"` (or `A3S_PRISM_UPSTREAM`).
@@ -12,12 +12,14 @@
 
 mod detect;
 mod profile;
+mod stream;
 mod timings;
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::Stream;
@@ -39,6 +41,9 @@ pub use detect::{is_prism_required_manifest, is_prism_required_path};
 pub use profile::{resolve_profile, PrismProfile};
 pub use timings::{UpstreamSpecMetrics, UpstreamTimings};
 
+/// How long a successful `/health` probe may be reused before the next probe.
+const HEALTH_CACHE_TTL: Duration = Duration::from_secs(5);
+
 /// PrismML / Bonsai runtime fronted by Power.
 pub struct PrismBackend {
     config: Arc<PowerConfig>,
@@ -47,7 +52,9 @@ pub struct PrismBackend {
     /// Models that passed Prism load checks (name → absolute weight path).
     loaded: RwLock<HashMap<String, String>>,
     /// Cumulative upstream-reported speculative counters (not Power-verified).
-    spec_metrics: Mutex<UpstreamSpecMetrics>,
+    spec_metrics: Arc<Mutex<UpstreamSpecMetrics>>,
+    /// Cached healthy upstream base URL + probe time (avoids per-request RTT).
+    healthy_upstream: Arc<Mutex<Option<(Instant, String)>>>,
 }
 
 impl PrismBackend {
@@ -61,7 +68,8 @@ impl PrismBackend {
             profile,
             http: reqwest::Client::new(),
             loaded: RwLock::new(HashMap::new()),
-            spec_metrics: Mutex::new(UpstreamSpecMetrics::default()),
+            spec_metrics: Arc::new(Mutex::new(UpstreamSpecMetrics::default())),
+            healthy_upstream: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -110,13 +118,14 @@ impl PrismBackend {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
         else {
-            return Err(PowerError::Config(
-                "prism_profile=dspark requires prism_drafter pointing at a target-matched \
-                 *dspark-dflash*.gguf (Bonsai 2 official drafter not assumed present). \
-                 Use prism_profile=baseline until a drafter is pinned, or see \
-                 docs/prism-acceleration-plan.md"
-                    .into(),
-            ));
+            return Err(PowerError::Config(format!(
+                "prism_profile={} requires prism_drafter pointing at a target-matched \
+                 speculative sidecar (DSpark: *dspark-dflash*; DFlash: *DFlash*.gguf). \
+                 Bonsai-2 has no official DSpark pin — prefer prism_profile=mtp with an \
+                 in-file MTP graft, or prism_profile=dflash with a community DFlash2 \
+                 GGUF. See docs/prism-acceleration-plan.md",
+                profile.as_str()
+            )));
         };
         let path = Path::new(path);
         if !path.is_file() {
@@ -130,17 +139,31 @@ impl PrismBackend {
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if !(name.contains("dspark") || name.contains("draft")) {
+        let looks_ok = match profile {
+            PrismProfile::Dspark => name.contains("dspark") || name.contains("dflash"),
+            PrismProfile::Dflash => name.contains("dflash") || name.contains("draft"),
+            _ => name.contains("dspark") || name.contains("dflash") || name.contains("draft"),
+        };
+        if !looks_ok {
             tracing::warn!(
                 drafter = %path.display(),
-                "prism_drafter filename does not contain 'dspark' or 'draft'; \
-                 ensure it is the Prism-matched speculative sidecar"
+                profile = profile.as_str(),
+                "prism_drafter filename does not look like a matched speculative sidecar"
             );
         }
         Ok(())
     }
 
     async fn ensure_upstream_healthy(&self) -> Result<String> {
+        {
+            let guard = self.healthy_upstream.lock().await;
+            if let Some((probed_at, base)) = guard.as_ref() {
+                if probed_at.elapsed() < HEALTH_CACHE_TTL {
+                    return Ok(base.clone());
+                }
+            }
+        }
+
         let base = self.upstream_base()?;
         let health = format!("{base}/health");
         let resp = self.http.get(&health).send().await.map_err(|e| {
@@ -149,12 +172,20 @@ impl PrismBackend {
             ))
         })?;
         if !resp.status().is_success() {
+            let mut guard = self.healthy_upstream.lock().await;
+            *guard = None;
             return Err(PowerError::InferenceFailed(format!(
                 "prism upstream health check returned {} ({health})",
                 resp.status()
             )));
         }
+        let mut guard = self.healthy_upstream.lock().await;
+        *guard = Some((Instant::now(), base.clone()));
         Ok(base)
+    }
+
+    async fn invalidate_health_cache(&self) {
+        *self.healthy_upstream.lock().await = None;
     }
 
     async fn post_json(&self, path: &[&str], body: serde_json::Value) -> Result<serde_json::Value> {
@@ -173,6 +204,7 @@ impl PrismBackend {
             .await
             .map_err(|e| PowerError::InferenceFailed(format!("prism response body error: {e}")))?;
         if !status.is_success() {
+            self.invalidate_health_cache().await;
             return Err(PowerError::InferenceFailed(format!(
                 "prism upstream returned {status}: {text}"
             )));
@@ -182,45 +214,232 @@ impl PrismBackend {
         })
     }
 
+    async fn post_sse(&self, path: &[&str], body: serde_json::Value) -> Result<reqwest::Response> {
+        let base = self.ensure_upstream_healthy().await?;
+        let mut url = base;
+        for segment in path {
+            url.push('/');
+            url.push_str(segment);
+        }
+        let resp = self
+            .http
+            .post(&url)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                PowerError::InferenceFailed(format!("prism stream to {url} failed: {e}"))
+            })?;
+        if !resp.status().is_success() {
+            self.invalidate_health_cache().await;
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(PowerError::InferenceFailed(format!(
+                "prism upstream stream returned {status}: {text}"
+            )));
+        }
+        Ok(resp)
+    }
+
+    async fn chat_buffered(
+        &self,
+        model_name: &str,
+        request: ChatRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
+        let body = build_prism_chat_body(model_name, &request, false);
+        let json = self.post_json(&["v1", "chat", "completions"], body).await?;
+        let parsed = parse_prism_chat_message(&json);
+        let timings = UpstreamTimings::from_response(&json);
+        if let Some(ref t) = timings {
+            self.record_timings(model_name, t).await;
+        }
+        let prompt_eval_duration_ns = timings.as_ref().and_then(|t| t.prompt_eval_duration_ns());
+        let upstream_timings = timings.map(|t| t.into_observation_json());
+        let done_reason = parsed.done_reason.clone();
+        let tool_calls = parsed.tool_calls.clone().map(|calls| {
+            calls
+                .into_iter()
+                .enumerate()
+                .map(|(index, mut call)| {
+                    if call.index.is_none() {
+                        call.index = Some(index as u32);
+                    }
+                    call
+                })
+                .collect::<Vec<_>>()
+        });
+
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            let _ = tx
+                .send(Ok(ChatResponseChunk {
+                    content: parsed.content,
+                    thinking_content: parsed.thinking_content,
+                    done: false,
+                    prompt_tokens: None,
+                    done_reason: None,
+                    prompt_eval_duration_ns,
+                    tool_calls,
+                    upstream_timings: upstream_timings.clone(),
+                }))
+                .await;
+            let _ = tx
+                .send(Ok(ChatResponseChunk {
+                    content: String::new(),
+                    thinking_content: None,
+                    done: true,
+                    prompt_tokens: None,
+                    done_reason,
+                    prompt_eval_duration_ns: None,
+                    tool_calls: None,
+                    upstream_timings,
+                }))
+                .await;
+        });
+        Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+
+    async fn chat_streaming(
+        &self,
+        model_name: &str,
+        request: ChatRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
+        let body = build_prism_chat_body(model_name, &request, true);
+        let resp = self.post_sse(&["v1", "chat", "completions"], body).await?;
+        let (tx, rx) = mpsc::channel(64);
+        let spec_metrics = Arc::clone(&self.spec_metrics);
+        let profile = self.profile;
+        let model = model_name.to_string();
+        tokio::spawn(async move {
+            let mut byte_stream = Box::pin(resp.bytes_stream());
+            let mut buf = Vec::new();
+            let mut done_reason = Some("stop".to_string());
+            let mut prompt_eval_duration_ns = None;
+            let mut upstream_timings = None;
+            while let Some(event) = stream::next_sse_event(&mut byte_stream, &mut buf).await {
+                match event {
+                    Err(error) => {
+                        let _ = tx.send(Err(error)).await;
+                        return;
+                    }
+                    Ok(None) => break,
+                    Ok(Some(json)) => {
+                        if let Some(timings) = UpstreamTimings::from_response(&json) {
+                            prompt_eval_duration_ns = timings.prompt_eval_duration_ns();
+                            if profile.expects_speculation_timings()
+                                && !timings.speculation_engaged()
+                            {
+                                tracing::warn!(
+                                    model = %model,
+                                    profile = profile.as_str(),
+                                    "prism speculation profile selected but upstream timings have no draft_n"
+                                );
+                            }
+                            {
+                                let mut guard = spec_metrics.lock().await;
+                                guard.observe(&timings);
+                            }
+                            upstream_timings = Some(timings.into_observation_json());
+                        }
+                        let delta = json
+                            .pointer("/choices/0/delta/content")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let thinking = json
+                            .pointer("/choices/0/delta/reasoning_content")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| {
+                                json.pointer("/choices/0/delta/thinking")
+                                    .and_then(|v| v.as_str())
+                            })
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
+                        if let Some(reason) = json
+                            .pointer("/choices/0/finish_reason")
+                            .and_then(|v| v.as_str())
+                        {
+                            done_reason = Some(reason.to_string());
+                        }
+                        if !delta.is_empty() || thinking.is_some() {
+                            if tx
+                                .send(Ok(ChatResponseChunk {
+                                    content: delta.to_string(),
+                                    thinking_content: thinking,
+                                    done: false,
+                                    prompt_tokens: None,
+                                    done_reason: None,
+                                    prompt_eval_duration_ns,
+                                    tool_calls: None,
+                                    upstream_timings: upstream_timings.clone(),
+                                }))
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                        if json
+                            .pointer("/choices/0/finish_reason")
+                            .and_then(|v| v.as_str())
+                            .is_some()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = tx
+                .send(Ok(ChatResponseChunk {
+                    content: String::new(),
+                    thinking_content: None,
+                    done: true,
+                    prompt_tokens: None,
+                    done_reason,
+                    prompt_eval_duration_ns: None,
+                    tool_calls: None,
+                    upstream_timings,
+                }))
+                .await;
+        });
+        Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+
     async fn record_timings(&self, model_name: &str, timings: &UpstreamTimings) {
-        let strategy = match self.profile {
-            PrismProfile::Baseline => "prism-baseline-upstream",
-            PrismProfile::Dspark => "prism-dspark-upstream",
-            PrismProfile::Kv4 => "prism-kv4-upstream",
-        };
         tracing::info!(
             model = %model_name,
             profile = %self.profile.as_str(),
             source = "upstream-reported",
+            strategy = self.profile.upstream_source_label(),
             predicted_per_second = ?timings.predicted_per_second,
             draft_n = ?timings.draft_n,
             draft_n_accepted = ?timings.draft_n_accepted,
             prompt_per_second = ?timings.prompt_per_second,
             "Prism upstream timings"
         );
-        if self.profile == PrismProfile::Dspark && !timings.speculation_engaged() {
+        if self.profile.expects_speculation_timings() && !timings.speculation_engaged() {
             tracing::warn!(
                 model = %model_name,
-                "prism_profile=dspark but upstream timings have no draft_n; \
-                 the Prism server may not have been started with --spec-type draft-dspark"
+                profile = self.profile.as_str(),
+                "prism speculation profile selected but upstream timings have no draft_n; \
+                 start Prism with matching --spec-type (draft-dspark|draft-mtp)"
             );
         }
         let mut guard = self.spec_metrics.lock().await;
         guard.observe(timings);
-        let _ = strategy;
     }
 
     fn strategy_label(&self) -> &'static str {
-        match self.profile {
-            PrismProfile::Baseline => "prism-baseline-upstream",
-            PrismProfile::Dspark => "prism-dspark-upstream",
-            PrismProfile::Kv4 => "prism-kv4-upstream",
-        }
+        self.profile.upstream_source_label()
     }
 }
 
 /// Build the OpenAI-compatible chat body forwarded to Prism `llama-server`.
-fn build_prism_chat_body(model_name: &str, request: &ChatRequest) -> serde_json::Value {
+fn build_prism_chat_body(
+    model_name: &str,
+    request: &ChatRequest,
+    stream: bool,
+) -> serde_json::Value {
     let messages: Vec<serde_json::Value> = request
         .messages
         .iter()
@@ -230,7 +449,7 @@ fn build_prism_chat_body(model_name: &str, request: &ChatRequest) -> serde_json:
     let mut body = serde_json::json!({
         "model": model_name,
         "messages": messages,
-        "stream": false,
+        "stream": stream,
     });
     if let Some(temp) = request.temperature {
         body["temperature"] = temp.into();
@@ -254,6 +473,13 @@ fn build_prism_chat_body(model_name: &str, request: &ChatRequest) -> serde_json:
         body["stop"] = serde_json::to_value(stop).unwrap_or(serde_json::Value::Null);
     }
     body
+}
+
+fn request_has_tools(request: &ChatRequest) -> bool {
+    request
+        .tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
 }
 
 fn prism_chat_message_json(message: &ChatMessage) -> serde_json::Value {
@@ -365,7 +591,7 @@ impl Backend for PrismBackend {
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {
         ensure_non_speculative_mode(&self.config.spec_mode, self.name()).map_err(|error| {
             PowerError::Config(format!(
-                "{error}. For Prism acceleration use prism_profile=baseline|dspark|kv4 \
+                "{error}. For Prism acceleration use prism_profile=baseline|dspark|mtp|dflash|kv4 \
                  (not Power spec_mode=mtp|dflash|dspark); see docs/prism-acceleration-plan.md"
             ))
         })?;
@@ -413,57 +639,13 @@ impl Backend for PrismBackend {
             )));
         }
 
-        let body = build_prism_chat_body(model_name, &request);
-        let json = self.post_json(&["v1", "chat", "completions"], body).await?;
-        let parsed = parse_prism_chat_message(&json);
-        let timings = UpstreamTimings::from_response(&json);
-        if let Some(ref t) = timings {
-            self.record_timings(model_name, t).await;
+        // Tool-call streaming needs a delta assembler; keep the buffered path
+        // for tool requests. Tool-free chats stream from upstream for TTFT.
+        if request_has_tools(&request) {
+            self.chat_buffered(model_name, request).await
+        } else {
+            self.chat_streaming(model_name, request).await
         }
-        let prompt_eval_duration_ns = timings.as_ref().and_then(|t| t.prompt_eval_duration_ns());
-        let upstream_timings = timings.map(|t| t.into_observation_json());
-        let done_reason = parsed.done_reason.clone();
-        let tool_calls = parsed.tool_calls.clone().map(|calls| {
-            calls
-                .into_iter()
-                .enumerate()
-                .map(|(index, mut call)| {
-                    if call.index.is_none() {
-                        call.index = Some(index as u32);
-                    }
-                    call
-                })
-                .collect::<Vec<_>>()
-        });
-
-        let (tx, rx) = mpsc::channel(4);
-        tokio::spawn(async move {
-            let _ = tx
-                .send(Ok(ChatResponseChunk {
-                    content: parsed.content,
-                    thinking_content: parsed.thinking_content,
-                    done: false,
-                    prompt_tokens: None,
-                    done_reason: None,
-                    prompt_eval_duration_ns,
-                    tool_calls,
-                    upstream_timings: upstream_timings.clone(),
-                }))
-                .await;
-            let _ = tx
-                .send(Ok(ChatResponseChunk {
-                    content: String::new(),
-                    thinking_content: None,
-                    done: true,
-                    prompt_tokens: None,
-                    done_reason,
-                    prompt_eval_duration_ns: None,
-                    tool_calls: None,
-                    upstream_timings,
-                }))
-                .await;
-        });
-        Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
     async fn complete(
@@ -715,12 +897,67 @@ mod tests {
             session_id: None,
         };
 
-        let body = build_prism_chat_body("bonsai2-ptq1", &request);
+        let body = build_prism_chat_body("bonsai2-ptq1", &request, false);
         assert_eq!(body["model"], "bonsai2-ptq1");
         assert_eq!(body["max_tokens"], 128);
+        assert_eq!(body["stream"], false);
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["tools"][0]["function"]["name"], "write");
         assert_eq!(body["messages"][0]["role"], "user");
+    }
+
+    #[test]
+    fn chat_body_enables_upstream_stream_for_tool_free_requests() {
+        use crate::backend::types::{ChatMessage, MessageContent};
+
+        let request = ChatRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: MessageContent::Text("hi".into()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                images: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(32),
+            stop: None,
+            stream: true,
+            top_k: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            num_ctx: None,
+            mirostat: None,
+            mirostat_tau: None,
+            mirostat_eta: None,
+            tfs_z: None,
+            typical_p: None,
+            response_format: None,
+            stream_options: None,
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            repeat_last_n: None,
+            penalize_newline: None,
+            num_batch: None,
+            num_thread: None,
+            num_thread_batch: None,
+            flash_attention: None,
+            num_gpu: None,
+            main_gpu: None,
+            use_mmap: None,
+            use_mlock: None,
+            num_parallel: None,
+            images: None,
+            session_id: None,
+        };
+        assert!(!request_has_tools(&request));
+        let body = build_prism_chat_body("bonsai2-ptq1", &request, true);
+        assert_eq!(body["stream"], true);
     }
 
     #[test]

@@ -1,0 +1,105 @@
+{
+  "schema": "a3s.power.prism-packing-compare.v1",
+  "host_note": "sequential single-GPU: restart Prism between packs; same Power URL",
+  "mode": "sequential",
+  "decode_winner": "PTQ1_0",
+  "prefill_winner": "PQ2_0",
+  "ptq1": {
+    "packing": "PTQ1_0",
+    "model": "bonsai2-ptq1",
+    "model_path": "D:\\Bonsai-demo\\models\\bonsai2-gguf\\27B\\Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+    "prism_url": "http://127.0.0.1:8080",
+    "predicted_per_second_mean": 81.4200510553577,
+    "predicted_per_second_min": 78.87429610901297,
+    "predicted_per_second_max": 82.93422597552198,
+    "prompt_per_second_mean": 123.54097549412364,
+    "artifact": "C:\\Users\\admin\\AppData\\Local\\Temp\\a3s-power-pack-9201b5a1a0c74903b176dc5f38af5c89\\power-baseline-bench-20260924-003320.json",
+    "rows": [
+      {
+        "sample": 1,
+        "wall_ms": 3848,
+        "source": "upstream-reported",
+        "predicted_per_second": 82.93422597552198,
+        "predicted_n": 128,
+        "predicted_ms": 1531.334,
+        "prompt_per_second": 309.48956017610396,
+        "draft_n": null,
+        "draft_n_accepted": null,
+        "finish_reason": "length"
+      },
+      {
+        "sample": 2,
+        "wall_ms": 3936,
+        "source": "upstream-reported",
+        "predicted_per_second": 78.87429610901297,
+        "predicted_n": 128,
+        "predicted_ms": 1610.157,
+        "prompt_per_second": 23.48630748273756,
+        "draft_n": null,
+        "draft_n_accepted": null,
+        "finish_reason": "length"
+      },
+      {
+        "sample": 3,
+        "wall_ms": 4245,
+        "source": "upstream-reported",
+        "predicted_per_second": 82.45163108153817,
+        "predicted_n": 128,
+        "predicted_ms": 1540.297,
+        "prompt_per_second": 37.64705882352941,
+        "draft_n": null,
+        "draft_n_accepted": null,
+        "finish_reason": "length"
+      }
+    ]
+  },
+  "pq2": {
+    "packing": "PQ2_0",
+    "model": "bonsai2-pq2",
+    "model_path": "D:\\Bonsai-demo\\models\\bonsai2-gguf\\27B\\Ternary-Bonsai-2-27B-PQ2_0.gguf",
+    "prism_url": "http://127.0.0.1:8080",
+    "predicted_per_second_mean": 77.59623737058182,
+    "predicted_per_second_min": 75.86460259194102,
+    "predicted_per_second_max": 78.75910380821973,
+    "prompt_per_second_mean": 153.49934763299316,
+    "artifact": "C:\\Users\\admin\\AppData\\Local\\Temp\\a3s-power-pack-23d351fa4bb14750937530f1bfe2045d\\power-baseline-bench-20260924-003349.json",
+    "rows": [
+      {
+        "sample": 1,
+        "wall_ms": 5886,
+        "source": "upstream-reported",
+        "predicted_per_second": 75.86460259194102,
+        "predicted_n": 128,
+        "predicted_ms": 1674.035,
+        "prompt_per_second": 385.42130348399144,
+        "draft_n": null,
+        "draft_n_accepted": null,
+        "finish_reason": "length"
+      },
+      {
+        "sample": 2,
+        "wall_ms": 4451,
+        "source": "upstream-reported",
+        "predicted_per_second": 78.75910380821973,
+        "predicted_n": 128,
+        "predicted_ms": 1612.512,
+        "prompt_per_second": 34.92778680078936,
+        "draft_n": null,
+        "draft_n_accepted": null,
+        "finish_reason": "length"
+      },
+      {
+        "sample": 3,
+        "wall_ms": 3783,
+        "source": "upstream-reported",
+        "predicted_per_second": 78.16500571158467,
+        "predicted_n": 128,
+        "predicted_ms": 1624.768,
+        "prompt_per_second": 40.14895261419868,
+        "draft_n": null,
+        "draft_n_accepted": null,
+        "finish_reason": "length"
+      }
+    ]
+  }
+}

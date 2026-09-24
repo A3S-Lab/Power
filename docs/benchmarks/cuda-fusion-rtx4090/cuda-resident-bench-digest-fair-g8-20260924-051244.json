@@ -1,0 +1,29 @@
+{
+  "schema": "a3s.power.cuda-resident-bench.v1",
+  "device": "cuda:0",
+  "elements": 4194304,
+  "chain_graphs": 8,
+  "warmup_rounds": 3,
+  "measured_rounds": 11,
+  "resident": {
+    "median_ns": 65733300,
+    "output_digest": "8abd2e1bbf380e99b514cb711207aa5d28bf4ce5a464de36b3481ca663709656",
+    "host_to_device_copy_operations": 1,
+    "device_to_host_copy_operations": 1,
+    "input_materializations": 1,
+    "output_materializations": 1
+  },
+  "owned_roundtrip": {
+    "median_ns": 222254800,
+    "output_digest": "8abd2e1bbf380e99b514cb711207aa5d28bf4ce5a464de36b3481ca663709656",
+    "host_to_device_copy_operations": 8,
+    "device_to_host_copy_operations": 8,
+    "input_materializations": 8,
+    "output_materializations": 8
+  },
+  "speedup_resident_vs_owned": 3.381159929594285,
+  "parity": true,
+  "copy_contract_ok": true,
+  "accepted": true,
+  "reject_reason": null
+}

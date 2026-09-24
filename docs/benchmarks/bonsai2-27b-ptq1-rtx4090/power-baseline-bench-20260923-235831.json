@@ -1,0 +1,51 @@
+{
+  "profile": "baseline",
+  "model": "bonsai2-ptq1",
+  "power_url": "http://127.0.0.1:11435",
+  "prism_url": "http://127.0.0.1:8080",
+  "samples": 3,
+  "max_tokens": 128,
+  "prompt": "Write a Python function is_prime(n) that returns True if n is prime. Code only.",
+  "predicted_per_second_mean": 78.43357733813816,
+  "predicted_per_second_min": 74.90897380014403,
+  "predicted_per_second_max": 81.13128959143049,
+  "dspark_compare": "skipped — Bonsai-2 official dspark-dflash drafter not pinned",
+  "rows": [
+    {
+      "sample": 1,
+      "wall_ms": 6421,
+      "source": "upstream-reported",
+      "predicted_per_second": 81.13128959143049,
+      "predicted_n": 128,
+      "predicted_ms": 1565.364,
+      "prompt_per_second": 276.2001089239866,
+      "draft_n": null,
+      "draft_n_accepted": null,
+      "finish_reason": "length"
+    },
+    {
+      "sample": 2,
+      "wall_ms": 4043,
+      "source": "upstream-reported",
+      "predicted_per_second": 79.26046862284,
+      "predicted_n": 128,
+      "predicted_ms": 1602.312,
+      "prompt_per_second": 29.627873903768663,
+      "draft_n": null,
+      "draft_n_accepted": null,
+      "finish_reason": "length"
+    },
+    {
+      "sample": 3,
+      "wall_ms": 5125,
+      "source": "upstream-reported",
+      "predicted_per_second": 74.90897380014403,
+      "predicted_n": 128,
+      "predicted_ms": 1695.391,
+      "prompt_per_second": 37.97155930208274,
+      "draft_n": null,
+      "draft_n_accepted": null,
+      "finish_reason": "length"
+    }
+  ]
+}

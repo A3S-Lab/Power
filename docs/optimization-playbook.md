@@ -41,6 +41,15 @@ tensor name, sequence length, image geometry, or backend label.
 | Accelerator topology | Residency-bound fused batches, exact fallback, bounded heterogeneous meshes | Runtime + model crate + backend | Only after parity and device evidence pass. |
 | Tuning and proof | Two-order A/B, output parity, quality gates, receipts, hardware bundles, offline hash verification | Runtime + client gate | Evidence format is portable; thresholds are deployment policy. |
 
+Non-TEE performance work must also pass
+[perf-first-principles.md](perf-first-principles.md): reject overfitted
+microbenchmarks, require end-to-end evidence, and keep ternary acceleration on
+Prism profiles rather than Power-owned kernels. Native Rust CUDA gains are
+proven with `a3s-power-cuda-fusion-bench` and `a3s-power-cuda-resident-bench`
+(GraphExecutor fused vs unfused; resident vs owned H↔D contracts). Current RTX
+4090 captures: fusion ≈1.02× (not claimed), resident copy contract held but
+trivial Add chains are slower — see `docs/benchmarks/cuda-fusion-rtx4090/`.
+
 ## Optimization order
 
 For repeated language-model workloads, exhaust lossless execution changes

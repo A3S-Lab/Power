@@ -1,0 +1,10 @@
+# External Qwen MTP head on Bonsai-2 PTQ1 — regression (2026-09-24)
+
+Target: Ternary-Bonsai-2-27B-PTQ1_0.gguf
+Draft:  Qwen3.8-27B-Q6_K-TBQ4_0-FFN-MTP-head-Q4_K.gguf
+Flags:  --spec-type draft-mtp --spec-draft-n-max 2 --reasoning off
+
+Mean tok/s: 19.10 (accept ~97%) — ~4.7x SLOWER than in-file MTP graft peak 89.9.
+Artifact: power-spec-ext-mtp-n2-nothink-20260924-090105.json
+
+Verdict: reject this lever. Prefer Ternary-Bonsai-2-27B-PTQ1_0-mtp.gguf in-file MTP.

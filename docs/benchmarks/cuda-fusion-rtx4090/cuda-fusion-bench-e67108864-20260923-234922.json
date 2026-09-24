@@ -1,0 +1,14 @@
+{
+  "schema": "a3s.power.cuda-fusion-bench.v1",
+  "device": "cuda:0",
+  "elements": 67108864,
+  "warmup_rounds": 3,
+  "measured_rounds": 11,
+  "fused_median_ns": 237190600,
+  "unfused_median_ns": 241304800,
+  "speedup": 1.0173455440476984,
+  "output_digest": "f661975638391212b314af936c5a0349a45b7ed9044f8487a96f89f9fdaa0c65",
+  "parity": true,
+  "accepted": true,
+  "reject_reason": null
+}
