@@ -276,7 +276,7 @@ contracts. They do not define the architecture of the Power core.
 | `mistralrs` | Default GGUF, SafeTensors, vision, and embedding backend | No C++ inference engine |
 | `llamacpp` | Mature GGUF backend with native MTP support | CMake, C++ compiler, and libclang |
 | Prism (`prism_upstream` / `prism_profile`) | Fail-closed admission for PrismML / Bonsai packs; acceleration profiles `baseline`\|`dspark`\|`mtp`\|`dflash`\|`kv4` via upstream Prism `llama-server` | External Prism runtime (`docs/prism-acceleration-runbook.md`) |
-| Xolotl (`xolotl`) | Fail-closed admission for one DeepSeek-V4.1-Flash-1017 XQ pack on eight H200s. Forwards one non-streaming request to `serve_ds41.py`. Does not spawn `ds41_generate`. | External Xolotl `ds41_generate` built for sm_90 (`docs/xolotl-h200-xq.md`) |
+| Xolotl (`xolotl`) | Fail-closed admission for one DeepSeek-V4.1-Flash-1017 XQ pack on eight H200s, or on one GeForce RTX 4090 as the single-card expert cache (`--experts gpu` plus rank, no layer split). Forwards one non-streaming request to `serve_ds41.py`. Does not spawn `ds41_generate`. | External Xolotl `ds41_generate` (`docs/xolotl-h200-xq.md`) |
 | `llamacpp-cuda` | CUDA execution for llama.cpp | CUDA toolkit |
 | `llamacpp-external-draft` | Typed DFlash, DFlash2, and DSpark artifact contracts | Reviewed patches for the pinned llama.cpp source |
 | `llamacpp-mtp-fr` | Experimental reduced-vocabulary draft projection | Reviewed patch for the pinned llama.cpp source |

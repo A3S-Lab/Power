@@ -1,12 +1,16 @@
-//! Fail-closed 8× H200 launch plan for one `ds41_generate` process.
+//! Fail-closed launch plans for one `ds41_generate` process.
+//!
+//! Two placements are explicit. Eight H200s use
+//! `--layer-split 5,10,15,20,25,30,35 --split-device 0,1,2,3,4,5,6,7`.
+//! One GeForce RTX 4090 uses the Xolotl single-card expert cache
+//! (`--experts gpu` plus `--rank`) and emits no layer split.
 //!
 //! `ds41_generate` rejects an unknown `--gpus` flag. With `--layer-split` set
 //! and `--split-device` omitted it keeps only the first two visible devices,
 //! and `--layer-split auto` is a two-way split at half the layer count
 //! (`ds41_pipeline.cpp`). One H200 cannot hold the XQ expert pack, so
-//! `--split-skip-if-fits` is not emitted. The 40-layer 1017 pack on eight
-//! cards is the explicit split below. The engine may move a boundary that is
-//! not indexer-safe; that process is not ready.
+//! `--split-skip-if-fits` is not emitted. The engine may move a boundary that is
+//! not indexer-safe; that eight-card process is not ready.
 
 use std::path::{Path, PathBuf};
 
@@ -29,9 +33,23 @@ pub const REQUIRED_LAYER_SPLIT: &str = "5,10,15,20,25,30,35";
 /// built with `-DCMAKE_CUDA_ARCHITECTURES=90`.
 pub const REQUIRED_COMPUTE_CAPABILITY: &str = "9.0";
 
+/// nvidia-smi compute capability for an RTX 4090 (sm_89). The CMake integer
+/// `89` is not this string and does not select the single-card placement.
+pub const RTX_4090_COMPUTE_CAPABILITY: &str = "8.9";
+
+/// Config value that selects the single-card placement and emits no
+/// `--layer-split`. `auto` stays a two-way split and is refused.
+pub const RTX_4090_LAYER_SPLIT: &str = "none";
+
 /// Bytes below this are not an H200. 120 GiB rejects H100 80/94 GB and H20 96 GB.
 /// An H200 reports about 140 GiB through nvidia-smi.
 pub const H200_MIN_MEMORY_BYTES: u64 = 120 * 1024 * 1024 * 1024;
+
+/// Inclusive `memory.total` window for a 24 GiB GeForce RTX 4090.
+/// 23000 MiB rejects a 16 GiB card. 26000 MiB rejects a 48 GiB card.
+/// This machine reports 24564 MiB.
+pub const RTX_4090_MIN_MEMORY_MIB: u64 = 23_000;
+pub const RTX_4090_MAX_MEMORY_MIB: u64 = 26_000;
 
 /// One CUDA device from `nvidia-smi --query-gpu=index,name,compute_cap,memory.total`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,10 +61,12 @@ pub struct CudaDevice {
     pub memory_bytes: u64,
 }
 
-/// Argv and environment for one 8-card `ds41_generate --serve` process.
+/// Argv and environment for one `ds41_generate --serve` process.
 ///
-/// Power does not start that process. A supervisor may start it only after
-/// [`split_log_is_ready`] accepts the engine log.
+/// Power does not start that process. A supervisor may start the eight-H200
+/// process only after [`split_log_is_ready`] accepts the engine log. The
+/// RTX 4090 plan leaves [`XolotlLaunchPlan::ready_log_line`] empty because
+/// that placement has no layer-split line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XolotlLaunchPlan {
     pub argv: Vec<String>,
@@ -81,10 +101,17 @@ impl XolotlLaunchPlan {
     }
 }
 
-/// Build the only 8× H200 plan this backend will admit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    H200,
+    Rtx4090,
+}
+
+/// Build the launch plan for the configured placement.
 ///
-/// `devices` is the full nvidia-smi inventory. The plan keeps the eight
-/// configured indices and ignores extra cards.
+/// `devices` is the full nvidia-smi inventory. Each placement keeps only the
+/// configured indices and ignores extra cards. A partial RTX 4090 config does
+/// not fall through into the eight-H200 plan or into llama.cpp.
 pub fn plan(
     config: &PowerConfig,
     manifest: &ModelManifest,
@@ -98,26 +125,71 @@ pub fn plan(
     }
     if config.max_concurrent_requests != 1 {
         return Err(PowerError::Config(format!(
-            "xolotl 8× H200 serves one request at a time; max_concurrent_requests must be 1, got {}",
+            "xolotl serves one request at a time; max_concurrent_requests must be 1, got {}",
             config.max_concurrent_requests
         )));
     }
     if config.num_parallel != 1 {
         return Err(PowerError::Config(format!(
-            "xolotl layer split has no batch slots; num_parallel must be 1, got {}",
+            "xolotl serves one request at a time; num_parallel must be 1, got {}",
             config.num_parallel
-        )));
-    }
-    if xolotl.cuda_architecture != REQUIRED_COMPUTE_CAPABILITY {
-        return Err(PowerError::Config(format!(
-            "xolotl.cuda_architecture must be {REQUIRED_COMPUTE_CAPABILITY} (H200 / sm_90), got {}",
-            xolotl.cuda_architecture
         )));
     }
     if xolotl.layer_count != REQUIRED_LAYER_COUNT {
         return Err(PowerError::Config(format!(
             "xolotl.layer_count must be {REQUIRED_LAYER_COUNT} for DeepSeek-V4.1-Flash-1017, got {}",
             xolotl.layer_count
+        )));
+    }
+    let bin = require_ds41_binary(xolotl)?;
+    let model = require_model_path(xolotl, manifest)?;
+    let engram = require_engram(xolotl)?;
+    let rank = require_rank(xolotl)?;
+    match placement(xolotl)? {
+        Placement::H200 => plan_h200(xolotl, devices, bin, model, engram, rank),
+        Placement::Rtx4090 => plan_rtx_4090(xolotl, devices, bin, model, engram, rank),
+    }
+}
+
+/// Parse nvidia-smi CSV and admit a placement with [`plan`].
+pub fn plan_from_nvidia_smi_csv(
+    config: &PowerConfig,
+    manifest: &ModelManifest,
+    text: &str,
+) -> Result<XolotlLaunchPlan> {
+    let devices = parse_nvidia_smi_csv(text)?;
+    plan(config, manifest, &devices)
+}
+
+fn placement(config: &XolotlConfig) -> Result<Placement> {
+    let single = config
+        .layer_split
+        .eq_ignore_ascii_case(RTX_4090_LAYER_SPLIT);
+    let ada = config.cuda_architecture == RTX_4090_COMPUTE_CAPABILITY;
+    if ada && single && config.gpus.len() == 1 {
+        return Ok(Placement::Rtx4090);
+    }
+    if ada || single {
+        return Err(PowerError::Config(
+            "RTX 4090 placement needs cuda_architecture 8.9, exactly one gpu index, and layer_split none; the eight-H200 placement is unchanged"
+                .into(),
+        ));
+    }
+    Ok(Placement::H200)
+}
+
+fn plan_h200(
+    xolotl: &XolotlConfig,
+    devices: &[CudaDevice],
+    bin: PathBuf,
+    model: PathBuf,
+    engram: String,
+    rank: PathBuf,
+) -> Result<XolotlLaunchPlan> {
+    if xolotl.cuda_architecture != REQUIRED_COMPUTE_CAPABILITY {
+        return Err(PowerError::Config(format!(
+            "xolotl.cuda_architecture must be {REQUIRED_COMPUTE_CAPABILITY} (H200 / sm_90), got {}",
+            xolotl.cuda_architecture
         )));
     }
     if xolotl.layer_split == "auto" || xolotl.layer_split.eq_ignore_ascii_case("auto") {
@@ -133,11 +205,6 @@ pub fn plan(
     }
     let nvidia_indices = require_eight_indices(&xolotl.gpus)?;
     require_h200_devices(&nvidia_indices, devices)?;
-
-    let bin = require_ds41_binary(xolotl)?;
-    let model = require_model_path(xolotl, manifest)?;
-    let engram = require_engram(xolotl)?;
-    let rank = require_rank(xolotl)?;
 
     let visible_ordinals = (0..REQUIRED_CARD_COUNT as u32).collect::<Vec<_>>();
     let split_device = visible_ordinals
@@ -156,7 +223,53 @@ pub fn plan(
         REQUIRED_LAYER_SPLIT.replace(',', " "),
         split_device.replace(',', " ")
     );
-    let argv = vec![
+    let mut argv = serve_prefix(bin, model, engram, rank);
+    argv.extend([
+        "--layer-split".into(),
+        REQUIRED_LAYER_SPLIT.into(),
+        "--split-device".into(),
+        split_device,
+    ]);
+    reject_forbidden_launch(&argv)?;
+    Ok(XolotlLaunchPlan {
+        argv,
+        env: vec![("CUDA_VISIBLE_DEVICES".into(), visible_devices)],
+        nvidia_indices,
+        visible_ordinals,
+        ready_log_line,
+    })
+}
+
+fn plan_rtx_4090(
+    xolotl: &XolotlConfig,
+    devices: &[CudaDevice],
+    bin: PathBuf,
+    model: PathBuf,
+    engram: String,
+    rank: PathBuf,
+) -> Result<XolotlLaunchPlan> {
+    let index = xolotl.gpus[0];
+    require_rtx_4090(index, devices)?;
+    let argv = serve_prefix(bin, model, engram, rank);
+    reject_forbidden_launch(&argv)?;
+    for flag in ["--layer-split", "--split-device", "--gpus", "-ngl", "--ngl"] {
+        if argv.iter().any(|arg| arg == flag) {
+            return Err(PowerError::Config(format!(
+                "RTX 4090 launch must not include {flag}"
+            )));
+        }
+    }
+    Ok(XolotlLaunchPlan {
+        argv,
+        env: vec![("CUDA_VISIBLE_DEVICES".into(), index.to_string())],
+        nvidia_indices: vec![index],
+        visible_ordinals: vec![0],
+        ready_log_line: String::new(),
+    })
+}
+
+fn serve_prefix(bin: PathBuf, model: PathBuf, engram: String, rank: PathBuf) -> Vec<String> {
+    vec![
         bin.display().to_string(),
         "--serve".into(),
         "-m".into(),
@@ -169,19 +282,7 @@ pub fn plan(
         "cuda".into(),
         "--experts".into(),
         "gpu".into(),
-        "--layer-split".into(),
-        REQUIRED_LAYER_SPLIT.into(),
-        "--split-device".into(),
-        split_device,
-    ];
-    reject_forbidden_launch(&argv)?;
-    Ok(XolotlLaunchPlan {
-        argv,
-        env: vec![("CUDA_VISIBLE_DEVICES".into(), visible_devices)],
-        nvidia_indices,
-        visible_ordinals,
-        ready_log_line,
-    })
+    ]
 }
 
 /// Query the live inventory. Unit tests inject [`CudaDevice`] values and do not call this.
@@ -260,9 +361,25 @@ pub fn parse_nvidia_smi_csv(text: &str) -> Result<Vec<CudaDevice>> {
     Ok(devices)
 }
 
-/// The engine is ready only when the log shows this plan's 7 boundaries on
-/// the 8 visible ordinals, and it did not move a boundary.
+/// The eight-H200 engine is ready only when the log shows this plan's 7
+/// boundaries on the 8 visible ordinals, and it did not move a boundary.
+///
+/// The RTX 4090 plan has no layer-split line. It is refused when the log
+/// shows a split or an indexer rewrite.
 pub fn split_log_is_ready(log: &str, plan: &XolotlLaunchPlan) -> Result<()> {
+    let eight_card = plan.argv.iter().any(|arg| arg == "--layer-split");
+    if !eight_card {
+        if log.contains("not indexer-safe")
+            || log.to_ascii_lowercase().contains("layer split")
+            || log.to_ascii_lowercase().contains("layer-split")
+        {
+            return Err(PowerError::Config(
+                "ds41_generate introduced a layer split; refusing the RTX 4090 single-card plan"
+                    .into(),
+            ));
+        }
+        return Ok(());
+    }
     if log.contains("not indexer-safe") {
         return Err(PowerError::Config(
             "ds41_generate moved a layer-split boundary (not indexer-safe); refusing the 8× H200 plan".into(),
@@ -359,8 +476,62 @@ fn require_h200_devices(indices: &[u32], devices: &[CudaDevice]) -> Result<()> {
 
 /// `H200` as a whole product token. `H20`, `H100`, and `H2000` do not match.
 fn is_h200_product_name(name: &str) -> bool {
+    bounded_token(name, "H200")
+}
+
+fn require_rtx_4090(index: u32, devices: &[CudaDevice]) -> Result<()> {
+    let Some(device) = devices.iter().find(|device| device.index == index) else {
+        return Err(PowerError::Config(format!(
+            "xolotl.gpus index {index} is not in the nvidia-smi inventory"
+        )));
+    };
+    if !is_geforce_rtx_4090(&device.name) {
+        return Err(PowerError::Config(format!(
+            "GPU {index} ({}) is not a GeForce RTX 4090",
+            device.name
+        )));
+    }
+    if device.compute_major != 8 || device.compute_minor != 9 {
+        return Err(PowerError::Config(format!(
+            "GPU {index} ({}) is compute {}.{}, not {RTX_4090_COMPUTE_CAPABILITY}",
+            device.name, device.compute_major, device.compute_minor
+        )));
+    }
+    let memory_mib = device.memory_bytes / (1024 * 1024);
+    if !(RTX_4090_MIN_MEMORY_MIB..=RTX_4090_MAX_MEMORY_MIB).contains(&memory_mib) {
+        return Err(PowerError::Config(format!(
+            "GPU {index} ({}) reports {memory_mib} MiB, outside the {RTX_4090_MIN_MEMORY_MIB}-{RTX_4090_MAX_MEMORY_MIB} MiB GeForce RTX 4090 window",
+            device.name
+        )));
+    }
+    Ok(())
+}
+
+/// `GeForce RTX 4090` at the end of the product name. A trailing suffix
+/// (`Ti`, `D`, `Laptop`) is a different card.
+fn is_geforce_rtx_4090(name: &str) -> bool {
+    let phrase = "GeForce RTX 4090";
     let bytes = name.as_bytes();
-    let needle = b"H200";
+    let needle = phrase.as_bytes();
+    let mut start = 0;
+    while let Some(relative) = bytes[start..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+    {
+        let at = start + relative;
+        let before_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
+        let after = at + needle.len();
+        if before_ok && name[after..].trim().is_empty() {
+            return true;
+        }
+        start = at + 1;
+    }
+    false
+}
+
+fn bounded_token(name: &str, token: &str) -> bool {
+    let bytes = name.as_bytes();
+    let needle = token.as_bytes();
     let mut start = 0;
     while let Some(relative) = bytes[start..]
         .windows(needle.len())
@@ -628,6 +799,13 @@ mod tests {
             ("NVIDIA H200", 8, 9, 143_771 * 1024 * 1024, "compute 8.9"),
             ("NVIDIA H200", 9, 0, 96 * 1024 * 1024 * 1024, "H200 floor"),
             ("NVIDIA H2000", 9, 0, 143_771 * 1024 * 1024, "not an H200"),
+            (
+                "NVIDIA GeForce RTX 4090",
+                8,
+                9,
+                24_564 * 1024 * 1024,
+                "not an H200",
+            ),
         ];
         for (name, major, minor, memory, needle) in cases {
             let mut devices = eight_h200();
@@ -749,5 +927,205 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("XQ"));
+    }
+
+    fn rtx_4090(index: u32) -> CudaDevice {
+        CudaDevice {
+            index,
+            name: "NVIDIA GeForce RTX 4090".into(),
+            compute_major: 8,
+            compute_minor: 9,
+            memory_bytes: 24_564 * 1024 * 1024,
+        }
+    }
+
+    fn rtx_4090_config(root: &Path, index: u32) -> PowerConfig {
+        let mut config = enabled_config(root);
+        config.xolotl.gpus = vec![index];
+        config.xolotl.cuda_architecture = RTX_4090_COMPUTE_CAPABILITY.into();
+        config.xolotl.layer_split = RTX_4090_LAYER_SPLIT.into();
+        config
+    }
+
+    fn assert_single_card_command(plan: &XolotlLaunchPlan, index: u32) {
+        let command = plan.command_line();
+        assert!(
+            command.starts_with(&format!("CUDA_VISIBLE_DEVICES={index} ")),
+            "{command}"
+        );
+        assert!(command.contains("ds41_generate"));
+        assert!(command.contains("--serve"));
+        assert!(command.contains("--backend cuda"));
+        assert!(command.contains("--experts gpu"));
+        assert!(command.contains("--engram"));
+        assert!(command.contains("--rank"));
+        assert!(command.contains("rank-1017"));
+        assert!(command.contains(".bin"));
+        assert!(command.contains("-m "));
+        assert!(
+            command.contains("V41-XQ")
+                || command.contains("XQ-1017")
+                || command.contains("1017-XQ")
+        );
+        for flag in [
+            "--layer-split",
+            "--split-device",
+            "--gpus",
+            "-ngl",
+            "--ngl",
+            "STRATA_DSPARK",
+            "STRATA_SERVE_DSPARK",
+        ] {
+            assert!(!command.contains(flag), "{flag} in {command}");
+        }
+        assert!(plan.ready_log_line.is_empty(), "{}", plan.ready_log_line);
+        assert_eq!(plan.nvidia_indices, vec![index]);
+        assert_eq!(plan.visible_ordinals, vec![0]);
+        assert_eq!(
+            plan.env,
+            vec![("CUDA_VISIBLE_DEVICES".into(), index.to_string())]
+        );
+    }
+
+    #[test]
+    fn rtx_4090_single_card_plan_uses_expert_cache_not_layer_split() {
+        let root = Path::new("/models/xq");
+        let mut config = rtx_4090_config(root, 2);
+        config.xolotl.engram = Some(r"D:\engram-a;E:\engram-b".into());
+        config.xolotl.model = Some(root.join("V41-XQ-1017.gguf").display().to_string());
+        let mut manifest = manifest_for(&config);
+        manifest.path = PathBuf::from(config.xolotl.model.clone().unwrap());
+        let launch = plan(&config, &manifest, &[rtx_4090(2)]).unwrap();
+        assert_single_card_command(&launch, 2);
+        let engram = launch
+            .argv
+            .iter()
+            .position(|arg| arg == "--engram")
+            .and_then(|index| launch.argv.get(index + 1))
+            .unwrap();
+        assert_eq!(engram, r"D:\engram-a;E:\engram-b");
+        assert!(engram.contains(';'));
+        assert!(!launch.argv.iter().any(|arg| arg == "--layer-split"));
+
+        let mut colon = config.clone();
+        colon.xolotl.engram = Some("/fast/a:/fast/b".into());
+        let colon_plan = plan(&colon, &manifest, &[rtx_4090(2)]).unwrap();
+        assert!(colon_plan
+            .command_line()
+            .contains("--engram /fast/a:/fast/b"));
+
+        let csv = "0, NVIDIA GeForce RTX 4090, 8.9, 24564\n";
+        let mut indexed = rtx_4090_config(root, 0);
+        indexed.xolotl.model = config.xolotl.model.clone();
+        let from_csv = plan_from_nvidia_smi_csv(&indexed, &manifest, csv).unwrap();
+        assert_single_card_command(&from_csv, 0);
+        let parsed = parse_nvidia_smi_csv(csv).unwrap();
+        assert_eq!(parsed[0].name, "NVIDIA GeForce RTX 4090");
+        assert_eq!(parsed[0].compute_major, 8);
+        assert_eq!(parsed[0].compute_minor, 9);
+        assert_eq!(parsed[0].memory_bytes, 24_564 * 1024 * 1024);
+
+        split_log_is_ready("ds41: experts resident\n", &from_csv).unwrap();
+        assert!(split_log_is_ready("boundary is not indexer-safe\n", &from_csv).is_err());
+        assert!(
+            split_log_is_ready("ds41: 1-way layer split at 20 across GPUs 0 1\n", &from_csv)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn rtx_4090_partial_config_and_wrong_card_fail_closed() {
+        let root = Path::new("/models/xq");
+        let manifest_config = rtx_4090_config(root, 0);
+        let manifest = manifest_for(&manifest_config);
+        let device = rtx_4090(0);
+
+        let mut disabled = manifest_config.clone();
+        disabled.xolotl.enabled = false;
+        assert!(plan(&disabled, &manifest, &[device.clone()])
+            .unwrap_err()
+            .to_string()
+            .contains("xolotl.enabled"));
+
+        let mut missing_bin = manifest_config.clone();
+        missing_bin.xolotl.bin = None;
+        assert!(plan(&missing_bin, &manifest, &[device.clone()])
+            .unwrap_err()
+            .to_string()
+            .contains("ds41_generate"));
+
+        let mut missing_engram = manifest_config.clone();
+        missing_engram.xolotl.engram = None;
+        assert!(plan(&missing_engram, &manifest, &[device.clone()])
+            .unwrap_err()
+            .to_string()
+            .contains("engram"));
+
+        let mut missing_rank = manifest_config.clone();
+        missing_rank.xolotl.rank = None;
+        assert!(plan(&missing_rank, &manifest, &[device.clone()])
+            .unwrap_err()
+            .to_string()
+            .contains("rank-1017"));
+
+        let mut split_left_on = manifest_config.clone();
+        split_left_on.xolotl.layer_split = REQUIRED_LAYER_SPLIT.into();
+        let message = plan(&split_left_on, &manifest, &[device.clone()])
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("layer_split none"), "{message}");
+        assert!(message.contains("eight-H200"), "{message}");
+
+        let mut eight_gpus = manifest_config.clone();
+        eight_gpus.xolotl.gpus = vec![0, 1, 2, 3, 4, 5, 6, 7];
+        assert!(plan(&eight_gpus, &manifest, &[device.clone()])
+            .unwrap_err()
+            .to_string()
+            .contains("exactly one gpu index"));
+
+        let mut ud = manifest_config.clone();
+        let ud_path = root.join("DeepSeek-V4.1-Flash-1017-UD-IQ1_M.gguf");
+        ud.xolotl.model = Some(ud_path.display().to_string());
+        let mut ud_manifest = manifest.clone();
+        ud_manifest.path = ud_path;
+        assert!(plan(&ud, &ud_manifest, &[device.clone()])
+            .unwrap_err()
+            .to_string()
+            .contains("XQ"));
+
+        let h200 = h200(0);
+        assert!(plan(&manifest_config, &manifest, &[h200])
+            .unwrap_err()
+            .to_string()
+            .contains("not a GeForce RTX 4090"));
+
+        let mut compute = device.clone();
+        compute.compute_major = 9;
+        compute.compute_minor = 0;
+        assert!(plan(&manifest_config, &manifest, &[compute])
+            .unwrap_err()
+            .to_string()
+            .contains("not 8.9"));
+
+        let mut small = device.clone();
+        small.memory_bytes = 16_384 * 1024 * 1024;
+        assert!(plan(&manifest_config, &manifest, &[small])
+            .unwrap_err()
+            .to_string()
+            .contains("MiB"));
+
+        let mut suffixed = device.clone();
+        suffixed.name = "NVIDIA GeForce RTX 4090 D".into();
+        assert!(plan(&manifest_config, &manifest, &[suffixed])
+            .unwrap_err()
+            .to_string()
+            .contains("not a GeForce RTX 4090"));
+
+        let mut concurrent = manifest_config.clone();
+        concurrent.max_concurrent_requests = 2;
+        assert!(plan(&concurrent, &manifest, &[device])
+            .unwrap_err()
+            .to_string()
+            .contains("max_concurrent_requests"));
     }
 }

@@ -762,6 +762,31 @@ mod tests {
         assert!(decoded.xolotl.model.is_none());
         assert!(decoded.xolotl.engram.is_none());
         assert!(decoded.xolotl.rank.is_none());
+
+        let mut ada = PowerConfig::default();
+        ada.xolotl.enabled = true;
+        ada.xolotl.gpus = vec![0];
+        ada.xolotl.cuda_architecture = "8.9".into();
+        ada.xolotl.layer_split = "none".into();
+        ada.xolotl.engram = Some(r"D:\engram-a;E:\engram-b".into());
+        ada.xolotl.rank = Some(r"D:\models\rank-1017-085.bin".into());
+        let encoded = serialize(&ada).unwrap();
+        assert!(encoded.contains("xolotl {"));
+        assert!(!serialize(&PowerConfig::default())
+            .unwrap()
+            .contains("xolotl"));
+        let decoded = deserialize(&encoded).unwrap();
+        assert_eq!(decoded.xolotl.gpus, vec![0]);
+        assert_eq!(decoded.xolotl.cuda_architecture, "8.9");
+        assert_eq!(decoded.xolotl.layer_split, "none");
+        assert_eq!(
+            decoded.xolotl.engram.as_deref(),
+            Some(r"D:\engram-a;E:\engram-b")
+        );
+        assert_eq!(
+            decoded.xolotl.rank.as_deref(),
+            Some(r"D:\models\rank-1017-085.bin")
+        );
     }
 
     #[test]

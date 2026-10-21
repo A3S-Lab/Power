@@ -1,6 +1,8 @@
 # 8× H200 上的 DeepSeek-V4.1-Flash-1017 XQ
 
-状态：准入与非流式 HTTP 转发已实现。本说明不把通过的单测当成 8 卡 H200 实测。
+状态：准入与非流式 HTTP 转发已实现。本说明不把通过的单测当成 8 卡 H200 实测，也不把本机 4090 的单测当成一次推理。
+
+单卡 RTX 4090 是另一条放置，见文末。它是 Xolotl 的单卡专家缓存（`--experts gpu` 加 `--rank`），不是这条 8 卡层切分。
 
 Power 不链接 Xolotl 内核，也不启动 `ds41_generate`。它只接受唯一一种放置，把启动参数交给外部监督进程，再把一次请求转到已经在跑的 `serve_ds41.py`。
 
@@ -95,3 +97,33 @@ C:\Users\admin\.cargo\bin\cargo.exe test --no-default-features --features server
 这些测试注入假的 GPU 清单，不调用 `nvidia-smi`，不启动 `ds41_generate`，也不下载权重。绿色结果只说明准入、ACL 和一次 JSON 转发与上面的合同一致。
 
 仍留在本仓库之外的部分：监督并拉起 `ds41_generate`、sm_90 二进制、XQ 权重、indexer-safe 边界的实机确认、工具调用，以及真正的 SSE 流。
+
+## 单卡 RTX 4090
+
+这是 Xolotl 在一张 24 GiB 卡上的专家缓存，不是上面的 8 卡层切分。热专家留在显存，`--experts gpu` 配合 `--rank` 决定谁常驻，Engram 仍在 NVMe。命令里没有 `--layer-split`，没有 `--split-device`，没有 `--gpus`，也没有 `STRATA_DSPARK`。
+
+三条配置要一起写。少一条就失败关闭，不会落到 8 卡计划，也不会落到 llama.cpp：
+
+- `cuda_architecture = "8.9"`。CMake 的整数 `89` 不行。
+- `gpus` 只有一个 nvidia-smi 序号。`CUDA_VISIBLE_DEVICES` 就是这个序号。
+- `layer_split = "none"`。
+
+显卡产品名要以 `GeForce RTX 4090` 结尾。后面再跟 `Ti`、`D` 或 `Laptop` 就不认。计算能力必须是 8.9。`nvidia-smi` 的 `memory.total` 要在 23000 到 26000 MiB。本机这张卡是 24564 MiB、计算能力 8.9。
+
+8 卡计划的检查不放宽。把这张 4090、一张 H20、一张 H100、一张 H2000，或一张计算能力 8.9 的卡填进 8 个 H200 槽位，仍然拒绝。默认配置仍是 8 卡计划；不改 `xolotl` 时 ACL 继续省略整个块。
+
+```acl
+xolotl {
+    enabled = true
+    bin = "D:\xolotl\ds41_generate.exe"
+    model = "D:\xolotl\V41-XQ-1017.gguf"
+    engram = "D:\engram-a;E:\engram-b"
+    rank = "D:\xolotl\rank-1017-085.bin"
+    upstream = "http://127.0.0.1:8150"
+    gpus = [0]
+    cuda_architecture = "8.9"
+    layer_split = "none"
+}
+```
+
+这条放置没有 7 段切分日志。日志里如果出现 layer split 或 `not indexer-safe`，单卡计划拒绝。Power 仍然不启动 `ds41_generate`。

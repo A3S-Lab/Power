@@ -1,10 +1,11 @@
-//! Xolotl backend for the DeepSeek-V4.1-Flash-1017 XQ pack on eight H200s.
+//! Xolotl backend for the DeepSeek-V4.1-Flash-1017 XQ pack.
 //!
-//! `ds41_generate` (Indras-Mirror/Xolotl `tools/v41/engine/ds41_generate.cpp`)
-//! rejects `--gpus`. Omitting `--split-device` keeps at most two visible CUDA
-//! devices, and `--layer-split auto` is one cut at `n_layers / 2`. The admitted
-//! launch is `--layer-split 5,10,15,20,25,30,35 --split-device 0,1,2,3,4,5,6,7`
-//! with `CUDA_VISIBLE_DEVICES` set to the eight nvidia-smi indices.
+//! Two placements are admitted. Eight H200s use
+//! `--layer-split 5,10,15,20,25,30,35 --split-device 0,1,2,3,4,5,6,7`.
+//! One GeForce RTX 4090 uses the single-card expert cache (`--experts gpu`
+//! plus `--rank`) and emits no layer split. `ds41_generate` rejects `--gpus`.
+//! Omitting `--split-device` on a split keeps at most two visible CUDA devices,
+//! and `--layer-split auto` is one cut at `n_layers / 2`.
 //!
 //! Power does not link Xolotl kernels and does not spawn `ds41_generate`.
 //! `--serve` speaks the engine line protocol. Chat posts one non-streaming
@@ -33,7 +34,8 @@ use super::{ensure_non_speculative_mode, Backend};
 
 pub use detect::{is_xolotl_required_manifest, is_xolotl_xq_path};
 pub use plan::{
-    parse_nvidia_smi_csv, query_nvidia_smi, split_log_is_ready, CudaDevice, XolotlLaunchPlan,
+    parse_nvidia_smi_csv, plan_from_nvidia_smi_csv, query_nvidia_smi, split_log_is_ready,
+    CudaDevice, XolotlLaunchPlan,
 };
 
 /// Front for one XQ pack. The GPU process stays outside this type.
@@ -128,10 +130,16 @@ fn require_upstream(config: &XolotlConfig) -> Result<String> {
 }
 
 fn upstream_error(plan: &XolotlLaunchPlan, error: PowerError) -> PowerError {
+    if plan.argv.iter().any(|arg| arg == "--layer-split") {
+        return PowerError::InferenceFailed(format!(
+            "{error}. Power does not start ds41_generate. Start `{}`, wait until the log contains `{}`, then set xolotl.upstream to the serve_ds41.py origin.",
+            plan.command_line(),
+            plan.ready_log_line
+        ));
+    }
     PowerError::InferenceFailed(format!(
-        "{error}. Power does not start ds41_generate. Start `{}`, wait until the log contains `{}`, then set xolotl.upstream to the serve_ds41.py origin.",
-        plan.command_line(),
-        plan.ready_log_line
+        "{error}. Power does not start ds41_generate. Start `{}`. The RTX 4090 placement has no layer split. Set xolotl.upstream to the serve_ds41.py origin.",
+        plan.command_line()
     ))
 }
 
@@ -511,6 +519,24 @@ mod tests {
         assert!(backend.supports_manifest(&xq));
         let ordinary = sample_manifest("qwen");
         assert!(!backend.supports_manifest(&ordinary));
+
+        let mut unsloth = sample_manifest("ud");
+        unsloth.path = PathBuf::from("DeepSeek-V4.1-Flash-1017-UD-IQ1_M.gguf");
+        assert!(!backend.supports_manifest(&unsloth));
+    }
+
+    #[test]
+    fn llama_mistral_and_picolm_refuse_the_xq_manifest() {
+        let config = Arc::new(PowerConfig::default());
+        let mut xq = sample_manifest("xq-1017");
+        xq.format = crate::model::manifest::ModelFormat::Gguf;
+        xq.path = PathBuf::from("DeepSeek-V4.1-Flash-1017-XQ-Uncensored.gguf");
+        let llama = crate::backend::llamacpp::LlamaCppBackend::new(config.clone());
+        let mistral = crate::backend::mistralrs_backend::MistralRsBackend::new(config.clone());
+        let picolm = crate::backend::picolm::PicolmBackend::new(config);
+        assert!(!llama.supports_manifest(&xq));
+        assert!(!mistral.supports_manifest(&xq));
+        assert!(!picolm.supports_manifest(&xq));
     }
 
     #[tokio::test]
@@ -563,6 +589,37 @@ mod tests {
         backend.unload("xq-1017").await.unwrap();
         let missing = error_text(backend.chat("xq-1017", chat_request()).await);
         assert!(missing.contains("not loaded"));
+    }
+
+    #[tokio::test]
+    async fn rtx_4090_load_records_the_single_card_command() {
+        let root = tempfile::tempdir().unwrap();
+        write_artifacts(root.path());
+        let mut config = enabled_config(root.path());
+        config.xolotl.gpus = vec![0];
+        config.xolotl.cuda_architecture = "8.9".into();
+        config.xolotl.layer_split = "none".into();
+        let manifest = manifest_for(&config);
+        let device = CudaDevice {
+            index: 0,
+            name: "NVIDIA GeForce RTX 4090".into(),
+            compute_major: 8,
+            compute_minor: 9,
+            memory_bytes: 24_564 * 1024 * 1024,
+        };
+        let backend = XolotlBackend::new(Arc::new(config)).with_devices(vec![device]);
+        backend.load(&manifest).await.unwrap();
+        let message = error_text(backend.chat("xq-1017", chat_request()).await);
+        assert!(message.contains("CUDA_VISIBLE_DEVICES=0 "));
+        assert!(message.contains("--backend cuda"));
+        assert!(message.contains("--experts gpu"));
+        assert!(message.contains("--engram"));
+        assert!(message.contains("rank-1017"));
+        assert!(message.contains("RTX 4090 placement has no layer split"));
+        assert!(!message.contains("--layer-split"));
+        assert!(!message.contains("--split-device"));
+        assert!(!message.contains("--gpus"));
+        assert!(!message.contains("STRATA_DSPARK"));
     }
 
     #[derive(Clone)]

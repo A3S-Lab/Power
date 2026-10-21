@@ -341,9 +341,10 @@ fn default_xolotl_layer_split() -> String {
 
 /// Launch settings for one Xolotl `ds41_generate` process.
 ///
-/// This admits only the DeepSeek-V4.1-Flash-1017 XQ pack on eight H200s.
-/// Power does not spawn the binary. A supervisor starts the argv this config
-/// produces and points `upstream` at `serve_ds41.py`.
+/// The default values describe eight H200s. A GeForce RTX 4090 placement sets
+/// `cuda_architecture` to `8.9`, `gpus` to that one nvidia-smi index, and
+/// `layer_split` to `none`. Power does not spawn the binary. A supervisor
+/// starts the argv this config produces and points `upstream` at `serve_ds41.py`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct XolotlConfig {
@@ -374,8 +375,10 @@ pub struct XolotlConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
 
-    /// Eight unique nvidia-smi indices, in stage order.
-    /// `CUDA_VISIBLE_DEVICES` uses this order. `--split-device` is then `0,1,2,3,4,5,6,7`.
+    /// nvidia-smi indices. Eight unique indices, in stage order, for the H200
+    /// placement. One index for the RTX 4090 placement.
+    /// `CUDA_VISIBLE_DEVICES` uses this order. The H200 `--split-device` is then
+    /// `0,1,2,3,4,5,6,7`. The 4090 placement emits no `--split-device`.
     #[serde(default = "default_xolotl_gpus")]
     pub gpus: Vec<u32>,
 
@@ -383,12 +386,14 @@ pub struct XolotlConfig {
     #[serde(default = "default_xolotl_layer_count")]
     pub layer_count: u32,
 
-    /// nvidia-smi compute capability. `9.0` is H200 / sm_90.
-    /// `90` is the CMake architecture integer and is rejected.
+    /// nvidia-smi compute capability. `9.0` is H200 / sm_90. `8.9` is the
+    /// RTX 4090 / sm_89 placement. `90` and `89` are CMake integers and do not
+    /// select either placement.
     #[serde(default = "default_xolotl_cuda_architecture")]
     pub cuda_architecture: String,
 
-    /// Must stay `5,10,15,20,25,30,35`. `auto` is a two-way split and is rejected.
+    /// `5,10,15,20,25,30,35` for eight H200s. `none` for one RTX 4090, which
+    /// emits no `--layer-split`. `auto` is a two-way split and is rejected.
     #[serde(default = "default_xolotl_layer_split")]
     pub layer_split: String,
 }
