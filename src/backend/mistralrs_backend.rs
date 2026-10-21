@@ -147,7 +147,7 @@ impl Backend for MistralRsBackend {
     }
 
     fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
-        if crate::backend::prism::is_prism_required_manifest(manifest) {
+        if crate::backend::is_reserved_gguf_manifest(manifest) {
             return false;
         }
         self.supports(&manifest.format)
@@ -971,7 +971,7 @@ impl Backend for MistralRsBackend {
     }
 
     fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
-        if crate::backend::prism::is_prism_required_manifest(manifest) {
+        if crate::backend::is_reserved_gguf_manifest(manifest) {
             return false;
         }
         self.supports(&manifest.format)

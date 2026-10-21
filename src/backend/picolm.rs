@@ -1568,6 +1568,13 @@ impl Backend for PicolmBackend {
         matches!(format, ModelFormat::Gguf)
     }
 
+    fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
+        if crate::backend::is_reserved_gguf_manifest(manifest) {
+            return false;
+        }
+        self.supports(&manifest.format)
+    }
+
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {
         #[cfg(not(feature = "picolm"))]
         {

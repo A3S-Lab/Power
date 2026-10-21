@@ -246,6 +246,7 @@ DFlash、DFlash2 与 DSpark 是替代的外部草稿契约，而非可堆叠模�
 | --- | --- | --- |
 | `mistralrs` | 默认 GGUF、SafeTensors、视觉与嵌入后端 | 无 C++ 推理引擎 |
 | `llamacpp` | 成熟 GGUF 后端，支持原生 MTP | CMake、C++ 编译器与 libclang |
+| Xolotl (`xolotl`) | 为八张 H200 上的一份 DeepSeek-V4.1-Flash-1017 XQ 包做失败关闭准入。向 `serve_ds41.py` 转发一次非流式请求。不启动 `ds41_generate`。 | 按 sm_90 构建的外部 Xolotl `ds41_generate`（`docs/xolotl-h200-xq.md`） |
 | `llamacpp-cuda` | llama.cpp 的 CUDA 执行 | CUDA 工具包 |
 | `llamacpp-external-draft` | 类型化 DFlash、DFlash2 与 DSpark 制品契约 | 针对固定 llama.cpp 源的经审阅补丁 |
 | `llamacpp-mtp-fr` | 实验性缩减词表草稿投影 | 针对固定 llama.cpp 源的经审阅补丁 |
@@ -464,6 +465,7 @@ Metal 与 confidential-GPU 捕获仍缺失，因此尚无生产 `v1.0.0` 标签�
 
 仓库还将详细契约保持在代码附近：
 
+- [八卡 H200 上的 Xolotl XQ 准入](docs/xolotl-h200-xq.md)
 - [模型自有形状配置](docs/shape-profiles.md)
 - [模型无关会话副本](docs/session-replicas.md)
 - [设备驻留经审阅图链](docs/device-resident-graphs.md)

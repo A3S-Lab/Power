@@ -46,6 +46,10 @@ fn test_config_serialize_acl() {
     assert!(serialized.contains("gpu {"));
     assert!(serialized.contains("serving_execution {"));
     assert!(serialized.contains("profile = \"aggregated\""));
+    assert!(
+        !serialized.contains("xolotl"),
+        "default ACL must omit the xolotl block, got {serialized}"
+    );
 }
 
 #[test]
@@ -112,6 +116,7 @@ fn test_config_roundtrip() {
         prism_upstream: None,
         prism_profile: None,
         prism_drafter: None,
+        xolotl: XolotlConfig::default(),
         proxy_effective_prompt_digest: false,
         proxy_effective_prompt_digest_required: false,
         proxy_effective_prompt_digest_path: default_proxy_effective_prompt_digest_path(),

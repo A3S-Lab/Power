@@ -16,6 +16,7 @@ pub mod test_utils;
 pub mod think_parser;
 pub mod tool_parser;
 pub mod types;
+pub mod xolotl;
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -65,6 +66,15 @@ pub struct SpeculativeMetricsSnapshot {
     pub accepted_tokens: u64,
     pub emitted_tokens: u64,
     pub decode_duration_ns: u64,
+}
+
+/// GGUF packs that a generic backend must not load.
+///
+/// Prism and Xolotl register ahead of llama.cpp, mistral.rs, and picolm.
+/// Their `supports_manifest` claims are also excluded here so a format-only
+/// match, including TEE routing to picolm, cannot take the file.
+pub(crate) fn is_reserved_gguf_manifest(manifest: &ModelManifest) -> bool {
+    prism::is_prism_required_manifest(manifest) || xolotl::is_xolotl_required_manifest(manifest)
 }
 
 /// Reject an explicit speculative strategy for a backend that only implements
@@ -469,13 +479,17 @@ impl Default for BackendRegistry {
 
 /// Create a `BackendRegistry` with all available backends pre-registered.
 ///
-/// Backends are registered in priority order: Prism (architecture-specific GGUF)
-/// first, then mistral.rs, then llama.cpp. Prism only claims Prism-required packs
-/// via `supports_manifest`; ordinary GGUF still falls through to mistral.rs /
-/// llama.cpp. Use `find_by_name("llama.cpp")` to explicitly select llama.cpp.
+/// Backends are registered in priority order: Xolotl, then Prism, then
+/// mistral.rs, then llama.cpp. Xolotl and Prism claim only their own GGUF
+/// packs via `supports_manifest`. Ordinary GGUF still falls through to
+/// mistral.rs / llama.cpp. Use `find_by_name("llama.cpp")` to explicitly
+/// select llama.cpp.
 pub fn default_backends(#[allow(unused)] config: Arc<PowerConfig>) -> BackendRegistry {
     #[allow(unused_mut)]
     let mut registry = BackendRegistry::new();
+
+    // Xolotl XQ packs must be claimed before Prism and before generic GGUF.
+    registry.register(Arc::new(xolotl::XolotlBackend::new(config.clone())));
 
     // PrismML / Bonsai packs — must register before generic GGUF backends.
     registry.register(Arc::new(prism::PrismBackend::new(config.clone())));
@@ -563,11 +577,13 @@ mod tests {
     fn test_both_backends_registered() {
         let registry = default_backends(test_config());
         let names = registry.list_names();
+        assert_eq!(names.first().copied(), Some("xolotl"));
+        assert!(names.contains(&"prism"));
         assert!(names.contains(&"mistral.rs"));
         assert!(names.contains(&"llama.cpp"));
         #[cfg(feature = "picolm")]
         assert!(names.contains(&"picolm"));
-        assert_eq!(names.len(), 2 + usize::from(cfg!(feature = "picolm")));
+        assert_eq!(names.len(), 4 + usize::from(cfg!(feature = "picolm")));
     }
 
     #[cfg(all(feature = "mistralrs", feature = "llamacpp"))]
@@ -729,7 +745,7 @@ mod tests {
     #[test]
     fn default_backends_route_prism_packs_fail_closed() {
         let config = Arc::new(PowerConfig::default());
-        let registry = default_backends(config);
+        let registry = default_backends(config.clone());
 
         let mut prism = sample_manifest("bonsai2-ptq1");
         prism.format = ModelFormat::Gguf;
@@ -739,17 +755,46 @@ mod tests {
         let backend = registry.find_for_manifest(&prism).unwrap();
         assert_eq!(backend.name(), "prism");
 
+        let mut xq = sample_manifest("xq-1017");
+        xq.format = ModelFormat::Gguf;
+        xq.path = std::path::PathBuf::from("DeepSeek-V4.1-Flash-1017-XQ-Uncensored.gguf");
+        let backend = registry.find_for_manifest(&xq).unwrap();
+        assert_eq!(backend.name(), "xolotl");
+
+        let mut marked = sample_manifest("marked-xolotl");
+        marked.format = ModelFormat::Gguf;
+        marked.path = std::path::PathBuf::from("weights.gguf");
+        marked.family = Some("xolotl".into());
+        assert_eq!(
+            registry.find_for_manifest(&marked).unwrap().name(),
+            "xolotl"
+        );
+
         let mut ordinary = sample_manifest("qwen-q6");
         ordinary.format = ModelFormat::Gguf;
         ordinary.path = std::path::PathBuf::from("Qwen3.8-27B-Q6_K.gguf");
-        // Without mistralrs/llamacpp features, only Prism is registered and must
-        // refuse ordinary GGUF so format-only callers do not get a false claim.
-        if registry.list_names() == ["prism"] {
-            assert!(registry.find_for_manifest(&ordinary).is_err());
-        } else {
-            let backend = registry.find_for_manifest(&ordinary).unwrap();
+        let generic = registry
+            .list_names()
+            .iter()
+            .any(|name| *name == "mistral.rs" || *name == "llama.cpp");
+        let ordinary_backend = registry.find_for_manifest(&ordinary);
+        if generic {
+            let backend = ordinary_backend.unwrap();
+            assert_ne!(backend.name(), "xolotl");
             assert_ne!(backend.name(), "prism");
+        } else {
+            assert!(ordinary_backend.is_err());
         }
+
+        let llama = llamacpp::LlamaCppBackend::new(config.clone());
+        let mistral = mistralrs_backend::MistralRsBackend::new(config.clone());
+        let picolm = picolm::PicolmBackend::new(config);
+        assert!(!llama.supports_manifest(&xq));
+        assert!(!mistral.supports_manifest(&xq));
+        assert!(!picolm.supports_manifest(&xq));
+        assert!(!llama.supports_manifest(&prism));
+        assert!(!mistral.supports_manifest(&prism));
+        assert!(!picolm.supports_manifest(&prism));
     }
 
     #[test]

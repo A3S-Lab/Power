@@ -134,6 +134,13 @@ pub(super) fn serialize(config: &PowerConfig) -> Result<String> {
         blocks.push(json_object_block("gpu_attestation", gpu_attestation)?);
     }
 
+    let xolotl = current.remove("xolotl").ok_or_else(|| {
+        PowerError::Config("serialized Power configuration omitted xolotl".into())
+    })?;
+    if defaults.get("xolotl") != Some(&xolotl) {
+        blocks.push(json_object_block("xolotl", xolotl)?);
+    }
+
     append_optional_object_block(
         &mut blocks,
         "model_key_source",
@@ -281,6 +288,33 @@ fn power_schema() -> Schema {
         .block("model_hash", labeled_string_map_block("digest"))
         .block("expected_measurement", labeled_string_map_block("digest"))
         .block("proxy_upstream", labeled_string_map_block("url"))
+        .block("xolotl", optional_singleton_block(xolotl_schema()))
+}
+
+fn xolotl_schema() -> Schema {
+    Schema::new()
+        .attribute("enabled", AttributeSchema::optional(ValueSchema::bool()))
+        .attribute("bin", AttributeSchema::optional(ValueSchema::string()))
+        .attribute("model", AttributeSchema::optional(ValueSchema::string()))
+        .attribute("engram", AttributeSchema::optional(ValueSchema::string()))
+        .attribute("rank", AttributeSchema::optional(ValueSchema::string()))
+        .attribute("upstream", AttributeSchema::optional(ValueSchema::string()))
+        .attribute(
+            "gpus",
+            AttributeSchema::optional(ValueSchema::list(ValueSchema::number())),
+        )
+        .attribute(
+            "layer_count",
+            AttributeSchema::optional(ValueSchema::number()),
+        )
+        .attribute(
+            "cuda_architecture",
+            AttributeSchema::optional(ValueSchema::string()),
+        )
+        .attribute(
+            "layer_split",
+            AttributeSchema::optional(ValueSchema::string()),
+        )
 }
 
 fn serving_execution_schema() -> Schema {
@@ -410,7 +444,7 @@ fn document_to_json(document: &Document) -> Result<serde_json::Value> {
 
         match block.name.as_str() {
             "gpu" | "gpu_attestation" | "serving_execution" | "model_key_source"
-            | "audit_key_source" => {
+            | "audit_key_source" | "xolotl" => {
                 root.insert(block.name.clone(), block_to_json(block)?);
             }
             "key_rotation_source" => key_rotation_sources.push(block_to_json(block)?),
@@ -696,6 +730,38 @@ mod tests {
         assert_eq!(decoded.host, config.host);
         assert_eq!(decoded.port, config.port);
         assert_eq!(decoded.proxy_upstreams, config.proxy_upstreams);
+    }
+
+    #[test]
+    fn xolotl_block_is_omitted_until_it_changes_and_then_round_trips() {
+        let defaults = serialize(&PowerConfig::default()).unwrap();
+        assert!(
+            !defaults.contains("xolotl"),
+            "default ACL must omit the xolotl block, got {defaults}"
+        );
+
+        let mut config = PowerConfig::default();
+        config.xolotl.enabled = true;
+        config.xolotl.upstream = Some("http://127.0.0.1:8150".into());
+        config.xolotl.bin = Some("ds41_generate".into());
+        let encoded = serialize(&config).unwrap();
+        assert!(encoded.contains("xolotl {"));
+        assert!(encoded.contains("enabled = true"));
+        assert!(encoded.contains("http://127.0.0.1:8150"));
+        let decoded = deserialize(&encoded).unwrap();
+        assert!(decoded.xolotl.enabled);
+        assert_eq!(
+            decoded.xolotl.upstream.as_deref(),
+            Some("http://127.0.0.1:8150")
+        );
+        assert_eq!(decoded.xolotl.bin.as_deref(), Some("ds41_generate"));
+        assert_eq!(decoded.xolotl.gpus, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(decoded.xolotl.layer_count, 40);
+        assert_eq!(decoded.xolotl.cuda_architecture, "9.0");
+        assert_eq!(decoded.xolotl.layer_split, "5,10,15,20,25,30,35");
+        assert!(decoded.xolotl.model.is_none());
+        assert!(decoded.xolotl.engram.is_none());
+        assert!(decoded.xolotl.rank.is_none());
     }
 
     #[test]

@@ -323,6 +323,93 @@ impl GpuAttestationConfig {
     }
 }
 
+fn default_xolotl_gpus() -> Vec<u32> {
+    vec![0, 1, 2, 3, 4, 5, 6, 7]
+}
+
+fn default_xolotl_layer_count() -> u32 {
+    40
+}
+
+fn default_xolotl_cuda_architecture() -> String {
+    "9.0".to_string()
+}
+
+fn default_xolotl_layer_split() -> String {
+    "5,10,15,20,25,30,35".to_string()
+}
+
+/// Launch settings for one Xolotl `ds41_generate` process.
+///
+/// This admits only the DeepSeek-V4.1-Flash-1017 XQ pack on eight H200s.
+/// Power does not spawn the binary. A supervisor starts the argv this config
+/// produces and points `upstream` at `serve_ds41.py`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct XolotlConfig {
+    /// Claim remains active when this is false, so llama.cpp cannot load an XQ pack.
+    /// Load succeeds only after this is set.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Path to `ds41_generate` or `ds41_generate.exe`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bin: Option<String>,
+
+    /// Joined XQ GGUF. When set, it must equal the manifest path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+
+    /// Engram directories. Use `:` on Linux and `;` on Windows (`D:\a;E:\b`).
+    /// At least two directories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engram: Option<String>,
+
+    /// Rank file whose name contains `rank-1017` and ends with `.bin`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank: Option<String>,
+
+    /// Origin of `serve_ds41.py`, for example `http://127.0.0.1:8150`.
+    /// No `/v1` suffix. Chat fails closed until this is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+
+    /// Eight unique nvidia-smi indices, in stage order.
+    /// `CUDA_VISIBLE_DEVICES` uses this order. `--split-device` is then `0,1,2,3,4,5,6,7`.
+    #[serde(default = "default_xolotl_gpus")]
+    pub gpus: Vec<u32>,
+
+    /// Must stay 40. That is the 1017 layer count.
+    #[serde(default = "default_xolotl_layer_count")]
+    pub layer_count: u32,
+
+    /// nvidia-smi compute capability. `9.0` is H200 / sm_90.
+    /// `90` is the CMake architecture integer and is rejected.
+    #[serde(default = "default_xolotl_cuda_architecture")]
+    pub cuda_architecture: String,
+
+    /// Must stay `5,10,15,20,25,30,35`. `auto` is a two-way split and is rejected.
+    #[serde(default = "default_xolotl_layer_split")]
+    pub layer_split: String,
+}
+
+impl Default for XolotlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bin: None,
+            model: None,
+            engram: None,
+            rank: None,
+            upstream: None,
+            gpus: default_xolotl_gpus(),
+            layer_count: default_xolotl_layer_count(),
+            cuda_architecture: default_xolotl_cuda_architecture(),
+            layer_split: default_xolotl_layer_split(),
+        }
+    }
+}
+
 /// User-configurable settings for the Power server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -624,6 +711,11 @@ pub struct PowerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prism_drafter: Option<String>,
 
+    /// Xolotl `ds41_generate` settings for one 1017 XQ pack on eight H200s.
+    /// Omitted from ACL when every field is still the default.
+    #[serde(default)]
+    pub xolotl: XolotlConfig,
+
     /// Ask proxy upstreams for the exact rendered chat prompt digest before
     /// inference, using `proxy_effective_prompt_digest_path`.
     #[serde(default)]
@@ -869,6 +961,7 @@ impl Default for PowerConfig {
             prism_upstream: None,
             prism_profile: None,
             prism_drafter: None,
+            xolotl: XolotlConfig::default(),
             proxy_effective_prompt_digest: false,
             proxy_effective_prompt_digest_required: false,
             proxy_effective_prompt_digest_path: default_proxy_effective_prompt_digest_path(),
