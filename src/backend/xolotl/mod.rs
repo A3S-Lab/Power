@@ -17,6 +17,7 @@ mod plan;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream;
@@ -47,11 +48,21 @@ pub struct XolotlBackend {
     loaded: tokio::sync::RwLock<HashMap<String, XolotlLaunchPlan>>,
 }
 
+/// Reqwest's 30s default ends a cold XQ expert-cache response before tokens return.
+const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+fn upstream_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(UPSTREAM_TIMEOUT)
+        .build()
+        .expect("xolotl upstream HTTP client")
+}
+
 impl XolotlBackend {
     pub fn new(config: Arc<PowerConfig>) -> Self {
         Self {
             config,
-            http: reqwest::Client::new(),
+            http: upstream_client(),
             devices: None,
             loaded: tokio::sync::RwLock::new(HashMap::new()),
         }
@@ -729,5 +740,34 @@ mod tests {
         assert_eq!(posted["prompt"], json!("ping"));
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn cold_upstream_outlasts_the_reqwest_default() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            use std::io::{Read, Write};
+            let _ = stream.read(&mut buf);
+            std::thread::sleep(Duration::from_secs(35));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .unwrap();
+            stream.flush().unwrap();
+        });
+        let started = std::time::Instant::now();
+        let result = upstream_client()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await;
+        assert!(
+            started.elapsed() >= Duration::from_secs(31),
+            "client returned in {:?}",
+            started.elapsed()
+        );
+        assert!(result.is_ok(), "{result:?}");
+        server.join().unwrap();
     }
 }
