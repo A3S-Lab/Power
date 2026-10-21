@@ -1,11 +1,11 @@
 //! OpenAI request-only compatibility for completed assistant tool histories.
 //!
 //! Keep the public message/content types strict. The existing typed message
-//! deserializer still sees every field, including duplicate fields and unknown
+//! deserializer still sees every standard field, including duplicates and unknown
 //! policy, while this adapter can represent a nullable content value temporarily.
 use super::ChatCompletionMessage;
 use crate::backend::types::MessageContent;
-use serde::de::{DeserializeSeed, Error, MapAccess, Visitor};
+use serde::de::{DeserializeSeed, Error, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::fmt;
 
@@ -47,6 +47,7 @@ impl<'de> Visitor<'de> for RequestMessageVisitor {
             serde::de::value::MapAccessDeserializer::new(NullableContentMap {
                 inner: access,
                 next_is_content: false,
+                workbuddy_fields_seen: 0,
                 content_present: &mut content_present,
                 content_null: &mut content_null,
             }),
@@ -73,6 +74,7 @@ impl<'de> Visitor<'de> for RequestMessageVisitor {
 struct NullableContentMap<'a, M> {
     inner: M,
     next_is_content: bool,
+    workbuddy_fields_seen: u16,
     content_present: &'a mut bool,
     content_null: &'a mut bool,
 }
@@ -87,14 +89,47 @@ where
     where
         K: DeserializeSeed<'de>,
     {
-        self.inner.next_key::<String>()?.map_or(Ok(None), |key| {
+        while let Some(key) = self.inner.next_key::<String>()? {
+            // WorkBuddy replays these client annotations with conversation
+            // history. They have no Power prompt, routing, or policy semantics.
+            // Consume only these exact request-message keys; leave every other
+            // field to the existing typed deserializer and fail-closed checks.
+            let annotation: u16 = match key.as_str() {
+                "agent" => 1,
+                "conversationRequestId" => 2,
+                "startsNewUserRequest" => 4,
+                "messageId" => 1 << 3,
+                "model" => 1 << 4,
+                "requestModelId" => 1 << 5,
+                "requestModelName" => 1 << 6,
+                "stepSeq" => 1 << 7,
+                "traceId" => 1 << 8,
+                "argumentsDisplayText" => 1 << 9,
+                "rawUsage" => 1 << 10,
+                "usage" => 1 << 11,
+                _ => 0,
+            };
+            if annotation != 0 {
+                if self.workbuddy_fields_seen & annotation != 0 {
+                    return Err(M::Error::custom(format!(
+                        "duplicate WorkBuddy message field `{key}`"
+                    )));
+                }
+                self.workbuddy_fields_seen |= annotation;
+                // Opaque JSON: do not interpret annotations as server commands
+                // or copy them into backend requests, responses, or receipts.
+                self.inner.next_value::<IgnoredAny>()?;
+                continue;
+            }
             self.next_is_content = key == "content";
             if self.next_is_content {
                 *self.content_present = true;
             }
-            seed.deserialize(serde::de::value::StringDeserializer::<M::Error>::new(key))
-                .map(Some)
-        })
+            return seed
+                .deserialize(serde::de::value::StringDeserializer::<M::Error>::new(key))
+                .map(Some);
+        }
+        Ok(None)
     }
 
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
