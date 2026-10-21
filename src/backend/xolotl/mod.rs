@@ -625,6 +625,7 @@ mod tests {
     #[derive(Clone)]
     struct UpstreamState {
         chat: Arc<Mutex<Option<Value>>>,
+        completion: Arc<Mutex<Option<Value>>>,
     }
 
     async fn chat_handler(
@@ -641,7 +642,11 @@ mod tests {
         }))
     }
 
-    async fn completion_handler(Json(_body): Json<Value>) -> Json<Value> {
+    async fn completion_handler(
+        State(state): State<UpstreamState>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        *state.completion.lock().expect("completion body lock") = Some(body);
         Json(json!({
             "choices": [{"text": "pong", "finish_reason": "length"}],
             "usage": {"prompt_tokens": 2}
@@ -651,11 +656,13 @@ mod tests {
     #[tokio::test]
     async fn chat_and_completion_forward_one_json_response() {
         let chat = Arc::new(Mutex::new(None));
+        let completion_body = Arc::new(Mutex::new(None));
         let app = Router::new()
             .route("/v1/chat/completions", post(chat_handler))
             .route("/v1/completions", post(completion_handler))
             .with_state(UpstreamState {
                 chat: Arc::clone(&chat),
+                completion: Arc::clone(&completion_body),
             });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -666,12 +673,24 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         write_artifacts(root.path());
         let mut config = enabled_config(root.path());
+        config.xolotl.gpus = vec![0];
+        config.xolotl.cuda_architecture = "8.9".into();
+        config.xolotl.layer_split = "none".into();
         config.xolotl.upstream = Some(origin);
         let manifest = manifest_for(&config);
-        let backend = XolotlBackend::new(Arc::new(config)).with_devices(eight_h200());
+        let device = CudaDevice {
+            index: 0,
+            name: "NVIDIA GeForce RTX 4090".into(),
+            compute_major: 8,
+            compute_minor: 9,
+            memory_bytes: 24_564 * 1024 * 1024,
+        };
+        let backend = XolotlBackend::new(Arc::new(config)).with_devices(vec![device]);
         backend.load(&manifest).await.unwrap();
 
-        let mut stream = backend.chat("xq-1017", chat_request()).await.unwrap();
+        let mut request = chat_request();
+        request.stream = true;
+        let mut stream = backend.chat("xq-1017", request).await.unwrap();
         let first = stream.next().await.unwrap().unwrap();
         assert_eq!(first.content, "ready");
         assert!(!first.done);
@@ -690,7 +709,8 @@ mod tests {
 
         let completion: CompletionRequest = serde_json::from_value(json!({
             "prompt": "ping",
-            "max_tokens": 16
+            "max_tokens": 16,
+            "stream": true
         }))
         .unwrap();
         let mut stream = backend.complete("xq-1017", completion).await.unwrap();
@@ -700,6 +720,13 @@ mod tests {
         assert!(done.done);
         assert_eq!(done.done_reason.as_deref(), Some("length"));
         assert_eq!(done.prompt_tokens, Some(2));
+        let posted = completion_body
+            .lock()
+            .expect("completion body lock")
+            .clone()
+            .unwrap();
+        assert_eq!(posted["stream"], json!(false));
+        assert_eq!(posted["prompt"], json!("ping"));
 
         server.abort();
     }
