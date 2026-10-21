@@ -15,6 +15,9 @@ mod profile;
 mod stream;
 mod timings;
 
+#[cfg(test)]
+mod streaming_tests;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::pin::Pin;
@@ -22,7 +25,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, TryStreamExt};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -33,7 +36,7 @@ use crate::model::manifest::{ModelFormat, ModelManifest};
 use super::prompt_cache::PromptCacheSupport;
 use super::types::{
     ChatMessage, ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
-    EmbeddingRequest, EmbeddingResponse, ToolCall,
+    EmbeddingRequest, EmbeddingResponse,
 };
 use super::{ensure_non_speculative_mode, Backend, SpeculativeMetricsSnapshot};
 
@@ -155,33 +158,8 @@ impl PrismBackend {
     }
 
     async fn ensure_upstream_healthy(&self) -> Result<String> {
-        {
-            let guard = self.healthy_upstream.lock().await;
-            if let Some((probed_at, base)) = guard.as_ref() {
-                if probed_at.elapsed() < HEALTH_CACHE_TTL {
-                    return Ok(base.clone());
-                }
-            }
-        }
-
         let base = self.upstream_base()?;
-        let health = format!("{base}/health");
-        let resp = self.http.get(&health).send().await.map_err(|e| {
-            PowerError::InferenceFailed(format!(
-                "prism upstream health check failed ({health}): {e}"
-            ))
-        })?;
-        if !resp.status().is_success() {
-            let mut guard = self.healthy_upstream.lock().await;
-            *guard = None;
-            return Err(PowerError::InferenceFailed(format!(
-                "prism upstream health check returned {} ({health})",
-                resp.status()
-            )));
-        }
-        let mut guard = self.healthy_upstream.lock().await;
-        *guard = Some((Instant::now(), base.clone()));
-        Ok(base)
+        ensure_healthy_upstream(&self.http, &self.healthy_upstream, &base).await
     }
 
     async fn invalidate_health_cache(&self) {
@@ -214,195 +192,60 @@ impl PrismBackend {
         })
     }
 
-    async fn post_sse(&self, path: &[&str], body: serde_json::Value) -> Result<reqwest::Response> {
-        let base = self.ensure_upstream_healthy().await?;
-        let mut url = base;
-        for segment in path {
-            url.push('/');
-            url.push_str(segment);
-        }
-        let resp = self
-            .http
-            .post(&url)
-            .header(reqwest::header::ACCEPT, "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                PowerError::InferenceFailed(format!("prism stream to {url} failed: {e}"))
-            })?;
-        if !resp.status().is_success() {
-            self.invalidate_health_cache().await;
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(PowerError::InferenceFailed(format!(
-                "prism upstream stream returned {status}: {text}"
-            )));
-        }
-        Ok(resp)
-    }
-
-    async fn chat_buffered(
-        &self,
-        model_name: &str,
-        request: ChatRequest,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
-        let body = build_prism_chat_body(model_name, &request, false);
-        let json = self.post_json(&["v1", "chat", "completions"], body).await?;
-        let parsed = parse_prism_chat_message(&json);
-        let timings = UpstreamTimings::from_response(&json);
-        if let Some(ref t) = timings {
-            self.record_timings(model_name, t).await;
-        }
-        let prompt_eval_duration_ns = timings.as_ref().and_then(|t| t.prompt_eval_duration_ns());
-        let upstream_timings = timings.map(|t| t.into_observation_json());
-        let done_reason = parsed.done_reason.clone();
-        let tool_calls = parsed.tool_calls.clone().map(|calls| {
-            calls
-                .into_iter()
-                .enumerate()
-                .map(|(index, mut call)| {
-                    if call.index.is_none() {
-                        call.index = Some(index as u32);
-                    }
-                    call
-                })
-                .collect::<Vec<_>>()
-        });
-
-        let (tx, rx) = mpsc::channel(4);
-        tokio::spawn(async move {
-            let _ = tx
-                .send(Ok(ChatResponseChunk {
-                    content: parsed.content,
-                    thinking_content: parsed.thinking_content,
-                    done: false,
-                    prompt_tokens: None,
-                    done_reason: None,
-                    prompt_eval_duration_ns,
-                    tool_calls,
-                    upstream_timings: upstream_timings.clone(),
-                }))
-                .await;
-            let _ = tx
-                .send(Ok(ChatResponseChunk {
-                    content: String::new(),
-                    thinking_content: None,
-                    done: true,
-                    prompt_tokens: None,
-                    done_reason,
-                    prompt_eval_duration_ns: None,
-                    tool_calls: None,
-                    upstream_timings,
-                }))
-                .await;
-        });
-        Ok(Box::pin(ReceiverStream::new(rx)))
-    }
-
     async fn chat_streaming(
         &self,
         model_name: &str,
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
         let body = build_prism_chat_body(model_name, &request, true);
-        let resp = self.post_sse(&["v1", "chat", "completions"], body).await?;
-        let (tx, rx) = mpsc::channel(64);
+        let base = self.upstream_base()?;
+        let http = self.http.clone();
+        let healthy = Arc::clone(&self.healthy_upstream);
         let spec_metrics = Arc::clone(&self.spec_metrics);
         let profile = self.profile;
         let model = model_name.to_string();
-        tokio::spawn(async move {
-            let mut byte_stream = Box::pin(resp.bytes_stream());
-            let mut buf = Vec::new();
-            let mut done_reason = Some("stop".to_string());
-            let mut prompt_eval_duration_ns = None;
-            let mut upstream_timings = None;
-            while let Some(event) = stream::next_sse_event(&mut byte_stream, &mut buf).await {
-                match event {
-                    Err(error) => {
-                        let _ = tx.send(Err(error)).await;
-                        return;
-                    }
-                    Ok(None) => break,
-                    Ok(Some(json)) => {
-                        if let Some(timings) = UpstreamTimings::from_response(&json) {
-                            prompt_eval_duration_ns = timings.prompt_eval_duration_ns();
-                            if profile.expects_speculation_timings()
-                                && !timings.speculation_engaged()
-                            {
-                                tracing::warn!(
-                                    model = %model,
-                                    profile = profile.as_str(),
-                                    "prism speculation profile selected but upstream timings have no draft_n"
-                                );
-                            }
-                            {
-                                let mut guard = spec_metrics.lock().await;
-                                guard.observe(&timings);
-                            }
-                            upstream_timings = Some(timings.into_observation_json());
-                        }
-                        let delta = json
-                            .pointer("/choices/0/delta/content")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let thinking = json
-                            .pointer("/choices/0/delta/reasoning_content")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| {
-                                json.pointer("/choices/0/delta/thinking")
-                                    .and_then(|v| v.as_str())
-                            })
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_string);
-                        if let Some(reason) = json
-                            .pointer("/choices/0/finish_reason")
-                            .and_then(|v| v.as_str())
-                        {
-                            done_reason = Some(reason.to_string());
-                        }
-                        if !delta.is_empty() || thinking.is_some() {
-                            if tx
-                                .send(Ok(ChatResponseChunk {
-                                    content: delta.to_string(),
-                                    thinking_content: thinking,
-                                    done: false,
-                                    prompt_tokens: None,
-                                    done_reason: None,
-                                    prompt_eval_duration_ns,
-                                    tool_calls: None,
-                                    upstream_timings: upstream_timings.clone(),
-                                }))
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
-                        if json
-                            .pointer("/choices/0/finish_reason")
-                            .and_then(|v| v.as_str())
-                            .is_some()
-                        {
-                            break;
-                        }
-                    }
-                }
+
+        // The returned stream owns both startup and response. Dropping it cancels
+        // health checks, response-header waits, prefill, and decode HTTP reads
+        // without leaving a detached producer or a buffered generation behind.
+        let startup = async move {
+            let base = ensure_healthy_upstream(&http, &healthy, &base).await?;
+            let url = format!("{base}/v1/chat/completions");
+            let response = http
+                .post(&url)
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|error| {
+                    PowerError::InferenceFailed(format!("prism stream to {url} failed: {error}"))
+                })?;
+            if !response.status().is_success() {
+                *healthy.lock().await = None;
+                return Err(PowerError::InferenceFailed(format!(
+                    "prism upstream stream returned {}",
+                    response.status()
+                )));
             }
-            let _ = tx
-                .send(Ok(ChatResponseChunk {
-                    content: String::new(),
-                    thinking_content: None,
-                    done: true,
-                    prompt_tokens: None,
-                    done_reason,
-                    prompt_eval_duration_ns: None,
-                    tool_calls: None,
-                    upstream_timings,
-                }))
-                .await;
-        });
-        Ok(Box::pin(ReceiverStream::new(rx)))
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                .map(str::trim);
+            if content_type != Some("text/event-stream") {
+                return Err(PowerError::InferenceFailed(
+                    "prism upstream did not return text/event-stream".into(),
+                ));
+            }
+            Ok(stream::chat_response_stream(
+                response,
+                model,
+                profile,
+                spec_metrics,
+            ))
+        };
+        Ok(Box::pin(futures::stream::once(startup).try_flatten()))
     }
 
     async fn record_timings(&self, model_name: &str, timings: &UpstreamTimings) {
@@ -434,6 +277,36 @@ impl PrismBackend {
     }
 }
 
+async fn ensure_healthy_upstream(
+    http: &reqwest::Client,
+    healthy: &Mutex<Option<(Instant, String)>>,
+    base: &str,
+) -> Result<String> {
+    {
+        let guard = healthy.lock().await;
+        if let Some((probed_at, cached_base)) = guard.as_ref() {
+            if cached_base == base && probed_at.elapsed() < HEALTH_CACHE_TTL {
+                return Ok(cached_base.clone());
+            }
+        }
+    }
+    let health = format!("{base}/health");
+    let response = http.get(&health).send().await.map_err(|error| {
+        PowerError::InferenceFailed(format!(
+            "prism upstream health check failed ({health}): {error}"
+        ))
+    })?;
+    if !response.status().is_success() {
+        *healthy.lock().await = None;
+        return Err(PowerError::InferenceFailed(format!(
+            "prism upstream health check returned {} ({health})",
+            response.status()
+        )));
+    }
+    *healthy.lock().await = Some((Instant::now(), base.to_string()));
+    Ok(base.to_string())
+}
+
 /// Build the OpenAI-compatible chat body forwarded to Prism `llama-server`.
 fn build_prism_chat_body(
     model_name: &str,
@@ -451,6 +324,10 @@ fn build_prism_chat_body(
         "messages": messages,
         "stream": stream,
     });
+    if stream {
+        // Usage arrives in a separate final event on OpenAI-compatible servers.
+        body["stream_options"] = serde_json::json!({ "include_usage": true });
+    }
     if let Some(temp) = request.temperature {
         body["temperature"] = temp.into();
     }
@@ -475,13 +352,6 @@ fn build_prism_chat_body(
     body
 }
 
-fn request_has_tools(request: &ChatRequest) -> bool {
-    request
-        .tools
-        .as_ref()
-        .is_some_and(|tools| !tools.is_empty())
-}
-
 fn prism_chat_message_json(message: &ChatMessage) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert("role".into(), serde_json::json!(message.role));
@@ -504,50 +374,6 @@ fn prism_chat_message_json(message: &ChatMessage) -> serde_json::Value {
         obj.insert("tool_call_id".into(), serde_json::json!(tool_call_id));
     }
     serde_json::Value::Object(obj)
-}
-
-#[derive(Debug, Clone)]
-struct ParsedPrismChatMessage {
-    content: String,
-    thinking_content: Option<String>,
-    tool_calls: Option<Vec<ToolCall>>,
-    done_reason: Option<String>,
-}
-
-fn parse_prism_chat_message(json: &serde_json::Value) -> ParsedPrismChatMessage {
-    let content = json
-        .pointer("/choices/0/message/content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let thinking_content = json
-        .pointer("/choices/0/message/reasoning_content")
-        .and_then(|v| v.as_str())
-        .or_else(|| {
-            json.pointer("/choices/0/message/thinking")
-                .and_then(|v| v.as_str())
-        })
-        .map(str::to_string)
-        .filter(|s| !s.is_empty());
-    let tool_calls = json
-        .pointer("/choices/0/message/tool_calls")
-        .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v.clone()).ok())
-        .filter(|calls| !calls.is_empty());
-    let finish_reason = json
-        .pointer("/choices/0/finish_reason")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let done_reason = match (tool_calls.as_ref(), finish_reason) {
-        (Some(_), _) => Some("tool_calls".into()),
-        (_, Some(reason)) => Some(reason),
-        _ => Some("stop".into()),
-    };
-    ParsedPrismChatMessage {
-        content,
-        thinking_content,
-        tool_calls,
-        done_reason,
-    }
 }
 
 #[async_trait]
@@ -639,13 +465,8 @@ impl Backend for PrismBackend {
             )));
         }
 
-        // Tool-call streaming needs a delta assembler; keep the buffered path
-        // for tool requests. Tool-free chats stream from upstream for TTFT.
-        if request_has_tools(&request) {
-            self.chat_buffered(model_name, request).await
-        } else {
-            self.chat_streaming(model_name, request).await
-        }
+        // Both client response modes consume the same owned upstream SSE path.
+        self.chat_streaming(model_name, request).await
     }
 
     async fn complete(
@@ -955,68 +776,7 @@ mod tests {
             images: None,
             session_id: None,
         };
-        assert!(!request_has_tools(&request));
         let body = build_prism_chat_body("bonsai2-ptq1", &request, true);
         assert_eq!(body["stream"], true);
-    }
-
-    #[test]
-    fn chat_message_parser_preserves_native_tool_calls() {
-        let json = serde_json::json!({
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "write",
-                            "arguments": "{\"file_path\":\"hello_smoke.py\",\"content\":\"print(\\\"OK\\\")\"}"
-                        }
-                    }]
-                }
-            }]
-        });
-        let parsed = parse_prism_chat_message(&json);
-        assert_eq!(parsed.done_reason.as_deref(), Some("tool_calls"));
-        let calls = parsed.tool_calls.expect("tool_calls");
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].function.name, "write");
-        assert!(calls[0].function.arguments.contains("hello_smoke.py"));
-        assert_eq!(calls[0].index, None);
-    }
-
-    #[test]
-    fn streaming_tool_call_indexes_are_assigned() {
-        let json = serde_json::json!({
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "write",
-                            "arguments": "{\"file_path\":\"a.py\"}"
-                        }
-                    }]
-                }
-            }]
-        });
-        let parsed = parse_prism_chat_message(&json);
-        let mut calls = parsed.tool_calls.expect("tool_calls");
-        if calls[0].index.is_none() {
-            calls[0].index = Some(0);
-        }
-        assert_eq!(calls[0].index, Some(0));
-        let delta = serde_json::json!({
-            "tool_calls": calls
-        });
-        let index = delta["tool_calls"][0]["index"].as_u64();
-        assert_eq!(index, Some(0));
     }
 }

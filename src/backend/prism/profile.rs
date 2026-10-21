@@ -109,7 +109,10 @@ mod tests {
             PrismProfile::Dspark
         );
         assert_eq!(resolve_profile(Some("mtp")).unwrap(), PrismProfile::Mtp);
-        assert_eq!(resolve_profile(Some("dflash")).unwrap(), PrismProfile::Dflash);
+        assert_eq!(
+            resolve_profile(Some("dflash")).unwrap(),
+            PrismProfile::Dflash
+        );
         assert_eq!(resolve_profile(Some("kv4")).unwrap(), PrismProfile::Kv4);
         assert!(resolve_profile(Some("eagle")).is_err());
     }

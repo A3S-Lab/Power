@@ -116,6 +116,14 @@ impl PowerConfig {
     pub fn validate(&self) -> Result<()> {
         self.gpu.validate()?;
         self.serving_execution.validate()?;
+        if !(1..=100_000).contains(&self.max_concurrent_requests)
+            || self.max_queued_requests > 100_000
+            || !(1..=300_000).contains(&self.queue_timeout_ms)
+        {
+            return Err(PowerError::Config(
+                "HTTP admission requires max_concurrent_requests in 1..=100000, max_queued_requests in 0..=100000, and queue_timeout_ms in 1..=300000".to_string(),
+            ));
+        }
         if !self.serving_execution.is_aggregated() && self.api_keys.is_empty() {
             return Err(PowerError::Config(
                 "prefill-decode serving requires api_keys for authenticated internal phase routes"

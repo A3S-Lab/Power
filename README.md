@@ -333,12 +333,23 @@ serving_execution {
 
 flash_attention = true
 num_parallel = 1
+max_concurrent_requests = 1
+max_queued_requests = 8
+queue_timeout_ms = 1000
 
 gpu {
   gpu_layers = -1
   main_gpu = 0
 }
 ~~~
+
+HTTP admission is bounded independently of engine slots. The defaults above
+allow one active call and eight queued calls; a full queue or a 1000 ms queue
+deadline returns HTTP 429 without an internal retry. Active capacity must be
+positive; `max_concurrent_requests = 0` is refused. The same limits apply to
+chat, completions, embeddings and SystemOne. See
+[serving qualification](docs/serving-qualification.md) for metrics and external
+Prism runtime boundaries.
 
 Invalid ACL, ranges, hashes, strategies, execution profiles, or unsupported
 explicit backends fail before inference. `prefill-decode` is accepted only as

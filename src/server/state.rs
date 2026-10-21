@@ -108,8 +108,10 @@ impl AppState {
             Duration::ZERO
         });
         let metrics = Arc::new(Metrics::new());
-        let limiter = Arc::new(crate::server::limiter::ConcurrencyLimiter::new(
-            config.max_concurrent_requests,
+        let limiter = Arc::new(crate::server::limiter::ConcurrencyLimiter::new_bounded(
+            usize::try_from(config.max_concurrent_requests).unwrap_or(100_000),
+            usize::try_from(config.max_queued_requests).unwrap_or(100_000),
+            Duration::from_millis(config.queue_timeout_ms),
             metrics.clone(),
         ));
         Self {

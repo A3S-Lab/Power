@@ -1,24 +1,17 @@
 use axum::extract::State;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::Json;
-use futures::StreamExt;
-use std::convert::Infallible;
 use std::time::Instant;
-use zeroize::Zeroize;
 
 use super::openai_error;
-use crate::api::types::{
-    ChatChoice, ChatChunkChoice, ChatCompletionChunk, ChatCompletionMessage, ChatCompletionRequest,
-    ChatCompletionResponse, ChatDelta, Usage,
-};
-use crate::backend::types::{
-    ChatMessage, ChatRequest, ChatResponseChunk, MessageContent, ToolCall, ToolChoice,
-};
-use crate::server::audit::AuditEvent;
+use crate::api::types::ChatCompletionRequest;
+use crate::backend::types::{ChatMessage, ChatRequest, ChatResponseChunk, ToolChoice};
 use crate::server::auth::AuthId;
 use crate::server::request_context::RequestContext;
 use crate::server::state::AppState;
+
+#[path = "chat_runtime.rs"]
+mod runtime;
 
 fn chunk_emits_token(chunk: &ChatResponseChunk) -> bool {
     !chunk.done
@@ -99,6 +92,7 @@ pub async fn handler(
     auth_id: Option<axum::Extension<AuthId>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
+    let request_started = Instant::now();
     let model_name = request.model.clone();
     let request_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
     if let Err(message) =
@@ -224,6 +218,7 @@ pub async fn handler(
     // Build request context for isolation and audit tracking
     let ctx = RequestContext::new(auth_id.map(|a| a.0 .0.clone()));
     state.metrics.increment_active_requests();
+    let active_request = runtime::ActiveRequest::new(state.metrics.clone());
 
     // Privacy: redact inference content from logs
     if state.should_redact() {
@@ -236,7 +231,6 @@ pub async fn handler(
     let manifest = match state.registry.get(&model_name) {
         Ok(m) => m,
         Err(_) => {
-            state.metrics.decrement_active_requests();
             return openai_error(
                 "model_not_found",
                 &format!("model '{model_name}' not found"),
@@ -247,22 +241,18 @@ pub async fn handler(
     let request_keep_alive = match super::parse_request_keep_alive(request.keep_alive.as_deref()) {
         Ok(keep_alive) => keep_alive,
         Err(message) => {
-            state.metrics.decrement_active_requests();
             return openai_error("invalid_keep_alive", &message).into_response();
         }
     };
 
     if !matches!(manifest.format, crate::model::manifest::ModelFormat::Remote) {
         if let Some(message) = unsupported_local_message_role_message(&request) {
-            state.metrics.decrement_active_requests();
             return openai_error("unsupported_message_role", &message).into_response();
         }
         if let Some(message) = unsupported_local_tool_choice_message(&request) {
-            state.metrics.decrement_active_requests();
             return openai_error("unsupported_tool_choice", &message).into_response();
         }
         if let Some(message) = unsupported_local_parallel_tool_calls_message(&request) {
-            state.metrics.decrement_active_requests();
             return openai_error("unsupported_parallel_tool_calls", &message).into_response();
         }
     }
@@ -271,7 +261,6 @@ pub async fn handler(
         match crate::api::prompt_policy::runtime_policy_claim(&manifest, Some(&state.config)) {
             Ok(policy) => policy,
             Err(e) => {
-                state.metrics.decrement_active_requests();
                 return openai_error(
                     "receipt_failed",
                     &format!("failed to build runtime policy receipt claim: {e}"),
@@ -283,7 +272,6 @@ pub async fn handler(
     let backend = match state.find_backend_for_manifest(&manifest) {
         Ok(b) => b,
         Err(e) => {
-            state.metrics.decrement_active_requests();
             return openai_error("backend_unavailable", &state.sanitize_error(&e.to_string()))
                 .into_response();
         }
@@ -293,13 +281,11 @@ pub async fn handler(
         backend.name(),
         request.response_format.as_ref(),
     ) {
-        state.metrics.decrement_active_requests();
         return openai_error("unsupported_response_format", &message).into_response();
     }
     let prompt_cache_session_id = match request.prompt_cache_key.as_deref() {
         Some(key) => {
             if !backend.prompt_cache_support().is_supported() {
-                state.metrics.decrement_active_requests();
                 return openai_error(
                     "prompt_cache_unsupported",
                     &format!(
@@ -310,7 +296,6 @@ pub async fn handler(
                 .into_response();
             }
             if request.has_image_inputs() {
-                state.metrics.decrement_active_requests();
                 return openai_error(
                     "prompt_cache_unsupported",
                     "prompt_cache_key currently supports text-only chat requests",
@@ -327,6 +312,11 @@ pub async fn handler(
         None => None,
     };
 
+    let permit = match state.limiter.acquire_http().await {
+        Ok(permit) => permit,
+        Err(error) => return crate::server::limiter::admission_response(error),
+    };
+
     let load_result = match crate::api::autoload::ensure_loaded_with_keep_alive(
         &state,
         &model_name,
@@ -338,12 +328,19 @@ pub async fn handler(
     {
         Ok(r) => r,
         Err(e) => {
-            state.metrics.decrement_active_requests();
             return openai_error("model_load_failed", &state.sanitize_error(&e.to_string()))
                 .into_response();
         }
     };
-    let unload_after_use = load_result.unload_after_use;
+    let resources = runtime::Resources::new(
+        state.clone(),
+        backend.clone(),
+        model_name.clone(),
+        ctx,
+        permit,
+        active_request,
+        load_result.unload_after_use,
+    );
 
     let effective_tools = request.effective_tools();
     let effective_tool_choice = request.effective_tool_choice();
@@ -416,10 +413,6 @@ pub async fn handler(
     {
         Ok(digest) => digest,
         Err(e) => {
-            if unload_after_use {
-                crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
-            }
-            state.metrics.decrement_active_requests();
             return openai_error(
                 "receipt_failed",
                 &format!("failed to build effective prompt receipt claim: {e}"),
@@ -431,10 +424,6 @@ pub async fn handler(
         match super::chat_effective_prompt_for_receipt(&request, effective_prompt) {
             Ok(digest) => digest,
             Err(message) => {
-                if unload_after_use {
-                    crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
-                }
-                state.metrics.decrement_active_requests();
                 return openai_error("receipt_failed", &message).into_response();
             }
         };
@@ -446,10 +435,6 @@ pub async fn handler(
         ) {
             Ok(receipt) => receipt,
             Err(e) => {
-                if unload_after_use {
-                    crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
-                }
-                state.metrics.decrement_active_requests();
                 return openai_error(
                     "receipt_failed",
                     &format!("failed to build attestation receipt: {e}"),
@@ -461,10 +446,6 @@ pub async fn handler(
     {
         Ok(digest) => digest,
         Err(e) => {
-            if unload_after_use {
-                crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
-            }
-            state.metrics.decrement_active_requests();
             return openai_error(
                 "receipt_failed",
                 &format!("failed to digest attestation receipt: {e}"),
@@ -482,380 +463,29 @@ pub async fn handler(
             .map(|o| o.include_usage)
             .unwrap_or(false);
 
-    // Admission control: hold a permit for the whole request (including the
-    // streamed body). Releases on completion or early client disconnect.
-    let permit = state.limiter.acquire().await;
-
+    let prism = backend.name() == "prism";
     match backend.chat(&model_name, backend_request).await {
         Ok(stream) => {
-            if is_stream {
-                let id = request_id.clone();
-                let model = model_name.clone();
-                let created = chrono::Utc::now().timestamp();
-                let start = Instant::now();
-
-                // Timing padding: delay before sending first token to prevent
-                // prompt-length inference from response latency.
-                if let Some(pad) = state.timing_padding() {
-                    tokio::time::sleep(pad).await;
-                }
-
-                // First chunk: send role
-                let first_chunk = ChatCompletionChunk {
-                    id: id.clone(),
-                    object: "chat.completion.chunk".to_string(),
-                    created,
-                    model: model.clone(),
-                    choices: vec![ChatChunkChoice {
-                        index: 0,
-                        delta: ChatDelta {
-                            role: Some("assistant".to_string()),
-                            content: None,
-                            reasoning_content: None,
-                            tool_calls: None,
-                        },
-                        finish_reason: None,
-                    }],
-                };
-
-                let first_event = futures::stream::once(async move {
-                    Ok::<_, Infallible>(super::sse_json_event(&first_chunk))
-                });
-
-                let eval_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-                let counter_clone = eval_counter.clone();
-                let eval_counter2 = eval_counter.clone();
-                let prompt_tokens_shared =
-                    std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-                let prompt_tokens_clone = prompt_tokens_shared.clone();
-                let prompt_tokens_shared2 = prompt_tokens_shared.clone();
-                let ttft_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let ttft_clone = ttft_recorded.clone();
-                let metrics = state.metrics.clone();
-                let metrics_done = state.metrics.clone();
-                let metrics_cleanup = state.metrics.clone();
-                let model_for_metrics = model_name.clone();
-                let model_for_done = model_name.clone();
-                let model_for_cleanup = model_name.clone();
-                let backend_cleanup = backend.clone();
-                let ctx_cleanup = ctx.clone();
-                let audit_stream = state.audit.clone();
-                let ctx_audit = ctx.clone();
-                let state_cleanup = state.clone();
-                let model_for_unload = model_name.clone();
-
-                let id_for_done = id.clone();
-                let model_for_done2 = model.clone();
-                let receipt_for_usage = attestation_receipt.clone();
-                let receipt_digest_for_usage = attestation_receipt_sha256.clone();
-                let content_stream = stream.map(move |chunk| {
-                    let event_data = match chunk {
-                        Ok(c) => {
-                            if chunk_emits_token(&c) {
-                                counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                // Record TTFT on first content chunk
-                                if !ttft_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                                    metrics.record_ttft(
-                                        &model_for_metrics,
-                                        start.elapsed().as_secs_f64(),
-                                    );
-                                }
-                            }
-                            if let Some(pt) = c.prompt_tokens {
-                                prompt_tokens_clone.store(pt, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            let finish_reason = if c.done {
-                                Some(c.done_reason.clone().unwrap_or_else(|| "stop".to_string()))
-                            } else {
-                                None
-                            };
-                            let chunk_resp = ChatCompletionChunk {
-                                id: id.clone(),
-                                object: "chat.completion.chunk".to_string(),
-                                created,
-                                model: model.clone(),
-                                choices: vec![ChatChunkChoice {
-                                    index: 0,
-                                    delta: ChatDelta {
-                                        role: None,
-                                        content: (!c.content.is_empty()).then_some(c.content),
-                                        reasoning_content: c
-                                            .thinking_content
-                                            .filter(|content| !content.is_empty()),
-                                        tool_calls: c.tool_calls,
-                                    },
-                                    finish_reason,
-                                }],
-                            };
-                            super::sse_json_data(&chunk_resp)
-                        }
-                        Err(e) => super::sse_json_data(&serde_json::json!({
-                            "error": { "message": e.to_string() }
-                        })),
-                    };
-                    Ok::<_, Infallible>(Event::default().data(event_data))
-                });
-
-                // Emit a final usage chunk before [DONE] when either suppress_token_metrics is
-                // active (TEE privacy mode) or the client set stream_options.include_usage.
-                // Reads are deferred into an async closure so they execute after the content
-                // stream is fully consumed (counters have final values at that point).
-                let usage_event = futures::stream::once(async move {
-                    let eval_count2 = eval_counter2.load(std::sync::atomic::Ordering::Relaxed);
-                    let prompt_tokens2 =
-                        prompt_tokens_shared2.load(std::sync::atomic::Ordering::Relaxed);
-                    let (rp, rc) = if suppress_token_metrics {
-                        (
-                            super::round_tokens(prompt_tokens2),
-                            super::round_tokens(eval_count2),
-                        )
-                    } else {
-                        (prompt_tokens2, eval_count2)
-                    };
-                    let usage_chunk = ChatCompletionChunk {
-                        id: id_for_done,
-                        object: "chat.completion.chunk".to_string(),
-                        created,
-                        model: model_for_done2,
-                        choices: vec![],
-                    };
-                    let mut val = match serde_json::to_value(&usage_chunk) {
-                        Ok(val) => val,
-                        Err(e) => {
-                            return Ok::<_, Infallible>(super::sse_json_event(
-                                &serde_json::json!({
-                                    "error": { "message": format!("failed to serialize usage chunk: {e}") }
-                                }),
-                            ));
-                        }
-                    };
-                    if include_usage_chunk {
-                        val["usage"] = serde_json::json!({
-                            "prompt_tokens": rp,
-                            "completion_tokens": rc,
-                            "total_tokens": rp + rc
-                        });
-                    }
-                    val["attestation_receipt"] = serde_json::json!(receipt_for_usage);
-                    val["attestation_receipt_sha256"] = serde_json::json!(receipt_digest_for_usage);
-                    Ok::<_, Infallible>(super::sse_json_event(&val))
-                });
-
-                let done_event = futures::stream::once(async move {
-                    // Hold the admission permit until the stream finishes, then
-                    // release it (also released if the client disconnects early).
-                    let _permit = permit;
-                    // Record final metrics when stream completes
-                    let duration = start.elapsed().as_secs_f64();
-                    let eval_count = eval_counter.load(std::sync::atomic::Ordering::Relaxed);
-                    let prompt_tokens =
-                        prompt_tokens_shared.load(std::sync::atomic::Ordering::Relaxed);
-                    metrics_done.record_inference_duration(&model_for_done, duration);
-                    metrics_done.record_tokens(&model_for_done, "input", prompt_tokens as u64);
-                    metrics_done.record_tokens(&model_for_done, "output", eval_count as u64);
-
-                    // Request isolation: clean up backend resources
-                    crate::api::autoload::cleanup_after_request(
-                        &model_for_cleanup,
-                        &ctx_cleanup,
-                        &backend_cleanup,
-                    )
-                    .await;
-                    metrics_cleanup.decrement_active_requests();
-
-                    // Unload model if keep_alive=0 (after inference, not before)
-                    if unload_after_use {
-                        crate::api::autoload::unload_after_request(
-                            &state_cleanup,
-                            &model_for_unload,
-                            &backend_cleanup,
-                        )
-                        .await;
-                    }
-
-                    // Audit: log successful streaming inference
-                    if let Some(ref audit) = audit_stream {
-                        audit.log(&AuditEvent::success(
-                            &ctx_audit.request_id,
-                            ctx_audit.auth_id.clone(),
-                            "chat",
-                            Some(model_for_cleanup.clone()),
-                            Some(ctx_audit.elapsed().as_millis() as u64),
-                            Some(eval_count as u64),
-                        ));
-                    }
-
-                    Ok::<_, Infallible>(Event::default().data("[DONE]"))
-                });
-
-                let full_stream = first_event
-                    .chain(content_stream)
-                    .chain(usage_event)
-                    .chain(done_event);
-
-                Sse::new(full_stream)
-                    .keep_alive(KeepAlive::default())
-                    .into_response()
-            } else {
-                // Non-streaming: collect full response
-                // Timing padding: delay before processing to prevent
-                // prompt-length inference from response latency.
-                if let Some(pad) = state.timing_padding() {
-                    tokio::time::sleep(pad).await;
-                }
-                let start = Instant::now();
-                let mut full_content = String::new();
-                let mut full_thinking = String::new();
-                let mut tool_calls = Vec::<ToolCall>::new();
-                let mut completion_tokens: u32 = 0;
-                let mut prompt_tokens: u32 = 0;
-                let mut finish_reason = "stop".to_string();
-                let mut ttft_recorded = false;
-                let mut prism_upstream: Option<serde_json::Value> = None;
-                let mut stream = stream;
-                while let Some(chunk) = stream.next().await {
-                    match chunk {
-                        Ok(c) => {
-                            full_content.push_str(&c.content);
-                            if let Some(ref t) = c.thinking_content {
-                                full_thinking.push_str(t);
-                            }
-                            if chunk_emits_token(&c) {
-                                completion_tokens += 1;
-                                if !ttft_recorded {
-                                    state
-                                        .metrics
-                                        .record_ttft(&model_name, start.elapsed().as_secs_f64());
-                                    ttft_recorded = true;
-                                }
-                            }
-                            if let Some(pt) = c.prompt_tokens {
-                                prompt_tokens = pt;
-                            }
-                            if let Some(reason) = c.done_reason {
-                                finish_reason = reason;
-                            }
-                            if let Some(calls) = c.tool_calls {
-                                tool_calls.extend(calls);
-                            }
-                            if c.upstream_timings.is_some() {
-                                prism_upstream = c.upstream_timings;
-                            }
-                        }
-                        Err(e) => {
-                            return openai_error(
-                                "server_error",
-                                &state.sanitize_error(&e.to_string()),
-                            )
-                            .into_response();
-                        }
-                    }
-                }
-
-                let total_duration_secs = start.elapsed().as_secs_f64();
-
-                state
-                    .metrics
-                    .record_inference_duration(&model_name, total_duration_secs);
-                state
-                    .metrics
-                    .record_tokens(&model_name, "input", prompt_tokens as u64);
-                state
-                    .metrics
-                    .record_tokens(&model_name, "output", completion_tokens as u64);
-
-                // Round token counts to nearest 10 when suppress_token_metrics is enabled
-                // to prevent exact token-count side-channel inference.
-                let (reported_prompt, reported_completion) = if state.suppress_token_metrics() {
-                    (
-                        super::round_tokens(prompt_tokens),
-                        super::round_tokens(completion_tokens),
-                    )
-                } else {
-                    (prompt_tokens, completion_tokens)
-                };
-
-                let response = ChatCompletionResponse {
+            runtime::respond(
+                stream,
+                resources,
+                runtime::Presentation {
                     id: request_id,
-                    object: "chat.completion".to_string(),
-                    created: chrono::Utc::now().timestamp(),
-                    model: model_name.clone(),
-                    choices: vec![ChatChoice {
-                        index: 0,
-                        message: ChatCompletionMessage {
-                            role: "assistant".to_string(),
-                            content: MessageContent::Text(full_content.clone()),
-                            name: None,
-                            tool_calls: if tool_calls.is_empty() {
-                                None
-                            } else {
-                                Some(tool_calls)
-                            },
-                            tool_call_id: None,
-                            images: None,
-                            thinking: if full_thinking.is_empty() {
-                                None
-                            } else {
-                                Some(full_thinking.clone())
-                            },
-                            reasoning_content: None,
-                            unsupported: Default::default(),
-                        },
-                        finish_reason: Some(finish_reason),
-                    }],
-                    usage: Usage {
-                        prompt_tokens: reported_prompt,
-                        completion_tokens: reported_completion,
-                        total_tokens: reported_prompt + reported_completion,
-                    },
-                    system_fingerprint: Some("fp_a3s_power".to_string()),
-                    attestation_receipt: Some(attestation_receipt),
-                    attestation_receipt_sha256: Some(attestation_receipt_sha256),
-                    prism_upstream,
-                };
-
-                // Privacy: zeroize inference buffers in TEE mode
-                if state.should_redact() {
-                    full_content.zeroize();
-                    full_thinking.zeroize();
-                }
-
-                // Request isolation: clean up backend resources
-                crate::api::autoload::cleanup_after_request(&model_name, &ctx, &backend).await;
-                state.metrics.decrement_active_requests();
-
-                // Unload model if keep_alive=0 (after inference, not before)
-                if unload_after_use {
-                    crate::api::autoload::unload_after_request(&state, &model_name, &backend).await;
-                }
-
-                // Audit: log successful inference
-                if let Some(ref audit) = state.audit {
-                    audit.log(&AuditEvent::success(
-                        &ctx.request_id,
-                        ctx.auth_id.clone(),
-                        "chat",
-                        Some(model_name.clone()),
-                        Some(ctx.elapsed().as_millis() as u64),
-                        Some(completion_tokens as u64),
-                    ));
-                }
-
-                Json(response).into_response()
-            }
+                    model: model_name,
+                    started: request_started,
+                    stream: is_stream,
+                    include_usage: include_usage_chunk,
+                    suppress: suppress_token_metrics,
+                    receipt: attestation_receipt,
+                    receipt_sha256: attestation_receipt_sha256,
+                },
+                prism,
+            )
+            .await
         }
-        Err(e) => {
-            state.metrics.decrement_active_requests();
-            if let Some(ref audit) = state.audit {
-                audit.log(&AuditEvent::failure(
-                    &ctx.request_id,
-                    ctx.auth_id.clone(),
-                    "chat",
-                    Some(model_name.clone()),
-                    e.to_string(),
-                ));
-            }
-            openai_error("server_error", &state.sanitize_error(&e.to_string())).into_response()
+        Err(error) => {
+            resources.audit_failure(error.to_string());
+            openai_error("server_error", &state.sanitize_error(&error.to_string())).into_response()
         }
     }
 }

@@ -7,17 +7,21 @@
 //!
 //! A request acquires a [`RequestPermit`] before inference and holds it until
 //! the response (including the streamed body) completes. When the configured
-//! limit is 0 the limiter is a no-op (unbounded), preserving prior behaviour.
+//! legacy library constructor receives 0 it remains unbounded. HTTP state uses
+//! a positive execution limit, finite queue and deadline through `new_bounded`.
 
 use std::sync::Arc;
 
-use crate::admission::{AdmissionController, AdmissionPermit};
-use crate::server::metrics::Metrics;
+use crate::admission::{AdmissionController, AdmissionError, AdmissionPermit};
+use crate::server::metrics::{HttpAdmissionOutcome, Metrics};
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 /// Admits inference requests up to a fixed concurrency limit.
 pub struct ConcurrencyLimiter {
     admission: AdmissionController,
     metrics: Arc<Metrics>,
+    queue_timeout: Option<Duration>,
 }
 
 /// Held for the lifetime of an admitted request. Dropping it (on response
@@ -45,6 +49,18 @@ impl Drop for WaitGuard {
     }
 }
 
+struct AdmissionWaitGuard {
+    metrics: Arc<Metrics>,
+    started: tokio::time::Instant,
+    outcome: HttpAdmissionOutcome,
+}
+impl Drop for AdmissionWaitGuard {
+    fn drop(&mut self) {
+        self.metrics
+            .record_http_admission_wait(self.outcome, self.started.elapsed().as_secs_f64());
+    }
+}
+
 impl ConcurrencyLimiter {
     /// `max_concurrent == 0` means unbounded.
     pub fn new(max_concurrent: u64, metrics: Arc<Metrics>) -> Self {
@@ -56,7 +72,68 @@ impl ConcurrencyLimiter {
         Self {
             admission: AdmissionController::new(maximum),
             metrics,
+            queue_timeout: None,
         }
+    }
+
+    /// HTTP policy: finite execution capacity, finite waiting capacity and deadline.
+    /// The legacy constructor and `acquire` remain available to existing library callers.
+    pub fn new_bounded(
+        maximum: usize,
+        maximum_waiting: usize,
+        queue_timeout: Duration,
+        metrics: Arc<Metrics>,
+    ) -> Self {
+        Self {
+            admission: AdmissionController::new_bounded(maximum, maximum_waiting),
+            metrics,
+            queue_timeout: Some(queue_timeout),
+        }
+    }
+
+    pub fn snapshot(&self) -> crate::admission::AdmissionSnapshot {
+        self.admission.snapshot()
+    }
+
+    /// HTTP callers must use this fallible path; dropping it releases queue capacity.
+    pub async fn acquire_http(&self) -> Result<RequestPermit, AdmissionError> {
+        let Some(timeout) = self.queue_timeout else {
+            return Ok(self.acquire().await);
+        };
+        let mut observation = AdmissionWaitGuard {
+            metrics: self.metrics.clone(),
+            started: tokio::time::Instant::now(),
+            outcome: HttpAdmissionOutcome::Cancelled,
+        };
+        let permit = if let Some(permit) = self.admission.try_acquire() {
+            permit
+        } else {
+            self.metrics.increment_waiting_requests();
+            let _waiting = WaitGuard(self.metrics.clone());
+            let deadline = tokio::time::Instant::now() + timeout;
+            match self
+                .admission
+                .acquire_cancellable_until(&CancellationToken::new(), deadline)
+                .await
+            {
+                Ok(permit) => permit,
+                Err(error) => {
+                    observation.outcome = match error {
+                        AdmissionError::QueueFull { .. } => HttpAdmissionOutcome::QueueFull,
+                        AdmissionError::DeadlineExceeded => HttpAdmissionOutcome::Timeout,
+                        AdmissionError::Cancelled => HttpAdmissionOutcome::Cancelled,
+                        AdmissionError::Closed => HttpAdmissionOutcome::Unavailable,
+                    };
+                    return Err(error);
+                }
+            }
+        };
+        observation.outcome = HttpAdmissionOutcome::Admitted;
+        self.metrics.increment_running_requests();
+        Ok(RequestPermit {
+            _permit: permit,
+            metrics: self.metrics.clone(),
+        })
     }
 
     /// Acquire an admission permit, awaiting if the server is at capacity.
@@ -210,4 +287,26 @@ mod tests {
             "cancelled-while-queued request must not leak the waiting gauge"
         );
     }
+}
+
+#[cfg(test)]
+#[path = "limiter_http_tests.rs"]
+mod http_tests;
+
+/// Stable OpenAI-shaped refusal for finite HTTP admission.
+pub(crate) fn admission_response(error: AdmissionError) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let code = match error {
+        AdmissionError::QueueFull { .. } => "admission_queue_full",
+        AdmissionError::DeadlineExceeded => "admission_queue_timeout",
+        AdmissionError::Cancelled => "admission_cancelled",
+        AdmissionError::Closed => "admission_unavailable",
+    };
+    (
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        axum::Json(serde_json::json!({
+            "error": { "type": "rate_limit_error", "code": code, "message": error.to_string() }
+        })),
+    )
+        .into_response()
 }

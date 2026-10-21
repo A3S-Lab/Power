@@ -71,6 +71,44 @@ struct TtftEntry {
     ttft_secs: f64,
 }
 
+const HTTP_ADMISSION_BUCKETS: [f64; 11] = [
+    0.0001, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0, 300.0,
+];
+
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub(crate) enum HttpAdmissionOutcome {
+    Admitted,
+    QueueFull,
+    Timeout,
+    Cancelled,
+    Unavailable,
+}
+impl HttpAdmissionOutcome {
+    const ALL: [Self; 5] = [
+        Self::Admitted,
+        Self::QueueFull,
+        Self::Timeout,
+        Self::Cancelled,
+        Self::Unavailable,
+    ];
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Admitted => "admitted",
+            Self::QueueFull => "queue_full",
+            Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+#[derive(Clone, Copy, Default)]
+struct HttpAdmissionWait {
+    buckets: [u64; 11],
+    count: u64,
+    sum: f64,
+}
+
 /// Prometheus metrics collector.
 pub struct Metrics {
     // --- Existing metrics ---
@@ -122,6 +160,7 @@ pub struct Metrics {
     waiting_requests: AtomicU64,
     /// Number of admitted requests currently running (holding a permit).
     running_requests: AtomicU64,
+    http_admission_wait: RwLock<[HttpAdmissionWait; 5]>,
 }
 
 impl Default for Metrics {
@@ -151,6 +190,41 @@ impl Metrics {
             active_requests: AtomicU64::new(0),
             waiting_requests: AtomicU64::new(0),
             running_requests: AtomicU64::new(0),
+            http_admission_wait: RwLock::new([HttpAdmissionWait::default(); 5]),
+        }
+    }
+
+    /// Actual monotonic time spent in the local HTTP admission controller.
+    /// Fixed buckets and closed outcome labels keep storage/cardinality bounded.
+    pub(crate) fn record_http_admission_wait(&self, outcome: HttpAdmissionOutcome, seconds: f64) {
+        let mut all = write_lock(&self.http_admission_wait);
+        let stats = &mut all[outcome as usize];
+        stats.count = stats.count.saturating_add(1);
+        stats.sum += seconds;
+        for (bucket, bound) in stats.buckets.iter_mut().zip(HTTP_ADMISSION_BUCKETS) {
+            if seconds <= bound {
+                *bucket = bucket.saturating_add(1);
+            }
+        }
+    }
+
+    fn append_http_admission(&self, output: &mut String) {
+        output.push_str("# HELP power_http_admission_wait_seconds Local HTTP admission duration, including immediate refusals; excludes upstream engine queue.\n# TYPE power_http_admission_wait_seconds histogram\n");
+        output.push_str("# HELP power_http_admission_refusals_total HTTP admission refusals by closed reason.\n# TYPE power_http_admission_refusals_total counter\n");
+        let all = read_lock(&self.http_admission_wait);
+        for outcome in HttpAdmissionOutcome::ALL {
+            let stats = &all[outcome as usize];
+            let label = outcome.as_str();
+            for (bound, count) in HTTP_ADMISSION_BUCKETS.iter().zip(stats.buckets) {
+                output.push_str(&format!("power_http_admission_wait_seconds_bucket{{outcome=\"{label}\",le=\"{bound}\"}} {count}\n"));
+            }
+            output.push_str(&format!("power_http_admission_wait_seconds_bucket{{outcome=\"{label}\",le=\"+Inf\"}} {}\npower_http_admission_wait_seconds_count{{outcome=\"{label}\"}} {}\npower_http_admission_wait_seconds_sum{{outcome=\"{label}\"}} {:.9}\n", stats.count, stats.count, stats.sum));
+            if !matches!(outcome, HttpAdmissionOutcome::Admitted) {
+                output.push_str(&format!(
+                    "power_http_admission_refusals_total{{reason=\"{label}\"}} {}\n",
+                    stats.count
+                ));
+            }
         }
     }
 
@@ -605,6 +679,7 @@ impl Metrics {
             self.running_requests.load(Ordering::Relaxed)
         ));
 
+        self.append_http_admission(&mut output);
         output
     }
 
@@ -919,3 +994,7 @@ pub async fn middleware(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "metrics_admission_tests.rs"]
+mod admission_tests;

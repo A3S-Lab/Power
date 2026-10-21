@@ -59,26 +59,77 @@ fn prompt_policy_claim(
     Ok(Some(prompt))
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct TemplateStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+struct CachedChatTemplate {
+    path: std::path::PathBuf,
+    stamp: TemplateStamp,
+    template: Option<String>,
+}
+
+static CHAT_TEMPLATE_CACHE: std::sync::Mutex<Option<CachedChatTemplate>> =
+    std::sync::Mutex::new(None);
+
 fn gguf_chat_template(manifest: &ModelManifest) -> Option<String> {
     if manifest.format != ModelFormat::Gguf || !manifest.path.is_file() {
         return None;
     }
 
-    match crate::model::gguf::read_metadata(&manifest.path) {
-        Ok(metadata) => match metadata.metadata.get("tokenizer.chat_template") {
-            Some(crate::model::gguf::GgufValue::String(template)) => Some(template.clone()),
-            _ => None,
-        },
-        Err(e) => {
+    let stamp = std::fs::metadata(&manifest.path)
+        .ok()
+        .map(|meta| TemplateStamp {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        });
+    if let Some(stamp) = stamp.as_ref() {
+        if let Some(cached) = cached_chat_template(&manifest.path, stamp) {
+            return cached;
+        }
+    }
+
+    let template = match crate::model::gguf::read_chat_template(&manifest.path) {
+        Ok(template) => template,
+        Err(error) => {
             tracing::debug!(
                 model = %manifest.name,
                 path = %manifest.path.display(),
-                error = %e,
+                error = %error,
                 "GGUF chat template metadata unavailable for runtime policy digest"
             );
             None
         }
+    };
+    if let Some(stamp) = stamp {
+        store_chat_template(&manifest.path, stamp, template.clone());
     }
+    template
+}
+
+fn cached_chat_template(path: &std::path::Path, stamp: &TemplateStamp) -> Option<Option<String>> {
+    let guard = CHAT_TEMPLATE_CACHE
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let hit = guard.as_ref()?;
+    if hit.path == path && hit.stamp == *stamp {
+        Some(hit.template.clone())
+    } else {
+        None
+    }
+}
+
+fn store_chat_template(path: &std::path::Path, stamp: TemplateStamp, template: Option<String>) {
+    let mut guard = CHAT_TEMPLATE_CACHE
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    *guard = Some(CachedChatTemplate {
+        path: path.to_path_buf(),
+        stamp,
+        template,
+    });
 }
 
 fn effective_chat_template(manifest: &ModelManifest) -> Option<(&'static str, String)> {

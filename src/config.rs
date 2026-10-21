@@ -586,9 +586,17 @@ pub struct PowerConfig {
     #[serde(default)]
     pub rate_limit_rps: u64,
 
-    /// Max concurrent requests for /v1/* endpoints. 0 = unlimited (default).
-    #[serde(default)]
+    /// Maximum concurrent HTTP inference requests. Must be positive; default: 1.
+    #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: u64,
+
+    /// Maximum HTTP requests waiting for execution capacity. Zero rejects immediately.
+    #[serde(default = "default_max_queued_requests")]
+    pub max_queued_requests: u64,
+
+    /// Maximum time an HTTP request may wait for execution capacity.
+    #[serde(default = "default_queue_timeout_ms")]
+    pub queue_timeout_ms: u64,
 
     /// Remote models proxied to upstream OpenAI-compatible servers (vLLM, TGI,
     /// SGLang, ...). Maps served model name → upstream base URL (e.g.
@@ -676,6 +684,16 @@ fn validate_model_signing_key(value: &str) -> std::result::Result<(), String> {
     ed25519_dalek::VerifyingKey::from_bytes(&key_bytes)
         .map_err(|e| format!("model_signing_key is not a valid Ed25519 public key: {e}"))?;
     Ok(())
+}
+
+fn default_max_concurrent_requests() -> u64 {
+    1
+}
+fn default_max_queued_requests() -> u64 {
+    8
+}
+fn default_queue_timeout_ms() -> u64 {
+    1_000
 }
 
 fn default_num_parallel() -> usize {
@@ -844,7 +862,9 @@ impl Default for PowerConfig {
             streaming_decrypt: false,
             suppress_token_metrics: false,
             rate_limit_rps: 0,
-            max_concurrent_requests: 0,
+            max_concurrent_requests: default_max_concurrent_requests(),
+            max_queued_requests: default_max_queued_requests(),
+            queue_timeout_ms: default_queue_timeout_ms(),
             proxy_upstreams: HashMap::new(),
             prism_upstream: None,
             prism_profile: None,
@@ -859,3 +879,7 @@ impl Default for PowerConfig {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "config/http_admission_tests.rs"]
+mod http_admission_tests;

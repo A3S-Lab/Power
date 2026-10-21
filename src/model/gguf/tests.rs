@@ -743,3 +743,103 @@ fn test_memory_estimate_fields() {
     assert_eq!(est.total, 1300);
     assert_eq!(est.context_size, 4096);
 }
+
+#[test]
+fn test_read_chat_template_after_tokenizer_tables() {
+    let mut buf = Vec::new();
+    push_header(&mut buf, 0, 3);
+
+    push_string(&mut buf, b"tokenizer.ggml.tokens");
+    buf.extend_from_slice(&9u32.to_le_bytes());
+    buf.extend_from_slice(&8u32.to_le_bytes());
+    buf.extend_from_slice(&2u64.to_le_bytes());
+    push_string(&mut buf, b"<bos>");
+    push_string(&mut buf, b"hi");
+
+    push_string(&mut buf, b"tokenizer.ggml.token_type");
+    buf.extend_from_slice(&9u32.to_le_bytes());
+    buf.extend_from_slice(&4u32.to_le_bytes());
+    buf.extend_from_slice(&2u64.to_le_bytes());
+    buf.extend_from_slice(&1u32.to_le_bytes());
+    buf.extend_from_slice(&2u32.to_le_bytes());
+
+    push_string(&mut buf, b"tokenizer.chat_template");
+    buf.extend_from_slice(&8u32.to_le_bytes());
+    push_string(&mut buf, b"{{ messages }}");
+
+    let found = super::read_chat_template_from_reader(&mut Cursor::new(&buf)).unwrap();
+    assert_eq!(found.as_deref(), Some("{{ messages }}"));
+
+    let missing =
+        super::read_chat_template_from_reader(&mut Cursor::new(build_test_gguf())).unwrap();
+    assert_eq!(missing, None);
+}
+
+#[test]
+fn test_buffered_metadata_preserves_parsing_and_bounds_underlying_reads() {
+    struct CountingReader<'a> {
+        data: Cursor<&'a [u8]>,
+        reads: usize,
+    }
+    impl std::io::Read for CountingReader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            std::io::Read::read(&mut self.data, buffer)
+        }
+    }
+    impl std::io::Seek for CountingReader<'_> {
+        fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+            std::io::Seek::seek(&mut self.data, position)
+        }
+    }
+    let mut data = Vec::new();
+    push_header(&mut data, 1, 1);
+    push_string(&mut data, b"tokenizer.ggml.tokens");
+    data.extend_from_slice(&9u32.to_le_bytes());
+    data.extend_from_slice(&8u32.to_le_bytes());
+    data.extend_from_slice(&4096u64.to_le_bytes());
+    for index in 0..4096 {
+        push_string(
+            &mut data,
+            format!("token-{index:04}-abcdefghijklmnopqrstuvwxyz").as_bytes(),
+        );
+    }
+    push_string(&mut data, b"output.weight");
+    data.extend_from_slice(&2u32.to_le_bytes());
+    data.extend_from_slice(&16u64.to_le_bytes());
+    data.extend_from_slice(&16u64.to_le_bytes());
+    data.extend_from_slice(&1u32.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+
+    let mut raw = CountingReader {
+        data: Cursor::new(data.as_slice()),
+        reads: 0,
+    };
+    let expected = read_metadata_from_reader(&mut raw).unwrap();
+    let mut buffered = BufReader::with_capacity(
+        64 * 1024,
+        CountingReader {
+            data: Cursor::new(data.as_slice()),
+            reads: 0,
+        },
+    );
+    let actual = read_metadata_from_reader(&mut buffered).unwrap();
+    assert_eq!(actual.version, expected.version);
+    assert_eq!(actual.tensor_count, expected.tensor_count);
+    assert_eq!(actual.metadata_to_json(), expected.metadata_to_json());
+    assert_eq!(actual.tensors_to_json(), expected.tensors_to_json());
+    let buffered_reads = buffered.get_ref().reads;
+    assert!(buffered_reads <= data.len().div_ceil(64 * 1024) + 1);
+    assert!(buffered_reads * 100 < raw.reads);
+
+    for length in [0, 4, 23, data.len() - 1] {
+        let truncated = &data[..length];
+        let raw_error = read_metadata_from_reader(&mut Cursor::new(truncated)).unwrap_err();
+        let buffered_error = read_metadata_from_reader(&mut BufReader::with_capacity(
+            64 * 1024,
+            Cursor::new(truncated),
+        ))
+        .unwrap_err();
+        assert_eq!(raw_error.to_string(), buffered_error.to_string());
+    }
+}

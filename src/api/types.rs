@@ -7,6 +7,9 @@ use crate::backend::types::{
     ToolChoiceSpecific,
 };
 
+#[path = "types_chat_message_compat.rs"]
+mod chat_message_compat;
+
 // Re-import FunctionCall for use in tests
 #[cfg(test)]
 use crate::backend::types::FunctionCall;
@@ -51,6 +54,7 @@ impl StreamOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
+    #[serde(deserialize_with = "chat_message_compat::deserialize")]
     pub messages: Vec<ChatCompletionMessage>,
     #[serde(default)]
     pub temperature: Option<f32>,
@@ -1843,3 +1847,7 @@ mod tests {
         assert!(req.stream_options.is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "types_chat_message_tests.rs"]
+mod chat_message_compat_tests;

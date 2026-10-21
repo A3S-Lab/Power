@@ -4,7 +4,7 @@
 // descriptors without loading the full model weights into memory.
 
 use std::collections::HashMap;
-use std::io::{Read, Seek};
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 
 use crate::error::{PowerError, Result};
@@ -128,11 +128,137 @@ impl GgufMetadata {
 ///
 /// Only reads the header — does NOT load tensor data into memory.
 pub fn read_metadata(path: &Path) -> Result<GgufMetadata> {
-    let mut file = std::fs::File::open(path).map_err(|e| {
+    let file = std::fs::File::open(path).map_err(|e| {
         PowerError::Config(format!("Failed to open GGUF file {}: {e}", path.display()))
     })?;
 
-    read_metadata_from_reader(&mut file)
+    // Buffer the many small header reads while preserving all parser validation.
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    read_metadata_from_reader(&mut reader)
+}
+
+/// Read only `tokenizer.chat_template`, skipping other metadata values.
+///
+/// Tokenizer tables sit in front of the template. Materializing them is
+/// hundreds of milliseconds; receipt digests need the template string alone.
+pub fn read_chat_template(path: &Path) -> Result<Option<String>> {
+    let file = std::fs::File::open(path).map_err(|e| {
+        PowerError::Config(format!("Failed to open GGUF file {}: {e}", path.display()))
+    })?;
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    read_chat_template_from_reader(&mut reader)
+}
+
+fn read_chat_template_from_reader<R: Read>(reader: &mut R) -> Result<Option<String>> {
+    let magic = read_u32(reader)?;
+    if magic != GGUF_MAGIC {
+        return Err(PowerError::Config(format!(
+            "Not a valid GGUF file (magic: 0x{magic:08X}, expected 0x{GGUF_MAGIC:08X})"
+        )));
+    }
+    let version = read_u32(reader)?;
+    if !(2..=3).contains(&version) {
+        return Err(PowerError::Config(format!(
+            "Unsupported GGUF version {version} (supported: 2, 3)"
+        )));
+    }
+    let _tensor_count = read_u64(reader)?;
+    let metadata_kv_count = read_u64(reader)?;
+    if metadata_kv_count > MAX_METADATA_KV_COUNT {
+        return Err(PowerError::Config(format!(
+            "GGUF metadata count too large: {metadata_kv_count} entries"
+        )));
+    }
+
+    let mut template = None;
+    for _ in 0..metadata_kv_count {
+        let key = read_gguf_string(reader)?;
+        let value_type = read_u32(reader)?;
+        if key == "tokenizer.chat_template" && value_type == 8 {
+            template = Some(read_gguf_string(reader)?);
+        } else {
+            skip_gguf_value(reader, value_type)?;
+        }
+    }
+    Ok(template)
+}
+
+fn discard_exact<R: Read>(reader: &mut R, mut remaining: usize) -> Result<()> {
+    let mut buf = [0u8; 8192];
+    while remaining > 0 {
+        let n = remaining.min(buf.len());
+        reader
+            .read_exact(&mut buf[..n])
+            .map_err(|e| PowerError::Config(format!("GGUF read error: {e}")))?;
+        remaining -= n;
+    }
+    Ok(())
+}
+
+fn skip_gguf_string<R: Read>(reader: &mut R) -> Result<()> {
+    let len_u64 = read_u64(reader)?;
+    let len = usize::try_from(len_u64).map_err(|_| {
+        PowerError::Config(format!("GGUF string length exceeds usize: {len_u64} bytes"))
+    })?;
+    if len > MAX_GGUF_STRING_BYTES {
+        return Err(PowerError::Config(format!(
+            "GGUF string too long: {len} bytes"
+        )));
+    }
+    discard_exact(reader, len)
+}
+
+fn skip_gguf_value<R: Read>(reader: &mut R, value_type: u32) -> Result<()> {
+    match value_type {
+        0 | 1 | 7 => discard_exact(reader, 1),
+        2 | 3 => discard_exact(reader, 2),
+        4 | 5 | 6 => discard_exact(reader, 4),
+        8 => skip_gguf_string(reader),
+        9 => {
+            let elem_type = read_u32(reader)?;
+            let count_u64 = read_u64(reader)?;
+            let count = usize::try_from(count_u64).map_err(|_| {
+                PowerError::Config(format!(
+                    "GGUF array length exceeds usize: {count_u64} elements"
+                ))
+            })?;
+            if count > MAX_GGUF_ARRAY_ITEMS {
+                return Err(PowerError::Config(format!(
+                    "GGUF array too large: {count} elements"
+                )));
+            }
+            if let Some(width) = fixed_gguf_width(elem_type)? {
+                let bytes = count.checked_mul(width).ok_or_else(|| {
+                    PowerError::Config(format!(
+                        "GGUF array byte length overflows usize: {count} * {width}"
+                    ))
+                })?;
+                discard_exact(reader, bytes)
+            } else {
+                for _ in 0..count {
+                    skip_gguf_value(reader, elem_type)?;
+                }
+                Ok(())
+            }
+        }
+        10 | 11 | 12 => discard_exact(reader, 8),
+        _ => Err(PowerError::Config(format!(
+            "Unknown GGUF value type: {value_type}"
+        ))),
+    }
+}
+
+fn fixed_gguf_width(value_type: u32) -> Result<Option<usize>> {
+    match value_type {
+        0 | 1 | 7 => Ok(Some(1)),
+        2 | 3 => Ok(Some(2)),
+        4 | 5 | 6 => Ok(Some(4)),
+        10 | 11 | 12 => Ok(Some(8)),
+        8 | 9 => Ok(None),
+        _ => Err(PowerError::Config(format!(
+            "Unknown GGUF value type: {value_type}"
+        ))),
+    }
 }
 
 /// Read GGUF metadata from any reader that supports Read + Seek.

@@ -94,7 +94,13 @@ pub async fn handler(
     };
 
     // Admission control: hold a permit until this (non-streaming) request ends.
-    let _permit = state.limiter.acquire().await;
+    let _permit = match state.limiter.acquire_http().await {
+        Ok(permit) => permit,
+        Err(error) => {
+            state.metrics.decrement_active_requests();
+            return crate::server::limiter::admission_response(error);
+        }
+    };
 
     match backend.embed(&model_name, backend_request).await {
         Ok(result) => {

@@ -100,7 +100,13 @@ pub async fn handler(
             .collect(),
     };
 
-    let _permit = state.limiter.acquire().await;
+    let _permit = match state.limiter.acquire_http().await {
+        Ok(permit) => permit,
+        Err(error) => {
+            state.metrics.decrement_active_requests();
+            return crate::server::limiter::admission_response(error);
+        }
+    };
 
     match backend.systemone(&model_name, backend_request).await {
         Ok(response) => {

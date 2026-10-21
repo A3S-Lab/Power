@@ -50,6 +50,8 @@ const NORMAL_FIELDS: &[&str] = &[
     "suppress_token_metrics",
     "rate_limit_rps",
     "max_concurrent_requests",
+    "max_queued_requests",
+    "queue_timeout_ms",
     "proxy_effective_prompt_digest",
     "proxy_effective_prompt_digest_required",
     "proxy_effective_prompt_digest_path",
@@ -220,6 +222,8 @@ fn power_schema() -> Schema {
         "vsock_port",
         "rate_limit_rps",
         "max_concurrent_requests",
+        "max_queued_requests",
+        "queue_timeout_ms",
         "timing_padding_ms",
     ] {
         schema = schema.attribute(name, AttributeSchema::optional(ValueSchema::number()));

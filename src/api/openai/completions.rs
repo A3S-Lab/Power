@@ -344,7 +344,13 @@ pub async fn handler(
 
     // Admission control: hold a permit for the whole request (including the
     // streamed body). Releases on completion or early client disconnect.
-    let permit = state.limiter.acquire().await;
+    let permit = match state.limiter.acquire_http().await {
+        Ok(permit) => permit,
+        Err(error) => {
+            state.metrics.decrement_active_requests();
+            return crate::server::limiter::admission_response(error);
+        }
+    };
 
     match backend.complete(&model_name, backend_request).await {
         Ok(stream) => {
