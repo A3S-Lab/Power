@@ -4,7 +4,7 @@
 
 单卡 RTX 4090 是另一条放置，见文末。它是 Xolotl 的单卡专家缓存（`--experts gpu` 加 `--rank`），不是这条 8 卡层切分。
 
-Power 不链接 Xolotl 内核，也不启动 `ds41_generate`。它只接受唯一一种放置，把启动参数交给外部监督进程，再把一次请求转到已经在跑的 `serve_ds41.py`。
+Power 不链接 Xolotl 内核，也不启动 `ds41_generate`。它接受两种放置，把对应的启动参数交给外部监督进程，再把一次非流式请求转到已经在跑的 `serve_ds41.py`。八张 H200 是层切分。一张 GeForce RTX 4090 是单卡专家缓存（`--experts gpu` 加 `--rank`，Engram 在 NVMe），不是这条层切分。
 
 相关代码：`src/backend/xolotl/`、`src/config.rs` 的 `XolotlConfig`、`src/config/acl.rs`。
 
