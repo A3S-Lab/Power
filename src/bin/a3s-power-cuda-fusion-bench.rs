@@ -40,15 +40,13 @@ struct BenchReport {
 }
 
 fn gelu_plan(fused: bool) -> String {
-    let mut nodes = vec![
-        serde_json::json!({
-            "name": "divide",
-            "op": "Div",
-            "inputs": ["input", "divisor"],
-            "outputs": ["divided"],
-            "attributes": {}
-        }),
-    ];
+    let mut nodes = vec![serde_json::json!({
+        "name": "divide",
+        "op": "Div",
+        "inputs": ["input", "divisor"],
+        "outputs": ["divided"],
+        "attributes": {}
+    })];
     if !fused {
         // Breaks the exact Div/Erf/Add/Mul/Mul fusion window on purpose.
         nodes.push(serde_json::json!({

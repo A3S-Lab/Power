@@ -102,6 +102,8 @@ impl PowerRuntimeServiceProfile {
                     container_port: self.port,
                     protocol: TransportProtocol::Tcp,
                 }],
+                egress_allowlist: None,
+                host_services: Vec::new(),
             },
             resources: self.resources.clone(),
             isolation: self.isolation,

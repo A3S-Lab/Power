@@ -109,7 +109,8 @@ impl Backend for ProxyBackend {
         tokio::spawn(async move {
             let mut stream = Box::pin(resp.bytes_stream());
             let mut buf = Vec::new();
-            let mut done_reason = Some("stop".to_string());
+            let mut done_reason = None;
+            let mut usage = None;
             let mut tool_calls = ProxyToolCallAssembler::default();
             while let Some(event) = next_sse_event(&mut stream, &mut buf).await {
                 match event {
@@ -119,6 +120,14 @@ impl Backend for ProxyBackend {
                     }
                     Ok(None) => break, // [DONE]
                     Ok(Some(json)) => {
+                        match proxy_chat_usage(&json) {
+                            Ok(Some(value)) => usage = Some(value),
+                            Ok(None) => {}
+                            Err(error) => {
+                                let _ = tx.send(Err(error)).await;
+                                return;
+                            }
+                        }
                         let parsed = match parse_proxy_chat_stream_event(&json) {
                             Ok(parsed) => parsed,
                             Err(e) => {
@@ -126,6 +135,16 @@ impl Backend for ProxyBackend {
                                 return;
                             }
                         };
+                        if done_reason.is_some()
+                            && (parsed.has_text_delta() || parsed.tool_call_deltas.is_some())
+                        {
+                            let _ = tx
+                                .send(Err(PowerError::InferenceFailed(
+                                    "proxy chat stream returned output after finish".into(),
+                                )))
+                                .await;
+                            return;
+                        }
                         let has_text_delta = parsed.has_text_delta();
                         if let Some(deltas) = parsed.tool_call_deltas {
                             if let Err(e) = tool_calls.apply(deltas) {
@@ -152,10 +171,17 @@ impl Backend for ProxyBackend {
                         }
                         if let Some(reason) = parsed.done_reason {
                             done_reason = Some(reason);
-                            break;
                         }
                     }
                 }
+            }
+            if done_reason.is_none() {
+                let _ = tx
+                    .send(Err(PowerError::InferenceFailed(
+                        "proxy chat stream ended without a finish reason".into(),
+                    )))
+                    .await;
+                return;
             }
             let completed_tool_calls = match tool_calls.complete() {
                 Ok(calls) => calls,
@@ -191,7 +217,11 @@ impl Backend for ProxyBackend {
                     done_reason,
                     prompt_eval_duration_ns: None,
                     tool_calls: None,
-                    upstream_timings: None,
+                    upstream_timings: usage.map(|usage| {
+                        serde_json::json!({
+                            "source": "upstream-reported", "usage": usage,
+                        })
+                    }),
                 }))
                 .await;
         });
@@ -383,6 +413,37 @@ struct ParsedProxyChatStreamEvent {
     tool_call_deltas: Option<Vec<ProxyToolCallDelta>>,
     done_reason: Option<String>,
 }
+
+fn proxy_chat_usage(event: &serde_json::Value) -> Result<Option<serde_json::Value>> {
+    let Some(value) = event.get("usage").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let prompt = value
+        .get("prompt_tokens")
+        .and_then(serde_json::Value::as_u64);
+    let completion = value
+        .get("completion_tokens")
+        .and_then(serde_json::Value::as_u64);
+    let total = value
+        .get("total_tokens")
+        .and_then(serde_json::Value::as_u64);
+    match (prompt, completion, total) {
+        (Some(prompt), Some(completion), Some(total))
+            if prompt.checked_add(completion) == Some(total) =>
+        {
+            Ok(Some(serde_json::json!({
+                "prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total,
+            })))
+        }
+        _ => Err(PowerError::InferenceFailed(
+            "proxy chat stream returned invalid token usage".into(),
+        )),
+    }
+}
+
+#[cfg(test)]
+#[path = "proxy_usage_tests.rs"]
+mod usage_tests;
 
 impl ParsedProxyChatStreamEvent {
     fn has_text_delta(&self) -> bool {
@@ -1112,10 +1173,13 @@ async fn send_stream(
             PowerError::InferenceFailed(format!("proxy request to {url} failed: {e}"))
         })?;
     if !resp.status().is_success() {
-        return Err(PowerError::InferenceFailed(format!(
-            "proxy upstream returned {}",
-            resp.status()
-        )));
+        let status = resp.status();
+        let message = format!("proxy upstream returned {status}");
+        return Err(if matches!(status.as_u16(), 400 | 422) {
+            PowerError::InvalidRequest(message)
+        } else {
+            PowerError::InferenceFailed(message)
+        });
     }
     Ok(resp)
 }
@@ -1238,6 +1302,9 @@ fn build_chat_body(model_name: &str, request: &ChatRequest) -> serde_json::Value
             .expect("body is a json object")
             .insert("stream_options".into(), stream_options.clone());
     }
+    // The upstream is always streamed, including buffered caller requests.
+    // Collect its actual token counts; caller-facing usage remains opt-in.
+    body["stream_options"] = serde_json::json!({"include_usage": true});
     if let Some(tools) = &request.tools {
         body.as_object_mut()
             .expect("body is a json object")

@@ -2,6 +2,7 @@
 name = "a3s-power"
 version = "0.10.0"
 edition = "2021"
+publish = false
 authors = ["A3S Lab"]
 license = "MIT"
 repository = "https://github.com/A3S-Lab/Power"
@@ -126,8 +127,8 @@ tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-a3s-acl = { version = "=0.3.0", optional = true }
-a3s-runtime = { version = "=0.5.0", git = "https://github.com/A3S-Lab/Runtime.git", rev = "4c5fbd56bedd84d1007a7d9cd046a9f7083bbdcd", optional = true }
+a3s-acl = { version = "=0.3.0", path = "../acl", optional = true }
+a3s-runtime = { version = "=0.8.0", path = "../runtime", optional = true }
 
 # CLI
 clap = { version = "4", features = ["derive"], optional = true }
@@ -282,7 +283,3 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
-
-# This checkout sits inside the Aster workspace. The empty table keeps
-# a3s-power on this lockfile instead of joining the parent workspace.
-[workspace]

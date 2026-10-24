@@ -16,6 +16,7 @@ mod coupling;
 #[cfg(test)]
 mod coupling_tests;
 mod coupling_types;
+mod cuda_peer;
 mod device;
 mod execution_batch;
 #[cfg(test)]
@@ -84,6 +85,7 @@ pub use coupling::{
     RouteCouplingEntry, RouteCouplingHistory, RouteCouplingPolicy, RouteHintEvaluation,
     RouteHintTelemetry, RouteLayerGeometry, RoutePrefetchHint, RoutePrefetchHints,
 };
+pub use cuda_peer::{CudaPeerCopyReceipt, CudaPeerGroup, CudaPeerScalar, CudaPeerSession};
 pub use device::{DevicePreference, RuntimeDevice, RuntimeDeviceIdentity, RuntimeDeviceKind};
 pub use execution_batch::{
     ExecutionBatchBinding, ExecutionBatchLifecycle, ExecutionBatchLifecycleEvidence,
@@ -165,10 +167,11 @@ pub use tuning_types::{
 pub use weights::{encrypt_seekable_weight_collection, encrypt_seekable_weight_file};
 pub use weights::{
     weight_collection_sha256, LosslessEncodedRecord, LosslessRansNibbleHistogram,
-    LosslessRansNibbleTable, SeekableEncryptedFile, SeekableEncryptedFileDescriptor,
-    SeekableEncryptedFileVerification, SeekableEncryptedWeightCollectionReport,
-    SeekableEncryptedWeightFile, SeekableEncryptedWeightManifest, SeekableEncryptedWeightSource,
-    SeekableWeightKey, TensorDescriptor, TensorRangeRead, TensorRead, TensorStorageDescriptor,
+    LosslessRansNibbleTable, RawWeightRangeRead, SeekableEncryptedFile,
+    SeekableEncryptedFileDescriptor, SeekableEncryptedFileVerification,
+    SeekableEncryptedWeightCollectionReport, SeekableEncryptedWeightFile,
+    SeekableEncryptedWeightManifest, SeekableEncryptedWeightSource, SeekableWeightKey,
+    TensorDescriptor, TensorRangeRead, TensorRead, TensorStorageDescriptor, VerifiedRawWeightFile,
     WeightFileDescriptor, WeightReadStrategy, WeightSourceConfig, WeightSourceCoverage,
     WeightSourceDescriptor, WeightSourceRepresentation, WeightSourceRole, WeightSourceWeighting,
     WeightStore, WeightStoreConfig, DEFAULT_ENCRYPTED_CHUNK_BYTES, ENCRYPTED_WEIGHT_MANIFEST_FILE,

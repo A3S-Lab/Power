@@ -106,6 +106,14 @@ pub trait Backend: Send + Sync {
         self.supports(&manifest.format)
     }
 
+    /// Chat chunks carry exact final token usage in `upstream_timings.usage`.
+    /// This also supports locally executed native models whose UTF-8/SSE
+    /// fragments are not one-to-one with model tokens. Missing or malformed
+    /// usage must not fall back to counting transport fragments.
+    fn reports_exact_chat_usage(&self) -> bool {
+        false
+    }
+
     /// Whether this backend can score System One (Jev-shaped) decisions.
     ///
     /// Default: false. Only backends that can read next-token option-label

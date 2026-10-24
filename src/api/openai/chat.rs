@@ -463,7 +463,9 @@ pub async fn handler(
             .map(|o| o.include_usage)
             .unwrap_or(false);
 
-    let prism = backend.name() == "prism";
+    // Both remote backends own tokenization; SSE chunks are not token counts.
+    let upstream_accounting =
+        backend.reports_exact_chat_usage() || matches!(backend.name(), "prism" | "proxy");
     match backend.chat(&model_name, backend_request).await {
         Ok(stream) => {
             runtime::respond(
@@ -479,13 +481,18 @@ pub async fn handler(
                     receipt: attestation_receipt,
                     receipt_sha256: attestation_receipt_sha256,
                 },
-                prism,
+                upstream_accounting,
             )
             .await
         }
         Err(error) => {
             resources.audit_failure(error.to_string());
-            openai_error("server_error", &state.sanitize_error(&error.to_string())).into_response()
+            let code = if matches!(&error, crate::error::PowerError::InvalidRequest(_)) {
+                "invalid_request"
+            } else {
+                "server_error"
+            };
+            openai_error(code, &state.sanitize_error(&error.to_string())).into_response()
         }
     }
 }

@@ -191,13 +191,19 @@ fn read_buffered(
         PowerError::InvalidFormat("tensor byte length exceeds the host address range".to_string())
     })?;
     let mut output = Zeroizing::new(vec![0_u8; length]);
-    read_exact_loop(
-        output.as_mut_slice(),
-        offset,
-        cancellation,
-        |buffer, position| read_at(file, buffer, position),
-    )?;
+    read_buffered_into(file, output.as_mut_slice(), offset, cancellation)?;
     Ok(output)
+}
+
+pub(super) fn read_buffered_into(
+    file: &File,
+    output: &mut [u8],
+    offset: u64,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    read_exact_loop(output, offset, cancellation, |buffer, position| {
+        read_at(file, buffer, position)
+    })
 }
 
 pub(super) fn read_exact_loop<F>(

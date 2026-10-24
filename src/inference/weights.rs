@@ -26,8 +26,10 @@ mod files;
 mod index;
 mod lossless;
 mod range_io;
+mod raw_file;
 mod tensor_range;
 
+pub use raw_file::{RawWeightRangeRead, VerifiedRawWeightFile};
 pub use tensor_range::TensorRangeRead;
 
 pub use encrypted_collection::{

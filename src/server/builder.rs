@@ -8,6 +8,10 @@ use crate::serving::{ServingPhaseExecutor, StateTransferService};
 
 use super::log_stream::LogBuffer;
 
+#[cfg(test)]
+#[path = "builder/auth_tests.rs"]
+mod auth_tests;
+
 /// Typed composition root for the Power HTTP server.
 ///
 /// Injected backends are registered before Power's built-in backends and
@@ -25,6 +29,7 @@ pub(super) struct PowerServerOptions {
     pub(super) state_transfer_service: Option<Arc<dyn StateTransferService>>,
     pub(super) phase_executor: Option<Arc<dyn ServingPhaseExecutor>>,
     pub(super) include_default_backends: bool,
+    pub(super) auth_provider: Option<Arc<dyn super::auth::AuthProvider>>,
 }
 
 impl PowerServerBuilder {
@@ -38,6 +43,7 @@ impl PowerServerBuilder {
                 state_transfer_service: None,
                 phase_executor: None,
                 include_default_backends: true,
+                auth_provider: None,
             },
         }
     }
@@ -50,6 +56,14 @@ impl PowerServerBuilder {
     /// Register a typed backend ahead of the built-in backends.
     pub fn with_backend(mut self, backend: Arc<dyn Backend>) -> Self {
         self.options.backends.register(backend);
+        self
+    }
+
+    /// Install a host-owned authentication policy, including absolute expiry
+    /// and revocation. Static config keys and an injected policy are mutually
+    /// exclusive, so the service cannot accidentally accept either key set.
+    pub fn with_auth_provider(mut self, provider: Arc<dyn super::auth::AuthProvider>) -> Self {
+        self.options.auth_provider = Some(provider);
         self
     }
 

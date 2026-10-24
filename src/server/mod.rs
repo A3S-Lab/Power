@@ -67,7 +67,13 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         state_transfer_service,
         phase_executor,
         include_default_backends,
+        auth_provider,
     } = options;
+    if auth_provider.is_some() && !config.api_keys.is_empty() {
+        return Err(crate::error::PowerError::Config(
+            "injected authentication and static api_keys are mutually exclusive".into(),
+        ));
+    }
     config.validate()?;
     let (state_transfer_service, phase_executor) =
         serving_composition::resolve(&config, state_transfer_service, phase_executor)?;
@@ -239,7 +245,10 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         app_state = app_state.with_privacy(Arc::new(privacy));
     }
 
-    if !config.api_keys.is_empty() {
+    if let Some(provider) = auth_provider {
+        app_state = app_state.with_auth(provider);
+        tracing::info!("Host authentication policy enabled");
+    } else if !config.api_keys.is_empty() {
         let auth_provider = auth::ApiKeyAuth::new(&config.api_keys);
         app_state = app_state.with_auth(Arc::new(auth_provider));
         tracing::info!(
