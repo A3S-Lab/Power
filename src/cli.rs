@@ -44,8 +44,20 @@ pub struct ServeArgs {
     pub port: Option<u16>,
 
     /// Config file path
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["config_inline", "config_from_workload_env"])]
     pub config: Option<String>,
+
+    /// Explicit ACL document for a hosted workload, bounded to 64 KiB.
+    #[arg(long, conflicts_with_all = ["config", "config_from_workload_env"], value_name = "ACL")]
+    pub config_inline: Option<String>,
+
+    /// Read the explicit hosted-workload ACL from A3S_POWER_RUNTIME_ACL.
+    #[arg(long, conflicts_with_all = ["config", "config_inline"])]
+    pub config_from_workload_env: bool,
+
+    /// Validate ACL and resource bounds without opening a listener or loading a model.
+    #[arg(long)]
+    pub check_config: bool,
 }
 
 /// Model management subcommands.
@@ -176,3 +188,7 @@ mod tests {
         assert_eq!(args.port, Some(18080));
     }
 }
+
+#[cfg(test)]
+#[path = "cli/xolotl_inline_tests.rs"]
+mod xolotl_inline_tests;

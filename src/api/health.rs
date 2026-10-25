@@ -128,8 +128,13 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
         .map(str::to_string)
         .collect::<Vec<_>>();
     let loaded_speculative_artifacts = state.backends.loaded_speculative_artifacts().await;
+    let readiness = state.backends.runtime_readiness().await;
+    let ready = readiness.is_ok();
+    if let Err(error) = &readiness {
+        tracing::warn!(reason = %state.sanitize_error(&error.to_string()), "owned backend is not ready");
+    }
     let resp = HealthResponse {
-        status: "ok".to_string(),
+        status: if ready { "ok" } else { "not_ready" }.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: state.uptime().as_secs(),
         loaded_models: state.loaded_model_count(),
@@ -170,7 +175,14 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
         worker: Some(state.worker_observation()),
         tee,
     };
-    (StatusCode::OK, Json(resp))
+    (
+        if ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(resp),
+    )
 }
 
 #[cfg(test)]
@@ -517,3 +529,7 @@ mod tests {
         assert!(!tee.attestation_available);
     }
 }
+
+#[cfg(test)]
+#[path = "health_managed_tests.rs"]
+mod managed_tests;

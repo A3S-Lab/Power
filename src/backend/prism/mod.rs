@@ -35,8 +35,8 @@ use crate::model::manifest::{ModelFormat, ModelManifest};
 
 use super::prompt_cache::PromptCacheSupport;
 use super::types::{
-    ChatMessage, ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk,
-    EmbeddingRequest, EmbeddingResponse,
+    ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk, EmbeddingRequest,
+    EmbeddingResponse,
 };
 use super::{ensure_non_speculative_mode, Backend, SpeculativeMetricsSnapshot};
 
@@ -197,7 +197,8 @@ impl PrismBackend {
         model_name: &str,
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
-        let body = build_prism_chat_body(model_name, &request, true);
+        let tool_policy = crate::backend::openai_compat::ChatToolPolicy::from_request(&request)?;
+        let body = build_prism_chat_body(model_name, &request, true)?;
         let base = self.upstream_base()?;
         let http = self.http.clone();
         let healthy = Arc::clone(&self.healthy_upstream);
@@ -222,27 +223,14 @@ impl PrismBackend {
                 })?;
             if !response.status().is_success() {
                 *healthy.lock().await = None;
-                return Err(PowerError::InferenceFailed(format!(
-                    "prism upstream stream returned {}",
-                    response.status()
-                )));
             }
-            let content_type = response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.split(';').next())
-                .map(str::trim);
-            if content_type != Some("text/event-stream") {
-                return Err(PowerError::InferenceFailed(
-                    "prism upstream did not return text/event-stream".into(),
-                ));
-            }
-            Ok(stream::chat_response_stream(
+            let response = crate::backend::openai_compat::require_chat_stream(response)?;
+            Ok::<_, PowerError>(stream::chat_response_stream(
                 response,
                 model,
                 profile,
                 spec_metrics,
+                tool_policy,
             ))
         };
         Ok(Box::pin(futures::stream::once(startup).try_flatten()))
@@ -312,72 +300,16 @@ fn build_prism_chat_body(
     model_name: &str,
     request: &ChatRequest,
     stream: bool,
-) -> serde_json::Value {
-    let messages: Vec<serde_json::Value> = request
-        .messages
-        .iter()
-        .map(prism_chat_message_json)
-        .collect();
-
-    let mut body = serde_json::json!({
-        "model": model_name,
-        "messages": messages,
-        "stream": stream,
-    });
-    if stream {
-        // Usage arrives in a separate final event on OpenAI-compatible servers.
-        body["stream_options"] = serde_json::json!({ "include_usage": true });
-    }
-    if let Some(temp) = request.temperature {
-        body["temperature"] = temp.into();
-    }
-    if let Some(top_p) = request.top_p {
-        body["top_p"] = top_p.into();
-    }
-    if let Some(max_tokens) = request.max_tokens {
-        body["max_tokens"] = max_tokens.into();
-    }
-    if let Some(ref tools) = request.tools {
-        if !tools.is_empty() {
-            body["tools"] = serde_json::to_value(tools).unwrap_or(serde_json::json!([]));
-        }
-    }
-    if let Some(ref tool_choice) = request.tool_choice {
-        body["tool_choice"] =
-            serde_json::to_value(tool_choice).unwrap_or(serde_json::json!("auto"));
-    }
-    if let Some(ref stop) = request.stop {
-        body["stop"] = serde_json::to_value(stop).unwrap_or(serde_json::Value::Null);
-    }
-    body
-}
-
-fn prism_chat_message_json(message: &ChatMessage) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
-    obj.insert("role".into(), serde_json::json!(message.role));
-    obj.insert(
-        "content".into(),
-        serde_json::to_value(&message.content).unwrap_or(serde_json::json!("")),
-    );
-    if let Some(ref name) = message.name {
-        obj.insert("name".into(), serde_json::json!(name));
-    }
-    if let Some(ref tool_calls) = message.tool_calls {
-        if !tool_calls.is_empty() {
-            obj.insert(
-                "tool_calls".into(),
-                serde_json::to_value(tool_calls).unwrap_or(serde_json::json!([])),
-            );
-        }
-    }
-    if let Some(ref tool_call_id) = message.tool_call_id {
-        obj.insert("tool_call_id".into(), serde_json::json!(tool_call_id));
-    }
-    serde_json::Value::Object(obj)
+) -> Result<serde_json::Value> {
+    crate::backend::openai_compat::chat_request_body(model_name, request, stream)
 }
 
 #[async_trait]
 impl Backend for PrismBackend {
+    fn supports_openai_tool_selection(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "prism"
     }
@@ -718,7 +650,7 @@ mod tests {
             session_id: None,
         };
 
-        let body = build_prism_chat_body("bonsai2-ptq1", &request, false);
+        let body = build_prism_chat_body("bonsai2-ptq1", &request, false).unwrap();
         assert_eq!(body["model"], "bonsai2-ptq1");
         assert_eq!(body["max_tokens"], 128);
         assert_eq!(body["stream"], false);
@@ -776,7 +708,7 @@ mod tests {
             images: None,
             session_id: None,
         };
-        let body = build_prism_chat_body("bonsai2-ptq1", &request, true);
+        let body = build_prism_chat_body("bonsai2-ptq1", &request, true).unwrap();
         assert_eq!(body["stream"], true);
     }
 }

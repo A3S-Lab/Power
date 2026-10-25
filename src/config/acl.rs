@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use a3s_acl::{
     generate, parse, validate_document, AttributeSchema, Block, BlockSchema, Cardinality, Document,
-    Schema, Value, ValueSchema,
+    ObjectSchema, Schema, Value, ValueSchema,
 };
 use serde_json::{Map, Number};
 
@@ -292,7 +292,80 @@ fn power_schema() -> Schema {
 }
 
 fn xolotl_schema() -> Schema {
+    let dspark = ObjectSchema::new()
+        .field("sidecar", AttributeSchema::required(ValueSchema::string()))
+        .field(
+            "sidecar_sha256",
+            AttributeSchema::required(ValueSchema::string()),
+        )
+        .field("depth", AttributeSchema::required(ValueSchema::number()))
+        .field(
+            "confidence_bp",
+            AttributeSchema::required(ValueSchema::number()),
+        )
+        .field(
+            "evict_prompt_tokens",
+            AttributeSchema::required(ValueSchema::number()),
+        );
+    let mut tuning = ObjectSchema::new();
+    for field in [
+        "context_tokens",
+        "cpu_threads",
+        "arena_gib",
+        "prompt_batch",
+        "prefill_chunk",
+        "pcie_bp",
+        "tier_batch_pcie_bp",
+    ] {
+        tuning = tuning.field(field, AttributeSchema::required(ValueSchema::number()));
+    }
+    let mut managed = ObjectSchema::new();
+    for field in [
+        "model_name",
+        "model_sha256",
+        "python",
+        "bridge",
+        "server",
+        "tokenizer",
+    ] {
+        managed = managed.field(field, AttributeSchema::required(ValueSchema::string()));
+    }
+    managed = managed.field(
+        "gpu_uuids",
+        AttributeSchema::required(ValueSchema::list(ValueSchema::string())),
+    );
+    for field in ["startup_timeout_seconds", "shutdown_timeout_seconds"] {
+        managed = managed.field(field, AttributeSchema::optional(ValueSchema::number()));
+    }
+    let part = ObjectSchema::new()
+        .field("path", AttributeSchema::required(ValueSchema::string()))
+        .field(
+            "size_bytes",
+            AttributeSchema::required(ValueSchema::number()),
+        )
+        .field("sha256", AttributeSchema::required(ValueSchema::string()));
+    managed = managed.field(
+        "model_parts",
+        AttributeSchema::optional(ValueSchema::list(ValueSchema::object(part))),
+    );
     Schema::new()
+        .attribute(
+            "dspark",
+            AttributeSchema::optional(ValueSchema::object(dspark)),
+        )
+        .attribute(
+            "tuning",
+            AttributeSchema::optional(ValueSchema::object(tuning)),
+        )
+        .attribute(
+            "managed",
+            AttributeSchema::optional(ValueSchema::object(managed)),
+        )
+        .attribute(
+            "indexer_tile_elements",
+            AttributeSchema::optional(ValueSchema::number()),
+        )
+        .attribute("kv_fp4", AttributeSchema::optional(ValueSchema::bool()))
         .attribute("enabled", AttributeSchema::optional(ValueSchema::bool()))
         .attribute("bin", AttributeSchema::optional(ValueSchema::string()))
         .attribute("model", AttributeSchema::optional(ValueSchema::string()))
@@ -1212,3 +1285,11 @@ mod tests {
         assert!(error.to_string().contains("acl.schema.unknown_attribute"));
     }
 }
+
+#[cfg(test)]
+#[path = "xolotl_managed_acl_tests.rs"]
+mod managed_tests;
+
+#[cfg(test)]
+#[path = "xolotl_kv_fp4_acl_tests.rs"]
+mod kv_fp4_tests;

@@ -418,3 +418,83 @@ async fn privacy_preserves_success_audit_and_unredacted_host_failure_contract() 
         assert_eq!(events[0].tokens, Some(10));
     }
 }
+
+#[tokio::test]
+async fn buffered_reasoning_tool_message_can_be_replayed_through_request_and_receipt_validation() {
+    for prism in [false, true] {
+        let (resources, _, _) = resources().await;
+        let mut thought = chunk();
+        thought.thinking_content = Some("Need the offered record.".into());
+        let mut tool = chunk();
+        tool.tool_calls = Some(vec![call(
+            0,
+            "call_record_17",
+            "lookup_record",
+            r#"{"id":17}"#,
+        )]);
+        let mut terminal = chunk();
+        terminal.done = true;
+        terminal.done_reason = Some("tool_calls".into());
+        terminal.upstream_timings = Some(
+            json!({"source":"upstream-reported","usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}),
+        );
+        let source = Box::pin(futures::stream::iter(vec![
+            Ok(thought),
+            Ok(tool),
+            Ok(terminal),
+        ]));
+        let response = respond(source, resources, presentation(false, false), prism).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let message = &value["choices"][0]["message"];
+        assert_eq!(message["reasoning_content"], "Need the offered record.");
+        assert!(message.get("thinking").is_none());
+        assert_eq!(
+            message["tool_calls"][0]["function"]["arguments"],
+            r#"{"id":17}"#
+        );
+        assert_eq!(value["choices"][0]["finish_reason"], "tool_calls");
+        let replay: crate::api::types::ChatCompletionRequest = serde_json::from_value(json!({
+            "model":"test","messages":[{"role":"user","content":"Read record 17."},message,
+                {"role":"tool","tool_call_id":"call_record_17","content":"record contents"}],
+            "tools":[{"type":"function","function":{"name":"lookup_record","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}}],
+            "tool_choice":"none"
+        })).unwrap();
+        assert!(!replay.has_thinking_inputs());
+        assert!(replay.unsupported_message_fields_message().is_none());
+        assert!(crate::api::receipt::chat_receipt(&replay).is_ok());
+    }
+}
+
+#[tokio::test]
+async fn buffered_upstream_errors_keep_client_and_unavailable_http_status_and_release_admission() {
+    for (error, status) in [
+        (
+            crate::error::PowerError::InvalidRequest("upstream rejected input".into()),
+            400,
+        ),
+        (
+            crate::error::PowerError::BackendNotAvailable("upstream unavailable".into()),
+            503,
+        ),
+        (
+            crate::error::PowerError::InferenceFailed("upstream fault".into()),
+            500,
+        ),
+    ] {
+        let (resources, state, _) = resources().await;
+        let response = respond(
+            Box::pin(futures::stream::iter(vec![Err(error)])),
+            resources,
+            presentation(false, false),
+            true,
+        )
+        .await;
+        assert_eq!(response.status().as_u16(), status);
+        assert_eq!(state.metrics.active_requests(), 0);
+        assert_eq!(state.metrics.running_requests(), 0);
+    }
+}

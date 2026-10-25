@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{Request, StatusCode};
 use axum::middleware;
 use axum::middleware::Next;
@@ -95,10 +95,19 @@ pub fn build(state: AppState) -> Router {
     let rate_limit_rps = state.config.rate_limit_rps;
 
     // Public OpenAI routes retain their opt-in authentication behavior.
-    let v1_routes = api::openai::routes().layer(middleware::from_fn_with_state(
-        state.clone(),
-        auth::middleware,
-    ));
+    // Million-token requests exceed axum's 2 MiB default even as plain text.
+    // The larger finite bound is selected only by an explicit Xolotl profile.
+    let body_limit = if state.config.xolotl.enabled && state.config.xolotl.tuning.is_some() {
+        16 * 1024 * 1024
+    } else {
+        2 * 1024 * 1024
+    };
+    let v1_routes = api::openai::routes()
+        .layer(DefaultBodyLimit::max(body_limit))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::middleware,
+        ));
 
     // Browser-facing routes receive CORS headers. The internal distributed
     // protocol is service-to-service only and deliberately has no CORS layer.
@@ -377,6 +386,50 @@ mod tests {
                 .unwrap(),
             "my-custom-id-123"
         );
+    }
+
+    #[tokio::test]
+    async fn xolotl_long_context_body_reaches_model_admission_and_retains_a_finite_bound() {
+        use crate::{
+            backend::BackendRegistry,
+            config::{PowerConfig, XolotlTuning},
+            model::registry::ModelRegistry,
+        };
+        for (enabled, size, expected) in [
+            (false, 3 * 1024 * 1024, StatusCode::PAYLOAD_TOO_LARGE),
+            (true, 3 * 1024 * 1024, StatusCode::NOT_FOUND),
+            (true, 17 * 1024 * 1024, StatusCode::PAYLOAD_TOO_LARGE),
+        ] {
+            let mut cfg = PowerConfig::default();
+            cfg.xolotl.enabled = enabled;
+            cfg.xolotl.tuning = Some(XolotlTuning {
+                context_tokens: 1_048_576,
+                cpu_threads: 8,
+                arena_gib: 60,
+                prompt_batch: 8192,
+                prefill_chunk: 512,
+                pcie_bp: 7500,
+                tier_batch_pcie_bp: 10_000,
+            });
+            let state = AppState::new(
+                Arc::new(ModelRegistry::new()),
+                Arc::new(BackendRegistry::new()),
+                Arc::new(cfg),
+            );
+            let body = serde_json::to_vec(&serde_json::json!({"model":"unregistered-context-fixture", "messages":[{"role":"user","content":"x".repeat(size)}]})).unwrap();
+            let req = Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap();
+            let response = build(state).oneshot(req).await.unwrap();
+            assert_eq!(
+                response.status(),
+                expected,
+                "enabled={enabled}, size={size}"
+            );
+        }
     }
 
     // --- RateLimiter unit tests ---

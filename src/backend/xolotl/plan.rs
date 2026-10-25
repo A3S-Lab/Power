@@ -145,10 +145,53 @@ pub fn plan(
     let model = require_model_path(xolotl, manifest)?;
     let engram = require_engram(xolotl)?;
     let rank = require_rank(xolotl)?;
-    match placement(xolotl)? {
+    let mut launch = match placement(xolotl)? {
         Placement::H200 => plan_h200(xolotl, devices, bin, model, engram, rank),
         Placement::Rtx4090 => plan_rtx_4090(xolotl, devices, bin, model, engram, rank),
+    }?;
+    if let Some(tuning) = &xolotl.tuning {
+        tuning.append_args(&mut launch.argv)?;
     }
+    // Cache-residency routing biases change the model's selected experts. The
+    // upstream defaults can loop on simple arithmetic, so every owned plan
+    // explicitly preserves exact model routing, independent of cache state.
+    launch.argv.extend(
+        [
+            "--route-bias",
+            "0",
+            "--route-bias-file",
+            "0",
+            "--route-bias-remote",
+            "0",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    xolotl.validate_indexer_tile()?;
+    if let Some(tile) = xolotl.indexer_tile_elements {
+        launch
+            .env
+            .push(("STRATA_INDEXER_TILE".into(), tile.to_string()));
+    }
+    if let Some(dspark) = &xolotl.dspark {
+        if xolotl.gpus.len() != 1
+            || xolotl.layer_split != RTX_4090_LAYER_SPLIT
+            || xolotl.cuda_architecture != RTX_4090_COMPUTE_CAPABILITY
+            || xolotl.managed.is_none()
+            || xolotl.tuning.is_none()
+            || !xolotl.kv_fp4
+        {
+            return Err(PowerError::Config(
+                "xolotl.dspark requires the managed single-4090 FP4-KV plan with explicit tuning"
+                    .into(),
+            ));
+        }
+        dspark.append_env(&mut launch.env)?;
+    }
+    if xolotl.kv_fp4 {
+        launch.argv.push("--kv-fp4".into());
+    }
+    Ok(launch)
 }
 
 /// Parse nvidia-smi CSV and admit a placement with [`plan`].
@@ -487,7 +530,7 @@ fn require_rtx_4090(index: u32, devices: &[CudaDevice]) -> Result<()> {
     };
     if !is_geforce_rtx_4090(&device.name) {
         return Err(PowerError::Config(format!(
-            "GPU {index} ({}) is not a GeForce RTX 4090",
+            "GPU {index} ({}) is not a GeForce RTX 4090 or RTX 4090 D",
             device.name
         )));
     }
@@ -507,26 +550,13 @@ fn require_rtx_4090(index: u32, devices: &[CudaDevice]) -> Result<()> {
     Ok(())
 }
 
-/// `GeForce RTX 4090` at the end of the product name. A trailing suffix
-/// (`Ti`, `D`, `Laptop`) is a different card.
+/// Explicit product identities admitted for the sm_89 / 24 GiB single-card plan.
+/// The 4090 D identity is observed from nvidia-smi on the deployment host.
 fn is_geforce_rtx_4090(name: &str) -> bool {
-    let phrase = "GeForce RTX 4090";
-    let bytes = name.as_bytes();
-    let needle = phrase.as_bytes();
-    let mut start = 0;
-    while let Some(relative) = bytes[start..]
-        .windows(needle.len())
-        .position(|window| window == needle)
-    {
-        let at = start + relative;
-        let before_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
-        let after = at + needle.len();
-        if before_ok && name[after..].trim().is_empty() {
-            return true;
-        }
-        start = at + 1;
-    }
-    false
+    matches!(
+        name.trim(),
+        "GeForce RTX 4090" | "NVIDIA GeForce RTX 4090" | "NVIDIA GeForce RTX 4090 D"
+    )
 }
 
 fn bounded_token(name: &str, token: &str) -> bool {
@@ -622,15 +652,19 @@ fn require_rank(config: &XolotlConfig) -> Result<PathBuf> {
 }
 
 fn engram_segments(value: &str) -> Result<Vec<&str>> {
-    let separator = if value.contains(';') { ';' } else { ':' };
+    let separator = if cfg!(windows) || value.contains(';') {
+        ';'
+    } else {
+        ':'
+    };
     let segments = value
         .split(separator)
         .map(str::trim)
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
-    if segments.len() < 2 {
+    if segments.is_empty() {
         return Err(PowerError::Config(
-            "xolotl.engram needs at least two directories separated by ':' on Linux or ';' on Windows".into(),
+            "xolotl.engram needs at least one directory; multiple directories use ':' on Linux or ';' on Windows".into(),
         ));
     }
     Ok(segments)
@@ -988,6 +1022,67 @@ mod tests {
     }
 
     #[test]
+    fn explicit_one_million_context_and_cache_plan_is_bounded() {
+        let mut config = rtx_4090_config(Path::new("/models/xq"), 0);
+        let manifest = manifest_for(&config);
+        let tuning = crate::config::XolotlTuning {
+            context_tokens: 1_048_576,
+            cpu_threads: 16,
+            arena_gib: 120,
+            prompt_batch: 8192,
+            prefill_chunk: 512,
+            pcie_bp: 7500,
+            tier_batch_pcie_bp: 10_000,
+        };
+        config.xolotl.tuning = Some(tuning.clone());
+        let launch = plan(&config, &manifest, &[rtx_4090(0)]).unwrap();
+        assert_eq!(arg_value(&launch.argv, "--ctx").unwrap(), "1048576");
+        assert_eq!(arg_value(&launch.argv, "--arena-gib").unwrap(), "120");
+        assert_eq!(arg_value(&launch.argv, "--pcie").unwrap(), "0.7500");
+        assert_eq!(
+            arg_value(&launch.argv, "--tier-batch-pcie").unwrap(),
+            "1.0000"
+        );
+        assert_eq!(launch.argv.len(), 32);
+        assert_eq!(
+            &launch.argv[26..],
+            &[
+                "--route-bias",
+                "0",
+                "--route-bias-file",
+                "0",
+                "--route-bias-remote",
+                "0"
+            ]
+        );
+        for invalid in [
+            crate::config::XolotlTuning {
+                context_tokens: 2_097_152,
+                ..tuning.clone()
+            },
+            crate::config::XolotlTuning {
+                arena_gib: 193,
+                ..tuning.clone()
+            },
+            crate::config::XolotlTuning {
+                cpu_threads: 0,
+                ..tuning.clone()
+            },
+            crate::config::XolotlTuning {
+                prefill_chunk: 513,
+                ..tuning.clone()
+            },
+            crate::config::XolotlTuning {
+                pcie_bp: 10_001,
+                ..tuning.clone()
+            },
+        ] {
+            config.xolotl.tuning = Some(invalid);
+            assert!(plan(&config, &manifest, &[rtx_4090(0)]).is_err());
+        }
+    }
+
+    #[test]
     fn rtx_4090_single_card_plan_uses_expert_cache_not_layer_split() {
         let root = Path::new("/models/xq");
         let mut config = rtx_4090_config(root, 2);
@@ -1030,6 +1125,19 @@ mod tests {
         assert!(
             split_log_is_ready("ds41: 1-way layer split at 20 across GPUs 0 1\n", &from_csv)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn xolotl_single_engram_directory_does_not_require_a_duplicate_copy() {
+        let root = Path::new("/models/xq");
+        let mut config = rtx_4090_config(root, 0);
+        config.xolotl.engram = Some("/models/engram".into());
+        let manifest = manifest_for(&config);
+        let launch = plan(&config, &manifest, &[rtx_4090(0)]).unwrap();
+        assert_eq!(
+            arg_value(&launch.argv, "--engram").unwrap(),
+            "/models/engram"
         );
     }
 
@@ -1115,7 +1223,7 @@ mod tests {
             .contains("MiB"));
 
         let mut suffixed = device.clone();
-        suffixed.name = "NVIDIA GeForce RTX 4090 D".into();
+        suffixed.name = "NVIDIA GeForce RTX 4090 Ti".into();
         assert!(plan(&manifest_config, &manifest, &[suffixed])
             .unwrap_err()
             .to_string()
@@ -1129,3 +1237,19 @@ mod tests {
             .contains("max_concurrent_requests"));
     }
 }
+
+#[cfg(test)]
+#[path = "plan_4090d_tests.rs"]
+mod rtx_4090d_tests;
+
+#[cfg(test)]
+#[path = "plan_kv_fp4_tests.rs"]
+mod kv_fp4_tests;
+
+#[cfg(test)]
+#[path = "plan_exact_routing_tests.rs"]
+mod exact_routing_tests;
+
+#[cfg(test)]
+#[path = "plan_dspark_tests.rs"]
+mod dspark_tests;

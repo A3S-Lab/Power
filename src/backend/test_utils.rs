@@ -30,6 +30,7 @@ pub struct MockBackend {
     streaming_load_succeeds: bool,
     supports_streaming_load: bool,
     supports_remote: bool,
+    openai_tool_selection: bool,
     prompt_cache_support: PromptCacheSupport,
     unload_succeeds: bool,
     cleanup_succeeds: bool,
@@ -56,6 +57,11 @@ pub struct MockBackend {
 }
 
 impl MockBackend {
+    pub fn with_openai_tool_selection(mut self) -> Self {
+        self.openai_tool_selection = true;
+        self
+    }
+
     /// Create a mock backend where all operations succeed.
     pub fn success() -> Self {
         Self {
@@ -67,6 +73,7 @@ impl MockBackend {
             streaming_load_succeeds: true,
             supports_streaming_load: false,
             supports_remote: false,
+            openai_tool_selection: false,
             prompt_cache_support: PromptCacheSupport::Unsupported,
             unload_succeeds: true,
             cleanup_succeeds: true,
@@ -96,6 +103,7 @@ impl MockBackend {
             streaming_load_succeeds: false,
             supports_streaming_load: false,
             supports_remote: false,
+            openai_tool_selection: false,
             prompt_cache_support: PromptCacheSupport::Unsupported,
             unload_succeeds: true,
             cleanup_succeeds: true,
@@ -125,6 +133,7 @@ impl MockBackend {
             streaming_load_succeeds: true,
             supports_streaming_load: false,
             supports_remote: false,
+            openai_tool_selection: false,
             prompt_cache_support: PromptCacheSupport::Unsupported,
             unload_succeeds: false,
             cleanup_succeeds: true,
@@ -154,6 +163,7 @@ impl MockBackend {
             streaming_load_succeeds: true,
             supports_streaming_load: false,
             supports_remote: false,
+            openai_tool_selection: false,
             prompt_cache_support: PromptCacheSupport::Unsupported,
             unload_succeeds: true,
             cleanup_succeeds: false,
@@ -183,6 +193,7 @@ impl MockBackend {
             streaming_load_succeeds: true,
             supports_streaming_load: false,
             supports_remote: false,
+            openai_tool_selection: false,
             prompt_cache_support: PromptCacheSupport::Unsupported,
             unload_succeeds: true,
             cleanup_succeeds: true,
@@ -287,6 +298,10 @@ impl MockBackend {
 
 #[async_trait]
 impl Backend for MockBackend {
+    fn supports_openai_tool_selection(&self) -> bool {
+        self.openai_tool_selection
+    }
+
     fn name(&self) -> &str {
         self.backend_name
     }

@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Loopback transport proofs: no model, GPU, downloads, or external service.
 
 use std::convert::Infallible;
@@ -350,18 +351,29 @@ async fn documented_finish_reasons_preserve_the_upstream_outcome() {
     ] {
         let fixture = fixture().await;
         let backend = backend(&fixture.base).await;
+        let has_call = matches!(reason, "tool_calls" | "function_call");
+        let delta = if has_call {
+            json!({"tool_calls":[{"index":0,"id":"call-finish","type":"function","function":{"name":"write","arguments":"{}"}}]})
+        } else {
+            json!({})
+        };
         fixture
             .body
             .send(event(
-                json!({"choices": [{"delta": {}, "finish_reason": reason}]}),
+                json!({"choices":[{"delta":delta,"finish_reason":reason}]}),
             ))
             .await
             .unwrap();
         fixture.body.send("data: [DONE]\n\n".into()).await.unwrap();
         let mut stream = backend
-            .chat("prism-test", request(false, true))
+            .chat("prism-test", request(has_call, true))
             .await
             .unwrap();
+        if has_call {
+            let call = next_chunk(&mut stream).await;
+            assert!(!call.done);
+            assert_eq!(call.tool_calls.unwrap()[0].function.name, "write");
+        }
         let terminal = next_chunk(&mut stream).await;
         assert!(terminal.done);
         assert_eq!(terminal.done_reason.as_deref(), Some(reason));

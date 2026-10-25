@@ -9,6 +9,9 @@ use crate::dirs;
 use crate::error::{PowerError, Result};
 use crate::speculative::SpeculativeStrategy;
 
+mod xolotl_dspark;
+pub use xolotl_dspark::XolotlDSparkConfig;
+
 /// Default maximum number of resident llama.cpp MTP recurrent-state snapshots.
 pub const DEFAULT_SPEC_MTP_RECURRENT_SNAPSHOTS: u32 = 7;
 
@@ -348,6 +351,21 @@ fn default_xolotl_layer_split() -> String {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct XolotlConfig {
+    /// Maximum indexer score elements in one graph piece; unset preserves upstream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_tile_elements: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dspark: Option<XolotlDSparkConfig>,
+    /// Pack the checkpoint's existing FP4 KV grids without changing their values.
+    #[serde(default)]
+    pub kv_fp4: bool,
+    /// Explicit bounded engine resources, including the actual context capacity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tuning: Option<XolotlTuning>,
+    /// Explicitly own the packaged resident engine and its HTTP adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<XolotlManagedConfig>,
+
     /// Claim remains active when this is false, so llama.cpp cannot load an XQ pack.
     /// Load succeeds only after this is set.
     #[serde(default)]
@@ -362,7 +380,7 @@ pub struct XolotlConfig {
     pub model: Option<String>,
 
     /// Engram directories. Use `:` on Linux and `;` on Windows (`D:\a;E:\b`).
-    /// At least two directories.
+    /// At least one directory; official safetensors shards can be read in place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engram: Option<String>,
 
@@ -398,9 +416,27 @@ pub struct XolotlConfig {
     pub layer_split: String,
 }
 
+impl XolotlConfig {
+    pub(crate) fn validate_indexer_tile(&self) -> Result<()> {
+        if self
+            .indexer_tile_elements
+            .is_some_and(|n| !(1 << 24..=1 << 28).contains(&n) || !n.is_power_of_two())
+        {
+            return Err(PowerError::Config(
+                "xolotl.indexer_tile_elements must be a power of two from 2^24 through 2^28".into(),
+            ));
+        }
+        Ok(())
+    }
+}
 impl Default for XolotlConfig {
     fn default() -> Self {
         Self {
+            indexer_tile_elements: None,
+            dspark: None,
+            kv_fp4: false,
+            tuning: None,
+            managed: None,
             enabled: false,
             bin: None,
             model: None,
@@ -413,6 +449,102 @@ impl Default for XolotlConfig {
             layer_split: default_xolotl_layer_split(),
         }
     }
+}
+
+/// Typed settings for the pinned Xolotl engine. No arbitrary argv or environment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct XolotlTuning {
+    pub context_tokens: u32,
+    pub cpu_threads: u32,
+    pub arena_gib: u32,
+    pub prompt_batch: u32,
+    pub prefill_chunk: u32,
+    pub pcie_bp: u32,
+    pub tier_batch_pcie_bp: u32,
+}
+impl XolotlTuning {
+    pub fn validate(&self) -> Result<()> {
+        if !(4096..=1_048_576).contains(&self.context_tokens)
+            || self.context_tokens % 256 != 0
+            || !(1..=256).contains(&self.cpu_threads)
+            || self.arena_gib > 192
+            || !(256..=8192).contains(&self.prompt_batch)
+            || self.prompt_batch % 256 != 0
+            || !(64..=1024).contains(&self.prefill_chunk)
+            || self.prefill_chunk % 64 != 0
+            || self.prefill_chunk > self.prompt_batch
+            || self.pcie_bp > 10_000
+            || self.tier_batch_pcie_bp > 10_000
+        {
+            return Err(PowerError::Config(
+                "xolotl.tuning exceeds admitted engine resource bounds".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn append_args(&self, argv: &mut Vec<String>) -> Result<()> {
+        self.validate()?;
+        for (flag, value) in [
+            ("--ctx", self.context_tokens.to_string()),
+            ("--threads", self.cpu_threads.to_string()),
+            ("--arena-gib", self.arena_gib.to_string()),
+            ("--prompt-batch", self.prompt_batch.to_string()),
+            ("--prefill-chunk", self.prefill_chunk.to_string()),
+            (
+                "--pcie",
+                format!("{}.{:04}", self.pcie_bp / 10_000, self.pcie_bp % 10_000),
+            ),
+            (
+                "--tier-batch-pcie",
+                format!(
+                    "{}.{:04}",
+                    self.tier_batch_pcie_bp / 10_000,
+                    self.tier_batch_pcie_bp % 10_000
+                ),
+            ),
+        ] {
+            argv.extend([flag.to_string(), value]);
+        }
+        Ok(())
+    }
+}
+
+/// ACL-only settings for a Power-owned Xolotl adapter. Runtime launch facts
+/// cross a bounded stdin message; no secondary settings file is consumed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct XolotlManagedConfig {
+    pub model_name: String,
+    /// Joined GGUF digest declared by the admitted model package.
+    pub model_sha256: String,
+    /// Ordered, measured immutable package members; empty for a registered joined GGUF.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_parts: Vec<XolotlModelPart>,
+    /// Exact Cloud-admitted NVIDIA UUIDs, in the plan's stage order.
+    pub gpu_uuids: Vec<String>,
+    pub python: PathBuf,
+    pub bridge: PathBuf,
+    pub server: PathBuf,
+    pub tokenizer: PathBuf,
+    #[serde(default = "default_xolotl_startup_timeout")]
+    pub startup_timeout_seconds: u64,
+    #[serde(default = "default_xolotl_shutdown_timeout")]
+    pub shutdown_timeout_seconds: u64,
+}
+/// One measured input to the deterministic GGUF byte concatenation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct XolotlModelPart {
+    pub path: PathBuf,
+    pub size_bytes: u64,
+    pub sha256: String,
+}
+fn default_xolotl_startup_timeout() -> u64 {
+    1800
+}
+fn default_xolotl_shutdown_timeout() -> u64 {
+    15
 }
 
 /// User-configurable settings for the Power server.

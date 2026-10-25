@@ -13,6 +13,10 @@ use crate::server::state::AppState;
 #[path = "chat_runtime.rs"]
 mod runtime;
 
+#[cfg(test)]
+#[path = "chat_policy_tests.rs"]
+mod policy_tests;
+
 fn chunk_emits_token(chunk: &ChatResponseChunk) -> bool {
     !chunk.done
         || !chunk.content.is_empty()
@@ -249,12 +253,6 @@ pub async fn handler(
         if let Some(message) = unsupported_local_message_role_message(&request) {
             return openai_error("unsupported_message_role", &message).into_response();
         }
-        if let Some(message) = unsupported_local_tool_choice_message(&request) {
-            return openai_error("unsupported_tool_choice", &message).into_response();
-        }
-        if let Some(message) = unsupported_local_parallel_tool_calls_message(&request) {
-            return openai_error("unsupported_parallel_tool_calls", &message).into_response();
-        }
     }
 
     let runtime_policy =
@@ -276,6 +274,16 @@ pub async fn handler(
                 .into_response();
         }
     };
+    if !matches!(manifest.format, crate::model::manifest::ModelFormat::Remote)
+        && !backend.supports_openai_tool_selection()
+    {
+        if let Some(message) = unsupported_local_tool_choice_message(&request) {
+            return openai_error("unsupported_tool_choice", &message).into_response();
+        }
+        if let Some(message) = unsupported_local_parallel_tool_calls_message(&request) {
+            return openai_error("unsupported_parallel_tool_calls", &message).into_response();
+        }
+    }
     if let Some(message) = super::unsupported_local_response_format_for_backend(
         &manifest.format,
         backend.name(),
@@ -487,11 +495,7 @@ pub async fn handler(
         }
         Err(error) => {
             resources.audit_failure(error.to_string());
-            let code = if matches!(&error, crate::error::PowerError::InvalidRequest(_)) {
-                "invalid_request"
-            } else {
-                "server_error"
-            };
+            let code = runtime::backend_error_code(&error);
             openai_error(code, &state.sanitize_error(&error.to_string())).into_response()
         }
     }

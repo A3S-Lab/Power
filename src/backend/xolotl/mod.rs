@@ -7,12 +7,16 @@
 //! Omitting `--split-device` on a split keeps at most two visible CUDA devices,
 //! and `--layer-split auto` is one cut at `n_layers / 2`.
 //!
-//! Power does not link Xolotl kernels and does not spawn `ds41_generate`.
-//! `--serve` speaks the engine line protocol. Chat posts one non-streaming
-//! OpenAI request to `serve_ds41.py` (`tools/v41/serve/serve_ds41.py`, port 8150).
+//! With an explicit ACL `managed` block, Power owns the packaged adapter and
+//! real resident engine as one process group, proves READY and model identity,
+//! and reports failed readiness if either process is lost. The external
+//! upstream mode remains available when the block is absent.
 
 mod detect;
+mod managed;
 mod plan;
+mod prepare;
+pub(crate) use prepare::prepare_managed_model;
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -21,7 +25,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream;
-use futures::Stream;
+use futures::{Stream, TryStreamExt};
 
 use crate::config::{PowerConfig, XolotlConfig};
 use crate::error::{PowerError, Result};
@@ -39,17 +43,18 @@ pub use plan::{
     CudaDevice, XolotlLaunchPlan,
 };
 
-/// Front for one XQ pack. The GPU process stays outside this type.
+/// Front for one XQ pack, with optional ownership of its resident process.
 pub struct XolotlBackend {
     config: Arc<PowerConfig>,
     http: reqwest::Client,
     /// Injected inventory. Production load calls `nvidia-smi` when this is empty.
     devices: Option<Vec<CudaDevice>>,
     loaded: tokio::sync::RwLock<HashMap<String, XolotlLaunchPlan>>,
+    engine: tokio::sync::Mutex<Option<managed::ManagedEngine>>,
 }
 
-/// Reqwest's 30s default ends a cold XQ expert-cache response before tokens return.
-const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Bounded deadline for cold expert-cache inference and million-token prefill.
+const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 fn upstream_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -65,6 +70,7 @@ impl XolotlBackend {
             http: upstream_client(),
             devices: None,
             loaded: tokio::sync::RwLock::new(HashMap::new()),
+            engine: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -75,14 +81,26 @@ impl XolotlBackend {
     }
 
     async fn loaded_plan(&self, model_name: &str) -> Result<XolotlLaunchPlan> {
-        self.loaded
+        let plan = self
+            .loaded
             .read()
             .await
             .get(model_name)
             .cloned()
             .ok_or_else(|| {
                 PowerError::ModelNotFound(format!("xolotl model '{model_name}' is not loaded"))
-            })
+            })?;
+        if self.config.xolotl.managed.is_some() {
+            self.engine
+                .lock()
+                .await
+                .as_mut()
+                .ok_or_else(|| {
+                    PowerError::InferenceFailed("managed Xolotl engine is absent".into())
+                })?
+                .ensure_alive()?;
+        }
+        Ok(plan)
     }
 
     async fn post_json(&self, url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
@@ -160,33 +178,7 @@ fn chat_body(model_name: &str, request: &ChatRequest) -> Result<serde_json::Valu
             "xolotl chat refuses image inputs".into(),
         ));
     }
-    if request
-        .tools
-        .as_ref()
-        .is_some_and(|tools| !tools.is_empty())
-    {
-        return Err(PowerError::InferenceFailed(
-            "xolotl chat refuses tool definitions on this non-streaming upstream path".into(),
-        ));
-    }
-    let messages = serde_json::to_value(&request.messages).map_err(|error| {
-        PowerError::InferenceFailed(format!(
-            "xolotl chat messages could not be encoded: {error}"
-        ))
-    })?;
-    let mut body = serde_json::json!({
-        "model": model_name,
-        "messages": messages,
-        "stream": false,
-    });
-    copy_sampling(
-        &mut body,
-        request.temperature,
-        request.top_p,
-        request.max_tokens,
-        request.stop.as_ref(),
-    );
-    Ok(body)
+    crate::backend::openai_compat::chat_request_body(model_name, request, true)
 }
 
 fn completion_body(model_name: &str, request: &CompletionRequest) -> Result<serde_json::Value> {
@@ -261,37 +253,6 @@ fn prompt_tokens(json: &serde_json::Value) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
-fn chat_stream(
-    content: String,
-    prompt_tokens: Option<u32>,
-    done_reason: String,
-) -> Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>> {
-    let mut chunks = Vec::new();
-    if !content.is_empty() {
-        chunks.push(Ok(ChatResponseChunk {
-            content,
-            thinking_content: None,
-            done: false,
-            prompt_tokens: None,
-            done_reason: None,
-            prompt_eval_duration_ns: None,
-            tool_calls: None,
-            upstream_timings: None,
-        }));
-    }
-    chunks.push(Ok(ChatResponseChunk {
-        content: String::new(),
-        thinking_content: None,
-        done: true,
-        prompt_tokens,
-        done_reason: Some(done_reason),
-        prompt_eval_duration_ns: None,
-        tool_calls: None,
-        upstream_timings: None,
-    }));
-    Box::pin(stream::iter(chunks))
-}
-
 fn completion_stream(
     text: String,
     prompt_tokens: Option<u32>,
@@ -329,8 +290,16 @@ fn bounded_text(text: &str) -> &str {
 
 #[async_trait]
 impl Backend for XolotlBackend {
+    fn supports_openai_tool_selection(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "xolotl"
+    }
+
+    fn reports_exact_chat_usage(&self) -> bool {
+        true
     }
 
     fn supports(&self, format: &ModelFormat) -> bool {
@@ -340,6 +309,30 @@ impl Backend for XolotlBackend {
 
     fn supports_manifest(&self, manifest: &ModelManifest) -> bool {
         is_xolotl_required_manifest(manifest)
+    }
+
+    async fn runtime_readiness(&self) -> Result<()> {
+        if self.config.xolotl.managed.is_none() {
+            return Ok(());
+        }
+        // Health probes share this owner with each other and with lifecycle
+        // operations. Contention alone does not mean a resident model is lost.
+        // Bound the complete wait and HTTP proof so startup/shutdown still fail
+        // closed without leaving health requests queued for the load deadline.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut owner = self.engine.lock().await;
+            owner
+                .as_mut()
+                .ok_or_else(|| {
+                    PowerError::InferenceFailed("managed Xolotl model is not loaded".into())
+                })?
+                .probe(&self.http)
+                .await
+        })
+        .await
+        .map_err(|_| {
+            PowerError::InferenceFailed("managed Xolotl readiness deadline exceeded".into())
+        })?
     }
 
     async fn load(&self, manifest: &ModelManifest) -> Result<()> {
@@ -365,15 +358,54 @@ impl Backend for XolotlBackend {
         })
         .await
         .map_err(|error| PowerError::Config(format!("xolotl artifact check failed: {error}")))??;
-        self.loaded
-            .write()
-            .await
-            .insert(manifest.name.clone(), launch);
+        let mut loaded = self.loaded.write().await;
+        if let Some(managed) = &self.config.xolotl.managed {
+            let mut owner = self.engine.lock().await;
+            if !loaded.is_empty() {
+                if !loaded.contains_key(&manifest.name) {
+                    return Err(PowerError::InferenceFailed(
+                        "managed Xolotl already owns another model".into(),
+                    ));
+                }
+                return owner
+                    .as_mut()
+                    .ok_or_else(|| {
+                        PowerError::InferenceFailed("managed Xolotl lost its owner".into())
+                    })?
+                    .probe(&self.http)
+                    .await;
+            }
+            if owner.is_some() {
+                return Err(PowerError::InferenceFailed(
+                    "managed Xolotl retained an unregistered owner".into(),
+                ));
+            }
+            let origin = require_upstream(&self.config.xolotl)?;
+            *owner = Some(
+                managed::ManagedEngine::start(
+                    managed,
+                    &launch,
+                    &origin,
+                    &manifest.name,
+                    &self.http,
+                )
+                .await?,
+            );
+        }
+        loaded.insert(manifest.name.clone(), launch);
         Ok(())
     }
 
     async fn unload(&self, model_name: &str) -> Result<()> {
-        self.loaded.write().await.remove(model_name);
+        let mut loaded = self.loaded.write().await;
+        if self.config.xolotl.managed.is_some() && loaded.contains_key(model_name) {
+            let mut owner = self.engine.lock().await;
+            if let Some(engine) = owner.as_mut() {
+                engine.stop().await?;
+            }
+            *owner = None;
+        }
+        loaded.remove(model_name);
         Ok(())
     }
 
@@ -384,18 +416,30 @@ impl Backend for XolotlBackend {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponseChunk>> + Send>>> {
         ensure_non_speculative_mode(&self.config.spec_mode, self.name())?;
         let launch = self.loaded_plan(model_name).await?;
+        let tool_policy = crate::backend::openai_compat::ChatToolPolicy::from_request(&request)?;
         let body = chat_body(model_name, &request)?;
         let upstream = require_upstream(&self.config.xolotl)
             .map_err(|error| upstream_error(&launch, error))?;
-        let json = self
-            .post_json(&format!("{upstream}/v1/chat/completions"), &body)
-            .await?;
-        let content = string_field(&json, "/choices/0/message/content", "chat content")?;
-        Ok(chat_stream(
-            content,
-            prompt_tokens(&json),
-            finish_reason(&json),
-        ))
+        let http = self.http.clone();
+        let url = format!("{upstream}/v1/chat/completions");
+        // The stream owns startup and the response: dropping it cancels reads
+        // during header waits, million-token prefill, and token generation.
+        let startup = async move {
+            let response = http
+                .post(&url)
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| PowerError::InferenceFailed(format!("xolotl stream failed: {e}")))?;
+            let response = crate::backend::openai_compat::require_chat_stream(response)?;
+            Ok::<_, PowerError>(crate::backend::openai_compat::chat_response_stream(
+                response,
+                true,
+                tool_policy,
+            ))
+        };
+        Ok(Box::pin(stream::once(startup).try_flatten()))
     }
 
     async fn complete(
@@ -642,15 +686,21 @@ mod tests {
     async fn chat_handler(
         State(state): State<UpstreamState>,
         Json(body): Json<Value>,
-    ) -> Json<Value> {
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
         *state.chat.lock().expect("chat body lock") = Some(body);
-        Json(json!({
-            "choices": [{
-                "message": {"role": "assistant", "content": "ready"},
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 4}
-        }))
+        let events = [
+            json!({"choices":[{"index":0,"delta":{"content":"ready","reasoning_content":"measured reasoning"},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":4,"completion_tokens":17,"total_tokens":21},
+                "timings":{"prompt_n":4,"prompt_ms":2.0,"predicted_n":17,"predicted_ms":200.0,"predicted_per_second":85.0}}),
+        ];
+        let mut wire = events
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect::<String>();
+        wire.push_str("data: [DONE]\n\n");
+        ([("content-type", "text/event-stream")], wire).into_response()
     }
 
     async fn completion_handler(
@@ -665,7 +715,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_and_completion_forward_one_json_response() {
+    async fn chat_streams_and_completion_forwards_json_response() {
         let chat = Arc::new(Mutex::new(None));
         let completion_body = Arc::new(Mutex::new(None));
         let app = Router::new()
@@ -709,10 +759,19 @@ mod tests {
         assert!(done.done);
         assert_eq!(done.done_reason.as_deref(), Some("stop"));
         assert_eq!(done.prompt_tokens, Some(4));
+        assert_eq!(
+            first.thinking_content.as_deref(),
+            Some("measured reasoning")
+        );
+        assert!(backend.reports_exact_chat_usage());
+        let observation = done.upstream_timings.as_ref().unwrap();
+        assert_eq!(observation["usage"]["completion_tokens"], 17);
+        assert_eq!(observation["timings"]["predicted_per_second"], 85.0);
+        assert_eq!(done.prompt_eval_duration_ns, Some(2_000_000));
         assert!(stream.next().await.is_none());
 
         let body = chat.lock().expect("chat body lock").clone().unwrap();
-        assert_eq!(body["stream"], json!(false));
+        assert_eq!(body["stream"], json!(true));
         assert_eq!(body["messages"][0]["content"], json!("hello"));
         assert_eq!(body["temperature"], json!(1.0));
         assert_eq!(body["top_p"], json!(1.0));
@@ -771,3 +830,7 @@ mod tests {
         server.join().unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "streaming_tests.rs"]
+mod streaming_tests;

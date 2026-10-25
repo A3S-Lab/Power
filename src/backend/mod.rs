@@ -4,6 +4,7 @@ pub mod gpu;
 pub mod json_schema;
 pub mod llamacpp;
 pub mod mistralrs_backend;
+mod openai_compat;
 pub mod picolm;
 pub mod picolm_ops;
 pub mod prism;
@@ -106,6 +107,12 @@ pub trait Backend: Send + Sync {
         self.supports(&manifest.format)
     }
 
+    /// The backend forwards explicit OpenAI tool selection and validates its
+    /// generated tool names, complete arguments, and single-call policy.
+    fn supports_openai_tool_selection(&self) -> bool {
+        false
+    }
+
     /// Chat chunks carry exact final token usage in `upstream_timings.usage`.
     /// This also supports locally executed native models whose UTF-8/SSE
     /// fragments are not one-to-one with model tokens. Missing or malformed
@@ -142,6 +149,11 @@ pub trait Backend: Send + Sync {
     /// Return cumulative speculative counters for completed requests.
     fn speculative_metrics(&self) -> Vec<SpeculativeMetricsSnapshot> {
         Vec::new()
+    }
+
+    /// Readiness of resources explicitly owned by this backend.
+    async fn runtime_readiness(&self) -> Result<()> {
+        Ok(())
     }
 
     /// Load a model into memory, ready for inference.
@@ -297,6 +309,14 @@ impl BackendRegistry {
         Self {
             backends: Vec::new(),
         }
+    }
+
+    /// Refuse health while an explicitly managed runtime is unavailable.
+    pub async fn runtime_readiness(&self) -> Result<()> {
+        for backend in &self.backends {
+            backend.runtime_readiness().await?;
+        }
+        Ok(())
     }
 
     /// Register a new backend. Backends registered first have higher priority.

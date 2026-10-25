@@ -268,6 +268,10 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         app_state = app_state.with_key_provider(provider);
     }
 
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .map_err(|e| PowerError::Server(format!("Failed to bind to {bind_addr}: {e}")))?;
+
     // Spawn background keep_alive reaper task
     spawn_keep_alive_reaper(app_state.clone());
 
@@ -305,11 +309,9 @@ async fn start_with_options(options: builder::PowerServerOptions) -> Result<()> 
         vsock::spawn_vsock_server(vsock_port, app.clone()).await?;
     }
 
-    let listener = tokio::net::TcpListener::bind(&bind_addr)
-        .await
-        .map_err(|e| PowerError::Server(format!("Failed to bind to {bind_addr}: {e}")))?;
-
     tracing::info!("Server listening on {bind_addr}");
+
+    load_managed_xolotl(&app_state).await?;
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(app_state_for_shutdown))
@@ -474,6 +476,41 @@ async fn shutdown_signal(state: state::AppState) {
     }
 
     tracing::info!("Graceful shutdown complete");
+}
+
+async fn load_managed_xolotl(state: &state::AppState) -> Result<()> {
+    let Some(managed) = &state.config.xolotl.managed else {
+        return Ok(());
+    };
+    if !state.config.xolotl.enabled {
+        return Err(PowerError::Config(
+            "managed Xolotl requires xolotl.enabled".into(),
+        ));
+    }
+    let previous = match state.registry.get(&managed.model_name) {
+        Ok(manifest) => Some(manifest),
+        Err(PowerError::ModelNotFound(_)) => None,
+        Err(error) => return Err(error),
+    };
+    if previous
+        .as_ref()
+        .is_some_and(|manifest| !backend::xolotl::is_xolotl_required_manifest(manifest))
+    {
+        return Err(PowerError::Config(
+            "managed Xolotl startup requires the exact XQ manifest".into(),
+        ));
+    }
+    let manifest = backend::xolotl::prepare_managed_model(&state.config, previous).await?;
+    if !backend::xolotl::is_xolotl_required_manifest(&manifest) {
+        return Err(PowerError::Config(
+            "managed Xolotl startup requires the exact XQ manifest".into(),
+        ));
+    }
+    state.registry.register_transient(manifest.clone())?;
+    let backend = state.find_backend_for_manifest(&manifest)?;
+    backend.load(&manifest).await?;
+    state.mark_loaded_with_keep_alive(&manifest.name, std::time::Duration::MAX);
+    Ok(())
 }
 
 // Unload all models to trigger RAII cleanup (zeroize decrypted weights).
@@ -1860,3 +1897,7 @@ mod tests {
         assert!(err.to_string().contains("embedded credentials"));
     }
 }
+
+#[cfg(test)]
+#[path = "xolotl_startup_tests.rs"]
+mod xolotl_startup_tests;

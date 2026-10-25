@@ -66,6 +66,19 @@ impl PowerConfig {
     /// Load configuration from a specific file path (A3S ACL format).
     ///
     /// After loading from file, applies `A3S_POWER_*` environment variable overrides.
+    /// Parse one explicit bounded ACL document, without layered discovery or
+    /// inherited environment overrides. Hosted workloads bind all settings here.
+    pub fn from_acl(content: &str) -> Result<Self> {
+        if content.len() > 64 * 1024 {
+            return Err(crate::error::PowerError::Acl(
+                "inline ACL exceeds its 64 KiB byte bound".into(),
+            ));
+        }
+        let config = acl::deserialize(content)?;
+        config.validate()?;
+        Ok(config)
+    }
+
     pub fn load_from(path: &str) -> Result<Self> {
         let path = std::path::Path::new(path);
         let content = std::fs::read_to_string(path).map_err(|e| {
@@ -114,6 +127,14 @@ impl PowerConfig {
     /// Some legacy operational warnings remain non-fatal, but policy-bearing
     /// settings that would otherwise be silently ignored return an error.
     pub fn validate(&self) -> Result<()> {
+        self.xolotl.validate_indexer_tile()?;
+        if let Some(dspark) = &self.xolotl.dspark {
+            dspark.validate()?;
+        }
+        if let Some(tuning) = &self.xolotl.tuning {
+            tuning.validate()?;
+        }
+
         self.gpu.validate()?;
         self.serving_execution.validate()?;
         if !(1..=100_000).contains(&self.max_concurrent_requests)

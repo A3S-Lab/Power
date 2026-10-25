@@ -1851,3 +1851,7 @@ mod tests {
 #[cfg(test)]
 #[path = "types_chat_message_tests.rs"]
 mod chat_message_compat_tests;
+
+#[cfg(test)]
+#[path = "types_workbuddy_tests.rs"]
+mod workbuddy_compat_tests;

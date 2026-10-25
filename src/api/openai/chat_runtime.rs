@@ -17,6 +17,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use zeroize::Zeroize;
+pub(super) fn backend_error_code(error: &crate::error::PowerError) -> &'static str {
+    match error {
+        crate::error::PowerError::InvalidRequest(_)
+        | crate::error::PowerError::InvalidFormat(_) => "invalid_request",
+        crate::error::PowerError::BackendNotAvailable(_) => "backend_unavailable",
+        crate::error::PowerError::ModelNotFound(_) => "model_not_found",
+        _ => "server_error",
+    }
+}
+
 type ChatStream = Pin<Box<dyn Stream<Item = crate::error::Result<ChatResponseChunk>> + Send>>;
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 pub(super) fn meaningful(chunk: &ChatResponseChunk) -> bool {
@@ -534,7 +544,8 @@ async fn buffered(mut owned: OwnedSource, p: Presentation, prism: bool) -> Respo
                 let message = owned.resources.state().sanitize_error(&error.to_string());
                 drop(owned.stream.take());
                 owned.resources.finish().await;
-                return super::super::openai_error("server_error", &message).into_response();
+                return super::super::openai_error(backend_error_code(&error), &message)
+                    .into_response();
             }
         };
         if !ttft && meaningful(&chunk) {
@@ -580,7 +591,7 @@ async fn buffered(mut owned: OwnedSource, p: Presentation, prism: bool) -> Respo
         response["choices"][0]["message"]["tool_calls"] = json!(tools);
     }
     if !thinking.is_empty() {
-        response["choices"][0]["message"]["thinking"] = json!(thinking);
+        response["choices"][0]["message"]["reasoning_content"] = json!(thinking);
     }
     if let Some(usage) = accounting.usage(p.suppress) {
         response["usage"] = usage.json();

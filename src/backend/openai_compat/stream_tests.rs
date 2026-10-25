@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 fn chunks(bytes: &[u8], width: usize) -> impl Stream<Item = reqwest::Result<Vec<u8>>> + Unpin {
@@ -122,4 +124,21 @@ fn malformed_tool_deltas_and_inconsistent_usage_fail_closed() {
     ] {
         assert!(validate_usage(&usage).is_err());
     }
+}
+
+#[test]
+fn exact_usage_and_nonnegative_timing_observations_are_required() {
+    for usage in [
+        serde_json::json!({"prompt_tokens":4}),
+        serde_json::json!({"prompt_tokens":4,"completion_tokens":1.5,"total_tokens":5}),
+        serde_json::json!({"prompt_tokens":4,"completion_tokens":17,"total_tokens":20}),
+        serde_json::json!({"prompt_tokens":4294967296u64,"completion_tokens":0,"total_tokens":4294967296u64}),
+    ] {
+        assert!(validate_usage(&usage).is_err());
+    }
+    let usage =
+        serde_json::json!({"prompt_tokens":1000000,"completion_tokens":17,"total_tokens":1000017});
+    assert!(validate_usage(&usage).is_ok());
+    assert!(validate_timings(&serde_json::json!({"predicted_per_second":85.0})).is_ok());
+    assert!(validate_timings(&serde_json::json!({"predicted_per_second":-1})).is_err());
 }

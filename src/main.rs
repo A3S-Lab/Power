@@ -17,7 +17,14 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::Serve(args)) => {
             init_tracing();
-            let mut config = if let Some(ref path) = args.config {
+            let mut config = if args.config_from_workload_env {
+                let content = std::env::var("A3S_POWER_RUNTIME_ACL").map_err(|_| {
+                    anyhow::anyhow!("hosted workload requires UTF-8 A3S_POWER_RUNTIME_ACL")
+                })?;
+                PowerConfig::from_acl(&content)?
+            } else if let Some(ref content) = args.config_inline {
+                PowerConfig::from_acl(content)?
+            } else if let Some(ref path) = args.config {
                 PowerConfig::load_from(path)?
             } else {
                 PowerConfig::load()?
@@ -28,7 +35,12 @@ async fn main() -> anyhow::Result<()> {
             if let Some(port) = args.port {
                 config.port = port;
             }
-            a3s_power::server::start(config).await?;
+            config.validate()?;
+            if args.check_config {
+                println!("Power ACL and resource bounds validated");
+            } else {
+                a3s_power::server::start(config).await?;
+            }
         }
         Some(Command::Models(cmd)) => {
             run_models_command(cmd).await?;
