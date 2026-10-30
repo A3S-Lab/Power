@@ -5,16 +5,28 @@ use crate::{
     config::XolotlManagedConfig,
     error::{PowerError, Result},
 };
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, process::Stdio, time::Duration};
+#[cfg(any(target_os = "linux", test))]
+use serde::Deserialize;
+#[cfg(target_os = "linux")]
+use serde::Serialize;
+#[cfg(any(target_os = "linux", test))]
+use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::process::Child;
+#[cfg(target_os = "linux")]
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, Command},
+    process::Command,
 };
+#[cfg(target_os = "linux")]
 const MAX_LAUNCH_BYTES: usize = 64 * 1024;
+#[cfg(target_os = "linux")]
 const MAX_READY_BYTES: u64 = 4096;
 const MAX_HEALTH_BYTES: usize = 32 * 1024;
 
+#[cfg(target_os = "linux")]
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
 struct Launch<'a> {
@@ -29,6 +41,7 @@ struct Launch<'a> {
     host: &'static str,
     port: u16,
 }
+#[cfg(any(target_os = "linux", test))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Ready {
@@ -42,7 +55,9 @@ struct Ready {
 }
 pub(super) struct ManagedEngine {
     child: Child,
+    #[cfg(target_os = "linux")]
     group: i32,
+    #[cfg(target_os = "linux")]
     engine_pid: i32,
     model_name: String,
     origin: String,
@@ -52,6 +67,7 @@ fn refused(reason: impl Into<String>) -> PowerError {
     PowerError::InferenceFailed(reason.into())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn validate_context_proof(plan: &XolotlLaunchPlan, actual: u32) -> Result<()> {
     let expected = plan
         .argv
@@ -72,6 +88,7 @@ fn validate_context_proof(plan: &XolotlLaunchPlan, actual: u32) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn validate_config(config: &XolotlManagedConfig, origin: &str, model_name: &str) -> Result<u16> {
     if config.model_name != model_name
         || model_name.is_empty()
@@ -120,6 +137,7 @@ fn validate_config(config: &XolotlManagedConfig, origin: &str, model_name: &str)
         .ok_or_else(|| refused("managed Xolotl origin requires an explicit port"))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn bind_device_identities(indices: &[u32], expected: &[String], csv: &str) -> Result<String> {
     if indices.len() != expected.len() || !matches!(indices.len(), 1 | 8) || csv.len() > 4096 {
         return Err(refused(
@@ -162,6 +180,7 @@ fn bind_device_identities(indices: &[u32], expected: &[String], csv: &str) -> Re
     }
     Ok(expected.join(","))
 }
+#[cfg(target_os = "linux")]
 async fn query_device_identities() -> Result<String> {
     let mut child = Command::new("nvidia-smi")
         .args(["--query-gpu=index,uuid", "--format=csv,noheader,nounits"])

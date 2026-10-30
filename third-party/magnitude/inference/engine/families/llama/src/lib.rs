@@ -1,0 +1,464 @@
+//! Llama-architecture recognition and numerical interpretation.
+//!
+//! `llama` is a catch-all GGUF architecture string shared by many unrelated
+//! checkpoints, so this family is strict: it claims the architecture but
+//! admits exactly one feature set (plain grouped-query attention with full
+//! rotary, a dense SwiGLU feed-forward, pre-norm residuals and an untied
+//! head). Rope scaling, biases, per-layer variation, q/k norms, a tied head and
+//! any tensor role outside that set are refused, each by name.
+//!
+//! GGUF stores `attn_q`/`attn_k` rows in the adjacent-pair (NORM) rotary
+//! layout; import permutes them into the engine's half-split (NEOX) pairs, so
+//! the definition's rotary is a plain frequency table.
+
+mod family;
+
+pub use family::LlamaFamily;
+
+use magnitude_artifacts::{
+    gguf::{Directory, Value},
+    PackageIdentity, UnsupportedReason,
+};
+use magnitude_family_common::{architecture_keys, rotary, HeaderError, Metadata, Tensors};
+use magnitude_family_contracts::{
+    checked_product, ActivationDType, ActivationFunction, Attention, AttentionGate, Block, Decoder,
+    DefinitionError, DenseFfn, EmbeddingScale, EntryForm, ExitForm, ExitNorm, FamilyError,
+    FamilyId, FeedForwardUp, HeadNorm, HistoryDomain, HistoryReads, InputNorm, InputSemantics,
+    KeyValue, MediaRowAttention, ModelDefinition, Operator, OutputForm, ResidualForm, RmsNorm,
+    Sublayer, ValueNorm, ValueSource, WeightDescriptor,
+};
+use std::{error, fmt};
+
+/// The family identity every definition this crate builds carries.
+pub const FAMILY_ID: &str = "llama";
+
+/// Every `llama.*` key of the admitted feature set. Each is required and
+/// scalar; any other key names a feature this family does not admit.
+const ADMITTED_KEYS: [&str; 12] = [
+    "block_count",
+    "context_length",
+    "embedding_length",
+    "feed_forward_length",
+    "attention.head_count",
+    "attention.head_count_kv",
+    "attention.key_length",
+    "attention.value_length",
+    "attention.layer_norm_rms_epsilon",
+    "rope.dimension_count",
+    "rope.freq_base",
+    "vocab_size",
+];
+
+const GLOBAL_ROLES: [&str; 3] = ["token_embd.weight", "output_norm.weight", "output.weight"];
+
+const BLOCK_ROLES: [&str; 9] = [
+    "attn_norm.weight",
+    "attn_q.weight",
+    "attn_k.weight",
+    "attn_v.weight",
+    "attn_output.weight",
+    "ffn_norm.weight",
+    "ffn_gate.weight",
+    "ffn_up.weight",
+    "ffn_down.weight",
+];
+
+/// A feature of a `llama` artifact outside the admitted set: an unknown
+/// key, an admitted key given per layer, rope scaling, a tensor no admitted
+/// role binds, or a head tied to the embedding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Feature {
+    UnknownMetadata(String),
+    PerLayerMetadata(String),
+    RopeScaling(String),
+    Tensor(String),
+    TiedOutput,
+}
+
+impl Feature {
+    fn reason(&self) -> UnsupportedReason {
+        match self {
+            Self::UnknownMetadata(key) | Self::PerLayerMetadata(key) => {
+                UnsupportedReason::UnrecognizedMetadata { key: key.clone() }
+            }
+            Self::RopeScaling(kind) => UnsupportedReason::RopeScaling { kind: kind.clone() },
+            Self::Tensor(name) => UnsupportedReason::UnrecognizedTensor { name: name.clone() },
+            Self::TiedOutput => UnsupportedReason::TiedOutputHead,
+        }
+    }
+}
+
+impl fmt::Display for Feature {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownMetadata(key) => write!(formatter, "metadata {key:?}"),
+            Self::PerLayerMetadata(key) => write!(formatter, "per-layer metadata {key:?}"),
+            Self::RopeScaling(kind) => write!(formatter, "rope scaling {kind:?}"),
+            Self::Tensor(name) => write!(formatter, "tensor {name:?}"),
+            Self::TiedOutput => formatter.write_str("a head tied to the embedding"),
+        }
+    }
+}
+
+/// Failure to admit or interpret a `llama` artifact. `Unadmitted` names every
+/// feature outside the admitted set at once.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Error {
+    Architecture(Option<String>),
+    Unadmitted(Vec<Feature>),
+    Metadata {
+        key: String,
+        expected: &'static str,
+    },
+    Geometry(String),
+    Projector,
+    MissingWeight(String),
+    WeightShape {
+        name: String,
+        expected: Vec<u64>,
+        received: Vec<u64>,
+    },
+    UnboundWeights(Vec<String>),
+    Definition(DefinitionError),
+}
+
+impl Error {
+    /// The unsupported features this error names; a header missing a key
+    /// names it, one missing a weight the family needs, or whose values
+    /// contradict each other, is `Unreadable`, and a projector given to this
+    /// text-only family does not fit it.
+    pub fn reasons(&self) -> Vec<UnsupportedReason> {
+        match self {
+            Self::Unadmitted(features) => features.iter().map(Feature::reason).collect(),
+            Self::UnboundWeights(names) => names
+                .iter()
+                .map(|name| UnsupportedReason::UnrecognizedTensor { name: name.clone() })
+                .collect(),
+            Self::WeightShape { name, .. } => {
+                vec![UnsupportedReason::UnrecognizedTensor { name: name.clone() }]
+            }
+            Self::Architecture(Some(architecture)) => vec![UnsupportedReason::Architecture {
+                architecture: architecture.clone(),
+            }],
+            Self::Metadata {
+                key,
+                expected: PRESENT,
+            } => vec![UnsupportedReason::MissingMetadata { key: key.clone() }],
+            Self::Metadata { key, .. } => {
+                vec![UnsupportedReason::UnrecognizedMetadata { key: key.clone() }]
+            }
+            Self::Projector => vec![UnsupportedReason::TargetMismatch {
+                detail: self.to_string(),
+            }],
+            Self::Architecture(None)
+            | Self::Geometry(_)
+            | Self::MissingWeight(_)
+            | Self::Definition(_) => vec![UnsupportedReason::Unreadable],
+        }
+    }
+}
+
+/// What a [`Error::Metadata`] for a missing key expects.
+const PRESENT: &str = "present";
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Architecture(Some(architecture)) => {
+                write!(
+                    formatter,
+                    "GGUF architecture {architecture:?} is not \"llama\""
+                )
+            }
+            Self::Architecture(None) => formatter.write_str("missing GGUF architecture"),
+            Self::Unadmitted(features) => {
+                formatter.write_str("llama features outside the admitted set: ")?;
+                for (index, feature) in features.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str(", ")?;
+                    }
+                    feature.fmt(formatter)?;
+                }
+                Ok(())
+            }
+            Self::Metadata { key, expected } => {
+                write!(formatter, "llama metadata {key:?} must be {expected}")
+            }
+            Self::Geometry(message) => write!(formatter, "llama geometry: {message}"),
+            Self::Projector => formatter.write_str("llama has no vision projector"),
+            Self::MissingWeight(name) => write!(formatter, "missing llama weight {name:?}"),
+            Self::WeightShape {
+                name,
+                expected,
+                received,
+            } => write!(
+                formatter,
+                "llama weight {name:?}: expected {expected:?}, received {received:?}"
+            ),
+            Self::UnboundWeights(names) => {
+                write!(
+                    formatter,
+                    "llama artifact contains unbound weight roles {names:?}"
+                )
+            }
+            Self::Definition(error) => write!(formatter, "llama definition: {error}"),
+        }
+    }
+}
+
+impl error::Error for Error {}
+
+impl From<Error> for FamilyError {
+    fn from(error: Error) -> Self {
+        FamilyError::unsupported(error.reasons(), error.to_string())
+    }
+}
+
+impl From<HeaderError> for Error {
+    fn from(error: HeaderError) -> Self {
+        match error {
+            HeaderError::UnknownMetadata(keys) => {
+                Self::Unadmitted(keys.into_iter().map(Feature::UnknownMetadata).collect())
+            }
+            HeaderError::MissingMetadata(key) => Self::Metadata {
+                key,
+                expected: PRESENT,
+            },
+            HeaderError::MetadataType { key, expected } => Self::Metadata { key, expected },
+            HeaderError::MissingWeight(name) => Self::MissingWeight(name),
+            HeaderError::WeightShape {
+                name,
+                expected,
+                received,
+            } => Self::WeightShape {
+                name,
+                expected,
+                received,
+            },
+            HeaderError::UnboundWeights(names) => Self::UnboundWeights(names),
+            HeaderError::Definition(error) => Self::Definition(error),
+            error @ (HeaderError::NotMatrix { .. }
+            | HeaderError::CompanionScale { .. }
+            | HeaderError::Rotary { .. }
+            | HeaderError::Yarn) => Self::Geometry(error.to_string()),
+        }
+    }
+}
+
+/// Whether `name` is a tensor role of the admitted feature set.
+fn admitted_role(name: &str) -> bool {
+    if GLOBAL_ROLES.contains(&name) {
+        return true;
+    }
+    name.strip_prefix("blk.")
+        .and_then(|rest| rest.split_once('.'))
+        .is_some_and(|(index, role)| {
+            !index.is_empty()
+                && index.bytes().all(|byte| byte.is_ascii_digit())
+                && BLOCK_ROLES.contains(&role)
+        })
+}
+
+/// Admit the `llama` feature set from metadata keys and tensor role names,
+/// without interpreting geometry, naming every feature outside it.
+pub fn admit(directory: &Directory) -> Result<(), Error> {
+    match directory
+        .value("general.architecture")
+        .and_then(Value::string)
+    {
+        Some(FAMILY_ID) => {}
+        architecture => return Err(Error::Architecture(architecture.map(str::to_owned))),
+    }
+    let mut features = Vec::new();
+    let mut scaled = false;
+    for (key, metadata) in architecture_keys(directory, FAMILY_ID) {
+        if key.starts_with("rope.scaling.") {
+            scaled = true;
+        } else if !ADMITTED_KEYS.contains(&key) {
+            features.push(Feature::UnknownMetadata(metadata.name.clone()));
+        } else if matches!(metadata.value, Value::Array(_)) {
+            features.push(Feature::PerLayerMetadata(metadata.name.clone()));
+        }
+    }
+    if scaled {
+        let kind = directory
+            .value("llama.rope.scaling.type")
+            .and_then(Value::string)
+            .unwrap_or("unspecified");
+        features.push(Feature::RopeScaling(kind.to_owned()));
+    }
+    features.extend(
+        directory
+            .tensors
+            .iter()
+            .filter(|tensor| !admitted_role(&tensor.name))
+            .map(|tensor| Feature::Tensor(tensor.name.clone())),
+    );
+    if directory.tensor("output.weight").is_none() {
+        features.push(Feature::TiedOutput);
+    }
+    if features.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Unadmitted(features))
+    }
+}
+
+fn product(dimensions: &[u64]) -> Result<u64, Error> {
+    checked_product(dimensions).map_err(Error::Definition)
+}
+
+/// Build the numerical definition of a recognized `llama` package from its
+/// headers.
+pub fn inspect_components(
+    directory: &Directory,
+    projector: Option<&Directory>,
+    identity: PackageIdentity,
+) -> Result<ModelDefinition, Error> {
+    admit(directory)?;
+    if projector.is_some() {
+        return Err(Error::Projector);
+    }
+    let m = Metadata::new(directory, FAMILY_ID, &ADMITTED_KEYS)?;
+    let block_count = m.integer("block_count")?;
+    let context_limit = m.integer("context_length")?;
+    let hidden = m.integer("embedding_length")?;
+    let intermediate = m.integer("feed_forward_length")?;
+    let heads = m.integer("attention.head_count")?;
+    let kv_heads = m.integer("attention.head_count_kv")?;
+    // As llama.cpp reads them, absent head widths are the embedding width per head and an absent
+    // rotary dimension is the whole head.
+    if !hidden.is_multiple_of(heads) {
+        return Err(Error::Geometry(
+            "embedding width is not a whole number of heads".into(),
+        ));
+    }
+    let width = m
+        .optional_integer("attention.key_length")?
+        .unwrap_or(hidden / heads);
+    let epsilon = m.positive_number("attention.layer_norm_rms_epsilon")?;
+    let base = m.positive_number("rope.freq_base")?;
+    let vocabulary = m.integer("vocab_size")?;
+    if m.optional_integer("attention.value_length")?
+        .unwrap_or(width)
+        != width
+    {
+        return Err(Error::Geometry(
+            "value head width differs from key head width".into(),
+        ));
+    }
+    if m.optional_integer("rope.dimension_count")?.unwrap_or(width) != width
+        || !width.is_multiple_of(2)
+    {
+        return Err(Error::Geometry(
+            "rotary must cover the whole even head width".into(),
+        ));
+    }
+    // Each block binds distinct stored weights; reject impossible counts
+    // before allocating from untrusted metadata.
+    if block_count > directory.tensors.len() as u64 {
+        return Err(Error::Geometry(
+            "block count exceeds the stored weight roles".into(),
+        ));
+    }
+    let query_rows = product(&[heads, width])?;
+    let key_rows = product(&[kv_heads, width])?;
+    let rms = |weight: WeightDescriptor| RmsNorm { weight, epsilon };
+    // Pair `p` rotates dimensions `(p, p + W/2)` at `base^(-2p/W)`.
+    let rotary = rotary::table(width, width, base)?;
+    // GGUF stores the query and key rows of each head in adjacent pairs.
+    let half_split = rotary::half_split_rows(width, width);
+
+    let mut tensors = Tensors::new(directory);
+    let embedding = tensors.bind("token_embd.weight", &[vocabulary, hidden])?;
+    let output_norm = tensors.bind("output_norm.weight", &[hidden])?;
+    let output = tensors.bind("output.weight", &[vocabulary, hidden])?;
+    let blocks = (0..block_count)
+        .map(|index| {
+            let role = |role: &str| format!("blk.{index}.{role}");
+            let mut rotated = |name: &str, shape: &[u64]| {
+                tensors.bind_transformed(&role(name), shape, vec![half_split.clone()])
+            };
+            let query = rotated("attn_q.weight", &[query_rows, hidden])?;
+            let key = rotated("attn_k.weight", &[key_rows, hidden])?;
+            let mut weight = |name: &str, shape: &[u64]| tensors.bind(&role(name), shape);
+            let attention_norm = weight("attn_norm.weight", &[hidden])?;
+            let attention = Attention {
+                heads,
+                kv_heads,
+                width,
+                query,
+                gate: AttentionGate::None,
+                query_norm: HeadNorm::None,
+                key_value: KeyValue::Owned {
+                    key,
+                    value: ValueSource::Projected(weight("attn_v.weight", &[key_rows, hidden])?),
+                    key_norm: HeadNorm::None,
+                    value_norm: ValueNorm::None,
+                    domain: HistoryDomain::Token,
+                },
+                rotary: rotary.clone(),
+                scale: 1.0 / (width as f64).sqrt(),
+                reads: HistoryReads::Visible,
+                media_rows: MediaRowAttention::Causal,
+                sinks: None,
+                output: weight("attn_output.weight", &[hidden, query_rows])?,
+            };
+            let feed_forward = DenseFfn {
+                intermediate,
+                up: FeedForwardUp::Gated {
+                    activation: ActivationFunction::Silu,
+                    gate: weight("ffn_gate.weight", &[intermediate, hidden])?,
+                    up: weight("ffn_up.weight", &[intermediate, hidden])?,
+                },
+                down: weight("ffn_down.weight", &[hidden, intermediate])?,
+            };
+            Ok(Block {
+                sublayers: vec![
+                    Sublayer {
+                        input: InputNorm::Rms(rms(attention_norm)),
+                        op: Operator::Attention(Box::new(attention)),
+                        output: OutputForm::Residual,
+                    },
+                    Sublayer {
+                        input: InputNorm::Rms(rms(weight("ffn_norm.weight", &[hidden])?)),
+                        op: Operator::DenseFfn(Box::new(feed_forward)),
+                        output: OutputForm::Residual,
+                    },
+                ],
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    tensors.finish()?;
+
+    let definition = ModelDefinition {
+        family: FamilyId(FAMILY_ID.into()),
+        artifact_identity: identity,
+        inputs: InputSemantics { coordinate_axes: 1 },
+        decoder: Decoder {
+            activation_dtype: ActivationDType::BF16,
+            hidden,
+            vocabulary,
+            context_limit,
+            residual: ResidualForm::Single,
+            entry: EntryForm {
+                embedding,
+                scale: EmbeddingScale::Unit,
+                norm: None,
+                per_layer: None,
+                hash_routing: None,
+            },
+            blocks,
+            exit: ExitForm {
+                norm: ExitNorm::Rms(rms(output_norm)),
+                output,
+                softcap: None,
+            },
+        },
+        head: None,
+        vision: None,
+        draft: None,
+    };
+    definition.validate().map_err(Error::Definition)?;
+    Ok(definition)
+}

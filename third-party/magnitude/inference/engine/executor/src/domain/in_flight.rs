@@ -1,0 +1,200 @@
+//! Owned numerical submissions and completed selection decoding. Every flight
+//! holds the domain's [`StateBindings`] until its finish returns them.
+
+use super::*;
+use crate::programs::SubmittedTarget;
+
+/// The host's turn after a flight finished: until the next launch, the host
+/// reconciles the flight and prepares that launch for the flight's requests.
+pub(super) struct HostTurn {
+    since: Instant,
+    requests: Vec<RequestId>,
+}
+
+impl<F: ProgramFamily> ExecutorDomain<F> {
+    /// A finished flight of `requests` hands the host its turn.
+    pub(super) fn begin_host_turn(&mut self, requests: impl IntoIterator<Item = RequestId>) {
+        self.host_turn = Some(HostTurn {
+            since: Instant::now(),
+            requests: requests.into_iter().collect(),
+        });
+    }
+
+    /// When the service of a launch of `requests` submitted at `submitted`
+    /// starts: where the flight before it finished, when that flight
+    /// carried one of its requests and the owner did not idle since, so a
+    /// launch is charged the host work that prepared it (a round's host
+    /// time is part of its cost); at its submission otherwise, so neither
+    /// idle time nor another request's work is charged to it.
+    pub(super) fn service_start(&mut self, requests: &[RequestId], submitted: Instant) -> Instant {
+        match self.host_turn.take() {
+            Some(turn)
+                if requests
+                    .iter()
+                    .any(|request| turn.requests.contains(request)) =>
+            {
+                turn.since
+            }
+            _ => submitted,
+        }
+    }
+
+    /// The owner has no work: time until its next launch is idle, not service.
+    pub fn host_idle(&mut self) {
+        self.host_turn = None;
+    }
+}
+
+pub struct VisionFlight<F: ProgramFamily = NativeFamily> {
+    pub(super) request: RequestId,
+    pub(super) image: ImageRef,
+    pub(super) submission: F::VisionSubmission,
+    pub(super) started: Instant,
+    /// The device's recorded graph count at submission: the flight paid a
+    /// recording if it grew before the flight finished.
+    pub(super) recorded_graphs: u64,
+    pub(super) bindings: StateBindings<F>,
+}
+
+impl<F: ProgramFamily> VisionFlight<F> {
+    pub fn completion(&mut self) -> &mut dyn Completion {
+        self.submission.completion()
+    }
+}
+
+pub struct HeadFlight<F: ProgramFamily = NativeFamily> {
+    /// Per slot: request, entry rows, proposals.
+    pub(super) requests: Vec<(RequestId, usize, usize)>,
+    /// Selections per slot in the submitted graph.
+    pub(super) steps: usize,
+    pub(super) submission: F::HeadSubmission,
+    pub(super) started: Instant,
+    /// The device's recorded graph count at submission: the flight paid a
+    /// recording if it grew before the flight finished.
+    pub(super) recorded_graphs: u64,
+    /// Optional one-flight launch attribution for diagnosing a proposing head.
+    pub(super) launch_trace: Option<seismic::SubmissionTrace>,
+    pub(super) bindings: StateBindings<F>,
+}
+
+impl<F: ProgramFamily> HeadFlight<F> {
+    pub fn completion(&mut self) -> &mut dyn Completion {
+        self.submission.completion()
+    }
+}
+
+/// A prompt chunk's drafter entry, drafted on the device behind its target
+/// flight, conditioned by the flight's feature output. Only completion may
+/// resolve its head advance; a final target token may publish earlier.
+pub(super) struct PrimingFlight<H> {
+    pub(super) request: RequestId,
+    pub(super) submission: H,
+    /// For a claimed lookahead: the accepted head state its successor
+    /// advance attaches to at finish, or `None` when nobody claimed it (its
+    /// rows are discarded). `None` for an ordinary flight.
+    pub(super) continuation: Option<Option<InFlightState>>,
+}
+
+/// One submitted target step: a group's flight, or the lookahead queued
+/// behind one.
+pub(super) struct TargetWork<F: ProgramFamily> {
+    pub(super) requests: Vec<(
+        RequestId,
+        usize,
+        Option<crate::ConditioningRef>,
+        WorkKind,
+        usize,
+    )>,
+    pub(super) submission: F::TargetSubmission,
+    /// The drafter entry of the step's prompt chunk, when it primes one.
+    pub(super) priming: Option<PrimingFlight<F::HeadSubmission>>,
+    /// Optional attribution for one prefill flight selected by diagnostics.
+    pub(super) launch_trace: Option<seismic::SubmissionTrace>,
+    pub(super) started: Instant,
+    /// The device's recorded graph count at submission: the flight paid a
+    /// recording if it grew before the flight finished.
+    pub(super) recorded_graphs: u64,
+    /// When the device could begin this step: its submission, or for a step
+    /// queued behind its predecessor (lookahead), the predecessor's
+    /// completion. The step's physical duration is measured from here, so
+    /// pipelined steps never charge their predecessor's time again.
+    pub(super) runnable: Instant,
+    /// When the domain last read a selection before this step was submitted.
+    pub(super) previous_selection: Option<Instant>,
+    /// Identifies the step a lookahead continues.
+    pub(super) id: u64,
+    /// For a claimed lookahead, per slot: the accepted state its successor
+    /// advance attaches to at finish, or `None` for a slot nobody claimed
+    /// (its rows are discarded). `None` for an ordinary step.
+    pub(super) continuation: Option<Vec<Option<InFlightState>>>,
+}
+
+pub struct TargetFlight<F: ProgramFamily = NativeFamily> {
+    pub(super) work: TargetWork<F>,
+    /// Carries the lookahead queued behind `work`.
+    pub(super) bindings: StateBindings<F>,
+}
+
+impl<F: ProgramFamily> TargetFlight<F> {
+    pub fn completion(&mut self) -> &mut dyn Completion {
+        self.work.submission.completion()
+    }
+}
+
+pub(super) fn decode_selected(bytes: &[u8]) -> Result<Vec<Selected>, String> {
+    if !bytes.len().is_multiple_of(8) {
+        return Err("selection byte count is not a row multiple".into());
+    }
+    bytes
+        .chunks_exact(8)
+        .map(|row| {
+            let token = i32::from_le_bytes(row[0..4].try_into().expect("four token bytes"));
+            let status = i32::from_le_bytes(row[4..8].try_into().expect("four status bytes"));
+            // 3: a draft declined its proposal (`draft_confidence`).
+            let status = u8::try_from(status)
+                .ok()
+                .filter(|value| *value <= 3)
+                .ok_or("selection status is invalid")?;
+            let token = if status == 0 {
+                crate::TokenId(u32::try_from(token).map_err(|_| "selected token is negative")?)
+            } else {
+                crate::TokenId(0)
+            };
+            Ok(Selected { token, status })
+        })
+        .collect::<Result<Vec<_>, &str>>()
+        .map_err(str::to_owned)
+}
+
+/// The binding right returns only after every submitted use is complete.
+pub enum TargetContinuation<F: ProgramFamily> {
+    Ready(StateBindings<F>),
+    Priming(PrimingCompletionFlight<F>),
+}
+
+/// A final prompt entry finishing after the first token was published.
+/// The binding right stays here, so neither lane can be checkpointed,
+/// evicted, or reused before the head advance resolves.
+pub struct PrimingCompletionFlight<F: ProgramFamily> {
+    pub(super) work: PrimingFlight<F::HeadSubmission>,
+    pub(super) target_end: usize,
+    pub(super) bindings: StateBindings<F>,
+    pub(super) started: Instant,
+}
+
+impl<F: ProgramFamily> PrimingCompletionFlight<F> {
+    pub fn completion(&mut self) -> &mut dyn Completion {
+        self.work.submission.completion()
+    }
+}
+
+impl<F: ProgramFamily> TargetFlight<F> {
+    /// Separate entry completion when the caller publishes this final
+    /// chunk's target result before waiting for drafter history.
+    pub(super) fn detach_priming(&mut self) -> Option<(PrimingFlight<F::HeadSubmission>, usize)> {
+        let work = self.work.priming.take()?;
+        let advances = self.work.submission.launch().advances();
+        let target = &advances[0];
+        Some((work, target.position() + target.rows()))
+    }
+}

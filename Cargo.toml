@@ -1,6 +1,6 @@
 [package]
 name = "a3s-power"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 publish = false
 authors = ["A3S Lab"]
@@ -95,6 +95,12 @@ llamacpp-mtp-fr = ["llamacpp-external-draft"]
 # builds do not require a CUDA toolchain.
 llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda", "llama-cpp-sys-2/cuda"]
 mistralrs = ["server", "dep:mistralrs"]
+magnitude = [
+    "server",
+    "dep:magnitude-engine",
+    "dep:magnitude-chat",
+    "dep:magnitude-executor",
+]
 embedded-inference = [
     "dep:candle-core",
     "dep:candle-nn",
@@ -227,6 +233,11 @@ encoding_rs = { version = "0.8", optional = true }
 
 # mistral.rs backend — pure Rust LLM inference (optional, default)
 mistralrs = { version = "0.7", optional = true }
+
+# Magnitude native engine. Pin the reviewed CLI 0.2.13 source snapshot.
+magnitude-engine = { path = "third-party/magnitude/inference/engine", optional = true }
+magnitude-chat = { path = "third-party/magnitude/inference/engine/chat", optional = true }
+magnitude-executor = { path = "third-party/magnitude/inference/engine/executor", optional = true }
 
 # Embedded model execution. Power supplies model-neutral scheduling, graph,
 # residency, integrity, and tensor primitives; model crates own architectures.

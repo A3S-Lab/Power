@@ -17,6 +17,7 @@ const NORMAL_FIELDS: &[&str] = &[
     "prompt_cache_max_entries",
     "prompt_cache_ttl_seconds",
     "worker_observation_ttl_seconds",
+    "magnitude_device",
     "spec_mode",
     "spec_draft_max",
     "spec_mtp_recurrent_snapshots",
@@ -199,6 +200,7 @@ fn power_schema() -> Schema {
     for name in [
         "host",
         "data_dir",
+        "magnitude_device",
         "spec_mode",
         "keep_alive",
         "tee_policy_mode",
@@ -1283,6 +1285,19 @@ mod tests {
             deserialize("serving_execution { profile = \"aggregated\" unexpected = true }\n")
                 .unwrap_err();
         assert!(error.to_string().contains("acl.schema.unknown_attribute"));
+    }
+
+    #[test]
+    fn magnitude_device_round_trips_when_non_default() {
+        let defaults = serialize(&PowerConfig::default()).unwrap();
+        assert!(!defaults.contains("magnitude_device"));
+        let config = PowerConfig {
+            magnitude_device: "cpu".into(),
+            ..Default::default()
+        };
+        let encoded = serialize(&config).unwrap();
+        assert!(encoded.contains("magnitude_device = \"cpu\""));
+        assert_eq!(deserialize(&encoded).unwrap().magnitude_device, "cpu");
     }
 }
 

@@ -28,7 +28,7 @@ async fn concurrent_readiness_checks_wait_for_the_healthy_owned_probe() {
         for index in 0..2 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            stream.read(&mut request).await.unwrap();
+            let _request_len = stream.read(&mut request).await.unwrap();
             if index == 0 {
                 entered_server.notify_one();
                 release_server.notified().await;

@@ -1,0 +1,15 @@
+[package]
+publish = false
+name = "seismic-vulkan"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+# The Vulkan backend of Seismic's direct native route. It is built on Linux
+# and Windows only; dependents gate it with `cfg(not(target_os = "macos"))`.
+[dependencies]
+seismic-compiler = { path = "../../compiler" }
+seismic-native-target = { path = "../../native-target" }
+ash = "=0.38.0"
+glslang = "=0.8.1"
+spirv-tools = "=0.13.3"

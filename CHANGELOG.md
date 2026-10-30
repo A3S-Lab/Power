@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-30
+
+This pre-v1 release adds the scoped Magnitude native GGUF Chat production
+profile. It is not the complete Power v1 or TEE release.
+
+### Added
+
+- Optional `magnitude` backend using the vendored Magnitude / Seismic engine for
+  in-process GGUF Chat, streaming, exact usage, native tool calls and argument
+  deltas, multi-turn tool results, JSON Object, and JSON Schema output.
+- `magnitude_device` selection with `auto`, `cpu`, `metal`, `cuda`, `vulkan`,
+  and exact Seismic selectors. Cold Prepare uses a short-lived worker; warm
+  loads reuse the model/device kernel cache. Cancellation, unload, and reload
+  are supported within the documented profile.
+- Production configuration, rollout guidance, and retained CPU / Metal
+  acceptance evidence in `docs/magnitude-backend.md`.
+
+### Changed
+
+- Release binaries now compile the `magnitude` feature and release CI runs its
+  full library test profile from an independent Power checkout.
+- The vendored source is part of the Power repository, with workspace
+  inheritance expanded so both Aster and standalone Power builds resolve it.
+- This unpublishable package no longer runs a crates.io publish job. GitHub
+  Release archives and the Homebrew formula remain the distribution path.
+
+### Boundaries
+
+- CPU and Metal were qualified with the documented model and context limits.
+  CUDA and Vulkan selectors have not passed hardware qualification.
+- Completion, embeddings, SystemOne, keyed prompt caching, images, LoRA,
+  manifest prompt overrides, confidential in-memory loading, and the strict TEE
+  profile remain unsupported by this backend.
+
 ## [0.10.0] - 2026-09-21
 
 This is the current `main` release. It is not the production `v1.0.0` tag.

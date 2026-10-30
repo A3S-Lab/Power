@@ -27,7 +27,7 @@ impl XolotlDSparkConfig {
             || !(1..=5).contains(&self.depth)
             || self.confidence_bp > 10000
             || self.evict_prompt_tokens > 1048576
-            || self.evict_prompt_tokens % 128 != 0
+            || !self.evict_prompt_tokens.is_multiple_of(128)
         {
             return Err(PowerError::Config(
                 "xolotl.dspark exceeds its admitted path, digest or speculative bounds".into(),

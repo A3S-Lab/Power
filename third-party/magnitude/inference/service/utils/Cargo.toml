@@ -1,0 +1,21 @@
+[package]
+publish = false
+name = "magnitude-service-utils"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+fs2 = { version = "0.4.3" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.149" }
+
+[dev-dependencies]
+tempfile = "3.24.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation", "Win32_Globalization", "Win32_Security",
+    "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading",
+    "Win32_System_IO", "Win32_System_Ioctl", "Win32_Storage_FileSystem",
+] }

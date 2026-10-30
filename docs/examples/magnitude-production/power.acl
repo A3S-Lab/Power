@@ -1,0 +1,21 @@
+host = "127.0.0.1"
+port = 11434
+data_dir = "/var/lib/a3s-power"
+max_loaded_models = 1
+prompt_cache_max_entries = 1
+prompt_cache_ttl_seconds = 300
+worker_observation_ttl_seconds = 120
+magnitude_device = "auto"
+spec_mode = "off"
+keep_alive = "5m"
+use_mmap = true
+use_mlock = false
+num_parallel = 1
+max_concurrent_requests = 4
+max_queued_requests = 16
+queue_timeout_ms = 2000
+
+gpu {
+  gpu_layers = -1
+  main_gpu = 0
+}

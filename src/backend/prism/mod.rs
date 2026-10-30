@@ -508,9 +508,11 @@ mod tests {
 
     #[test]
     fn dspark_profile_fails_closed_without_drafter() {
-        let mut config = PowerConfig::default();
-        config.prism_profile = Some("dspark".into());
-        config.prism_upstream = Some("http://127.0.0.1:8080".into());
+        let config = PowerConfig {
+            prism_profile: Some("dspark".into()),
+            prism_upstream: Some("http://127.0.0.1:8080".into()),
+            ..Default::default()
+        };
         let backend = PrismBackend::new(Arc::new(config));
         assert_eq!(backend.profile(), PrismProfile::Dspark);
         let err = backend.validate_profile_artifacts().unwrap_err();
@@ -536,10 +538,12 @@ mod tests {
         std::fs::write(&model_path, b"fake-prism-weights").unwrap();
 
         for mode in ["mtp", "dflash", "dflash2", "dspark", "draft-model"] {
-            let mut config = PowerConfig::default();
-            config.spec_mode = mode.into();
-            config.prism_upstream = Some("http://127.0.0.1:9".into());
-            config.prism_profile = Some("baseline".into());
+            let config = PowerConfig {
+                spec_mode: mode.into(),
+                prism_upstream: Some("http://127.0.0.1:9".into()),
+                prism_profile: Some("baseline".into()),
+                ..Default::default()
+            };
             let backend = PrismBackend::new(Arc::new(config));
             let mut manifest = sample_manifest("bonsai2-ptq1");
             manifest.format = ModelFormat::Gguf;
@@ -555,17 +559,15 @@ mod tests {
 
     #[test]
     fn dspark_profile_rejects_missing_drafter_file() {
-        let mut config = PowerConfig::default();
-        config.prism_profile = Some("dspark".into());
-        config.prism_upstream = Some("http://127.0.0.1:8080".into());
-        config.prism_drafter = Some("D:/missing/Ternary-Bonsai-2-27B-dspark-dflash.gguf".into());
+        let config = PowerConfig {
+            prism_profile: Some("dspark".into()),
+            prism_upstream: Some("http://127.0.0.1:8080".into()),
+            prism_drafter: Some("D:/missing/Ternary-Bonsai-2-27B-dspark-dflash.gguf".into()),
+            ..Default::default()
+        };
         let backend = PrismBackend::new(Arc::new(config));
         let err = backend.validate_profile_artifacts().unwrap_err();
-        assert!(
-            err.to_string().contains("prism_drafter"),
-            "got: {}",
-            err.to_string()
-        );
+        assert!(err.to_string().contains("prism_drafter"), "got: {err}");
     }
 
     #[test]
@@ -573,9 +575,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let drafter = dir.path().join("fake-dspark-dflash.gguf");
         std::fs::write(&drafter, b"fake-drafter").unwrap();
-        let mut config = PowerConfig::default();
-        config.prism_profile = Some("dspark".into());
-        config.prism_drafter = Some(drafter.display().to_string());
+        let config = PowerConfig {
+            prism_profile: Some("dspark".into()),
+            prism_drafter: Some(drafter.display().to_string()),
+            ..Default::default()
+        };
         let backend = PrismBackend::new(Arc::new(config));
         backend.validate_profile_artifacts().unwrap();
         assert!(!backend.profile().allows_cross_request_prompt_cache());

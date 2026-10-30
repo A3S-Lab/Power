@@ -1,0 +1,876 @@
+//! Execution of formed modules (§8.3–§8.7), the shape of CUDA's `direct`:
+//! batches of launches recorded into one primary command buffer and
+//! submitted to the device's queue, graphs recorded once into a secondary
+//! command buffer and replayed, and their completion and timing.
+//!
+//! Every launch reads its arguments from an argument block in upload
+//! storage: its buffer addresses, the scalar-result address, then its words.
+//! The launch's only push constant is the block's address.
+
+use crate::device::{
+    barrier, call, Device, Recording, Retired, RetiredCommand, ARGUMENT_CHUNK_BYTES,
+};
+use crate::formation::DirectModule;
+use crate::memory::{Buffer, Range};
+use ash::vk::{self, Handle};
+use seismic_compiler::errors::ExecutionError;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// One launch as issued. Its workgroup size and group memory are the
+/// pipeline's; only the group counts vary per launch.
+pub struct DirectLaunch<'a> {
+    pub module: &'a DirectModule,
+    pub function: usize,
+    /// Buffer arguments in ABI order, as `(buffer, byte offset)`.
+    pub buffers: &'a [(&'a Buffer, u64)],
+    /// The argument words, little-endian.
+    pub words: &'a [u8],
+    pub scalar_results: (&'a Buffer, u64),
+    pub groups: [u64; 3],
+}
+
+/// What fixes a launch's device work apart from the values it reads: its
+/// pipeline and group counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LaunchKind {
+    pipeline: u64,
+    groups: [u64; 3],
+}
+
+impl DirectLaunch<'_> {
+    pub fn kind(&self) -> LaunchKind {
+        LaunchKind {
+            pipeline: self.module.pipeline_handle(self.function).as_raw(),
+            groups: self.groups,
+        }
+    }
+}
+
+/// Argument blocks written into upload chunks for one command buffer.
+struct Arguments {
+    chunks: Vec<Range>,
+    /// Bytes used in the last chunk.
+    used: u64,
+}
+
+impl Arguments {
+    fn new() -> Self {
+        Self {
+            chunks: Vec::new(),
+            used: ARGUMENT_CHUNK_BYTES,
+        }
+    }
+
+    /// Write the block of `launch` and return its device address.
+    fn write(
+        &mut self,
+        device: &Device,
+        recording: &mut Recording,
+        launch: &DirectLaunch<'_>,
+    ) -> Result<u64, ExecutionError> {
+        let mut block = Vec::with_capacity((launch.buffers.len() + 1) * 8 + launch.words.len());
+        for (buffer, offset) in launch.buffers {
+            block.extend_from_slice(&(buffer.address() + offset).to_le_bytes());
+        }
+        block.extend_from_slice(
+            &(launch.scalar_results.0.address() + launch.scalar_results.1).to_le_bytes(),
+        );
+        block.extend_from_slice(launch.words);
+        let bytes = block.len() as u64;
+        if bytes > ARGUMENT_CHUNK_BYTES {
+            return Err(ExecutionError::SubmissionFailed(format!(
+                "a launch's argument block needs {bytes} bytes; a chunk holds {ARGUMENT_CHUNK_BYTES}"
+            )));
+        }
+        let start = self.used.next_multiple_of(16);
+        if start + bytes > ARGUMENT_CHUNK_BYTES {
+            self.chunks.push(device.argument_chunk(recording)?);
+            self.used = 0;
+        }
+        let start = self.used.next_multiple_of(16);
+        let chunk = self.chunks.last().expect("a chunk was taken above");
+        chunk.write_mapped(start, &block);
+        self.used = start + bytes;
+        Ok(chunk.address() + start)
+    }
+}
+
+/// Record one launch: its barrier after the previous launch's writes, the
+/// pipeline, the argument block address, the dispatch.
+unsafe fn record_launch(
+    device: &Device,
+    command: vk::CommandBuffer,
+    launch: &DirectLaunch<'_>,
+    address: u64,
+    groups: [u32; 3],
+    first: bool,
+) {
+    let raw = &device.inner.device;
+    if !first {
+        compute_barrier(raw, command);
+    }
+    raw.cmd_bind_pipeline(
+        command,
+        vk::PipelineBindPoint::COMPUTE,
+        launch.module.pipeline_handle(launch.function),
+    );
+    raw.cmd_push_constants(
+        command,
+        device.inner.layout,
+        vk::ShaderStageFlags::COMPUTE,
+        0,
+        &address.to_le_bytes(),
+    );
+    raw.cmd_dispatch(command, groups[0], groups[1], groups[2]);
+}
+
+/// Each launch follows the previous launch's writes, as on a CUDA stream.
+unsafe fn compute_barrier(raw: &ash::Device, command: vk::CommandBuffer) {
+    barrier(
+        raw,
+        command,
+        vk::PipelineStageFlags2::COMPUTE_SHADER,
+        vk::AccessFlags2::SHADER_WRITE,
+        vk::PipelineStageFlags2::COMPUTE_SHADER,
+        vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE,
+    );
+}
+
+/// The group counts of a non-empty launch, checked against the device.
+fn groups(device: &Device, launch: &DirectLaunch<'_>) -> Result<Option<[u32; 3]>, ExecutionError> {
+    if launch.groups.contains(&0) {
+        return Ok(None);
+    }
+    let limit = device.facts().limits.max_group_count;
+    let mut groups = [0u32; 3];
+    for axis in 0..3 {
+        if launch.groups[axis] > limit[axis] {
+            return Err(ExecutionError::SubmissionFailed(format!(
+                "native launch requests {} groups on axis {axis}; the device allows {}",
+                launch.groups[axis], limit[axis]
+            )));
+        }
+        groups[axis] = launch.groups[axis] as u32;
+    }
+    Ok(Some(groups))
+}
+
+fn begin(
+    device: &Device,
+    command: vk::CommandBuffer,
+    flags: vk::CommandBufferUsageFlags,
+    inheritance: Option<&vk::CommandBufferInheritanceInfo<'_>>,
+) -> Result<(), ExecutionError> {
+    let mut info = vk::CommandBufferBeginInfo::default().flags(flags);
+    if let Some(inheritance) = inheritance {
+        info = info.inheritance_info(inheritance);
+    }
+    call(
+        unsafe { device.inner.device.begin_command_buffer(command, &info) },
+        "vkBeginCommandBuffer",
+    )
+}
+
+/// Forms a [`DirectGraph`]: the launches of one submission, in order, with
+/// their argument blocks fixed, in one or more segments.
+pub struct DirectGraphBuilder {
+    device: Device,
+    /// Heap usage and held memory when recording began.
+    mark: (u64, u64),
+    /// Becomes the graph; dropping an abandoned builder retires it (and the
+    /// chunks it wrote) unsubmitted.
+    graph: Option<GraphInner>,
+    arguments: Arguments,
+    launched: bool,
+}
+
+impl DirectGraphBuilder {
+    pub fn new(device: &Device) -> Result<Self, ExecutionError> {
+        let mut builder = Self {
+            device: device.clone(),
+            mark: device.inner.unheld_mark(),
+            graph: Some(GraphInner {
+                device: device.clone(),
+                commands: Vec::new(),
+                arguments: Vec::new(),
+                last_use: AtomicU64::new(0),
+            }),
+            arguments: Arguments::new(),
+            launched: false,
+        };
+        builder.begin_segment()?;
+        Ok(builder)
+    }
+
+    fn graph(&mut self) -> &mut GraphInner {
+        self.graph.as_mut().expect("a live builder holds its graph")
+    }
+
+    fn command(&self) -> vk::CommandBuffer {
+        *self
+            .graph
+            .as_ref()
+            .expect("a live builder holds its graph")
+            .commands
+            .last()
+            .expect("a live builder has begun a segment")
+    }
+
+    /// Allocate and begin the secondary buffer of the next segment.
+    fn begin_segment(&mut self) -> Result<(), ExecutionError> {
+        let device = self.device.clone();
+        let mut recording = device.recording();
+        let command = device.command(&mut recording, vk::CommandBufferLevel::SECONDARY)?;
+        self.graph().commands.push(command);
+        let inheritance = vk::CommandBufferInheritanceInfo::default();
+        let begun = begin(
+            &device,
+            command,
+            vk::CommandBufferUsageFlags::SIMULTANEOUS_USE,
+            Some(&inheritance),
+        );
+        // Released before an error drops the builder, whose graph retires
+        // under this lock.
+        drop(recording);
+        begun
+    }
+
+    fn end_segment(&self) -> Result<(), ExecutionError> {
+        let recording = self.device.recording();
+        let ended = call(
+            unsafe { self.device.inner.device.end_command_buffer(self.command()) },
+            "vkEndCommandBuffer",
+        );
+        drop(recording);
+        ended
+    }
+
+    /// End the current segment and begin the next: launches added from now
+    /// on can be replayed apart from those added before, in their own queue
+    /// submission. Segments share the graph's argument blocks, and a
+    /// segment's first launch still follows the previous launch's writes.
+    pub fn segment(&mut self) -> Result<(), ExecutionError> {
+        self.end_segment()?;
+        self.begin_segment()
+    }
+
+    /// Append a launch after every launch added before it; an empty grid
+    /// adds nothing.
+    pub fn launch(&mut self, launch: &DirectLaunch<'_>) -> Result<(), ExecutionError> {
+        let Some(groups) = groups(&self.device, launch)? else {
+            return Ok(());
+        };
+        let mut recording = self.device.recording();
+        let address = self.arguments.write(&self.device, &mut recording, launch)?;
+        unsafe {
+            record_launch(
+                &self.device,
+                self.command(),
+                launch,
+                address,
+                groups,
+                !self.launched,
+            )
+        };
+        self.launched = true;
+        Ok(())
+    }
+
+    /// Finish recording. The device memory recording took beyond blocks
+    /// (command memory) is the graph's; the device keeps it after the graph
+    /// is dropped, for the command buffers it reuses, so it stays held.
+    pub fn instantiate(mut self) -> Result<DirectGraph, ExecutionError> {
+        self.end_segment()?;
+        let mut graph = self.graph.take().expect("a live builder holds its graph");
+        graph.arguments = std::mem::take(&mut self.arguments.chunks);
+        let device_bytes = self.device.inner.unheld_since(self.mark);
+        let inner = &self.device.inner;
+        inner.record_driver_memory(&inner.graphs, device_bytes);
+        Ok(DirectGraph {
+            inner: std::sync::Arc::new(graph),
+            device_bytes,
+        })
+    }
+}
+
+impl Drop for DirectGraphBuilder {
+    fn drop(&mut self) {
+        if let Some(graph) = &mut self.graph {
+            graph.arguments.append(&mut self.arguments.chunks);
+        }
+    }
+}
+
+/// Recorded secondary command buffers (its segments, in launch order) of
+/// launches with fixed arguments. One replay replaces its launches'
+/// individual recording.
+pub struct DirectGraph {
+    inner: std::sync::Arc<GraphInner>,
+    device_bytes: u64,
+}
+
+impl DirectGraph {
+    pub fn segments(&self) -> usize {
+        self.inner.commands.len()
+    }
+
+    /// Device memory recording the graph took beyond blocks.
+    pub fn device_bytes(&self) -> u64 {
+        self.device_bytes
+    }
+}
+
+/// Shared by the graph and the submissions replaying it, so its buffers and
+/// argument blocks outlive every replay.
+struct GraphInner {
+    device: Device,
+    commands: Vec<vk::CommandBuffer>,
+    arguments: Vec<Range>,
+    /// Timeline value of the latest submission that replays it.
+    last_use: AtomicU64,
+}
+
+impl Drop for GraphInner {
+    fn drop(&mut self) {
+        let value = self.last_use.load(Ordering::Acquire);
+        let mut arguments = std::mem::take(&mut self.arguments);
+        for command in self.commands.drain(..) {
+            self.device.retire(Retired {
+                value,
+                command: RetiredCommand::Secondary(command),
+                queries: None,
+                arguments: std::mem::take(&mut arguments),
+            });
+        }
+    }
+}
+
+/// Launches recorded into one primary command buffer and submitted to the
+/// device's queue. A leading barrier orders the batch after every earlier
+/// submission; each launch follows the previous launch's writes; a trailing
+/// barrier makes results visible to the host.
+pub struct DirectBatch {
+    device: Device,
+    command: vk::CommandBuffer,
+    queries: (vk::QueryPool, u32),
+    /// Queries written so far (the first is the batch start).
+    written: u32,
+    /// For a timed batch, per `launch` call, the query written just before
+    /// the launch (absent for an empty launch).
+    marks: Option<Vec<Option<u32>>>,
+    arguments: Arguments,
+    /// Whether a dispatch or replay has been recorded (the next one needs a
+    /// barrier).
+    launched: bool,
+    /// Graphs replayed by this batch; the submission keeps them alive and
+    /// records itself as their last use.
+    replayed: Vec<std::sync::Arc<GraphInner>>,
+    /// Host timelines the batch's queue submission waits on before it runs,
+    /// and the ones it signals once it completes, with their values.
+    waits: Vec<(vk::Semaphore, u64)>,
+    signals: Vec<(vk::Semaphore, u64)>,
+    /// Set by `commit`; an uncommitted batch returns its resources on drop.
+    committed: bool,
+}
+
+/// A timeline semaphore the host and the device's queue submissions both
+/// advance and wait on.
+pub struct HostTimeline {
+    device: Device,
+    semaphore: vk::Semaphore,
+}
+
+impl HostTimeline {
+    /// A timeline at 0.
+    pub fn new(device: &Device) -> Result<Self, ExecutionError> {
+        let mut timeline = vk::SemaphoreTypeCreateInfo::default()
+            .semaphore_type(vk::SemaphoreType::TIMELINE)
+            .initial_value(0);
+        let semaphore = call(
+            unsafe {
+                device.inner.device.create_semaphore(
+                    &vk::SemaphoreCreateInfo::default().push_next(&mut timeline),
+                    None,
+                )
+            },
+            "vkCreateSemaphore",
+        )?;
+        Ok(Self {
+            device: device.clone(),
+            semaphore,
+        })
+    }
+
+    /// Raise the timeline to `value` from the host; a value it has reached
+    /// already changes nothing.
+    ///
+    /// Host writes made before the signal are visible to the device work
+    /// that waits on `value` (`DirectBatch::wait_timeline`):
+    /// - the writes are to `HOST_COHERENT` memory (every upload allocation,
+    ///   `Memory::new`, which host-shared tensors are), so they are
+    ///   available in the host domain without `vkFlushMappedMemoryRanges`
+    ///   (spec, "Host Access to Device Memory Objects": a flush is required
+    ///   only of memory without `VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`);
+    /// - `vkSignalSemaphore`'s first synchronization scope includes every
+    ///   host operation that happened-before it (spec, "Semaphore Signaling",
+    ///   `vkSignalSemaphore`), and the waiting batch's semaphore wait
+    ///   operation's second synchronization and access scopes include every
+    ///   command of the batch and all its device memory accesses, at the
+    ///   stages of its wait mask (spec, "Semaphore Waiting"), which is
+    ///   `COMPUTE_SHADER | ALL_COMMANDS` (`Device::submit_with`).
+    pub fn signal(&self, value: u64) -> Result<(), ExecutionError> {
+        if self.value() >= value {
+            return Ok(());
+        }
+        let info = vk::SemaphoreSignalInfo::default()
+            .semaphore(self.semaphore)
+            .value(value);
+        call(
+            unsafe { self.device.inner.device.signal_semaphore(&info) },
+            "vkSignalSemaphore",
+        )
+    }
+
+    /// The value reached. A failed query reads as reached everything: the
+    /// device cannot make progress.
+    pub fn value(&self) -> u64 {
+        unsafe {
+            self.device
+                .inner
+                .device
+                .get_semaphore_counter_value(self.semaphore)
+        }
+        .unwrap_or(u64::MAX)
+    }
+
+    /// Wait at most `timeout` for the timeline to reach `value`; whether it
+    /// did.
+    pub fn wait(&self, value: u64, timeout: std::time::Duration) -> bool {
+        let semaphores = [self.semaphore];
+        let values = [value];
+        let info = vk::SemaphoreWaitInfo::default()
+            .semaphores(&semaphores)
+            .values(&values);
+        let nanoseconds = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX);
+        unsafe { self.device.inner.device.wait_semaphores(&info, nanoseconds) }.is_ok()
+            && self.value() >= value
+    }
+}
+
+impl Drop for HostTimeline {
+    /// A submission may still wait on or signal the semaphore: every one
+    /// submitted so far completes first. Precondition: every value a
+    /// submission waits on was signaled, or is signaled by one before it.
+    fn drop(&mut self) {
+        let _ = self.device.wait(self.device.submitted());
+        unsafe {
+            self.device
+                .inner
+                .device
+                .destroy_semaphore(self.semaphore, None)
+        };
+    }
+}
+
+impl DirectBatch {
+    pub fn new(device: &Device) -> Result<Self, ExecutionError> {
+        Self::create(device, 2, None)
+    }
+
+    /// A measurement batch that writes a timestamp before every launch, so
+    /// each launch's device interval is known; `launches` bounds the calls
+    /// of `launch` and `skip`. A timed batch attributes time but does not
+    /// measure production, and never replays.
+    pub fn timed(device: &Device, launches: usize) -> Result<Self, ExecutionError> {
+        let queries = u32::try_from(launches + 2)
+            .map_err(|_| ExecutionError::SubmissionFailed("too many timed launches".into()))?;
+        Self::create(device, queries, Some(Vec::with_capacity(launches)))
+    }
+
+    fn create(
+        device: &Device,
+        queries: u32,
+        marks: Option<Vec<Option<u32>>>,
+    ) -> Result<Self, ExecutionError> {
+        let mut recording = device.recording();
+        let command = device.command(&mut recording, vk::CommandBufferLevel::PRIMARY)?;
+        let pool = match device.queries(&mut recording, queries) {
+            Ok(pool) => pool,
+            Err(error) => {
+                recording.free_command(command);
+                return Err(error);
+            }
+        };
+        let mut batch = Self {
+            device: device.clone(),
+            command,
+            queries: pool,
+            written: 0,
+            marks,
+            arguments: Arguments::new(),
+            launched: false,
+            replayed: Vec::new(),
+            waits: Vec::new(),
+            signals: Vec::new(),
+            committed: false,
+        };
+        let begun = begin(
+            device,
+            command,
+            vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            None,
+        );
+        if begun.is_ok() {
+            let raw = &device.inner.device;
+            unsafe {
+                raw.cmd_reset_query_pool(command, pool.0, 0, pool.1);
+                barrier(
+                    raw,
+                    command,
+                    vk::PipelineStageFlags2::ALL_COMMANDS,
+                    vk::AccessFlags2::MEMORY_WRITE,
+                    vk::PipelineStageFlags2::COMPUTE_SHADER | vk::PipelineStageFlags2::TRANSFER,
+                    vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
+                );
+            }
+            batch.timestamp();
+        }
+        // Released before an error drops the batch, which retires under it.
+        drop(recording);
+        begun.map(|()| batch)
+    }
+
+    /// Write the next timestamp; the recording lock is held.
+    fn timestamp(&mut self) -> u32 {
+        let query = self.written;
+        unsafe {
+            self.device.inner.device.cmd_write_timestamp2(
+                self.command,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                self.queries.0,
+                query,
+            )
+        };
+        self.written += 1;
+        query
+    }
+
+    /// The batch's queue submission waits, before any of its work, until
+    /// `timeline` reaches `value`: the host gate. Precondition: nothing is
+    /// recorded in the batch yet.
+    pub fn wait_timeline(&mut self, timeline: &HostTimeline, value: u64) {
+        assert!(
+            !self.launched,
+            "DirectBatch::wait_timeline precondition: the batch records nothing yet"
+        );
+        self.waits.push((timeline.semaphore, value));
+    }
+
+    /// `timeline` reaches `value` once the batch's queue submission
+    /// completes. Precondition: the batch records nothing after this.
+    pub fn signal_timeline(&mut self, timeline: &HostTimeline, value: u64) {
+        self.signals.push((timeline.semaphore, value));
+    }
+
+    /// Record a launch that does no device work (inactive, or an empty
+    /// grid): nothing is recorded, and a timed batch keeps its place with no
+    /// interval.
+    pub fn skip(&mut self) {
+        if let Some(marks) = &mut self.marks {
+            marks.push(None);
+        }
+    }
+
+    pub fn launch(&mut self, launch: &DirectLaunch<'_>) -> Result<(), ExecutionError> {
+        let Some(groups) = groups(&self.device, launch)? else {
+            self.skip();
+            return Ok(());
+        };
+        let device = self.device.clone();
+        let mut recording = device.recording();
+        let address = self.arguments.write(&device, &mut recording, launch)?;
+        if self.marks.is_some() {
+            if self.launched {
+                unsafe { compute_barrier(&device.inner.device, self.command) };
+            }
+            let mark = self.timestamp();
+            self.marks
+                .as_mut()
+                .expect("a timed batch has marks")
+                .push(Some(mark));
+            unsafe { record_launch(&device, self.command, launch, address, groups, true) };
+        } else {
+            unsafe {
+                record_launch(
+                    &device,
+                    self.command,
+                    launch,
+                    address,
+                    groups,
+                    !self.launched,
+                )
+            };
+        }
+        self.launched = true;
+        Ok(())
+    }
+
+    /// Execute every launch of `graph` in its order.
+    pub fn replay(&mut self, graph: &DirectGraph) -> Result<(), ExecutionError> {
+        self.execute(graph, &graph.inner.commands)
+    }
+
+    /// Execute the launches of one segment of `graph`.
+    pub fn replay_segment(
+        &mut self,
+        graph: &DirectGraph,
+        segment: usize,
+    ) -> Result<(), ExecutionError> {
+        self.execute(graph, std::slice::from_ref(&graph.inner.commands[segment]))
+    }
+
+    fn execute(
+        &mut self,
+        graph: &DirectGraph,
+        commands: &[vk::CommandBuffer],
+    ) -> Result<(), ExecutionError> {
+        assert!(
+            self.marks.is_none(),
+            "DirectBatch::replay precondition: a timed batch times each launch"
+        );
+        let _recording = self.device.recording();
+        let raw = &self.device.inner.device;
+        unsafe {
+            if self.launched {
+                compute_barrier(raw, self.command);
+            }
+            raw.cmd_execute_commands(self.command, commands);
+        }
+        self.launched = true;
+        if !self
+            .replayed
+            .iter()
+            .any(|replayed| std::sync::Arc::ptr_eq(replayed, &graph.inner))
+        {
+            self.replayed.push(graph.inner.clone());
+        }
+        Ok(())
+    }
+
+    /// Submit without waiting.
+    pub fn commit(mut self) -> Result<DirectSubmission, ExecutionError> {
+        let device = self.device.clone();
+        let recording = device.recording();
+        let raw = &device.inner.device;
+        unsafe {
+            barrier(
+                raw,
+                self.command,
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::AccessFlags2::SHADER_WRITE,
+                vk::PipelineStageFlags2::HOST | vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::HOST_READ
+                    | vk::AccessFlags2::MEMORY_READ
+                    | vk::AccessFlags2::MEMORY_WRITE,
+            );
+        }
+        let end = self.timestamp();
+        let ended = call(
+            unsafe { raw.end_command_buffer(self.command) },
+            "vkEndCommandBuffer",
+        );
+        drop(recording);
+        ended?;
+        let value = self
+            .device
+            .submit_with(self.command, &self.waits, &self.signals)?;
+        for graph in &self.replayed {
+            graph.last_use.fetch_max(value, Ordering::AcqRel);
+        }
+        self.committed = true;
+        Ok(DirectSubmission {
+            device: self.device.clone(),
+            value,
+            retired: Some(Retired {
+                value,
+                command: RetiredCommand::Primary(self.command),
+                queries: Some(self.queries),
+                arguments: std::mem::take(&mut self.arguments.chunks),
+            }),
+            _graphs: std::mem::take(&mut self.replayed),
+            end,
+            marks: self.marks.take(),
+        })
+    }
+}
+
+impl Drop for DirectBatch {
+    fn drop(&mut self) {
+        if !self.committed {
+            // Nothing was submitted: everything is reusable at once.
+            self.device.retire(Retired {
+                value: 0,
+                command: RetiredCommand::Primary(self.command),
+                queries: Some(self.queries),
+                arguments: std::mem::take(&mut self.arguments.chunks),
+            });
+        }
+    }
+}
+
+/// A batch's device timestamps paired with the host clock: the origin that
+/// places device times on the host timeline. Recorded on the idle queue,
+/// waited on, and paired with the host clock read just after.
+pub struct TimelineAnchor {
+    ticks: u64,
+    host_seconds: f64,
+    period: f64,
+    mask: u64,
+}
+
+impl TimelineAnchor {
+    pub fn record(
+        device: &Device,
+        host_clock: impl FnOnce() -> f64,
+    ) -> Result<Self, ExecutionError> {
+        let batch = DirectBatch::new(device)?;
+        let submission = batch.commit()?;
+        submission.finish()?;
+        let host_seconds = host_clock();
+        let ticks = submission.timestamps(2)?[1];
+        let limits = device.facts().limits;
+        Ok(Self {
+            ticks,
+            host_seconds,
+            period: limits.timestamp_period,
+            mask: mask(limits.timestamp_valid_bits),
+        })
+    }
+
+    fn place(&self, ticks: u64) -> f64 {
+        let elapsed = ticks.wrapping_sub(self.ticks) & self.mask;
+        // A tick before the anchor wraps to a huge value: take it negative.
+        let signed = if elapsed > self.mask / 2 {
+            -(((self.ticks.wrapping_sub(ticks)) & self.mask) as f64)
+        } else {
+            elapsed as f64
+        };
+        self.host_seconds + signed * self.period / 1e9
+    }
+}
+
+fn mask(bits: u32) -> u64 {
+    if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    }
+}
+
+/// Submitted launches, observed through the device's timeline semaphore.
+pub struct DirectSubmission {
+    device: Device,
+    value: u64,
+    /// Returned to the device for reuse when this submission is dropped.
+    retired: Option<Retired>,
+    /// The graphs it replays, alive until it is.
+    _graphs: Vec<std::sync::Arc<GraphInner>>,
+    /// Query of the batch's end timestamp (the start is query 0).
+    end: u32,
+    marks: Option<Vec<Option<u32>>>,
+}
+
+impl DirectSubmission {
+    pub fn is_complete(&self) -> bool {
+        self.device.completed() >= self.value
+    }
+
+    pub fn wait_complete(&self) {
+        let _ = self.device.wait(self.value);
+    }
+
+    pub fn finish(&self) -> Result<(), ExecutionError> {
+        self.device.wait(self.value)
+    }
+
+    /// The first `count` timestamps of the completed batch.
+    fn timestamps(&self, count: u32) -> Result<Vec<u64>, ExecutionError> {
+        self.finish()?;
+        let (pool, _) = self
+            .retired
+            .as_ref()
+            .and_then(|retired| retired.queries)
+            .expect("a live submission holds its queries");
+        let mut values = vec![0u64; count as usize];
+        call(
+            unsafe {
+                self.device.inner.device.get_query_pool_results(
+                    pool,
+                    0,
+                    &mut values,
+                    vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
+                )
+            },
+            "vkGetQueryPoolResults",
+        )?;
+        Ok(values)
+    }
+
+    /// Device execution time between the batch's start and end timestamps.
+    pub fn device_seconds(&self) -> Result<f64, ExecutionError> {
+        let values = self.timestamps(self.end + 1)?;
+        let limits = self.device.facts().limits;
+        let ticks =
+            values[self.end as usize].wrapping_sub(values[0]) & mask(limits.timestamp_valid_bits);
+        Ok(ticks as f64 * limits.timestamp_period / 1e9)
+    }
+
+    /// The completed batch's device interval on the anchor's host clock.
+    pub fn device_interval(&self, anchor: &TimelineAnchor) -> Result<(f64, f64), ExecutionError> {
+        let values = self.timestamps(self.end + 1)?;
+        Ok((
+            anchor.place(values[0]),
+            anchor.place(values[self.end as usize]),
+        ))
+    }
+
+    /// For a timed batch, each `launch` call's device interval on the
+    /// anchor's host clock, in launch order (`None` for an empty launch). A
+    /// launch ends where the next recorded launch (or the batch) ends.
+    /// `None` for a production batch.
+    pub fn launch_intervals(
+        &self,
+        anchor: &TimelineAnchor,
+    ) -> Result<Option<Vec<Option<(f64, f64)>>>, ExecutionError> {
+        let Some(marks) = &self.marks else {
+            return Ok(None);
+        };
+        let values = self.timestamps(self.end + 1)?;
+        let mut intervals = Vec::with_capacity(marks.len());
+        for (index, mark) in marks.iter().enumerate() {
+            let Some(mark) = mark else {
+                intervals.push(None);
+                continue;
+            };
+            let end = marks[index + 1..]
+                .iter()
+                .flatten()
+                .next()
+                .copied()
+                .unwrap_or(self.end);
+            intervals.push(Some((
+                anchor.place(values[*mark as usize]),
+                anchor.place(values[end as usize]),
+            )));
+        }
+        Ok(Some(intervals))
+    }
+}
+
+impl Drop for DirectSubmission {
+    fn drop(&mut self) {
+        if let Some(retired) = self.retired.take() {
+            self.device.retire(retired);
+        }
+    }
+}

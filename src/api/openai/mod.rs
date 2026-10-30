@@ -119,13 +119,13 @@ pub(super) fn unsupported_local_response_format_for_backend(
     match response_format.r#type.as_str() {
         "text" => None,
         "json_object" => match backend_name {
-            "llama.cpp" | "picolm" => None,
+            "llama.cpp" | "picolm" | "magnitude" => None,
             _ => Some(format!(
                 "backend '{backend_name}' does not support response_format.type json_object"
             )),
         },
         "json_schema" => match backend_name {
-            "llama.cpp" => {
+            "llama.cpp" | "magnitude" => {
                 let local_format = local_backend_response_format(response_format);
                 match crate::backend::json_schema::format_to_gbnf(&local_format) {
                     Ok(Some(_)) => None,
@@ -134,7 +134,7 @@ pub(super) fn unsupported_local_response_format_for_backend(
                             .to_string(),
                     ),
                     Err(e) => Some(format!(
-                        "backend 'llama.cpp' cannot enforce response_format.type json_schema: {e}"
+                        "backend '{backend_name}' cannot enforce response_format.type json_schema: {e}"
                     )),
                 }
             }
@@ -456,6 +456,31 @@ mod tests {
         .unwrap();
 
         assert!(message.contains("does not support response_format.type json_object"));
+    }
+
+    #[test]
+    fn test_magnitude_accepts_json_object_and_enforceable_json_schema() {
+        let json_object = response_format(serde_json::json!({"type": "json_object"}));
+        assert!(unsupported_local_response_format_for_backend(
+            &ModelFormat::Gguf,
+            "magnitude",
+            Some(&json_object)
+        )
+        .is_none());
+
+        let json_schema = response_format(serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "Answer",
+                "schema": {"type": "object"}
+            }
+        }));
+        assert!(unsupported_local_response_format_for_backend(
+            &ModelFormat::Gguf,
+            "magnitude",
+            Some(&json_schema)
+        )
+        .is_none());
     }
 
     #[test]

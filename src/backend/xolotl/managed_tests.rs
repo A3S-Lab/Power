@@ -55,6 +55,21 @@ fn managed_ready_proof_refuses_unknown_facts_and_payloads() {
     )
     .is_err());
 }
+
+#[test]
+fn managed_ready_proof_reads_the_complete_wire_identity() {
+    let proof = serde_json::from_slice::<Ready>(
+        br#"{"schema":"a3s.power.xolotl.ready.v2","nonce":"n","model_name":"m","engine_pid":123,"context_tokens":4096,"dspark_active":true}"#,
+    )
+    .unwrap();
+    assert_eq!(proof.schema, "a3s.power.xolotl.ready.v2");
+    assert_eq!(proof.nonce, "n");
+    assert_eq!(proof.model_name, "m");
+    assert_eq!(proof.engine_pid, 123);
+    assert_eq!(proof.context_tokens, 4096);
+    assert!(proof.dspark_active);
+}
+
 #[cfg(target_os = "linux")]
 fn process(script: &str) -> ManagedEngine {
     use std::os::unix::process::CommandExt;
@@ -108,7 +123,7 @@ async fn managed_probe_refuses_an_http_200_for_the_wrong_or_unloaded_model() {
         let serve = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            stream.read(&mut request).await.unwrap();
+            let _request_len = stream.read(&mut request).await.unwrap();
             stream.write_all(response.as_bytes()).await.unwrap();
         });
         let mut engine = process("exec sleep 60");
@@ -130,7 +145,7 @@ fn managed_local_index_must_resolve_to_the_exact_cloud_admitted_uuid() {
     let other = "GPU-aeb13ea2-62f0-f454-47a2-d4cabe61b14d".to_string();
     let row = format!("0, {selected}");
     assert_eq!(
-        bind_device_identities(&[0], &[selected.clone()], &row).unwrap(),
+        bind_device_identities(&[0], std::slice::from_ref(&selected), &row).unwrap(),
         selected
     );
     for csv in [
@@ -138,7 +153,7 @@ fn managed_local_index_must_resolve_to_the_exact_cloud_admitted_uuid() {
         format!("0, {selected}\n0, {selected}"),
         format!("0, {selected}\n1, {selected}"),
     ] {
-        assert!(bind_device_identities(&[0], &[selected.clone()], &csv).is_err());
+        assert!(bind_device_identities(&[0], std::slice::from_ref(&selected), &csv).is_err());
     }
     assert!(bind_device_identities(&[1], &[selected], &row).is_err());
 }

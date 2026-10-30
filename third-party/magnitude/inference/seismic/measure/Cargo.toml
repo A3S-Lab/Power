@@ -1,0 +1,17 @@
+[package]
+publish = false
+name = "seismic-measure"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+# Measuring work on a device, generically: the timing session, held
+# sustained clocks, the sampling statistics and the one stopping rule,
+# deadlines, and records with their store trait
+# (specs/26-10-18/device-topology.md §2.6). It depends on no device or other
+# Seismic crate: what it times is a `Work`.
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.149" }
+sha2 = { version = "0.10.9" }
+tempfile = "3.24.0"

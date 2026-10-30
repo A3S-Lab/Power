@@ -1,0 +1,14 @@
+[package]
+publish = false
+name = "seismic-cli"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[[bin]]
+name = "seismic"
+path = "src/main.rs"
+
+[dependencies]
+seismic-lang = { path = "../lang" }
+seismic-std = { path = "../../seismic-std" }

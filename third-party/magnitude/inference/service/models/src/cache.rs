@@ -1,0 +1,500 @@
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::{fs, io};
+
+use getrandom::fill;
+use magnitude_service_contracts::models::{
+    ModelAssessment, ModelCapabilities, ModelId, ParsedModelId,
+};
+use magnitude_service_utils::file_cache::{read_json, read_object, write_json_atomic};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
+
+use crate::header_cache::{HEADER_CAPACITY_BYTES, HEADER_EVICTION_GRACE, HeaderCache};
+
+/// One completed profile assessment. Its evidence key carries the complete assessment identity
+/// (environment, bundle, profile and depths), so a read never revalidates it.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CachedModelAssessment {
+    pub capabilities: ModelCapabilities,
+    pub template_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<magnitude_service_contracts::models::ModelFingerprint>,
+    pub profile: ModelAssessment,
+}
+
+/// Presentation already established by candidate inspection, before the weights are installed.
+/// This is derived engine data, never a declaration supplied by the client.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CachedModelPresentation {
+    pub display_name: String,
+    pub variant_label: String,
+    pub variant_of: Option<ModelId>,
+    pub license: Option<String>,
+}
+
+const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug)]
+pub enum ModelIndexKind {
+    Artifact,
+    InventoryMetadata,
+    GgufInspection,
+    HuggingFaceRepositorySnapshot,
+    HuggingFaceBaseModels,
+    HuggingFaceGgufHeader,
+    HuggingFaceSearchShape,
+    HuggingFaceWeightSample,
+    RecommendableModelCatalog,
+    ModelAssessment,
+    CandidateClassification,
+    CandidatePresentation,
+    OllamaHubFile,
+}
+
+impl ModelIndexKind {
+    fn relative(self) -> &'static str {
+        match self {
+            Self::Artifact => "artifacts",
+            Self::InventoryMetadata => "inventory/model-metadata",
+            Self::GgufInspection => "inspections/gguf",
+            Self::HuggingFaceRepositorySnapshot => "sources/hugging-face/repositories",
+            Self::HuggingFaceBaseModels => "sources/hugging-face/base-models",
+            Self::HuggingFaceGgufHeader => "sources/hugging-face/gguf-headers",
+            Self::HuggingFaceSearchShape => "sources/hugging-face/search-shapes",
+            Self::HuggingFaceWeightSample => "sources/hugging-face/weight-samples",
+            Self::RecommendableModelCatalog => "catalogs/recommendable-models",
+            Self::ModelAssessment => "assessments/model-configurations",
+            Self::CandidateClassification => "inspections/candidate-classification",
+            Self::CandidatePresentation => "inspections/candidate-presentation",
+            Self::OllamaHubFile => "sources/hugging-face/ollama-files",
+        }
+    }
+}
+
+/// The sole filesystem namespace owner for recomputable model data.
+#[derive(Clone, Debug)]
+pub struct ModelCache {
+    root: PathBuf,
+    headers: HeaderCache,
+}
+
+pub struct ModelCacheWorkspace {
+    path: PathBuf,
+    temporary: Option<tempfile::TempDir>,
+}
+
+impl ModelCacheWorkspace {
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ModelCacheWorkspace {
+    fn drop(&mut self) {
+        if self.temporary.is_none() {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+impl ModelCache {
+    #[must_use]
+    pub fn new(cache_root: &Path) -> Self {
+        Self {
+            root: cache_root.to_path_buf(),
+            headers: HeaderCache::new(cache_root, HEADER_CAPACITY_BYTES, HEADER_EVICTION_GRACE),
+        }
+    }
+
+    pub(crate) fn read_inventory(&self) -> Option<Map<String, Value>> {
+        read_object(&self.inventory_path(), MAX_INDEX_BYTES)
+    }
+
+    pub(crate) fn write_inventory<T: Serialize>(&self, value: &T) {
+        write_json_atomic(
+            &self.inventory_path(),
+            &self.lock_path("inventory"),
+            value,
+            MAX_INDEX_BYTES,
+        );
+    }
+
+    pub fn read_index<T: DeserializeOwned>(
+        &self,
+        kind: ModelIndexKind,
+        evidence: &str,
+    ) -> Option<T> {
+        read_json(&self.index_path(kind, evidence), MAX_INDEX_BYTES)
+    }
+
+    pub fn write_index<T: Serialize>(&self, kind: ModelIndexKind, evidence: &str, value: &T) {
+        let digest = evidence_digest(evidence);
+        write_json_atomic(
+            &self.index_path_for_digest(kind, &digest),
+            &self.lock_path(&format!("index-{digest}")),
+            value,
+            MAX_INDEX_BYTES,
+        );
+    }
+
+    pub fn read_load_timing_store<T: DeserializeOwned>(&self) -> Option<T> {
+        read_json(&self.load_timing_path(), MAX_INDEX_BYTES)
+    }
+
+    pub fn write_load_timing_store<T: Serialize>(&self, value: &T) {
+        write_json_atomic(
+            &self.load_timing_path(),
+            &self.lock_path("load-timings"),
+            value,
+            MAX_INDEX_BYTES,
+        );
+    }
+
+    pub fn read_model_assessment(&self, evidence: &str) -> Option<CachedModelAssessment> {
+        self.read_index(ModelIndexKind::ModelAssessment, evidence)
+    }
+
+    pub fn write_model_assessment(&self, evidence: &str, assessment: &CachedModelAssessment) {
+        self.write_index(ModelIndexKind::ModelAssessment, evidence, assessment);
+    }
+
+    /// A version's inspected identity at an immutable Hub commit. Changing the release catalog
+    /// invalidates its family mapping; no repository name is used to guess a family on a miss.
+    pub fn read_model_presentation(
+        &self,
+        model_id: &ModelId,
+        commit: &str,
+    ) -> Option<CachedModelPresentation> {
+        self.read_index::<CachedModelPresentation>(
+            ModelIndexKind::CandidatePresentation,
+            &presentation_evidence(model_id, commit),
+        )
+        .filter(|presentation| {
+            !presentation.display_name.trim().is_empty()
+                && !presentation.variant_label.trim().is_empty()
+                && presentation
+                    .variant_of
+                    .as_ref()
+                    .is_none_or(|id| matches!(id.parsed(), ParsedModelId::Catalog { .. }))
+        })
+    }
+
+    pub fn write_model_presentation(
+        &self,
+        model_id: &ModelId,
+        commit: &str,
+        presentation: &CachedModelPresentation,
+    ) {
+        self.write_index(
+            ModelIndexKind::CandidatePresentation,
+            &presentation_evidence(model_id, commit),
+            presentation,
+        );
+    }
+
+    /// The engine's compiled-kernel store, shared by loads and tuning.
+    #[must_use]
+    pub fn kernel_directory(&self) -> PathBuf {
+        self.root.join("kernels")
+    }
+
+    /// The GGUF header with this sha256, or `None` when the header cache doesn't hold it (see
+    /// `header_cache`): its caller fetches it again.
+    #[must_use]
+    pub fn read_header(&self, digest: &str) -> Option<Vec<u8>> {
+        self.headers.read(digest)
+    }
+
+    /// Whether the header cache holds this header, marking it used for the read that follows;
+    /// `read_header` still verifies it.
+    #[must_use]
+    pub fn has_header(&self, digest: &str) -> bool {
+        self.headers.contains(digest)
+    }
+
+    /// Stores a GGUF header and returns its sha256. When the header cache has outgrown its
+    /// capacity, `pinned` names the headers it must keep.
+    pub fn write_header(&self, header: &[u8], pinned: impl FnOnce() -> BTreeSet<String>) -> String {
+        self.headers.write(header, pinned)
+    }
+
+    pub fn workspace(&self) -> io::Result<ModelCacheWorkspace> {
+        let mut random = [0_u8; 16];
+        fill(&mut random).map_err(io::Error::other)?;
+        let name = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = self.root.join(".work").join(name);
+        if fs::create_dir_all(&path).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).is_err() {
+                    let _ = fs::remove_dir_all(&path);
+                } else {
+                    return Ok(ModelCacheWorkspace {
+                        path,
+                        temporary: None,
+                    });
+                }
+            }
+            #[cfg(not(unix))]
+            return Ok(ModelCacheWorkspace {
+                path,
+                temporary: None,
+            });
+        }
+        let temporary = tempfile::Builder::new()
+            .prefix("magnitude-model-preview-")
+            .tempdir()?;
+        Ok(ModelCacheWorkspace {
+            path: temporary.path().to_path_buf(),
+            temporary: Some(temporary),
+        })
+    }
+
+    fn inventory_path(&self) -> PathBuf {
+        self.root.join("indexes/inventory.json")
+    }
+
+    fn load_timing_path(&self) -> PathBuf {
+        self.root.join("indexes/runtime/load-timings.json")
+    }
+
+    fn index_path(&self, kind: ModelIndexKind, evidence: &str) -> PathBuf {
+        self.index_path_for_digest(kind, &evidence_digest(evidence))
+    }
+
+    fn index_path_for_digest(&self, kind: ModelIndexKind, digest: &str) -> PathBuf {
+        self.root
+            .join("indexes")
+            .join(kind.relative())
+            .join(format!("{digest}.json"))
+    }
+
+    fn lock_path(&self, name: &str) -> PathBuf {
+        self.root.join(".locks").join(format!("{name}.lock"))
+    }
+}
+
+fn presentation_evidence(model_id: &ModelId, commit: &str) -> String {
+    static CATALOG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let catalog = CATALOG.get_or_init(|| {
+        format!(
+            "{}:{}",
+            crate::catalog::catalog_source_digest(),
+            crate::catalog::catalog_lock_digest()
+        )
+    });
+    format!("candidate-presentation-v1:{catalog}:{model_id}@{commit}")
+}
+
+fn evidence_digest(evidence: &str) -> String {
+    hex_sha256(evidence.as_bytes())
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use magnitude_service_contracts::MemoryDomainId;
+    use magnitude_service_contracts::models::{
+        MemoryAssessment, ModelAssessmentId, ModelCapabilities, ModelPerformance,
+        ModelReasoningCapabilities, PerformanceEvidence, ServingProfile,
+    };
+
+    fn profile(context_length: u32) -> ServingProfile {
+        ServingProfile { context_length }
+    }
+
+    #[test]
+    fn inspected_presentation_is_pinned_to_commit_and_selected_file_across_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ModelCache::new(directory.path());
+        let q4: ModelId = "hf:publisher/Qwen-Finetune-GGUF/model-Q4_K_M.gguf"
+            .parse()
+            .unwrap();
+        let q8: ModelId = "hf:publisher/Qwen-Finetune-GGUF/model-Q8_0.gguf"
+            .parse()
+            .unwrap();
+        let presentation = CachedModelPresentation {
+            display_name: "Qwen Finetune".to_owned(),
+            variant_label: "Q4_K_M".to_owned(),
+            variant_of: Some("qwen3.6-35b-a3b:gguf:q4".parse().unwrap()),
+            license: None,
+        };
+        let commit = "c".repeat(40);
+        cache.write_model_presentation(&q4, &commit, &presentation);
+        let reopened = ModelCache::new(directory.path());
+        assert_eq!(
+            reopened.read_model_presentation(&q4, &commit),
+            Some(presentation.clone())
+        );
+        assert_eq!(reopened.read_model_presentation(&q8, &commit), None);
+        assert_eq!(reopened.read_model_presentation(&q4, &"d".repeat(40)), None);
+        cache.write_model_presentation(
+            &q4,
+            &commit,
+            &CachedModelPresentation {
+                variant_of: Some(q8),
+                ..presentation
+            },
+        );
+        assert_eq!(
+            reopened.read_model_presentation(&q4, &commit),
+            None,
+            "a family must be a validated catalog identity"
+        );
+    }
+
+    #[test]
+    fn namespaces_are_typed_and_fail_as_misses() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ModelCache::new(directory.path());
+
+        cache.write_index(ModelIndexKind::InventoryMetadata, "model evidence", &42_u64);
+        assert_eq!(
+            cache.read_index::<u64>(ModelIndexKind::InventoryMetadata, "model evidence"),
+            Some(42)
+        );
+        let bytes = b"header";
+        let digest = cache.write_header(bytes, BTreeSet::new);
+        assert_eq!(digest, hex_sha256(bytes));
+        assert_eq!(
+            cache.read_header(&digest).as_deref(),
+            Some(bytes.as_slice())
+        );
+        assert!(cache.read_header(&"0".repeat(64)).is_none());
+
+        let index_path = cache.index_path(ModelIndexKind::InventoryMetadata, "model evidence");
+        fs::write(&index_path, b"corrupt").unwrap();
+        assert_eq!(
+            cache.read_index::<u64>(ModelIndexKind::InventoryMetadata, "model evidence"),
+            None
+        );
+        cache.write_index(ModelIndexKind::InventoryMetadata, "model evidence", &7_u64);
+        assert_eq!(
+            cache.read_index::<u64>(ModelIndexKind::InventoryMetadata, "model evidence"),
+            Some(7)
+        );
+
+        fs::write(
+            directory.path().join("blobs/gguf-headers").join(&digest),
+            b"corrupt",
+        )
+        .unwrap();
+        assert!(cache.read_header(&digest).is_none());
+    }
+
+    #[test]
+    fn workspaces_are_private_and_removed_on_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ModelCache::new(directory.path());
+        let path = {
+            let workspace = cache.workspace().unwrap();
+            let path = workspace.path().to_path_buf();
+            assert!(path.is_dir());
+            path
+        };
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn fitting_target_with_non_fitting_sibling_profiles_survives_cache_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let fits = ModelAssessment::Fits {
+            profile: profile(50_000),
+            assessment_id: ModelAssessmentId("fits-assessment".to_owned()),
+            memory: vec![MemoryAssessment {
+                memory_domain_id: MemoryDomainId::system(),
+                capacity_bytes: 100,
+                required_bytes: 50,
+                compatibility_reserve_bytes: 0,
+                remaining_bytes: 50,
+            }],
+            performance: ModelPerformance::Estimated {
+                samples: vec![PerformanceEvidence {
+                    context_tokens: 50_000,
+                    estimated_tokens_per_second: 2.0,
+                }],
+            },
+            projector: magnitude_service_contracts::models::ProjectorVerdict::None,
+            drafter: magnitude_service_contracts::models::DrafterVerdict::None,
+        };
+        let does_not_fit = ModelAssessment::DoesNotFit {
+            profile: profile(100_000),
+            assessment_id: ModelAssessmentId("non-fit-assessment".to_owned()),
+            memory: vec![MemoryAssessment {
+                memory_domain_id: MemoryDomainId::system(),
+                capacity_bytes: 100,
+                required_bytes: 101,
+                compatibility_reserve_bytes: 0,
+                remaining_bytes: -1,
+            }],
+            limiting_resource: "system memory".to_owned(),
+            deficit_bytes: 1,
+            projector: magnitude_service_contracts::models::ProjectorVerdict::None,
+            drafter: magnitude_service_contracts::models::DrafterVerdict::None,
+        };
+
+        let initial = ModelCache::new(directory.path());
+        let capabilities = ModelCapabilities {
+            vision: false,
+            tools: true,
+            structured_output: true,
+            reasoning: ModelReasoningCapabilities {
+                supported: false,
+                efforts: Vec::new(),
+                default_effort: None,
+            },
+        };
+        let fits = CachedModelAssessment {
+            capabilities: capabilities.clone(),
+            template_fingerprint: "template".to_owned(),
+            fingerprint: None,
+            profile: fits,
+        };
+        let does_not_fit = CachedModelAssessment {
+            capabilities,
+            template_fingerprint: fits.template_fingerprint.clone(),
+            fingerprint: None,
+            profile: does_not_fit,
+        };
+        initial.write_model_assessment("fits evidence", &fits);
+        initial.write_model_assessment("non-fit evidence", &does_not_fit);
+
+        let reopened = ModelCache::new(directory.path());
+
+        assert_eq!(reopened.read_model_assessment("fits evidence"), Some(fits));
+        assert_eq!(
+            reopened.read_model_assessment("non-fit evidence"),
+            Some(does_not_fit),
+        );
+    }
+
+    #[test]
+    fn workspace_falls_back_when_the_cache_root_is_unusable() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache_root = directory.path().join("blocked-cache");
+        fs::write(&cache_root, b"not a directory").unwrap();
+        let cache = ModelCache::new(&cache_root);
+        let path = {
+            let workspace = cache.workspace().unwrap();
+            let path = workspace.path().to_path_buf();
+            assert!(path.is_dir());
+            assert!(!path.starts_with(directory.path()));
+            path
+        };
+        assert!(!path.exists());
+    }
+}

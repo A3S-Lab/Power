@@ -1150,35 +1150,39 @@ mod tests {
 
         let mut disabled = manifest_config.clone();
         disabled.xolotl.enabled = false;
-        assert!(plan(&disabled, &manifest, &[device.clone()])
+        assert!(plan(&disabled, &manifest, std::slice::from_ref(&device))
             .unwrap_err()
             .to_string()
             .contains("xolotl.enabled"));
 
         let mut missing_bin = manifest_config.clone();
         missing_bin.xolotl.bin = None;
-        assert!(plan(&missing_bin, &manifest, &[device.clone()])
+        assert!(plan(&missing_bin, &manifest, std::slice::from_ref(&device))
             .unwrap_err()
             .to_string()
             .contains("ds41_generate"));
 
         let mut missing_engram = manifest_config.clone();
         missing_engram.xolotl.engram = None;
-        assert!(plan(&missing_engram, &manifest, &[device.clone()])
-            .unwrap_err()
-            .to_string()
-            .contains("engram"));
+        assert!(
+            plan(&missing_engram, &manifest, std::slice::from_ref(&device))
+                .unwrap_err()
+                .to_string()
+                .contains("engram")
+        );
 
         let mut missing_rank = manifest_config.clone();
         missing_rank.xolotl.rank = None;
-        assert!(plan(&missing_rank, &manifest, &[device.clone()])
-            .unwrap_err()
-            .to_string()
-            .contains("rank-1017"));
+        assert!(
+            plan(&missing_rank, &manifest, std::slice::from_ref(&device))
+                .unwrap_err()
+                .to_string()
+                .contains("rank-1017")
+        );
 
         let mut split_left_on = manifest_config.clone();
         split_left_on.xolotl.layer_split = REQUIRED_LAYER_SPLIT.into();
-        let message = plan(&split_left_on, &manifest, &[device.clone()])
+        let message = plan(&split_left_on, &manifest, std::slice::from_ref(&device))
             .unwrap_err()
             .to_string();
         assert!(message.contains("layer_split none"), "{message}");
@@ -1186,7 +1190,7 @@ mod tests {
 
         let mut eight_gpus = manifest_config.clone();
         eight_gpus.xolotl.gpus = vec![0, 1, 2, 3, 4, 5, 6, 7];
-        assert!(plan(&eight_gpus, &manifest, &[device.clone()])
+        assert!(plan(&eight_gpus, &manifest, std::slice::from_ref(&device))
             .unwrap_err()
             .to_string()
             .contains("exactly one gpu index"));
@@ -1196,7 +1200,7 @@ mod tests {
         ud.xolotl.model = Some(ud_path.display().to_string());
         let mut ud_manifest = manifest.clone();
         ud_manifest.path = ud_path;
-        assert!(plan(&ud, &ud_manifest, &[device.clone()])
+        assert!(plan(&ud, &ud_manifest, std::slice::from_ref(&device))
             .unwrap_err()
             .to_string()
             .contains("XQ"));

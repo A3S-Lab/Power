@@ -1,0 +1,317 @@
+//! Logical operation grouping for one native physical executor domain.
+//!
+//! The physical domain owns programs, resident state, in-flight advances and
+//! reconciliation. This module only keeps compatible operations together and
+//! identifies the lane the service must submit next.
+
+use magnitude_executor::{
+    Completion, CompletionWake, DomainError, DomainRequirements, GroupKey, HeadFlight,
+    NativeFamily, Operation, PendingOperationOutcome, PrimingCompletionFlight, ProgramFamily,
+    ReservedResources, StateBindings, SubmitFailure, TargetContinuation, TargetFlight,
+    VisionFlight,
+};
+pub use magnitude_executor::{ExecutorDomain, ResumeState};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DomainLane {
+    Target,
+    Head,
+    Encoder,
+}
+
+impl DomainLane {
+    fn for_operation(operation: &Operation) -> Self {
+        match operation {
+            Operation::Forward { .. } => Self::Target,
+            Operation::Head { .. } => Self::Head,
+            Operation::Encode { .. } => Self::Encoder,
+        }
+    }
+}
+
+pub struct OperationGroup {
+    lane: DomainLane,
+    key: GroupKey,
+    operations: Vec<Operation>,
+}
+
+impl OperationGroup {
+    pub fn lane(&self) -> DomainLane {
+        self.lane
+    }
+    pub fn key(&self) -> &GroupKey {
+        &self.key
+    }
+    pub fn operations(&self) -> &[Operation] {
+        &self.operations
+    }
+    pub fn into_operations(self) -> Vec<Operation> {
+        self.operations
+    }
+
+    /// Keep a capacity-limited launch's last request for a later physical
+    /// launch without changing its logical round or operation order.
+    pub fn split_last(mut self) -> Result<(Self, Self), Self> {
+        if self.operations.len() < 2 {
+            return Err(self);
+        }
+        let last = self
+            .operations
+            .pop()
+            .expect("group has at least two operations");
+        let tail = Self {
+            lane: self.lane,
+            key: self.key.clone(),
+            operations: vec![last],
+        };
+        Ok((self, tail))
+    }
+}
+
+/// Whether `operation` is a prompt chunk with a drafter entry drafted behind
+/// it, which launches alone (its entry reads the chunk's own features).
+fn primes(operation: &Operation) -> bool {
+    matches!(operation, Operation::Forward { prime: Some(_), .. })
+}
+
+/// Preserve input order while coalescing adjacent compatible operations. A
+/// request may occupy only one slot in a group; another operation starts a new
+/// group so dependencies never leap across an intervening lane. The domain
+/// validates every operation when a group is reserved.
+pub fn group<F: ProgramFamily>(
+    domain: &ExecutorDomain<F>,
+    operations: Vec<Operation>,
+) -> Vec<OperationGroup> {
+    let mut groups: Vec<OperationGroup> = Vec::new();
+    for operation in operations {
+        let lane = DomainLane::for_operation(&operation);
+        let key = domain.group_key(&operation);
+        let request = operation.request();
+        let alone = primes(&operation);
+        let existing = groups.last_mut().filter(|group| {
+            group.lane == lane
+                && group.key == key
+                && group.lane != DomainLane::Encoder
+                && !alone
+                && !group.operations.iter().any(primes)
+                && group
+                    .operations
+                    .iter()
+                    .all(|item| item.request() != request)
+        });
+        if let Some(existing) = existing {
+            existing.operations.push(operation);
+        } else {
+            groups.push(OperationGroup {
+                lane,
+                key,
+                operations: vec![operation],
+            });
+        }
+    }
+    groups
+}
+
+pub enum DomainFlight<F: ProgramFamily = NativeFamily> {
+    Target(TargetFlight<F>),
+    Head(HeadFlight<F>),
+    Vision(VisionFlight<F>),
+    Priming(PrimingCompletionFlight<F>),
+}
+
+impl<F: ProgramFamily> DomainFlight<F> {
+    pub fn completion(&mut self) -> &mut dyn Completion {
+        match self {
+            Self::Target(flight) => flight.completion(),
+            Self::Head(flight) => flight.completion(),
+            Self::Vision(flight) => flight.completion(),
+            Self::Priming(flight) => flight.completion(),
+        }
+    }
+}
+
+/// A finished flight's outcomes, still owning their physical transactions.
+pub enum FlightOutcomes {
+    Target(Vec<PendingOperationOutcome>),
+    Head(Vec<PendingOperationOutcome>),
+    Vision(PendingOperationOutcome),
+    Priming(magnitude_executor::RequestId, std::time::Duration),
+}
+
+/// Reserve and submit one group. Submission moves the bindings into the
+/// flight and registers `wake` with its completion; a refusal returns them.
+pub fn submit_group<F: ProgramFamily>(
+    domain: &mut ExecutorDomain<F>,
+    bindings: StateBindings<F>,
+    group: &OperationGroup,
+    wake: CompletionWake,
+) -> Result<DomainFlight<F>, SubmitFailure<F>> {
+    let mut flight = submit(domain, bindings, group)?;
+    flight.completion().notify(wake);
+    Ok(flight)
+}
+
+fn submit<F: ProgramFamily>(
+    domain: &mut ExecutorDomain<F>,
+    mut bindings: StateBindings<F>,
+    group: &OperationGroup,
+) -> Result<DomainFlight<F>, SubmitFailure<F>> {
+    let operations = group.operations.as_slice();
+    let resources = match domain.reserve(&mut bindings, operations) {
+        Ok(reservation) => reservation.into_resources(),
+        Err(error) => return Err(SubmitFailure::Refused(error, bindings)),
+    };
+    let submitted = match (group.lane, resources) {
+        (DomainLane::Target, ReservedResources::Target(reservation)) => domain
+            .submit_target(bindings, operations, reservation)
+            .map(DomainFlight::Target),
+        (DomainLane::Head, ReservedResources::Head(graph_workspace, graph_output, advances)) => {
+            domain
+                .submit_head(
+                    bindings,
+                    operations,
+                    graph_workspace,
+                    graph_output,
+                    advances,
+                )
+                .map(DomainFlight::Head)
+        }
+        (DomainLane::Encoder, ReservedResources::Vision(workspace, output)) => {
+            let [operation @ Operation::Encode { .. }] = operations else {
+                return Err(SubmitFailure::Refused(
+                    DomainError::Input("vision group must contain one encode operation".into()),
+                    bindings,
+                ));
+            };
+            domain
+                .submit_vision(bindings, operation, workspace, output)
+                .map(DomainFlight::Vision)
+        }
+        _ => {
+            return Err(SubmitFailure::Refused(
+                DomainError::Invariant(magnitude_executor::InvariantError {
+                    context: "reserved domain submission",
+                    detail: "reserved resource lane differs from operation group".into(),
+                }),
+                bindings,
+            ));
+        }
+    };
+    submitted.map_err(|failure| match failure {
+        SubmitFailure::Refused(DomainError::Capacity(capacity), bindings) => {
+            SubmitFailure::Refused(
+                DomainError::Invariant(magnitude_executor::InvariantError {
+                    context: "reserved domain submission",
+                    detail: format!("reserved capacity became unavailable: {capacity}"),
+                }),
+                bindings,
+            )
+        }
+        other => other,
+    })
+}
+
+/// Finish a completed flight: its outcomes, and the bindings it held.
+pub fn finish<F: ProgramFamily>(
+    domain: &mut ExecutorDomain<F>,
+    flight: DomainFlight<F>,
+    operations: &[Operation],
+) -> Result<(FlightOutcomes, TargetContinuation<F>), DomainError> {
+    match flight {
+        DomainFlight::Target(flight) => {
+            // A finishing prompt chunk knows one fewer successor token
+            // than it has rows. Its target result can publish independently
+            // of the already submitted history entry.
+            let finishing = matches!(operations, [Operation::Forward {
+                kind: magnitude_executor::WorkKind::Prefill, tokens, prime: Some(prime), ..
+            }] if prime.tokens.len() + 1 == tokens.len());
+            domain
+                .finish_target_for_publication(flight, finishing)
+                .map(|(outcomes, continuation)| (FlightOutcomes::Target(outcomes), continuation))
+        }
+        DomainFlight::Head(flight) => domain.finish_head(flight).map(|(outcomes, bindings)| {
+            (
+                FlightOutcomes::Head(outcomes),
+                TargetContinuation::Ready(bindings),
+            )
+        }),
+        DomainFlight::Vision(flight) => domain.finish_vision(flight).map(|(outcome, bindings)| {
+            (
+                FlightOutcomes::Vision(outcome),
+                TargetContinuation::Ready(bindings),
+            )
+        }),
+        DomainFlight::Priming(flight) => {
+            domain
+                .finish_priming(flight)
+                .map(|(request, duration, bindings)| {
+                    (
+                        FlightOutcomes::Priming(request, duration),
+                        TargetContinuation::Ready(bindings),
+                    )
+                })
+        }
+    }
+}
+
+pub fn requirements<F: ProgramFamily>(
+    domain: &ExecutorDomain<F>,
+    bindings: &StateBindings<F>,
+    group: &OperationGroup,
+) -> Result<DomainRequirements, DomainError> {
+    domain.requirements(bindings, &group.operations)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use magnitude_executor::{
+        CommittedClass, Demand, ExecutableKind, ProgramIdentity, RequestId, TokenId, WorkKind,
+    };
+
+    #[test]
+    fn capacity_split_preserves_request_order_and_launch_identity() {
+        let key = GroupKey {
+            program_identity: ProgramIdentity::new("target").unwrap(),
+            executable: ExecutableKind::Target,
+            commitment: CommittedClass::AllCommitted,
+            draft_width: None,
+        };
+        let operation = |id| Operation::Forward {
+            request: RequestId(id),
+            kind: WorkKind::Decode,
+            tokens: vec![TokenId(1)],
+            position: 0,
+            conditioning: None,
+            demand: Demand::NONE,
+            select: Vec::new(),
+            committed: 1,
+            prime: None,
+        };
+        let group = OperationGroup {
+            lane: DomainLane::Target,
+            key: key.clone(),
+            operations: vec![operation(1), operation(2), operation(3)],
+        };
+        let (leading, trailing) = group.split_last().ok().unwrap();
+        assert_eq!(leading.key(), &key);
+        assert_eq!(trailing.key(), &key);
+        assert_eq!(
+            leading
+                .operations()
+                .iter()
+                .map(Operation::request)
+                .collect::<Vec<_>>(),
+            vec![RequestId(1), RequestId(2)]
+        );
+        assert_eq!(
+            trailing
+                .operations()
+                .iter()
+                .map(Operation::request)
+                .collect::<Vec<_>>(),
+            vec![RequestId(3)]
+        );
+        assert!(trailing.split_last().is_err());
+    }
+}

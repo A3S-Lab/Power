@@ -1,0 +1,24 @@
+[package]
+publish = false
+name = "seismic"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+seismic-lang = { path = "../lang" }
+seismic-compiler = { path = "../compiler" }
+seismic-runtime = { path = "../runtime" }
+seismic-topology = { path = "../topology" }
+seismic-measure = { path = "../measure" }
+seismic-native-cpu = { path = "../native-cpu" }
+serde = { version = "=1.0.229", features = ["derive"] }
+seismic-std = { path = "../../seismic-std" }
+sha2 = "0.10"
+self_cell = "1"
+
+[features]
+# Offline formation coverage of native implementations (`seismic::coverage`).
+coverage = ["seismic-runtime/coverage"]
+# The recorded machines (`seismic::fixtures::recorded`), for other crates' tests.
+fixtures = ["seismic-topology/fixtures"]

@@ -606,8 +606,10 @@ mod tests {
         let message = disabled.load(&manifest).await.unwrap_err().to_string();
         assert!(message.contains("xolotl.enabled"));
 
-        let mut speculative = PowerConfig::default();
-        speculative.spec_mode = "mtp".into();
+        let mut speculative = PowerConfig {
+            spec_mode: "mtp".into(),
+            ..Default::default()
+        };
         speculative.xolotl.enabled = true;
         let backend = XolotlBackend::new(Arc::new(speculative)).with_devices(eight_h200());
         let message = backend.load(&manifest).await.unwrap_err().to_string();

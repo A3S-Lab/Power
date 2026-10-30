@@ -1,0 +1,33 @@
+[project]
+name = "magnitude-evaluation"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "magnitude-fixtures",
+  "magnitude-references",
+  "magnitude-bench",
+  "magnitude-rig",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["fixtures", "references", "bench", "rig"]
+
+[tool.uv.sources]
+magnitude-fixtures = { workspace = true }
+magnitude-references = { workspace = true }
+magnitude-bench = { workspace = true }
+magnitude-rig = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=9.1.1", "pytest-asyncio>=1"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

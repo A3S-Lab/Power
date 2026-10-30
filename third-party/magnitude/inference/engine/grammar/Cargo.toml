@@ -1,0 +1,12 @@
+[package]
+publish = false
+name = "magnitude-grammar"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+magnitude-generation = { path = "../generation" }
+llguidance = { version = "=1.8.0", default-features = false, features = ["lark", "ahash"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"

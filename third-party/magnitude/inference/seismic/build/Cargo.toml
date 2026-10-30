@@ -1,0 +1,12 @@
+[package]
+publish = false
+name = "seismic-build"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+seismic-lang = { path = "../lang" }
+seismic-std = { path = "../../seismic-std" }
+seismic-native-cpu = { path = "../native-cpu" }
+sha2 = "=0.11.0"

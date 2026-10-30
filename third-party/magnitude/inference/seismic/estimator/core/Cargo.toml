@@ -1,0 +1,11 @@
+[package]
+publish = false
+name = "seismic-estimator"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+seismic-ir = { path = "../../ir" }
+seismic-lang = { path = "../../lang" }
+sha2 = "=0.11.0"

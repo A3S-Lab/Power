@@ -1,0 +1,30 @@
+[package]
+publish = false
+name = "magnitude-family-common"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[features]
+# The catalog header loader for family tests.
+catalog-headers = ["dep:serde_json"]
+
+[dependencies]
+magnitude-artifacts = { path = "../../artifacts" }
+magnitude-family-contracts = { path = "../contracts" }
+# Header floats parse to the values GGUF stores, whatever else the build unifies.
+serde_json = { version = "1.0.149", optional = true, features = ["float_roundtrip"] }
+
+[dev-dependencies]
+magnitude-family-common = { path = ".", features = ["catalog-headers"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.149" }
+sha2 = "=0.11.0"
+magnitude-family-dflash = { path = "../dflash" }
+magnitude-family-gemma4 = { path = "../gemma4" }
+magnitude-family-lfm2 = { path = "../lfm2" }
+magnitude-family-llama = { path = "../llama" }
+magnitude-family-muse-glimmer = { path = "../muse_glimmer" }
+magnitude-family-nemotron-h = { path = "../nemotron_h" }
+magnitude-family-qwen35 = { path = "../qwen35" }
+magnitude-family-qwen4exp = { path = "../qwen4exp" }

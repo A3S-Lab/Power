@@ -175,14 +175,7 @@ impl Backend for ProxyBackend {
                     }
                 }
             }
-            if done_reason.is_none() {
-                let _ = tx
-                    .send(Err(PowerError::InferenceFailed(
-                        "proxy chat stream ended without a finish reason".into(),
-                    )))
-                    .await;
-                return;
-            }
+            let done_reason = done_reason.or_else(|| Some("stop".to_string()));
             let completed_tool_calls = match tool_calls.complete() {
                 Ok(calls) => calls,
                 Err(e) => {

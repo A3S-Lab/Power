@@ -466,13 +466,13 @@ pub struct XolotlTuning {
 impl XolotlTuning {
     pub fn validate(&self) -> Result<()> {
         if !(4096..=1_048_576).contains(&self.context_tokens)
-            || self.context_tokens % 256 != 0
+            || !self.context_tokens.is_multiple_of(256)
             || !(1..=256).contains(&self.cpu_threads)
             || self.arena_gib > 192
             || !(256..=8192).contains(&self.prompt_batch)
-            || self.prompt_batch % 256 != 0
+            || !self.prompt_batch.is_multiple_of(256)
             || !(64..=1024).contains(&self.prefill_chunk)
-            || self.prefill_chunk % 64 != 0
+            || !self.prefill_chunk.is_multiple_of(64)
             || self.prefill_chunk > self.prompt_batch
             || self.pcie_bp > 10_000
             || self.tier_batch_pcie_bp > 10_000
@@ -589,6 +589,11 @@ pub struct PowerConfig {
     /// GPU acceleration settings
     #[serde(default)]
     pub gpu: GpuConfig,
+
+    /// Device selected by the Magnitude engine: auto, cpu, metal, cuda,
+    /// vulkan, or an exact Seismic device selector.
+    #[serde(default = "default_magnitude_device")]
+    pub magnitude_device: String,
 
     /// NVIDIA GPU confidential-computing evidence binding settings.
     #[serde(default)]
@@ -885,6 +890,10 @@ fn default_keep_alive() -> String {
     "5m".to_string()
 }
 
+fn default_magnitude_device() -> String {
+    "auto".to_string()
+}
+
 fn default_spec_mode() -> String {
     "auto".to_string()
 }
@@ -1053,6 +1062,7 @@ impl Default for PowerConfig {
             worker_observation_ttl_seconds: default_worker_observation_ttl_seconds(),
             serving_execution: crate::serving::ServingExecutionProfile::default(),
             gpu: GpuConfig::default(),
+            magnitude_device: default_magnitude_device(),
             gpu_attestation: GpuAttestationConfig::default(),
             spec_mode: default_spec_mode(),
             spec_draft_max: None,

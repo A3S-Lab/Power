@@ -1,0 +1,276 @@
+// attention_output: the output projection of the gated attention rows
+// plus the F32 residual.
+#define KERNEL_W0 SEISMIC_OUTPUT_WEIGHT
+#include "lib/projection/projection.h"
+#include "lib/projection/packing.h"
+
+typedef element::Act activation;
+// The output weight's operand rows (the gated rows, or NVFP4 operands): the
+// GEMV row classes form them while staging, the stage launch into the
+// scratch every other form reads.
+constant constexpr bool NVFP4 = projection::OperandRecipe<packets::W0_OPERANDS_NVFP4>::NVFP4;
+typedef projection::operands<NVFP4> Operands;
+
+#define ATTENTION_OUTPUT_ARGUMENTS                                                      \
+    device const float *hidden [[buffer(SEISMIC_BUFFER_HIDDEN)]],                       \
+    device const float *inject [[buffer(SEISMIC_BUFFER_INJECT)]],                       \
+    device const uchar *gated [[buffer(SEISMIC_BUFFER_GATED)]],                         \
+    device uchar *staged [[buffer(SEISMIC_BUFFER_SCRATCH_STAGED)]],                     \
+    device const uchar *output_weight [[buffer(SEISMIC_BUFFER_OUTPUT_WEIGHT)]],         \
+    device float *result [[buffer(SEISMIC_RESULT_0_BUFFER)]],                           \
+    device float *partials [[buffer(SEISMIC_BUFFER_SCRATCH_PARTIALS)]],                 \
+    device float *small_partials [[buffer(SEISMIC_BUFFER_SCRATCH_SMALL_PARTIALS)]],     \
+    device uchar *fragments [[buffer(SEISMIC_BUFFER_SCRATCH_FRAGMENTS)]],               \
+    device float *packed [[buffer(SEISMIC_BUFFER_SCRATCH_PACKED)]],                     \
+    device half *token_factors [[buffer(SEISMIC_BUFFER_SCRATCH_TOKEN_FACTORS)]],        \
+    device half *weight_factors [[buffer(SEISMIC_BUFFER_SCRATCH_WEIGHT_FACTORS)]],      \
+    device float *token_scales [[buffer(SEISMIC_BUFFER_SCRATCH_TOKEN_SCALES)]],         \
+    device float *weight_scales [[buffer(SEISMIC_BUFFER_SCRATCH_WEIGHT_SCALES)]],       \
+    device const float *output_scale [[buffer(SEISMIC_BUFFER_OUTPUT_SCALE)]],           \
+    device const float *output_bound [[buffer(SEISMIC_BUFFER_OUTPUT_BOUND)]],           \
+    constant ulong *seismic_words [[buffer(SEISMIC_BUFFER_WORDS)]]
+
+// `gated` is [M, Q, W] and canonical, so a row is Q*W contiguous values.
+// `raw` is the gated rows; `in` the rows every form past the GEMV reads.
+#define ATTENTION_OUTPUT_OPERANDS                                                       \
+    const uint k = uint(SEISMIC_DIM_Q * SEISMIC_DIM_W);                                 \
+    const projection::Plain<activation, projection::AllRows> raw{gated, SEISMIC_GATED_STRIDE_0, \
+        SEISMIC_GATED_STRIDE_2, k, {}};                                                 \
+    const projection::Plain<activation, projection::AllRows> in = NVFP4                 \
+        ? projection::Plain<activation, projection::AllRows>{staged, k, 1, k, {}}       \
+        : raw;                                                                          \
+    ATTENTION_OUTPUT_EPILOGUE;                                                          \
+    projection::Weights<packets::W0> w{output_weight, KERNEL_W0_LAYOUT(k), k}
+
+// The residual join: a plain residual, or the scatter into each
+// hyper-connection stream (`scatter`), after the weight's second-level
+// scale where it has one.
+typedef projection::OutputOf<activation, projection::AllRows, SEISMIC_DIM_SN, SEISMIC_DIM_IN != 0> output_join;
+#define ATTENTION_OUTPUT_EPILOGUE                                                       \
+    const auto out = projection::scaling<(SEISMIC_DIM_OS != 0)>::wrap(                  \
+        output_join::make(result, SEISMIC_RESULT_0_STRIDE_0,                            \
+            SEISMIC_RESULT_0_STRIDE_1, hidden, SEISMIC_HIDDEN_STRIDE_0, SEISMIC_HIDDEN_STRIDE_1, {}, \
+            inject, SEISMIC_INJECT_STRIDE_0, uint(SEISMIC_DIM_D)),                      \
+        projection::scale_factor(output_scale, SEISMIC_DIM_OS, 0, 0), 1.0f)
+
+// The GEMV of a launch that serves COUNT (ONE, SEVERAL) rows.
+#define ATTENTION_OUTPUT_GEMV(ROWS, LANES, COUNT)                                       \
+    ATTENTION_OUTPUT_OPERANDS;                                                          \
+    uint rows = uint(SEISMIC_DIM_M);                                                    \
+    PROJECTION_OPERANDS_SHARED(globals, NVFP4);                                         \
+    const auto x = Operands::rows(raw, rows, k, globals, simdgroups, sg, lane);         \
+    PROJECTION_FOR_##COUNT##_ROWS(rows,                                                 \
+        projection::gemv_runtime<packets::W0, ROWS, MAXM, LANES>(                       \
+            x, out, w, rows, uint(SEISMIC_DIM_D), k, tile, shared, simdgroups, sg, lane))
+
+// One row.
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_GEMV
+template <uint ROWS, uint LANES>
+kernel void attention_output_gemv(ATTENTION_OUTPUT_ARGUMENTS,
+    threadgroup uchar *shared [[threadgroup(0)]],
+    uint tile [[threadgroup_position_in_grid]],
+    uint simdgroups [[simdgroups_per_threadgroup]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    ATTENTION_OUTPUT_GEMV(ROWS, LANES, ONE);
+}
+#endif
+
+// Three rows up to BATCH_FROM: the same GEMV under this launch's mapping.
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_GEMV_ROWS
+template <uint ROWS, uint LANES>
+kernel void attention_output_gemv_rows(ATTENTION_OUTPUT_ARGUMENTS,
+    threadgroup uchar *shared [[threadgroup(0)]],
+    uint tile [[threadgroup_position_in_grid]],
+    uint simdgroups [[simdgroups_per_threadgroup]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    ATTENTION_OUTPUT_GEMV(ROWS, LANES, SEVERAL);
+}
+#endif
+
+// Two rows: the same GEMV under this launch's mapping.
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_GEMV_PAIR
+template <uint ROWS, uint LANES>
+kernel void attention_output_gemv_pair(ATTENTION_OUTPUT_ARGUMENTS,
+    threadgroup uchar *shared [[threadgroup(0)]],
+    uint tile [[threadgroup_position_in_grid]],
+    uint simdgroups [[simdgroups_per_threadgroup]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    ATTENTION_OUTPUT_GEMV(ROWS, LANES, PAIR);
+}
+#endif
+
+// The gated rows as NVFP4 operands into `staged`, one row a threadgroup.
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_STAGE
+kernel void attention_output_stage(ATTENTION_OUTPUT_ARGUMENTS,
+    uint item [[threadgroup_position_in_grid]],
+    uint thread_index [[thread_index_in_threadgroup]]) {
+    PROJECTION_NORMALIZE_SHARED(maxima);
+    ATTENTION_OUTPUT_OPERANDS;
+    projection::operands<true>::form<256>(raw, item, staged, k, maxima, thread_index);
+}
+#endif
+
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_BATCH
+template <uint BATCH_ROWS, uint BATCH_PARTS>
+kernel void attention_output_batch(ATTENTION_OUTPUT_ARGUMENTS,
+    threadgroup uchar *shared [[threadgroup(0)]],
+    uint tile [[threadgroup_position_in_grid]],
+    uint simdgroups [[simdgroups_per_threadgroup]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    ATTENTION_OUTPUT_OPERANDS;
+    if constexpr (projection::matrix_codes<packets::W0>::available && SEISMIC_DIM_Q * SEISMIC_DIM_W % 256 == 0) {
+        projection::gemv_matrix<packets::W0, BATCH_PARTS>(in, out, w,
+            uint(SEISMIC_DIM_M), uint(SEISMIC_DIM_D), k, tile, shared, simdgroups, sg, lane);
+        return;
+    }
+    if (tile * simdgroups * BATCH_ROWS * 8u >= uint(SEISMIC_DIM_D))
+        return;
+    projection::gemv_batch_runtime<packets::W0, BATCH_ROWS>(in, out, w,
+        uint(SEISMIC_DIM_M), uint(SEISMIC_DIM_D), k, tile, shared, simdgroups, sg, lane);
+}
+#endif
+
+#define ATTENTION_OUTPUT_GEMM(TM, TN, SPLIT, PARTIALS)                                  \
+    PROJECTION_GEMM_SHARED(shared, TM, TN);                                             \
+    ATTENTION_OUTPUT_OPERANDS;                                                          \
+    const uint m = uint(SEISMIC_DIM_M), n = uint(SEISMIC_DIM_D);                        \
+    if (SPLIT == 1)                                                                     \
+        projection::gemm<packets::W0, TM, TN>(in, out, w, m, n, k, tile.y, tile.x, shared, sg, lane); \
+    else                                                                                \
+        projection::gemm_part<packets::W0, TM, TN>(in, PARTIALS, w, m, n, k, SPLIT, tile.z, tile.y, tile.x, \
+            shared, sg, lane)
+
+// 17..64 rows: the fixed small-row tile and split.
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_GEMM_SMALL
+kernel void attention_output_gemm_small(ATTENTION_OUTPUT_ARGUMENTS,
+    uint3 tile [[threadgroup_position_in_grid]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    ATTENTION_OUTPUT_GEMM(projection::small_tile_m, projection::small_tile_n, projection::small_split,
+        small_partials);
+}
+#endif
+
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_FINALIZE_SMALL
+kernel void attention_output_finalize_small(ATTENTION_OUTPUT_ARGUMENTS,
+    uint index [[thread_position_in_grid]]) {
+    ATTENTION_OUTPUT_OPERANDS;
+    projection::gemm_reduce(out, small_partials, uint(SEISMIC_DIM_M), uint(SEISMIC_DIM_D), projection::small_split,
+        index);
+}
+#endif
+
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_GEMM
+template <uint TILE_M, uint TILE_N>
+kernel void attention_output_gemm(ATTENTION_OUTPUT_ARGUMENTS,
+    uint3 tile [[threadgroup_position_in_grid]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    ATTENTION_OUTPUT_GEMM(TILE_M, TILE_N, uint(SEISMIC_RUNTIME_SPLIT), partials);
+}
+#endif
+
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_FINALIZE
+kernel void attention_output_finalize(ATTENTION_OUTPUT_ARGUMENTS,
+    uint index [[thread_position_in_grid]]) {
+    ATTENTION_OUTPUT_OPERANDS;
+    projection::gemm_reduce(out, partials, uint(SEISMIC_DIM_M), uint(SEISMIC_DIM_D),
+        uint(SEISMIC_RUNTIME_SPLIT), index);
+}
+#endif
+
+// The TALL form past 64 rows: the gated rows in the tall GEMM's order, then
+// its tiles.
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_RELAYOUT
+kernel void attention_output_relayout(ATTENTION_OUTPUT_ARGUMENTS,
+    uint item [[thread_position_in_grid]]) {
+    ATTENTION_OUTPUT_OPERANDS;
+    projection::tall_relayout(in, fragments, uint(SEISMIC_DIM_M), k, item);
+}
+#endif
+
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_TALL
+template <uint TALL_M, uint TALL_K, uint STAGERS>
+kernel void attention_output_tall(ATTENTION_OUTPUT_ARGUMENTS,
+    uint3 tile [[threadgroup_position_in_grid]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    PROJECTION_GEMM_TALL_SHARED(shared, TALL_K);
+    ATTENTION_OUTPUT_OPERANDS;
+    projection::gemm_tall<packets::W0, TALL_M, TALL_K, STAGERS>(projection::tall_operand(in, fragments), out, w,
+        uint(SEISMIC_DIM_M), uint(SEISMIC_DIM_D), k, tile.y, tile.x, shared, sg, lane);
+}
+#endif
+
+// The PACK form past 64 rows: the gated rows as integer codes, two rows
+// packed per operand element, the weights' block scales and biases, then the
+// packed tiles.
+#define ATTENTION_OUTPUT_PACKING_SCRATCH \
+    const projection::packing_scratch scratch{packed, token_factors, token_scales, weight_factors, weight_scales}
+
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_PACK
+// RESIDUE: the operand's residue width for weights with residue bits.
+template <uint RESIDUE>
+kernel void attention_output_pack(ATTENTION_OUTPUT_ARGUMENTS,
+    uint pairs [[threadgroup_position_in_grid]],
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    if constexpr (!projection::packing_codes<packets::W0>::available)
+        return;
+    threadgroup float4 peaks[8];
+    ATTENTION_OUTPUT_OPERANDS;
+    ATTENTION_OUTPUT_PACKING_SCRATCH;
+    typedef projection::packing_codes<packets::W0> coded;
+    constexpr uint BOUNDS = SEISMIC_DIM_OB != 0 ? 1 : 0;
+    const projection::packing_bounds<BOUNDS> bounds{{output_bound}};
+    projection::packing_operand<coded::centre, coded::folds, (coded::residue != 0 ? RESIDUE : 0), BOUNDS>(in,
+        scratch, bounds,
+        uint(SEISMIC_DIM_M), k, pairs, peaks, thread_index, sg, lane);
+}
+#endif
+
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_PACK_COEFFICIENTS
+kernel void attention_output_pack_coefficients(ATTENTION_OUTPUT_ARGUMENTS,
+    uint row [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    if constexpr (!projection::packing_codes<packets::W0>::available)
+        return;
+    ATTENTION_OUTPUT_OPERANDS;
+    ATTENTION_OUTPUT_PACKING_SCRATCH;
+    projection::packing_coefficients(w, scratch, uint(SEISMIC_DIM_D), k, row, lane);
+}
+#endif
+
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_PACKED
+template <uint RESIDUE, uint PACK_TOKENS, uint WEIGHTS_AHEAD>
+kernel void attention_output_packed(ATTENTION_OUTPUT_ARGUMENTS,
+    uint tile [[threadgroup_position_in_grid]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    if constexpr (!projection::packing_codes<packets::W0>::available)
+        return;
+    ATTENTION_OUTPUT_OPERANDS;
+    ATTENTION_OUTPUT_PACKING_SCRATCH;
+    const uint m = uint(SEISMIC_DIM_M);
+    projection::gemm_packed<packets::W0, RESIDUE, PACK_TOKENS, WEIGHTS_AHEAD>(out, w, scratch, m,
+        (m + 127u) / 128u * 128u, uint(SEISMIC_DIM_D), k, tile * projection::packing_simdgroups + sg, lane);
+}
+#endif
+
+// PACK with weights that have no packed path: the staged tiles of the
+// default form, with its results.
+#ifdef SEISMIC_FORMING_ATTENTION_OUTPUT_UNPACKED
+kernel void attention_output_unpacked(ATTENTION_OUTPUT_ARGUMENTS,
+    uint3 tile [[threadgroup_position_in_grid]],
+    uint sg [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    if constexpr (projection::packing_codes<packets::W0>::available)
+        return;
+    ATTENTION_OUTPUT_GEMM(64, 64, 1, partials);
+}
+#endif

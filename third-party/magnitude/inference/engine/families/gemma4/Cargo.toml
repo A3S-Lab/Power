@@ -1,0 +1,14 @@
+[package]
+publish = false
+name = "magnitude-family-gemma4"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+magnitude-artifacts = { path = "../../artifacts" }
+magnitude-family-common = { path = "../common" }
+magnitude-family-contracts = { path = "../contracts" }
+
+[dev-dependencies]
+magnitude-family-common = { path = "../common", features = ["catalog-headers"] }

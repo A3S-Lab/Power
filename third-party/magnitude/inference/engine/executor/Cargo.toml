@@ -1,0 +1,46 @@
+[package]
+publish = false
+name = "magnitude-executor"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+libc = "0.2"
+magnitude-artifacts = { path = "../artifacts" }
+magnitude-batching = { path = "../batching" }
+magnitude-family-contracts = { path = "../families/contracts" }
+magnitude-kernels = { path = "../kernels" }
+magnitude-state = { path = "../state" }
+seismic = { path = "../../seismic/api" }
+serde = { version = "=1.0.229", features = ["derive"] }
+# Persisted precision policies and objective weights retain their exact f64 identity.
+serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
+sha2 = "=0.11.0"
+
+[features]
+# Development-only tuning pin for bit-exact measurement runs
+# (`native::tuning::pinned`). Enabled only through `magnitude-engine`'s
+# `pinned-tuning` feature by `magnitude-harness`; never by a served engine.
+pinned-tuning = []
+# Development-only tuning survey (`native::tuning::survey`): every admissible
+# configuration of every tuned entry is measured and recorded for replaying
+# the search. Enabled only through `magnitude-engine`'s `tuning-survey`
+# feature by `magnitude-harness`; never by a served engine.
+tuning-survey = []
+
+# The catalog's families and headers, for the assessment terms of every
+# catalog target (`assessment::catalog`).
+[dev-dependencies]
+magnitude-family-common = { path = "../families/common", features = ["catalog-headers"] }
+magnitude-family-dflash = { path = "../families/dflash" }
+magnitude-family-gemma4 = { path = "../families/gemma4" }
+magnitude-family-lfm2 = { path = "../families/lfm2" }
+magnitude-family-llama = { path = "../families/llama" }
+magnitude-family-muse-glimmer = { path = "../families/muse_glimmer" }
+magnitude-family-nemotron-h = { path = "../families/nemotron_h" }
+magnitude-family-qwen35 = { path = "../families/qwen35" }
+magnitude-family-qwen4exp = { path = "../families/qwen4exp" }
+# The recorded machines' topologies, for fit and assessment over the spec's
+# situations (`platform::policy`, `planning::assessment`).
+seismic = { path = "../../seismic/api", features = ["fixtures"] }

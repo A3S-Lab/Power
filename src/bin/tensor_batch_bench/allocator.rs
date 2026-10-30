@@ -111,11 +111,13 @@ fn increase_live_bytes(bytes: u64) {
     if bytes == 0 {
         return;
     }
-    let previous = LIVE_BYTES
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            Some(current.saturating_add(bytes))
-        })
-        .unwrap_or_else(|current| current);
+    let previous = a3s_power::atomic_fetch_update!(
+        LIVE_BYTES,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+        |current: u64| Some(current.saturating_add(bytes))
+    )
+    .unwrap_or_else(|current| current);
     PEAK_LIVE_BYTES.fetch_max(previous.saturating_add(bytes), Ordering::Relaxed);
 }
 
@@ -123,7 +125,10 @@ fn decrease_live_bytes(bytes: u64) {
     if bytes == 0 {
         return;
     }
-    let _ = LIVE_BYTES.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-        Some(current.saturating_sub(bytes))
-    });
+    let _ = a3s_power::atomic_fetch_update!(
+        LIVE_BYTES,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+        |current: u64| Some(current.saturating_sub(bytes))
+    );
 }

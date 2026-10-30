@@ -71,6 +71,7 @@ fn test_config_roundtrip() {
             gpu_tensors: vec!["token_embd.weight".to_string()],
             ..Default::default()
         },
+        magnitude_device: "auto".to_string(),
         gpu_attestation: GpuAttestationConfig::default(),
         spec_mode: "prompt-lookup".to_string(),
         spec_draft_max: Some(3),
@@ -871,4 +872,15 @@ fn test_env_a3s_power_redact_logs_false_overrides_true() {
     config.apply_env_overrides().unwrap();
     assert!(!config.redact_logs);
     std::env::remove_var("A3S_POWER_REDACT_LOGS");
+}
+
+#[cfg(feature = "magnitude")]
+#[test]
+#[serial]
+fn test_magnitude_production_example_is_valid() {
+    let config = PowerConfig::load_from("docs/examples/magnitude-production/power.acl").unwrap();
+    assert_eq!(config.magnitude_device, "auto");
+    assert_eq!(config.spec_mode, "off");
+    assert_eq!(config.max_concurrent_requests, 4);
+    assert_eq!(config.max_queued_requests, 16);
 }

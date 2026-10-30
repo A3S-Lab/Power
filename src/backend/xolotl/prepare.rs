@@ -296,7 +296,7 @@ pub(crate) async fn prepare_managed_model(
             .ok_or_else(|| refused("no registered joined model or admitted source members"))?
             .size;
     }
-    if size < 4 || size > MAX_BYTES {
+    if !(4..=MAX_BYTES).contains(&size) {
         return Err(refused("joined GGUF length is outside its bounds"));
     }
     let cancel = Arc::new(AtomicBool::new(false));

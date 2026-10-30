@@ -25,7 +25,7 @@
 </p>
 
 <p align="center">
-  <a href="#发布状态2026-09-21">发布状态</a> &middot;
+  <a href="#发布状态2026-10-30">发布状态</a> &middot;
   <a href="#实测而非承诺">证据</a> &middot;
   <a href="#选择边界">表面</a> &middot;
   <a href="#快速开始">快速开始</a> &middot;
@@ -43,14 +43,14 @@ A3S Power 是面向推理的模型无关 Rust 执行层。模型 crate 保留其
 以及最小的层流式 TEE 配置。运行时核心不对 Qwen 或任何其他模型族做分发。
 
 > [!IMPORTANT]
-> **当前版本是 v0.10.0。** `main` 已包含 Prism 后端与 SystemOne 评分，并且已经越过冻结父提交。**v1.0.0 仍不是生产发布。**
+> **当前版本是 v0.11.0。** 它包含限定范围的 Magnitude 原生 GGUF Chat 配置，并且已经越过冻结父提交。**完整 v1.0.0 生产版本仍未发布。**
 
-## 发布状态（2026-09-21）
+## 发布状态（2026-10-30）
 
 | 项 | 状态 |
 | --- | --- |
-| 包版本 / 变更日志 | `Cargo.toml` `0.10.0`；带日期的 `[0.10.0] - 2026-09-21` |
-| v0.10.0 在 `main` 上新增 | PrismML / Bonsai 服务（`prism_upstream`、`prism_profile`）与 `POST /v1/systemone` |
+| 包版本 / 变更日志 | `Cargo.toml` `0.11.0`；带日期的 `[0.11.0] - 2026-10-30` |
+| v0.11.0 新增 | Magnitude 原生 GGUF Chat、流式输出、工具调用、JSON Schema、CPU / Metal 选择与有界生产指南 |
 | 生产 v1 的冻结源码父提交 `S` | `514031dc74edd72da7c3bfee40144a38d2d91434` |
 | 开发 / ROADMAP P0–P6 | 软件计划已出口。Scale 0 / Phase R 尚未出口 |
 | Exact-parent CPU + CUDA 契约捕获 | 已检入 [release-contract-windows-20260910](docs/benchmarks/release-contract-windows-20260910/README.md) |
@@ -59,7 +59,7 @@ A3S Power 是面向推理的模型无关 Rust 执行层。模型 crate 保留其
 | Exact-parent SEV-SNP confidential-GPU 捕获 | **缺失**（需机密硬件 + NRAS 晋升） |
 | `main` 上的 `release/v1.0.0/` 证据子提交 | **不存在** |
 | 附注生产标签 `v1.0.0` | **未发布** |
-| 本版本标签 | `v0.10.0`（v1 之前；不满足生产证据门） |
+| 本版本标签 | `v0.11.0`（v1 之前；限定范围原生 Chat 证据，不满足完整生产证据门） |
 
 生产 `v1.0.0` 标签仅在 `S` 的证据子提交恰好新增
 `release/v1.0.0/release-evidence.{json,sha256}`（四平台齐全），且 GitHub
@@ -110,10 +110,13 @@ Q4 文件仅在说明处作为辅助 proposer 出现。
 
 ### 运行当前托管服务
 
-安装当前 v0.10.0：
+Apple Silicon 可按下面命令安装当前 v0.11.0。其他平台请使用同一 GitHub
+Release 中对应的压缩包。
 
 ~~~bash
-cargo install a3s-power --version 0.10.0 --locked
+curl -fLO https://github.com/A3S-Lab/Power/releases/download/v0.11.0/a3s-power-v0.11.0-aarch64-apple-darwin.tar.gz
+tar xzf a3s-power-v0.11.0-aarch64-apple-darwin.tar.gz
+export PATH="$PWD:$PATH"
 a3s-power serve --host 127.0.0.1 --port 11434
 ~~~
 

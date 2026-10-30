@@ -435,9 +435,12 @@ impl Telemetry {
         if self.mode == TelemetryMode::Disabled {
             return;
         }
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            Some(current.saturating_add(value))
-        });
+        let _ = crate::atomic_fetch_update!(
+            counter,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current: u64| { Some(current.saturating_add(value)) }
+        );
     }
 
     fn load(&self, counter: &AtomicU64) -> u64 {

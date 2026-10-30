@@ -1,0 +1,12 @@
+[package]
+publish = false
+name = "magnitude-solver-lab"
+default-run = "magnitude-solver-lab"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+magnitude-solver = { path = "..", features = ["serde"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"

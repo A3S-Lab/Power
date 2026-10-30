@@ -1,0 +1,12 @@
+[package]
+publish = false
+name = "magnitude-family-qwen"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+magnitude-artifacts = { path = "../../artifacts" }
+magnitude-family-common = { path = "../common" }
+magnitude-family-contracts = { path = "../contracts" }
+sha2 = "=0.11.0"

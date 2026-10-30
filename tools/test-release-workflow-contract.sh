@@ -53,6 +53,17 @@ grep -F -- '--main-ref refs/remotes/origin/main' "$release_workflow" >/dev/null 
 if grep -F 'verify-release-bundle' "$release_workflow" >/dev/null; then
   fail "release workflow must not duplicate semantic bundle verification"
 fi
+[ "$(grep -Fc 'name: Checkout local dependency sources' "$release_workflow")" -eq 2 ] ||
+  fail "CI and release builds must both materialize the pinned local dependencies"
+[ "$(grep -Ec '^  (ACL|RUNTIME)_GIT_REV: "[0-9a-f]{40}"$' "$release_workflow")" -eq 2 ] ||
+  fail "ACL and Runtime must each have one full pinned revision"
+grep -F 'BUILD_FEATURES: "--features hf,hw-verify,embedded-inference,magnitude"' \
+  "$release_workflow" >/dev/null || fail "release binaries must include Magnitude"
+grep -F 'cargo test --locked --no-default-features --features magnitude --lib' \
+  "$release_workflow" >/dev/null || fail "release CI must test Magnitude independently"
+if grep -F 'cargo publish' "$release_workflow" >/dev/null; then
+  fail "publish=false package must not run a crates.io publish job"
+fi
 
 release_source="$(cat -- "$release_workflow")"
 case "$release_source" in

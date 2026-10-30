@@ -34,8 +34,10 @@ use super::prompt_cache::{
 use super::types::EffectivePromptDigest;
 use super::types::{
     ChatRequest, ChatResponseChunk, CompletionRequest, CompletionResponseChunk, EmbeddingRequest,
-    EmbeddingResponse, SystemOneRequest, SystemOneResponse,
+    EmbeddingResponse,
 };
+#[cfg(feature = "llamacpp")]
+use super::types::{SystemOneRequest, SystemOneResponse};
 use super::Backend;
 
 #[cfg(feature = "llamacpp")]

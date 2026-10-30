@@ -1,0 +1,58 @@
+# Release model catalog
+
+`models.json` owns the catalog. A model lists its `sources`: each is one repository's
+publication of it, with the variants it hosts, the projector they share and the license it grants,
+so a model's variants can come from different publishers. A separately packaged speculative draft
+names its own repository. `models.lock.json` maps every repository the catalog resolves from to its
+immutable Hugging Face commit.
+
+Input modality is inspected from the exact target package. Image-capable targets receive a
+projector during generation: a sole repository `mmproj` is selected automatically, while
+repositories with multiple candidates require an exact `projector.path` declaration on the source.
+The projector is locked as a related component of the target package.
+
+Each variant's primary GGUF is the one file (or first shard) whose path contains its `format`.
+When other repository files also contain that format, such as MTP heads, the variant declares its
+exact `path` instead.
+
+A catalog entry declares no context length. Its serving profile is the target's supported maximum
+context from its GGUF metadata, which is the context the engine resolves, serves and assesses.
+
+```sh
+cargo run --release -p magnitude-service-catalog-tool -- update-lock ...   # advance the commit map
+cargo run --release -p magnitude-service-catalog-tool -- build-bundle ...  # build the header bundle
+cargo run --release -p magnitude-service-catalog-tool -- headers --output DIR --model-store DIR  # headers for tests
+cargo run --release -p magnitude-service-catalog-tool -- acquire --model qwen3.5-4b:gguf:q4 --model-store DIR
+cargo run --release -p magnitude-service-catalog-tool -- audit --headers DIR --output FILE --model-store DIR  # tensor-type audit
+cargo run --release -p magnitude-service-catalog-tool -- header local PATH  # metadata and tensors
+cargo run --release -p magnitude-service-catalog-tool -- slice --output FILE hub --repository REPO --revision REV --path PATH --model-store DIR
+```
+
+`fixture-header` and `weight-sample` write the assessment fixtures (see
+`engine/fixtures/assessment/README.md`); `slice` writes a truncated real-weight GGUF of a model too
+large to run whole, with a provenance record beside it. `header`, `weight-sample` and `slice` read
+a `local PATH` or a `hub --repository REPO --revision REV --path PATH --model-store DIR` file; a
+Hub file is read by range requests only, through the model store's Hub client.
+
+`acquire` resolves one catalog model at its locked revisions, downloads into a managed model store
+only the target, drafter and projector files that are missing, verifies them through the service's
+own download path, and prints their absolute paths and SHA-256 digests as JSON (the evaluation
+model-reference contract). Evaluation tools obtain models only through it.
+
+Generation resolves the pinned repositories and writes `model-planner-inputs.bundle`: the exact GGUF
+header (every byte through the aligned tensor-data offset) of every package component, which is
+what the engine's header-only planning and chat-template inspection read before a model is
+downloaded. Repeated references to the same immutable package share one package identity and one
+set of bundled headers. Each target also carries its weight sample (a few hundred bytes of its early
+normalization weights, read by range requests), stored as an input of its own that the variants
+of one model share. The bundle is derived release output and is not committed. It is the only
+catalog-related file shipped alongside the service; catalog definitions and pins are compiled into
+the executable.
+
+`headers` builds that bundle under `--output` (only when it is not current for this lock) and
+writes each component's exact header, extended sparsely to its file's size, to `--output/headers/`
+at `<repository>/<revision>/<path>`, with an index naming the lock. Family and assessment tests read
+that export through `MAGNITUDE_CATALOG_HEADERS` and refuse an export of another lock; the
+evaluation flow's `--catalog-headers` runs the export on the host and sets the variable. A header
+a test needs outside the lock is a pinned artifact (`magnitude_artifacts::catalog_headers::artifacts`:
+its repository, revision and path), exported beside the catalog's the same way.

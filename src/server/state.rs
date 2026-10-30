@@ -941,9 +941,19 @@ mod tests {
         let state = AppState::new(Arc::new(ModelRegistry::new()), backends, config);
         // Non-TEE mode: should use find_for_format (standard priority)
         let result = state.find_backend(&ModelFormat::Gguf, 1_000_000);
-        #[cfg(any(feature = "mistralrs", feature = "llamacpp", feature = "picolm"))]
+        #[cfg(any(
+            feature = "mistralrs",
+            feature = "llamacpp",
+            feature = "picolm",
+            feature = "magnitude"
+        ))]
         assert!(result.is_ok());
-        #[cfg(not(any(feature = "mistralrs", feature = "llamacpp", feature = "picolm")))]
+        #[cfg(not(any(
+            feature = "mistralrs",
+            feature = "llamacpp",
+            feature = "picolm",
+            feature = "magnitude"
+        )))]
         assert!(result.is_err());
     }
 
@@ -958,9 +968,19 @@ mod tests {
         let state = AppState::new(Arc::new(ModelRegistry::new()), backends, config);
         // TEE mode: should use find_for_tee (EPC-aware routing)
         let result = state.find_backend(&ModelFormat::Gguf, 1_000_000);
-        #[cfg(any(feature = "mistralrs", feature = "llamacpp", feature = "picolm"))]
+        #[cfg(any(
+            feature = "mistralrs",
+            feature = "llamacpp",
+            feature = "picolm",
+            feature = "magnitude"
+        ))]
         assert!(result.is_ok());
-        #[cfg(not(any(feature = "mistralrs", feature = "llamacpp", feature = "picolm")))]
+        #[cfg(not(any(
+            feature = "mistralrs",
+            feature = "llamacpp",
+            feature = "picolm",
+            feature = "magnitude"
+        )))]
         assert!(result.is_err());
     }
 

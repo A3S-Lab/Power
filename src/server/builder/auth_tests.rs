@@ -12,8 +12,10 @@ async fn injected_auth_is_retained_and_ambiguous_static_keys_fail_before_startup
         .auth_provider
         .unwrap()
         .authenticate("hermetic-test-token"));
-    let mut config = PowerConfig::default();
-    config.api_keys = vec!["a-different-hermetic-test-token".into()];
+    let config = PowerConfig {
+        api_keys: vec!["a-different-hermetic-test-token".into()],
+        ..Default::default()
+    };
     assert!(
         matches!(PowerServerBuilder::new(config).with_auth_provider(provider).start().await,
         Err(PowerError::Config(message)) if message.contains("mutually exclusive"))

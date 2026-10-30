@@ -1,0 +1,23 @@
+[package]
+publish = false
+name = "magnitude-kernel-formation"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+# Forms every native kernel the engine ships and every kernel every supported
+# catalog model requests, with each GPU backend's real toolchain
+# (`bun run kernels:form`).
+[dependencies]
+anyhow = { version = "1.0.100" }
+clap = { version = "4.5.54", features = ["derive", "env"] }
+magnitude-kernels = { path = "../../engine/kernels" }
+magnitude-service-server = { path = "../server" }
+seismic = { path = "../../seismic/api", features = ["coverage"] }
+sha2 = { version = "0.10.9" }
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = { version = "0.2.180" }
+
+[build-dependencies]
+sha2 = { version = "0.10.9" }

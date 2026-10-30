@@ -6,6 +6,13 @@ use a3s_power::config::PowerConfig;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    #[cfg(feature = "magnitude")]
+    if std::env::args().nth(1).as_deref()
+        == Some(a3s_power::backend::magnitude::MAGNITUDE_WORKER_ARG)
+    {
+        std::process::exit(a3s_power::backend::magnitude::worker_main());
+    }
+
     let cli = Cli::parse();
 
     match cli.command {

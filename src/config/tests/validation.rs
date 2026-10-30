@@ -11,6 +11,20 @@ fn test_validate_default_config_no_warnings() {
     config.validate().unwrap(); // must not panic
 }
 
+#[cfg(feature = "magnitude")]
+#[test]
+fn test_validate_rejects_invalid_magnitude_device() {
+    let config = PowerConfig {
+        magnitude_device: "not-a-device".into(),
+        ..Default::default()
+    };
+    assert!(config
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("magnitude_device"));
+}
+
 #[test]
 fn test_validate_keep_alive_valid_formats() {
     // All valid formats should pass without warnings

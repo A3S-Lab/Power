@@ -243,16 +243,17 @@ where
                         .to_string(),
                 ));
             }
-            existing
-                .loading_callers
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |callers| {
-                    callers.checked_add(1)
-                })
-                .map_err(|_| {
-                    PowerError::InferenceFailed(
-                        "model session loading caller count overflowed".to_string(),
-                    )
-                })?;
+            crate::atomic_fetch_update!(
+                existing.loading_callers,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |callers: usize| callers.checked_add(1)
+            )
+            .map_err(|_| {
+                PowerError::InferenceFailed(
+                    "model session loading caller count overflowed".to_string(),
+                )
+            })?;
             return Ok((key, Arc::clone(existing)));
         }
         let reserved_bytes = sessions.values().try_fold(0_u64, |total, entry| {
@@ -328,10 +329,11 @@ where
     T: Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        let previous = self.entry.loading_callers.fetch_update(
+        let previous = crate::atomic_fetch_update!(
+            self.entry.loading_callers,
             Ordering::Relaxed,
             Ordering::Relaxed,
-            |callers| callers.checked_sub(1),
+            |callers: usize| callers.checked_sub(1)
         );
         match previous {
             Ok(1) => self.pool.remove_empty(&self.key, &self.entry),

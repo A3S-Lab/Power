@@ -1,0 +1,656 @@
+//! Tuning cases of the readout: the final-norm vocabulary projections
+//! (`readout_head_rows`, `readout_selected_rows`, the MTP head's
+//! `readout_project_rows`) and token selection (`shape_rows`, `sample_rows`).
+//!
+//! Readout points are the projected-row counts the engine serves (bounded by
+//! its projected-row limit, not its batch rows). The vocabulary projection
+//! weight is one tensor far larger than any device cache, so each point has
+//! a single argument set.
+
+use super::cases::projection_shape;
+use super::{
+    row_points, served_row_points, CaseState, EntryTuning, ModelInputs, PointShape, TuningInputs,
+    TuningLimits,
+};
+use magnitude_batching::{HISTORY_WIDTH, SHAPING_WIDTH};
+use magnitude_family_contracts::{WeightKind, WeightScope};
+use magnitude_kernels::{
+    draft_rows, readout_head_rows, readout_project_rows, readout_selected_rows, sample_rows,
+    shape_rows,
+};
+use seismic::{BuildError, Element, Tensor};
+
+/// Candidate tokens of a `readout_selected_rows` tuning point.
+const SELECTED_TOKENS: u64 = 256;
+
+/// The MTP input's fused embedding, two RMS norms and combine projection.
+#[derive(Clone)]
+pub(crate) struct DraftRowsTuning {
+    pub conditioning: Element,
+    pub streams: u64,
+    pub embedding: Element,
+    pub embedding_norm: Element,
+    pub hidden_norm: Element,
+    pub combine: Element,
+    pub activation: Element,
+    pub scopes: Vec<WeightScope>,
+    pub epsilon: f32,
+}
+
+pub(crate) struct DraftRowsCase {
+    tokens: Tensor,
+    /// Empty: the tokens are the table's rows.
+    directory: Tensor,
+    table: Tensor,
+    conditioning: Tensor,
+    embedding_norm: Tensor,
+    hidden_norm: Tensor,
+    combine: Tensor,
+    epsilon: f32,
+}
+
+impl EntryTuning for DraftRowsTuning {
+    type Entry = draft_rows::Entry;
+    type Case = DraftRowsCase;
+
+    fn launches(&self) -> usize {
+        self.scopes.len()
+    }
+
+    fn bindings(&self) -> String {
+        format!(
+            "EW={},EN={},HN={},CW={},A={},C={},S={}",
+            self.embedding.name(),
+            self.embedding_norm.name(),
+            self.hidden_norm.name(),
+            self.combine.name(),
+            self.activation.name(),
+            self.conditioning.name(),
+            self.streams
+        )
+    }
+
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let (hidden, joined) = projection_shape(inputs, &self.scopes, WeightKind::HeadCombine)?;
+        if joined != 2 * hidden {
+            return Err("the draft combine weight does not have two hidden inputs".into());
+        }
+        Ok(vec![("D", hidden)])
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        row_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let table = inputs.weight(WeightScope::Target, WeightKind::Embedding)?;
+        let [vocabulary, hidden] = table.extents()[..] else {
+            return Err("the draft embedding table is not a matrix".into());
+        };
+        if vocabulary == 0 {
+            return Err("the draft embedding table is empty".into());
+        }
+        TuningInputs::rotation_scopes(&self.scopes, point)
+            .into_iter()
+            .enumerate()
+            .map(|(index, scope)| {
+                let tokens = (0..point.rows)
+                    .map(|row| {
+                        i32::try_from((row + index as u64) % vocabulary)
+                            .map(|token| [token, 0])
+                            .map_err(|_| "the draft vocabulary exceeds i32")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                Ok(DraftRowsCase {
+                    tokens: inputs.i32s(&[point.rows, 2], &tokens)?,
+                    directory: inputs.i32s(&[0, 1], &[])?,
+                    table: table.clone(),
+                    conditioning: inputs.activation(
+                        self.conditioning,
+                        &[point.rows, self.streams * hidden],
+                        index as u64 + 1,
+                    )?,
+                    embedding_norm: inputs.weight(scope, WeightKind::HeadEmbeddingNorm)?,
+                    hidden_norm: inputs.weight(scope, WeightKind::HeadHiddenNorm)?,
+                    combine: inputs.weight(scope, WeightKind::HeadCombine)?,
+                    epsilon: self.epsilon,
+                })
+            })
+            .collect()
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> draft_rows::Args<'a> {
+        draft_rows::Args {
+            tokens: &case.tokens,
+            directory: &case.directory,
+            table: &case.table,
+            conditioning: &case.conditioning,
+            embedding_norm: &case.embedding_norm,
+            hidden_norm: &case.hidden_norm,
+            combine: &case.combine,
+            epsilon: case.epsilon,
+        }
+    }
+
+    generated_entry!(draft_rows, this => draft_rows::Elements {
+        C: this.conditioning,
+        EW: this.embedding,
+        A: this.activation,
+        EN: this.embedding_norm,
+        HN: this.hidden_norm,
+        CW: this.combine,
+    });
+}
+
+/// The projected-row points of the readout.
+fn projected_points(limits: TuningLimits) -> Vec<PointShape> {
+    served_row_points(
+        TuningLimits {
+            max_rows: limits.max_projected_rows,
+            ..limits
+        },
+        |_| true,
+    )
+}
+
+/// `[V, D]` of the output projection.
+fn vocabulary_shape(inputs: &ModelInputs<'_>) -> Result<(u64, u64), String> {
+    projection_shape(inputs, &[WeightScope::Target], WeightKind::Output)
+}
+
+/// `readout_head_rows`: final RMS norm and vocabulary projection of the rows
+/// `out_rows` selects.
+#[derive(Clone)]
+pub(crate) struct HeadRowsTuning {
+    pub projection_scope: WeightScope,
+    pub norm_scope: WeightScope,
+    pub norm: Element,
+    pub weight: Element,
+    pub activation: Element,
+    pub epsilon: f32,
+    /// Optional declared output rows; `None` projects onto every row.
+    pub rows: Option<u64>,
+}
+
+pub(crate) struct HeadRowsCase {
+    hidden: Tensor,
+    norm: Tensor,
+    weight: Tensor,
+    weight_scale: Tensor,
+    out_rows: Tensor,
+    epsilon: f32,
+}
+
+impl HeadRowsTuning {
+    fn elements(&self) -> readout_head_rows::Elements {
+        readout_head_rows::Elements {
+            NW: self.norm,
+            OW: self.weight,
+            A: self.activation,
+        }
+    }
+}
+
+impl EntryTuning for HeadRowsTuning {
+    type Entry = readout_head_rows::Entry;
+    type Case = HeadRowsCase;
+
+    fn launches(&self) -> usize {
+        1
+    }
+
+    fn bindings(&self) -> String {
+        format!(
+            "NW={},OW={},A={}",
+            self.norm.name(),
+            self.weight.name(),
+            self.activation.name()
+        )
+    }
+
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let (vocabulary, hidden) =
+            projection_shape(inputs, &[self.projection_scope], WeightKind::Output)?;
+        let (parts, norm) = inputs.readout_form(self.norm_scope, hidden)?;
+        Ok(vec![
+            (
+                "V",
+                self.rows.map_or(vocabulary, |rows| rows.min(vocabulary)),
+            ),
+            ("D", hidden),
+            ("PT", parts),
+            ("NM", norm),
+            (
+                "WS",
+                inputs.scale_extent(self.projection_scope, WeightKind::Output)?,
+            ),
+        ])
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        projected_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let weight = inputs.weight(self.projection_scope, WeightKind::Output)?;
+        let [vocabulary, hidden] = weight.extents()[..] else {
+            return Err("the output weight is not a matrix".into());
+        };
+        let weight = weight
+            .slice_leading(0, self.rows.map_or(vocabulary, |rows| rows.min(vocabulary)))
+            .map_err(|error| error.to_string())?;
+        let (parts, norm) = inputs.readout_form(self.norm_scope, hidden)?;
+        Ok(vec![HeadRowsCase {
+            hidden: inputs.activation(Element::f32(), &[point.rows, parts * hidden], 1)?,
+            norm: inputs.input_norm(self.norm_scope, WeightKind::OutputNorm, self.norm, norm)?,
+            out_rows: inputs.every_row(point.rows)?,
+            weight,
+            weight_scale: inputs
+                .unit_scale(inputs.scale_extent(self.projection_scope, WeightKind::Output)?)?,
+            epsilon: self.epsilon,
+        }])
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> readout_head_rows::Args<'a> {
+        readout_head_rows::Args {
+            hidden: &case.hidden,
+            norm: &case.norm,
+            weight: &case.weight,
+            out_rows: &case.out_rows,
+            epsilon: case.epsilon,
+            softcap: 0.0,
+            weight_scale: &case.weight_scale,
+        }
+    }
+
+    generated_entry!(readout_head_rows, this => this.elements());
+}
+
+/// `readout_selected_rows`: final RMS norm and the logits of a candidate token
+/// set.
+#[derive(Clone)]
+pub(crate) struct SelectedRowsTuning {
+    pub norm: Element,
+    pub weight: Element,
+    pub activation: Element,
+    pub epsilon: f32,
+}
+
+pub(crate) struct SelectedRowsCase {
+    head: HeadRowsCase,
+    selected: Tensor,
+}
+
+impl SelectedRowsTuning {
+    fn elements(&self) -> readout_selected_rows::Elements {
+        readout_selected_rows::Elements {
+            NW: self.norm,
+            OW: self.weight,
+            A: self.activation,
+        }
+    }
+}
+
+impl EntryTuning for SelectedRowsTuning {
+    type Entry = readout_selected_rows::Entry;
+    type Case = SelectedRowsCase;
+
+    fn launches(&self) -> usize {
+        1
+    }
+
+    fn bindings(&self) -> String {
+        format!(
+            "NW={},OW={},A={}",
+            self.norm.name(),
+            self.weight.name(),
+            self.activation.name()
+        )
+    }
+
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let (vocabulary, hidden) = vocabulary_shape(inputs)?;
+        let (parts, norm) = inputs.readout_form(WeightScope::Target, hidden)?;
+        Ok(vec![
+            ("V", vocabulary),
+            ("D", hidden),
+            ("PT", parts),
+            ("NM", norm),
+        ])
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        projected_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let head = HeadRowsTuning {
+            projection_scope: WeightScope::Target,
+            norm_scope: WeightScope::Target,
+            norm: self.norm,
+            weight: self.weight,
+            activation: self.activation,
+            epsilon: self.epsilon,
+            rows: None,
+        }
+        .rotation(inputs, point)?;
+        let (vocabulary, _) = vocabulary_shape(inputs)?;
+        // Candidates spread over the whole vocabulary, as a constrained or
+        // speculative candidate set is.
+        let stride = vocabulary / SELECTED_TOKENS;
+        let tokens = (0..SELECTED_TOKENS)
+            .map(|index| i32::try_from(index * stride).map_err(|_| "vocabulary exceeds i32"))
+            .collect::<Result<Vec<_>, _>>()?;
+        head.into_iter()
+            .map(|head| {
+                Ok(SelectedRowsCase {
+                    head,
+                    selected: inputs.i32s(&[SELECTED_TOKENS], &tokens)?,
+                })
+            })
+            .collect()
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> readout_selected_rows::Args<'a> {
+        readout_selected_rows::Args {
+            hidden: &case.head.hidden,
+            norm: &case.head.norm,
+            weight: &case.head.weight,
+            out_rows: &case.head.out_rows,
+            selected: &case.selected,
+            epsilon: case.head.epsilon,
+            softcap: 0.0,
+        }
+    }
+
+    generated_entry!(readout_selected_rows, this => this.elements());
+}
+
+/// A scope-owned vocabulary projection of prepared semantic feature rows.
+/// Indexed forms return compact columns with the same dot and epilogue as Full.
+#[derive(Clone)]
+pub(crate) struct PreparedProjectionTuning {
+    pub scope: WeightScope,
+    pub kind: WeightKind,
+    pub weight: Element,
+    pub activation: Element,
+    pub columns: Option<u64>,
+    pub indexed: bool,
+    pub softcap: f32,
+}
+
+pub(crate) struct PreparedProjectionCase {
+    features: Tensor,
+    weight: Tensor,
+    token_rows: Tensor,
+    weight_scale: Tensor,
+    softcap: f32,
+}
+
+impl EntryTuning for PreparedProjectionTuning {
+    type Entry = readout_project_rows::Entry;
+    type Case = PreparedProjectionCase;
+    fn launches(&self) -> usize {
+        6
+    }
+    fn bindings(&self) -> String {
+        format!(
+            "OW={},A={},kind={:?},cap={:08x}",
+            self.weight.name(),
+            self.activation.name(),
+            self.kind,
+            self.softcap.to_bits()
+        )
+    }
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let (vocabulary, hidden) = projection_shape(inputs, &[self.scope], self.kind)?;
+        let columns = self.columns.unwrap_or(vocabulary);
+        if columns == 0 || columns > vocabulary {
+            return Err("prepared projection columns exceed its vocabulary".into());
+        }
+        Ok(vec![
+            ("V", vocabulary),
+            ("D", hidden),
+            ("S", columns),
+            ("I", u64::from(self.indexed)),
+            ("WS", inputs.scale_extent(self.scope, self.kind)?),
+        ])
+    }
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        projected_points(limits)
+    }
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let weight = inputs.weight(self.scope, self.kind)?;
+        let [vocabulary, hidden] = weight.extents()[..] else {
+            return Err("prepared projection weight is not a matrix".into());
+        };
+        let columns = self.columns.unwrap_or(vocabulary);
+        let tokens = if self.indexed {
+            (0..point.rows)
+                .flat_map(|row| {
+                    (0..columns).map(move |col| {
+                        (row * 17 + col * (vocabulary / columns).max(1)) % vocabulary
+                    })
+                })
+                .map(|token| {
+                    i32::try_from(token).map_err(|_| "canonical vocabulary ID exceeds i32")
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+        Ok(vec![PreparedProjectionCase {
+            features: inputs.activation(self.activation, &[point.rows, hidden], 1)?,
+            weight,
+            token_rows: inputs.i32s(&[point.rows, u64::from(self.indexed), columns], &tokens)?,
+            weight_scale: inputs.unit_scale(inputs.scale_extent(self.scope, self.kind)?)?,
+            softcap: self.softcap,
+        }])
+    }
+    fn args<'a>(case: &'a mut Self::Case) -> readout_project_rows::Args<'a> {
+        readout_project_rows::Args {
+            features: &case.features,
+            weight: &case.weight,
+            token_rows: &case.token_rows,
+            weight_scale: &case.weight_scale,
+            softcap: case.softcap,
+        }
+    }
+    generated_entry!(readout_project_rows, this => readout_project_rows::Elements {
+        OW: this.weight,
+        A: this.activation,
+    });
+}
+
+/// Pseudo-random logits of `rows` rows over `vocabulary` tokens.
+fn logits(
+    inputs: &TuningInputs<'_, '_>,
+    rows: u64,
+    vocabulary: u64,
+    seed: u64,
+) -> Result<Tensor, BuildError> {
+    inputs.activation(Element::f32(), &[rows, vocabulary], seed)
+}
+
+/// `shape_rows`: constraint mask, penalties, temperature, top-k, min-p and top-p of each
+/// selected row over `vocabulary` tokens (the target's, or the draft
+/// head's). Its parameters partition the vocabulary without changing any
+/// result.
+#[derive(Clone)]
+pub(crate) struct ShapeRowsTuning {
+    pub vocabulary: u64,
+}
+
+pub(crate) struct ShapeRowsCase {
+    /// Shaped in place, so every run restores the raw logits.
+    logits: CaseState,
+    mask: Tensor,
+    constrained: Tensor,
+    params: Tensor,
+    history: Tensor,
+}
+
+impl EntryTuning for ShapeRowsTuning {
+    type Entry = shape_rows::Entry;
+    type Case = ShapeRowsCase;
+
+    fn launches(&self) -> usize {
+        1
+    }
+
+    fn bindings(&self) -> String {
+        "fixed".into()
+    }
+
+    fn statics(&self, _: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        Ok(vec![("V", self.vocabulary), ("Hn", HISTORY_WIDTH as u64)])
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        projected_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let rows = point.rows;
+        let vocabulary = self.vocabulary;
+        // A typical sampling configuration with every stage active:
+        // temperature, top-k, top-p, min-p, repetition, presence, frequency.
+        let shaping: [f32; SHAPING_WIDTH] = [0.7, 20.0, 0.95, 0.05, 1.1, 0.2, 0.1, 0.0];
+        let params = (0..rows).flat_map(|_| shaping).collect::<Vec<_>>();
+        let history = (0..rows * HISTORY_WIDTH as u64)
+            .map(|index| {
+                i32::try_from(index * 7919 % vocabulary).map_err(|_| "vocabulary exceeds i32")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let words = vocabulary.div_ceil(32);
+        Ok(vec![ShapeRowsCase {
+            logits: inputs.state(logits(inputs, rows, vocabulary, 1)?, 0..rows)?,
+            // Every other row constrained: both the masked and the free
+            // path are measured.
+            mask: inputs.u32s(&[rows, words], &vec![u32::MAX; (rows * words) as usize])?,
+            constrained: inputs.i32s(
+                &[rows],
+                &(0..rows).map(|row| (row % 2) as i32).collect::<Vec<_>>(),
+            )?,
+            params: inputs.f32s(&[rows, SHAPING_WIDTH as u64], &params)?,
+            history: inputs.i32s(&[rows, HISTORY_WIDTH as u64], &history)?,
+        }])
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> shape_rows::Args<'a> {
+        shape_rows::Args {
+            logits: case.logits.tensor_mut(),
+            mask: &case.mask,
+            constrained: &case.constrained,
+            params: &case.params,
+            history: &case.history,
+        }
+    }
+
+    fn state(case: &Self::Case) -> Vec<(&'static str, &CaseState)> {
+        vec![("logits", &case.logits)]
+    }
+
+    generated_entry!(shape_rows);
+}
+
+/// `sample_rows`: one draw per selected row over its shaped logits of
+/// `vocabulary` tokens. Its parameters partition the vocabulary without
+/// changing any draw.
+#[derive(Clone)]
+pub(crate) struct SampleRowsTuning {
+    pub vocabulary: u64,
+}
+
+pub(crate) struct SampleRowsCase {
+    logits: Tensor,
+    mask: Tensor,
+    constrained: Tensor,
+    draws: Tensor,
+    result: CaseState,
+}
+
+impl EntryTuning for SampleRowsTuning {
+    type Entry = sample_rows::Entry;
+    type Case = SampleRowsCase;
+
+    fn launches(&self) -> usize {
+        1
+    }
+
+    fn bindings(&self) -> String {
+        "fixed".into()
+    }
+
+    fn statics(&self, _: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        Ok(vec![("V", self.vocabulary)])
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        projected_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let rows = point.rows;
+        let words = self.vocabulary.div_ceil(32);
+        let draws = (0..rows * 6)
+            .map(|index| (index as u32).wrapping_mul(0x9e37_79b9))
+            .collect::<Vec<_>>();
+        let result = inputs.scratch(Element::i32(), &[rows, 2])?;
+        Ok(vec![SampleRowsCase {
+            logits: logits(inputs, rows, self.vocabulary, 2)?,
+            mask: inputs.u32s(&[rows, words], &vec![u32::MAX; (rows * words) as usize])?,
+            // Every other row constrained: both the masked and the free
+            // path are measured.
+            constrained: inputs.i32s(
+                &[rows],
+                &(0..rows).map(|row| (row % 2) as i32).collect::<Vec<_>>(),
+            )?,
+            draws: inputs.u32s(&[rows, 6], &draws)?,
+            result: inputs.state(result, 0..rows)?,
+        }])
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> sample_rows::Args<'a> {
+        sample_rows::Args {
+            logits: &case.logits,
+            mask: &case.mask,
+            constrained: &case.constrained,
+            draws: &case.draws,
+            result: case.result.tensor_mut(),
+        }
+    }
+
+    fn state(case: &Self::Case) -> Vec<(&'static str, &CaseState)> {
+        vec![("result", &case.result)]
+    }
+
+    generated_entry!(sample_rows);
+}

@@ -1,0 +1,10 @@
+[package]
+publish = false
+name = "magnitude-batching"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+magnitude-family-contracts = { path = "../families/contracts" }
+magnitude-state = { path = "../state" }

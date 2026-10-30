@@ -1,0 +1,47 @@
+[package]
+publish = false
+name = "seismic-runtime"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+seismic-topology = { path = "../topology" }
+seismic-measure = { path = "../measure" }
+seismic-ir = { path = "../ir" }
+seismic-lang = { path = "../lang" }
+seismic-compiler = { path = "../compiler" }
+seismic-native-target = { path = "../native-target" }
+seismic-metal = { path = "../backends/metal" }
+seismic-cpu = { path = "../backends/cpu" }
+seismic-native-cpu = { path = "../native-cpu" }
+seismic-cuda = { path = "../backends/cuda" }
+# Offline formation coverage forms Vulkan sources on every host.
+seismic-vulkan = { path = "../backends/vulkan", optional = true }
+opentelemetry = "0.33.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+postcard = { version = "=1.1.3", default-features = false, features = ["use-std"] }
+sha2 = "=0.11.0"
+
+[features]
+# The offline formation coverage suite (`native::coverage`).
+coverage = ["dep:seismic-vulkan"]
+
+[dev-dependencies]
+seismic-std = { path = "../../seismic-std" }
+# The Vulkan prefix's formation tests run on every host.
+seismic-vulkan = { path = "../backends/vulkan" }
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Vulkan is built on Linux and Windows only.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+seismic-vulkan = { path = "../backends/vulkan" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Memory",
+] }

@@ -1,0 +1,65 @@
+[package]
+publish = false
+name = "magnitude-engine"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+magnitude-artifacts = { path = "artifacts" }
+magnitude-chat = { path = "chat" }
+magnitude-generation = { path = "generation" }
+magnitude-grammar = { path = "grammar" }
+magnitude-scheduler = { path = "scheduler" }
+magnitude-templates = { path = "templates" }
+magnitude-batching = { path = "batching" }
+magnitude-family-contracts = { path = "families/contracts" }
+magnitude-executor = { path = "executor" }
+magnitude-family-qwen35 = { path = "families/qwen35" }
+magnitude-family-qwen4exp = { path = "families/qwen4exp" }
+magnitude-family-llama = { path = "families/llama" }
+magnitude-family-lfm2 = { path = "families/lfm2" }
+magnitude-family-nemotron-h = { path = "families/nemotron_h" }
+magnitude-family-gemma4 = { path = "families/gemma4" }
+magnitude-family-muse-glimmer = { path = "families/muse_glimmer" }
+magnitude-family-dflash = { path = "families/dflash" }
+magnitude-state = { path = "state" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+postcard = { version = "=1.1.3", default-features = false, features = ["use-std"] }
+sha2 = "=0.11.0"
+tokio = { version = "=1.53.3", features = ["rt", "sync", "macros", "time"] }
+seismic = { path = "../seismic/api" }
+opentelemetry = "0.33.0"
+opentelemetry_sdk = "0.33.0"
+opentelemetry-otlp = { version = "0.33.0", features = ["http-json", "reqwest"] }
+
+# Re-executes itself as a worker process whose stdout carries the protocol,
+# so it runs without the libtest harness (which prints to stdout).
+[[test]]
+name = "worker_parity"
+harness = false
+
+[[test]]
+name = "media_drafting"
+harness = false
+
+[dev-dependencies]
+magnitude-family-common = { path = "families/common", features = ["catalog-headers"] }
+flate2 = { version = "1.1" }
+tempfile = "3.24.0"
+
+[build-dependencies]
+sha2 = "=0.11.0"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "=0.2.189"
+
+[features]
+# Development-only: lets `magnitude-harness` record tuned configurations and
+# replay them in a later run (bit-exact comparisons). The served
+# `magnitude-engine` binary (engine/cli) never installs a pin.
+pinned-tuning = ["magnitude-executor/pinned-tuning"]
+# Development-only: lets `magnitude-harness` survey every admissible tuning
+# configuration (`--tuning-survey DIR`) for replaying the search.
+tuning-survey = ["magnitude-executor/tuning-survey"]

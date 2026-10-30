@@ -26,7 +26,7 @@
 </p>
 
 <p align="center">
-  <a href="#release-status-2026-09-21">Release status</a> &middot;
+  <a href="#release-status-2026-10-30">Release status</a> &middot;
   <a href="#measured-not-promised">Evidence</a> &middot;
   <a href="#choose-the-boundary">Surfaces</a> &middot;
   <a href="#quick-start">Quick start</a> &middot;
@@ -48,16 +48,16 @@ layer-streaming TEE profile. The runtime core does not dispatch on Qwen or any
 other model family.
 
 > [!IMPORTANT]
-> **Current release is v0.10.0.** `main` includes the Prism backend and
-> SystemOne scoring, and it is past the frozen parent. **v1.0.0 is still not
-> a production release.**
+> **Current release is v0.11.0.** It includes the scoped Magnitude native GGUF
+> Chat profile and is past the frozen parent. **The complete v1.0.0 production
+> release has not been published.**
 
-## Release status (2026-09-21)
+## Release status (2026-10-30)
 
 | Item | Status |
 | --- | --- |
-| Package / changelog | `Cargo.toml` `0.10.0`; dated `[0.10.0] - 2026-09-21` |
-| What v0.10.0 adds on `main` | PrismML / Bonsai serving (`prism_upstream`, `prism_profile`) and `POST /v1/systemone` |
+| Package / changelog | `Cargo.toml` `0.11.0`; dated `[0.11.0] - 2026-10-30` |
+| What v0.11.0 adds | Magnitude native GGUF Chat, streaming, tools, JSON Schema, CPU / Metal selection, and bounded production guidance |
 | Frozen source parent `S` for production v1 | `514031dc74edd72da7c3bfee40144a38d2d91434` |
 | Development / ROADMAP P0–P6 | Complete (software plan exit). Scale 0 / Phase R has not exited |
 | Exact-parent CPU + CUDA contract captures | Checked in under [release-contract-windows-20260910](docs/benchmarks/release-contract-windows-20260910/README.md) |
@@ -66,7 +66,7 @@ other model family.
 | Exact-parent SEV-SNP confidential-GPU capture | **Missing** (needs confidential hardware + NRAS promotion) |
 | `release/v1.0.0/` evidence child on `main` | **Absent** |
 | Annotated production tag `v1.0.0` | **Not published** |
-| This release tag | `v0.10.0` (pre-v1; does not satisfy the production evidence gate) |
+| This release tag | `v0.11.0` (pre-v1; scoped native Chat evidence, not the complete production evidence gate) |
 
 A production `v1.0.0` tag exists only when an evidence-only child of `S` adds
 exactly `release/v1.0.0/release-evidence.{json,sha256}` for all four platforms
@@ -126,10 +126,13 @@ Pick the narrowest surface that fits the product.
 
 ### Run the current hosted service
 
-Install the current v0.10.0 release:
+On Apple Silicon, install the current v0.11.0 release below. For another
+platform, use its matching archive from the same GitHub Release.
 
 ~~~bash
-cargo install a3s-power --version 0.10.0 --locked
+curl -fLO https://github.com/A3S-Lab/Power/releases/download/v0.11.0/a3s-power-v0.11.0-aarch64-apple-darwin.tar.gz
+tar xzf a3s-power-v0.11.0-aarch64-apple-darwin.tar.gz
+export PATH="$PWD:$PATH"
 a3s-power serve --host 127.0.0.1 --port 11434
 ~~~
 
@@ -274,6 +277,7 @@ contracts. They do not define the architecture of the Power core.
 | Feature | Capability | Native requirement |
 | --- | --- | --- |
 | `mistralrs` | Default GGUF, SafeTensors, vision, and embedding backend | No C++ inference engine |
+| `magnitude` | Optional Magnitude / Seismic native GGUF Chat backend; in-process inference with a Prepare worker for first-load tuning | Pinned local Magnitude source and platform backends |
 | `llamacpp` | Mature GGUF backend with native MTP support | CMake, C++ compiler, and libclang |
 | Prism (`prism_upstream` / `prism_profile`) | Fail-closed admission for PrismML / Bonsai packs; acceleration profiles `baseline`\|`dspark`\|`mtp`\|`dflash`\|`kv4` via upstream Prism `llama-server` | External Prism runtime (`docs/prism-acceleration-runbook.md`) |
 | Xolotl (`xolotl`) | Fail-closed admission for one DeepSeek-V4.1-Flash-1017 XQ pack on eight H200s, or on one GeForce RTX 4090 as the single-card expert cache (`--experts gpu` plus rank, no layer split). Forwards one non-streaming request to `serve_ds41.py`. Does not spawn `ds41_generate`. | External Xolotl `ds41_generate` (`docs/xolotl-h200-xq.md`) |
@@ -283,6 +287,15 @@ contracts. They do not define the architecture of the Power core.
 | `picolm` | Pure-Rust layer-streaming GGUF for constrained TEE memory | No C or C++ inference engine |
 | `embedded-cuda` / `embedded-metal` | Accelerators for model-owned embedded graphs | Platform toolkit |
 | `tls` / `vsock` / `hw-verify` | RA-TLS, guest-host transport, and AMD SEV-SNP verification | Platform-specific dependencies and trust roots |
+
+See the [Magnitude native backend production guide](docs/magnitude-backend.md)
+for the supported profile, configuration, and acceptance evidence. The adapter
+currently serves Chat only. It rejects keyed prompt caching, image input,
+Completion, embeddings, SystemOne, manifest prompt overrides, and confidential
+in-memory loading instead of silently changing their semantics. Set
+`magnitude_device = "auto"` for automatic accelerator selection, or `"cpu"`,
+`"metal"`, `"cuda"`, `"vulkan"`, or an exact Seismic selector to require one
+device. llama.cpp-specific placement overrides are not accepted.
 
 <details>
 <summary>Build profiles</summary>
@@ -299,6 +312,9 @@ cargo build --locked --release --no-default-features --features tee-minimal
 
 # llama.cpp with CUDA
 cargo build --locked --release --no-default-features --features llamacpp-cuda
+
+# Magnitude native Chat backend
+cargo build --locked --release --no-default-features --features magnitude
 
 # Strict verifier and release-promotion path
 cargo build --locked --release --no-default-features \

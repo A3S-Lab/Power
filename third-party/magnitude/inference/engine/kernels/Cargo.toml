@@ -1,0 +1,18 @@
+[package]
+publish = false
+name = "magnitude-kernels"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+seismic = { path = "../../seismic/api" }
+
+[build-dependencies]
+seismic-build = { path = "../../seismic/build" }
+
+[dev-dependencies]
+seismic-lang = { path = "../../seismic/lang" }
+seismic-std = { path = "../../seismic-std" }
+# Offline formation of focused requests (`tests/priming_formation.rs`).
+seismic = { path = "../../seismic/api", features = ["coverage"] }

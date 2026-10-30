@@ -3,6 +3,8 @@ pub mod gguf_stream;
 pub mod gpu;
 pub mod json_schema;
 pub mod llamacpp;
+#[cfg(feature = "magnitude")]
+pub mod magnitude;
 pub mod mistralrs_backend;
 mod openai_compat;
 pub mod picolm;
@@ -507,11 +509,10 @@ impl Default for BackendRegistry {
 
 /// Create a `BackendRegistry` with all available backends pre-registered.
 ///
-/// Backends are registered in priority order: Xolotl, then Prism, then
-/// mistral.rs, then llama.cpp. Xolotl and Prism claim only their own GGUF
-/// packs via `supports_manifest`. Ordinary GGUF still falls through to
-/// mistral.rs / llama.cpp. Use `find_by_name("llama.cpp")` to explicitly
-/// select llama.cpp.
+/// Backends are registered in priority order: Xolotl, then Prism, then the
+/// optional Magnitude engine, mistral.rs, and llama.cpp. Xolotl and Prism claim
+/// only their own GGUF packs via `supports_manifest`. Ordinary GGUF falls
+/// through to the first backend that recognizes the exact manifest.
 pub fn default_backends(#[allow(unused)] config: Arc<PowerConfig>) -> BackendRegistry {
     #[allow(unused_mut)]
     let mut registry = BackendRegistry::new();
@@ -521,6 +522,9 @@ pub fn default_backends(#[allow(unused)] config: Arc<PowerConfig>) -> BackendReg
 
     // PrismML / Bonsai packs — must register before generic GGUF backends.
     registry.register(Arc::new(prism::PrismBackend::new(config.clone())));
+
+    #[cfg(feature = "magnitude")]
+    registry.register(Arc::new(magnitude::MagnitudeBackend::new(config.clone())));
 
     // Register mistral.rs backend (pure Rust)
     #[cfg(feature = "mistralrs")]
@@ -804,7 +808,7 @@ mod tests {
         let generic = registry
             .list_names()
             .iter()
-            .any(|name| *name == "mistral.rs" || *name == "llama.cpp");
+            .any(|name| *name == "mistral.rs" || *name == "llama.cpp" || *name == "picolm");
         let ordinary_backend = registry.find_for_manifest(&ordinary);
         if generic {
             let backend = ordinary_backend.unwrap();

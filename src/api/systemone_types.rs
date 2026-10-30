@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 use crate::backend::systemone_scoring::{choice_label, distribution_confidence, subset_softmax};
 
 /// Maximum number of choice options (Jev cardinality).

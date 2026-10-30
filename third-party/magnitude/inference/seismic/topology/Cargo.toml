@@ -1,0 +1,49 @@
+[package]
+publish = false
+name = "seismic-topology"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+# What the machine is: the device topology, its discovery through the backend
+# crates and the OS, and status samples (specs/26-10-18/device-topology.md).
+[dependencies]
+seismic-lang = { path = "../lang" }
+seismic-cpu = { path = "../backends/cpu" }
+seismic-native-cpu = { path = "../native-cpu" }
+seismic-cuda = { path = "../backends/cuda" }
+seismic-metal = { path = "../backends/metal" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.149" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2.180" }
+
+# Vulkan is built on Linux and Windows only.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+seismic-vulkan = { path = "../backends/vulkan" }
+
+# Recorded Vulkan reports take the backend's own allocation rule on every
+# host, so on macOS the recorded machines bring the backend crate in.
+[target.'cfg(target_os = "macos")'.dependencies]
+seismic-vulkan = { path = "../backends/vulkan", optional = true }
+
+[dev-dependencies]
+# The recorded machines of this crate's own tests.
+seismic-vulkan = { path = "../backends/vulkan" }
+
+[features]
+# The recorded machines (`fixtures::recorded`), for other crates' tests.
+fixtures = ["dep:seismic-vulkan"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Wdk_System_SystemServices",
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_JobObjects",
+  "Win32_System_ProcessStatus",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Dxgi"] }

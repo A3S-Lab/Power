@@ -1,0 +1,14 @@
+[package]
+publish = false
+name = "magnitude-scheduler"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+magnitude-generation = { path = "../generation" }
+magnitude-family-contracts = { path = "../families/contracts" }
+magnitude-executor = { path = "../executor" }
+magnitude-state = { path = "../state" }
+serde = { version = "=1.0.229", features = ["derive"] }
+tracing = { version = "0.1.44" }

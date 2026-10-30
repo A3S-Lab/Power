@@ -1,0 +1,84 @@
+//! The drafter a load runs in the head lane: an embedded draft head (MTP),
+//! a draft head reading target history (MTP from a separate file) or a
+//! separate draft (DFlash, DSpark). Each runs one head transaction per
+//! submission and publishes step-major selections.
+
+use super::native_draft::{NativeDraftProgram, PreparedDraftGraphs};
+use super::native_head::{NativeHeadProgram, PreparedHeadGraphs};
+use super::native_shared_head::{NativeSharedHeadProgram, PreparedSharedHeadGraphs};
+use super::{DeviceSubmission, HeadOutput, HeadProgram};
+use crate::{HeadLaunchCore, NativeGraphWorkspaceLease, SubmitError, ValidatedHeadLaunch};
+use seismic::NativeGraphFamily;
+use std::rc::Rc;
+
+pub enum PreparedDrafterGraphs {
+    Head(Rc<PreparedHeadGraphs>),
+    SharedHead(Rc<PreparedSharedHeadGraphs>),
+    Draft(Rc<PreparedDraftGraphs>),
+}
+
+impl PreparedDrafterGraphs {
+    pub fn family(&self) -> &NativeGraphFamily {
+        match self {
+            Self::Head(graphs) => graphs.family(),
+            Self::SharedHead(graphs) => graphs.family(),
+            Self::Draft(graphs) => graphs.family(),
+        }
+    }
+
+    pub fn binding_constant_bytes(&self) -> Result<u64, String> {
+        match self {
+            Self::Head(graphs) => graphs.binding_constant_bytes(),
+            Self::SharedHead(graphs) => graphs.binding_constant_bytes(),
+            Self::Draft(graphs) => graphs.binding_constant_bytes(),
+        }
+    }
+
+    pub fn class_count(&self) -> usize {
+        match self {
+            Self::Head(graphs) => graphs.class_count(),
+            Self::SharedHead(graphs) => graphs.class_count(),
+            Self::Draft(graphs) => graphs.class_count(),
+        }
+    }
+}
+
+pub enum NativeDrafterProgram {
+    Head(NativeHeadProgram),
+    SharedHead(NativeSharedHeadProgram),
+    Draft(NativeDraftProgram),
+}
+
+impl NativeDrafterProgram {
+    /// Visit the graph constants the drafter's program binds.
+    pub(crate) fn visit_constants(&self, visit: &mut dyn FnMut(&seismic::Tensor)) {
+        match self {
+            Self::Head(program) => program.visit_constants(visit),
+            Self::SharedHead(program) => program.visit_constants(visit),
+            Self::Draft(program) => program.visit_constants(visit),
+        }
+    }
+
+    pub(crate) fn constant_bytes(&self) -> Result<u64, &'static str> {
+        match self {
+            Self::Head(program) => program.constant_bytes(),
+            Self::SharedHead(program) => program.constant_bytes(),
+            Self::Draft(program) => program.constant_bytes(),
+        }
+    }
+}
+
+impl HeadProgram for NativeDrafterProgram {
+    type Submission = DeviceSubmission<HeadLaunchCore, NativeGraphWorkspaceLease, HeadOutput>;
+
+    fn submit(
+        &mut self,
+        launch: ValidatedHeadLaunch,
+    ) -> Result<Self::Submission, (SubmitError, ValidatedHeadLaunch)> {
+        match self {
+            Self::Head(program) => program.submit(launch),
+            Self::SharedHead(program) => program.submit(launch),
+            Self::Draft(program) => program.submit(launch),
+        }
+    }
+}

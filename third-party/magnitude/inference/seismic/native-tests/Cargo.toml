@@ -1,0 +1,15 @@
+[package]
+name = "seismic-native-tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+seismic = { path = "../api" }
+
+[dev-dependencies]
+seismic-lang = { path = "../lang" }
+
+[build-dependencies]
+seismic-build = { path = "../build" }

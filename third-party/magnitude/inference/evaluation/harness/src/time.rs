@@ -1,0 +1,430 @@
+//! `time`: prefill and decode throughput at context lengths and concurrency,
+//! on fixtures sized to each context, without drafting (the drafter's
+//! acceptance is `draft`'s; served drafting is the serving benchmark's).
+//!
+//! Cells, at each context N and concurrency C:
+//! - `prefill`: C fresh sequences take their fixtures' tokens in prefill
+//!   steps of at most `PREFILL_ROWS` rows packed across sequences, as the
+//!   service bounds them; one cold sample, then warm samples (median). With
+//!   `--prefill-attribution`, one further sample runs each launch in its own
+//!   timed unit and decomposes the prefill's device time by entry;
+//! - `decode`: C sequences hold their fixtures' tokens as history, then
+//!   decode together, each step feeding back its greedy selections: warm
+//!   steps, then measured steps (median).
+//!
+//! Every measured step is traced per device submission: host time before
+//! the first encode, host encode time, device busy and idle within the step,
+//! device idle between steps, and host time after the device finished.
+//! With `--attribution-steps`, further decode steps run each launch in its
+//! own timed unit and decompose device time by entry; they are slower by
+//! construction and are not the cell's timing.
+
+use crate::artifacts::Artifacts;
+use crate::engine::{self, Engine, EngineOptions, Load, PREFILL_ROWS, Sequence, Step};
+use crate::fixture::FixtureSet;
+use crate::render::{Rendered, Renderer};
+use crate::steps::{attribution, device_end, median, medians, summary, window};
+use magnitude_executor::{Demand, Operation, WorkKind};
+use seismic::{SubmissionTrace, TraceDetail, host_seconds};
+use serde_json::{Value, json};
+
+const MS: f64 = 1e3;
+
+pub struct TimeOptions {
+    pub contexts: Vec<usize>,
+    pub concurrency: Vec<usize>,
+    pub warm: usize,
+    pub steps: usize,
+    pub attribution_steps: usize,
+    /// Attribute one further prefill sample's device time by entry.
+    pub prefill_attribution: bool,
+    /// Prefill samples, the first of them cold.
+    pub prefill_samples: usize,
+    pub lookahead: bool,
+}
+
+pub struct Timed {
+    pub rendered: Vec<Rendered>,
+    pub speed: Vec<Value>,
+    /// The target load's wall and processor time.
+    pub load: Value,
+    pub devices: Vec<String>,
+}
+
+pub fn run(
+    artifacts: &Artifacts,
+    set: &FixtureSet,
+    renderer: &Renderer<'_>,
+    options: &EngineOptions,
+    time: &TimeOptions,
+) -> Result<Timed, String> {
+    let mut by_context = Vec::with_capacity(time.contexts.len());
+    for &context in &time.contexts {
+        let rendered = set
+            .fixtures
+            .iter()
+            .map(|fixture| renderer.render(fixture, Some(context)))
+            .collect::<Result<Vec<_>, _>>()?;
+        by_context.push((context, rendered));
+    }
+
+    let longest = by_context
+        .iter()
+        .flat_map(|(_, rendered)| rendered.iter().map(|fixture| fixture.tokens.len()))
+        .max()
+        .expect("a fixture set is nonempty");
+    let widest = time.concurrency.iter().copied().max().unwrap_or(1);
+    let opening = (host_seconds(), process_cpu_seconds());
+    let mut engine = Engine::open(
+        artifacts,
+        options,
+        &Load {
+            drafter: false,
+            proposals: None,
+            context_tokens: longest + time.warm + time.steps + time.attribution_steps + 1,
+            decode_rows: widest,
+            exported_logits_rows: 0,
+            lookahead: time.lookahead,
+        },
+    )?;
+    // The whole load as this process ran it: a load that finds tuning units
+    // unprepared also waits for the worker process that prepares them, whose
+    // processor time is not this process's.
+    let load = json!({
+        "wall_ms": (host_seconds() - opening.0) * MS,
+        "process_cpu_ms": (process_cpu_seconds() - opening.1) * MS,
+    });
+    let devices = vec![engine.device().info().name().to_owned()];
+    let mut speed = Vec::new();
+    for (context, rendered) in &by_context {
+        for &concurrency in &time.concurrency {
+            let histories = (0..concurrency)
+                .map(|index| &rendered[index % rendered.len()])
+                .collect::<Vec<_>>();
+            eprintln!("magnitude-harness: prefill context={context} concurrency={concurrency}");
+            let cell = prefill_cell(&mut engine, time, &histories)?;
+            eprintln!(
+                "  {:.1} tok/s",
+                cell["tokens_per_second"].as_f64().unwrap_or(f64::NAN)
+            );
+            speed.push(with_cell(
+                cell,
+                "prefill",
+                *context,
+                concurrency,
+                &histories,
+            ));
+            eprintln!("magnitude-harness: decode context={context} concurrency={concurrency}");
+            let cell = decode_cell(&mut engine, time, &histories)?;
+            eprintln!(
+                "  {:.1} tok/s",
+                cell["tokens_per_second"].as_f64().unwrap_or(f64::NAN)
+            );
+            speed.push(with_cell(cell, "decode", *context, concurrency, &histories));
+        }
+    }
+    drop(engine);
+    let rendered = by_context
+        .into_iter()
+        .flat_map(|(_, rendered)| rendered)
+        .collect::<Vec<_>>();
+    Ok(Timed {
+        rendered,
+        speed,
+        load,
+        devices,
+    })
+}
+
+fn with_cell(
+    mut cell: Value,
+    phase: &str,
+    context: usize,
+    concurrency: usize,
+    histories: &[&Rendered],
+) -> Value {
+    cell["phase"] = json!(phase);
+    cell["context"] = json!(context);
+    cell["concurrency"] = json!(concurrency);
+    cell["fixtures"] = json!(
+        histories
+            .iter()
+            .map(|history| &history.fixture_id)
+            .collect::<Vec<_>>()
+    );
+    cell["history_tokens"] = json!(
+        histories
+            .iter()
+            .map(|history| history.tokens.len())
+            .collect::<Vec<_>>()
+    );
+    cell
+}
+
+fn traced(engine: &Engine, detail: TraceDetail) -> Result<SubmissionTrace, String> {
+    engine
+        .device()
+        .trace_submissions(detail)
+        .map_err(|error| error.to_string())
+}
+
+/// One prefill sample: fresh sequences take their histories in steps packed
+/// up to `PREFILL_ROWS` rows; each sequence's last chunk selects.
+fn prefill_sample(
+    engine: &mut Engine,
+    histories: &[&Rendered],
+    trace: &SubmissionTrace,
+) -> Result<(f64, Vec<Step>), String> {
+    let mut sequences = histories
+        .iter()
+        .map(|_| engine.open_sequence())
+        .collect::<Result<Vec<_>, _>>()?;
+    let tokens = histories
+        .iter()
+        .map(|history| engine::tokens(&history.tokens))
+        .collect::<Vec<_>>();
+    let start = host_seconds();
+    let mut steps = Vec::new();
+    while sequences
+        .iter()
+        .zip(&tokens)
+        .any(|(sequence, tokens)| sequence.position < tokens.len())
+    {
+        let mut budget = PREFILL_ROWS;
+        let mut operations = Vec::new();
+        let mut advancing = Vec::new();
+        for (sequence, tokens) in sequences.iter_mut().zip(&tokens) {
+            let rows = (tokens.len() - sequence.position).min(PREFILL_ROWS);
+            if rows == 0 || rows > budget {
+                continue;
+            }
+            budget -= rows;
+            let finishing = sequence.position + rows == tokens.len();
+            let piece = tokens[sequence.position..sequence.position + rows].to_vec();
+            let demand = if finishing {
+                Demand::SELECT
+            } else {
+                Demand::NONE
+            };
+            operations.push(Engine::forward(sequence, WorkKind::Prefill, piece, demand));
+            advancing.push(sequence);
+        }
+        let (step, _) = engine.step(operations, &mut advancing, Some(trace))?;
+        steps.push(step);
+    }
+    let seconds = host_seconds() - start;
+    for sequence in sequences {
+        engine.close(sequence)?;
+    }
+    Ok((seconds, steps))
+}
+
+fn prefill_cell(
+    engine: &mut Engine,
+    time: &TimeOptions,
+    histories: &[&Rendered],
+) -> Result<Value, String> {
+    let rows = histories
+        .iter()
+        .map(|history| history.tokens.len())
+        .sum::<usize>() as f64;
+    let trace = traced(engine, TraceDetail::Submissions)?;
+    let mut samples_ms = Vec::with_capacity(time.prefill_samples);
+    let mut summaries = Vec::new();
+    for sample in 0..time.prefill_samples {
+        let (seconds, steps) = prefill_sample(engine, histories, &trace)?;
+        samples_ms.push(seconds * MS);
+        if sample > 0 {
+            for step in &steps {
+                summaries.push(summary(step, None)?);
+            }
+        }
+    }
+    drop(trace);
+    let mut warm = samples_ms[1..].to_vec();
+    let median_ms = median(&mut warm);
+    // Untimed: each launch runs in its own timed unit, and each step of the
+    // sample collects its own launches.
+    let attributed = if time.prefill_attribution {
+        let trace = traced(engine, TraceDetail::Launches)?;
+        let (_, steps) = prefill_sample(engine, histories, &trace)?;
+        let mut submissions = steps
+            .into_iter()
+            .flat_map(|step| step.submissions)
+            .collect::<Vec<_>>();
+        submissions.extend(trace.collect().map_err(|error| error.to_string())?);
+        attribution(&submissions, 1, f64::INFINITY)
+    } else {
+        Value::Null
+    };
+    Ok(json!({
+        "tokens_per_second": rows / (median_ms / MS),
+        "samples": samples_ms[1..].iter().map(|ms| rows / (ms / MS)).collect::<Vec<_>>(),
+        "detail": {
+            "rows": rows,
+            "median_ms": median_ms,
+            "cold_ms": samples_ms[0],
+            "samples_ms": &samples_ms[1..],
+            "median_step": medians(&summaries),
+            "attribution": attributed,
+        },
+    }))
+}
+
+fn decode_cell(
+    engine: &mut Engine,
+    time: &TimeOptions,
+    histories: &[&Rendered],
+) -> Result<Value, String> {
+    let mut sequences = Vec::with_capacity(histories.len());
+    for history in histories {
+        let mut sequence = engine.open_sequence()?;
+        engine.prefill(&mut sequence, &engine::tokens(&history.tokens), true)?;
+        sequences.push(sequence);
+    }
+    let decode = |sequences: &[Sequence]| -> Result<Vec<Operation>, String> {
+        sequences
+            .iter()
+            .map(|sequence| {
+                let token = sequence.selected.ok_or("a decode follows a selection")?;
+                Ok(Engine::forward(
+                    sequence,
+                    WorkKind::Decode,
+                    vec![token],
+                    Demand::SELECT,
+                ))
+            })
+            .collect()
+    };
+    let detail = measure(engine, &mut sequences, time, &decode)?;
+    let step_ms = detail["median_ms"].as_f64().expect("a median");
+    let concurrency = sequences.len() as f64;
+    let samples = detail["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .map(|step| concurrency / (step["wall_ms"].as_f64().expect("wall") / MS))
+        .collect::<Vec<_>>();
+    for sequence in sequences {
+        engine.close(sequence)?;
+    }
+    Ok(json!({
+        "tokens_per_second": concurrency / (step_ms / MS),
+        "samples": samples,
+        "detail": detail,
+    }))
+}
+
+/// Measure `time.steps` steps made by `make` after `time.warm`, traced per
+/// submission, then attribute `time.attribution_steps` more by entry.
+fn measure(
+    engine: &mut Engine,
+    sequences: &mut [Sequence],
+    time: &TimeOptions,
+    make: &dyn Fn(&[Sequence]) -> Result<Vec<Operation>, String>,
+) -> Result<Value, String> {
+    // Every warm and measured step's selections, per sequence in order: two
+    // runs that decode the same tokens have the same digest.
+    let selected = std::cell::RefCell::new(Vec::<u8>::new());
+    let run = |engine: &mut Engine,
+               sequences: &mut [Sequence],
+               trace: &SubmissionTrace|
+     -> Result<Step, String> {
+        let operations = make(sequences)?;
+        let mut refs = sequences.iter_mut().collect::<Vec<_>>();
+        // Under lookahead the trace is collected once per window: a per-step
+        // collect would wait for the step queued behind this one.
+        let per_step = (!engine.lookahead).then_some(trace);
+        let (step, _) = engine.step(operations, &mut refs, per_step)?;
+        selected
+            .borrow_mut()
+            .extend(sequences.iter().flat_map(|sequence| {
+                sequence
+                    .selected
+                    .map_or(u32::MAX, |token| token.0)
+                    .to_le_bytes()
+            }));
+        Ok(step)
+    };
+    let collect = |trace: &SubmissionTrace| trace.collect().map_err(|error| error.to_string());
+    let trace = traced(engine, TraceDetail::Submissions)?;
+    for _ in 0..time.warm {
+        run(engine, sequences, &trace)?;
+    }
+    collect(&trace)?;
+    let mut summaries = Vec::with_capacity(time.steps);
+    let mut previous = None;
+    let mut submissions = Vec::new();
+    // The window opens at the end of the first measured step. Collecting the
+    // warm steps' trace waited for everything queued, which under lookahead
+    // includes the first measured step itself: it finished before any clock
+    // here started, so a window opened at its start would cover one step
+    // more than the device ran.
+    let mut span = (f64::NAN, f64::NAN);
+    let mut cpu = (0.0, 0.0);
+    for index in 0..time.steps {
+        let step = run(engine, sequences, &trace)?;
+        if index == 0 {
+            span.0 = step.end;
+            cpu.0 = process_cpu_seconds();
+        }
+        span.1 = step.end;
+        cpu.1 = process_cpu_seconds();
+        if engine.lookahead {
+            summaries.push(json!({ "wall_ms": (step.end - step.start) * MS }));
+        } else {
+            summaries.push(summary(&step, previous)?);
+            previous = Some(device_end(&step));
+        }
+        submissions.extend(step.submissions);
+    }
+    submissions.extend(collect(&trace)?);
+    drop(trace);
+    let attributed = if time.attribution_steps == 0 {
+        Value::Null
+    } else {
+        let trace = traced(engine, TraceDetail::Launches)?;
+        let mut attributed = Vec::new();
+        let mut attributed_end = f64::NEG_INFINITY;
+        for _ in 0..time.attribution_steps {
+            // Attributed steps are untimed, so each collects its own launches
+            // even under lookahead.
+            let operations = make(sequences)?;
+            let mut refs = sequences.iter_mut().collect::<Vec<_>>();
+            let (step, _) = engine.step(operations, &mut refs, Some(&trace))?;
+            attributed_end = step.end;
+            attributed.extend(step.submissions);
+        }
+        attributed.extend(collect(&trace)?);
+        attribution(&attributed, time.attribution_steps, attributed_end)
+    };
+    let mut wall = summaries
+        .iter()
+        .map(|summary| summary["wall_ms"].as_f64().expect("wall"))
+        .collect::<Vec<_>>();
+    let mut window = window(time.steps - 1, span, &submissions);
+    window["process_cpu_ms_per_step"] = json!((cpu.1 - cpu.0) * MS / (time.steps - 1) as f64);
+    Ok(json!({
+        "warm_steps": time.warm,
+        "lookahead": engine.lookahead,
+        "median_ms": median(&mut wall),
+        "median_step": medians(&summaries),
+        "window": window,
+        "selected_sha256": crate::digest::sha256_hex(&selected.borrow()),
+        "steps": summaries,
+        "attribution": attributed,
+    }))
+}
+
+/// Processor time this process has used, on every thread, in seconds.
+pub fn process_cpu_seconds() -> f64 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `clock_gettime` writes a whole `timespec` to the pointer it is
+    // given; the process clock exists on every supported host.
+    let read = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut time) };
+    assert_eq!(read, 0, "the process has a processor-time clock");
+    time.tv_sec as f64 + time.tv_nsec as f64 * 1e-9
+}

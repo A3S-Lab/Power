@@ -164,23 +164,28 @@ impl ResidentTensorReservation {
 impl Drop for ResidentTensorReservation {
     fn drop(&mut self) {
         let bytes = self.bytes;
-        let _ = self.inner.resident_bytes.fetch_update(
+        let _ = crate::atomic_fetch_update!(
+            self.inner.resident_bytes,
             Ordering::AcqRel,
             Ordering::Acquire,
-            |current| Some(current.saturating_sub(bytes)),
+            |current: u64| Some(current.saturating_sub(bytes))
         );
-        let _ = self.inner.active_handles.fetch_update(
+        let _ = crate::atomic_fetch_update!(
+            self.inner.active_handles,
             Ordering::AcqRel,
             Ordering::Acquire,
-            |current| Some(current.saturating_sub(1)),
+            |current: u64| Some(current.saturating_sub(1))
         );
     }
 }
 
 fn saturating_increment(counter: &AtomicU64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        Some(current.saturating_add(1))
-    });
+    let _ = crate::atomic_fetch_update!(
+        counter,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+        |current: u64| Some(current.saturating_add(1))
+    );
 }
 
 fn capacity_error(requested_bytes: u64, maximum_bytes: u64) -> PowerError {

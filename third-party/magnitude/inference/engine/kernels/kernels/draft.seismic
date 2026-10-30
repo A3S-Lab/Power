@@ -1,0 +1,202 @@
+# Draft-head input publication. Attention, dense feed-forward, and final norm
+# reuse the identical checked decoder entries; this entry owns the only
+# head-specific equation: normalized successor embedding + normalized target
+# feature followed by the 2D -> D combining projection.
+#
+# `tokens` has the `sample_rows` result layout (token, status), so a chained
+# draft step embeds the previous step's selection directly; `directory`
+# addresses the table's rows (`gathered_row`). A failed selection (token -1)
+# embeds row 0; its proposal is discarded by the host.
+fn draft_rows[M, V, D, S, R, F](tokens: &tensor[M, 2] i32, directory: &tensor[R, F] i32,
+    table: &tensor[V, D] EW, conditioning: &tensor[M, S * D] C, embedding_norm: &tensor[D] EN,
+    hidden_norm: &tensor[S * D] HN, combine: &tensor[D, 2 * D] CW,
+    epsilon: f32) -> tensor[M, S * D] f32 where R >= 0 and F >= 1 and S >= 1 and operands(CW) == 0:
+    let mut embedded = tensor[M, D] A
+    let mut normalized_embedding = tensor[M, D] A
+    let mut joined = tensor[M * S, 2 * D] A
+    let mut projected = tensor[M * S, D] f32
+    let mut result = tensor[M, S * D] f32
+    parallel for row in 0..M:
+        let token = gathered_row(directory, tokens[row, 0])
+        parallel for column in 0..D:
+            embedded[row, column] = f32(table[token, column])
+    rms_norm(embedded, embedding_norm, normalized_embedding, epsilon)
+    parallel for row in 0..M:
+        parallel for stream in 0..S:
+            let mut squares = 0.0
+            for column in 0..D:
+                let value = f32(conditioning[row, stream * D + column])
+                squares += value * value
+            let inverse = rsqrt(squares / f32(D) + epsilon)
+            parallel for column in 0..D:
+                joined[row * S + stream, column] = normalized_embedding[row, column]
+                joined[row * S + stream, D + column] = f32(conditioning[row, stream * D + column]) * inverse * f32(hidden_norm[stream * D + column])
+                projected[row * S + stream, column] = 0.0
+    linear(joined, combine, projected)
+    parallel for row in 0..M:
+        parallel for stream in 0..S:
+            parallel for column in 0..D:
+                result[row, stream * D + column] = projected[row * S + stream, column]
+    return result
+
+# Metal decode uses one threadgroup per (32 outputs, row). Prefill joins
+# each row once, then shares combine weights across 64 rows through GEMM.
+# The decode threadgroup forms the row's
+# joined [2D] input in A in threadgroup memory (embedding rows and the combine
+# weight decoded through the `rows16` packet library), then each simdgroup
+# reduces four combine rows over it. (CUDA holds the joined row in F32 and
+# decodes mma16 lane chunks, hence its larger shared memory.)
+native draft_rows for metal from "metal/draft_rows.metal":
+    scratch joined bytes (M * S * D * 2 * 2 * min(M * S / 17, 1))
+    launch draft_rows when M * S <= 16:
+        threadgroups (ceil_div(D, 32), M * S, 1)
+        threads_per_threadgroup (256, 1, 1)
+        shared_bytes (4 * D + 64)
+    launch draft_rows_join when M * S > 16:
+        threadgroups (1, M * S, 1)
+        threads_per_threadgroup (256, 1, 1)
+        shared_bytes (4 * D + 64)
+    launch draft_rows_gemm when M * S > 16:
+        threadgroups (ceil_div(D, 64), ceil_div(M * S, 64), 1)
+        threads_per_threadgroup (128, 1, 1)
+
+# CUDA shares the standard projection row bands. Large classes stage each
+# normalized row/stream once and share combine weight tiles across rows.
+native draft_rows for cuda from "cuda/draft_rows.cu":
+    scratch joined bytes (M * S * D * 4) when M * S > 16
+    launch draft_rows when M * S <= 16:
+        threadgroups (ceil_div(D, 32), M * S, 1)
+        threads_per_threadgroup (256, 1, 1)
+        shared_bytes (8 * D)
+    launch draft_rows_join when M * S > 16:
+        threadgroups (1, M * S, 1)
+        threads_per_threadgroup (256, 1, 1)
+        shared_bytes (8 * D)
+    launch draft_rows_gemm_small when M * S > 16 and M * S <= 64:
+        threadgroups (ceil_div(D, 128), 1, 1)
+        threads_per_threadgroup (256, 1, 1)
+        shared_bytes (3 * (64 * 144 + 10240) + 2048)
+    launch draft_rows_gemm when M * S > 64:
+        threadgroups (ceil_div(D, 128), ceil_div(M * S, 128), 1)
+        threads_per_threadgroup (256, 1, 1)
+        shared_bytes (2 * (128 * 144 + 10240) + 2048)
+
+native draft_rows for vulkan from "vulkan/draft_rows.comp":
+    static (D)
+    launch draft_rows:
+        threadgroups (ceil_div(D, 32), M * S, 1)
+        threads_per_threadgroup (256, 1, 1)
+        shared_bytes (4 * D + 64)
+
+# CPU: a join launch writes each row's joined [2D] input (both RMS norms in
+# A) as F32 to scratch; the row launch gives each work item ROWS combine
+# weight rows, projected against every joined row (the CPU projection
+# library, `cpu/lib/projection/projection.rs`).
+native draft_rows for cpu from "cpu/draft_rows.rs":
+    params (ROWS in [8, 4, 2, 1], arithmetic form INT8 in [0, 1])
+    scratch quantized bytes (M * S * ceil_div(2 * D, 256) * 292)
+    scratch joined bytes (M * S * D * 8)
+    launch draft_rows_join:
+        threadgroups (M * S, 1, 1)
+        threads_per_threadgroup (1, 1, 1)
+        shared_bytes (D * 8 * (S + 1))
+    launch draft_rows_rows:
+        threadgroups (ceil_div(D, ROWS), 1, 1)
+        threads_per_threadgroup (1, 1, 1)
+
+
+# The draft head's readout: the vocabulary projection of feature rows that
+# are already normalized (K1 projection without a prologue).
+# A vocabulary projection of semantic, already-rounded feature rows. I=0
+# uses implicit canonical rows; I=1 gathers independent canonical rows for
+# each feature row. Both publish the same scaled/capped projection recipe.
+fn readout_project_rows[O, V, D, S, I, WS](features: &tensor[O, D] A,
+    weight: &tensor[V, D] OW, token_rows: &tensor[O, I, S] i32,
+    weight_scale: &tensor[WS] f32, softcap: f32) -> tensor[O, S] f32
+    where S >= 1 and S <= V and I >= 0 and I <= 1 and WS >= 0 and WS <= 1:
+    # The feature rows are dense activations: staging them in A, as the
+    # weight's operand rows (an exact copy unless the weight is NVFP4),
+    # states that domain, which the CUDA forms' A staging requires.
+    let mut rows = tensor[O, D] A
+    operand_rows(features, operands(weight), rows)
+    let mut logits = tensor[O, S] f32
+    parallel for row in 0..O:
+        parallel for col in 0..S:
+            let mut token = i32(col)
+            if I == 1:
+                token = token_rows[row, 0, col]
+            if token < 0 or token >= i32(V):
+                logits[row, col] = -inf
+            else:
+                let mut value = reduce(f32(rows[row]) * f32(weight[token]), 0, sum)
+                if WS == 1:
+                    value = value * weight_scale[0]
+                logits[row, col] = cap_logit(value, softcap)
+    return logits
+
+native readout_project_rows for metal from "metal/readout_project_rows.metal":
+    static (V, D, S, I, WS)
+    launch readout_project_rows_gemv:
+        params (SIMDGROUPS in [16, 8, 4, 2, 32], code ROWS in [1, 2, 4], code arithmetic LANES in [16, 32])
+        threadgroups (S * I + (1 - I) * ceil_div(S, SIMDGROUPS * ROWS * 32 / LANES), O, 1)
+        threads_per_threadgroup (SIMDGROUPS * 32, 1, 1)
+        shared_bytes (min(ceil_div(D, 32), 448) * 64)
+
+native readout_project_rows for cuda from "cuda/readout_project_rows.cu":
+    static (V, D, S, I, WS)
+    params (code arithmetic OPERAND in [0, 1])
+    where D % 64 == 0 and (I == 0 or OPERAND == 0)
+    scratch staged bytes (O * D * 2) when O > 1 or I == 1
+    launch readout_project_rows_stage when O > 1 or I == 1:
+        reads (OPERAND)
+        threadgroups (O, 1, 1)
+        threads_per_threadgroup (256, 1, 1)
+    launch readout_project_rows_gemv when I == 0 and O <= 8:
+        params (code arithmetic KSPLIT in [4, 2, 8])
+        threadgroups (ceil_div(ceil_div(S, 16), 8 / KSPLIT), 1, 1)
+        threads_per_threadgroup (256, 1, 1)
+        shared_bytes ((1 - min(1, O - 1)) * D * 2)
+    launch readout_project_rows_gemv16 when I == 0 and O > 8 and O <= 16:
+        params (code arithmetic KSPLIT in [4, 2, 8])
+        threadgroups (ceil_div(ceil_div(S, 16), 8 / KSPLIT), 1, 1)
+        threads_per_threadgroup (256, 1, 1)
+    launch readout_project_rows_gemm_small when I == 0 and O > 16 and O <= 64:
+        reads (OPERAND)
+        threadgroups (ceil_div(ceil_div(S, 16), 8), 1, 1)
+        threads_per_threadgroup (256, 1, 1)
+        shared_bytes (3 * (64 * 144 + 10240) + 2048)
+    launch readout_project_rows_gemm when I == 0 and O > 64:
+        params (code ROTATE in [2, 1, 4])
+        reads (OPERAND)
+        threadgroups (ceil_div(ceil_div(S, 16), 8), ceil_div(O, 128), 1)
+        threads_per_threadgroup (256, 1, 1)
+        shared_bytes (2 * (128 * 144 + 10240) + 2048)
+    launch readout_project_rows_indexed when I == 1:
+        params (code arithmetic KSPLIT in [4, 2, 8])
+        threadgroups (S, O, 1)
+        threads_per_threadgroup (256, 1, 1)
+
+# Vulkan: each threadgroup projects one feature row through the GEMV
+# library, whose shared region is the row-norm squares, then one row's staged
+# packets (64 bytes each) and their 16-column sums (8 bytes each), at most
+# 288 packets a chunk (`lib/projection/projection.glsl`).
+native readout_project_rows for vulkan from "vulkan/readout_project_rows.comp":
+    static (V, D, S, I, WS)
+    params (SIMDGROUPS in [16, 8, 4, 2, 32], ROWS in [1, 2, 4], arithmetic LANES in [16, 32])
+    where S * I + (1 - I) * ceil_div(S, SIMDGROUPS * ROWS * 32 / LANES) <= 65535
+    launch readout_project_rows_gemv:
+        threadgroups (S * I + (1 - I) * ceil_div(S, SIMDGROUPS * ROWS * 32 / LANES), O, 1)
+        threads_per_threadgroup (SIMDGROUPS * 32, 1, 1)
+        shared_bytes (256 + 32 * operands(OW) + min(ceil_div(D, 32), 288) * 72)
+
+native readout_project_rows for cpu from "cpu/readout_project_rows.rs":
+    static (WS, I)
+    params (ROWS in [8, 4, 2, 1], arithmetic form INT8 in [0, 1])
+    scratch quantized bytes (O * ceil_div(D, 256) * 292)
+    scratch staged bytes (O * D * 4)
+    launch readout_project_rows_stage:
+        threadgroups (O, 1, 1)
+        threads_per_threadgroup (1, 1, 1)
+    launch readout_project_rows_rows:
+        threadgroups (ceil_div(S, ROWS), 1, 1)
+        threads_per_threadgroup (1, 1, 1)

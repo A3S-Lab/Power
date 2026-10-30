@@ -339,18 +339,19 @@ async fn failure_audit_applies_error_and_log_privacy_without_hiding_benign_reaso
     owned.audit_failure("upstream invalid input; prompt: AUDIT_PROMPT_SECRET".into());
     owned.audit_failure(r#"upstream rejected payload {"content":"AUDIT_JSON_SECRET"}"#.into());
     owned.audit_failure("upstream returned 503 Service Unavailable".into());
-    let events = audit.0.lock().unwrap();
-    let serialized = serde_json::to_string(&*events).unwrap();
-    assert!(!serialized.contains("AUDIT_PROMPT_SECRET"));
-    assert!(!serialized.contains("AUDIT_JSON_SECRET"));
-    assert!(serialized.contains("[REDACTED]"));
-    match &events[2].status {
-        crate::server::audit::AuditStatus::Failure { reason } => {
-            assert_eq!(reason, "upstream returned 503 Service Unavailable");
+    {
+        let events = audit.0.lock().unwrap();
+        let serialized = serde_json::to_string(&*events).unwrap();
+        assert!(!serialized.contains("AUDIT_PROMPT_SECRET"));
+        assert!(!serialized.contains("AUDIT_JSON_SECRET"));
+        assert!(serialized.contains("[REDACTED]"));
+        match &events[2].status {
+            crate::server::audit::AuditStatus::Failure { reason } => {
+                assert_eq!(reason, "upstream returned 503 Service Unavailable");
+            }
+            _ => panic!("failure audit changed status"),
         }
-        _ => panic!("failure audit changed status"),
     }
-    drop(events);
     owned.finish().await;
 }
 

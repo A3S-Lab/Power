@@ -71,11 +71,12 @@ impl PromptCacheTelemetry {
 
     fn remove_entries(&self, count: usize) {
         let count = count as u64;
-        let _ = self
-            .entries
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |entries| {
-                Some(entries.saturating_sub(count))
-            });
+        let _ = crate::atomic_fetch_update!(
+            self.entries,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |entries: u64| Some(entries.saturating_sub(count))
+        );
     }
 
     fn add_capacity(&self, count: usize) {
@@ -84,11 +85,12 @@ impl PromptCacheTelemetry {
 
     fn remove_capacity(&self, count: usize) {
         let count = count as u64;
-        let _ = self
-            .capacity
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |capacity| {
-                Some(capacity.saturating_sub(count))
-            });
+        let _ = crate::atomic_fetch_update!(
+            self.capacity,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |capacity: u64| Some(capacity.saturating_sub(count))
+        );
     }
 
     fn record_evictions(&self, count: usize) {

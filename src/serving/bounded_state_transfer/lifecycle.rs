@@ -205,10 +205,11 @@ impl Inner {
 
     pub(super) fn reclaim_registration(&self, lease: &TransferLease) {
         let bytes = lease.registered_bytes();
-        match self.registered_adapter_bytes.fetch_update(
+        match crate::atomic_fetch_update!(
+            self.registered_adapter_bytes,
             Ordering::Relaxed,
             Ordering::Relaxed,
-            |current| Some(current.saturating_sub(bytes)),
+            |current: u64| Some(current.saturating_sub(bytes))
         ) {
             Ok(previous) if previous < bytes => self.mark_cleanup_failure(),
             Ok(_) | Err(_) => {}

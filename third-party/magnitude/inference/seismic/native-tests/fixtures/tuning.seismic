@@ -1,0 +1,219 @@
+# Adds `x` into `state` in place. `BIAS` is declared a mapping parameter, but
+# a value of 1 changes the bits written to `state`: tuning reports it as a
+# misclassified-parameter defect, found only by validating the `&mut`
+# parameter (the entry has no results).
+fn accumulate[N](state: &mut tensor[N] f32, x: &tensor[N] f32):
+    parallel for i in 0..N:
+        state[i] = state[i] + x[i]
+
+native accumulate for metal from "metal/accumulate.metal":
+    params (BIAS in [0, 1], WIDTH in [32, 64])
+    launch accumulate:
+        threadgroups (ceil_div(N, WIDTH), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+native accumulate for cuda from "cuda/accumulate.cu":
+    params (BIAS in [0, 1], WIDTH in [32, 64])
+    launch accumulate:
+        threadgroups (ceil_div(N, WIDTH), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+native accumulate for vulkan from "vulkan/accumulate.comp":
+    params (BIAS in [0, 1], WIDTH in [32, 64])
+    launch accumulate:
+        threadgroups (ceil_div(N, WIDTH), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+native accumulate for cpu from "cpu/accumulate.rs":
+    params (BIAS in [0, 1], WIDTH in [32, 64])
+    launch accumulate:
+        threadgroups (1, 1, 1)
+        threads_per_threadgroup (1, 1, 1)
+
+# The same kernels with `BIAS` declared for what it is: a configuration that
+# intentionally changes numerics. Tuning forms it only for a caller that
+# allows its deviation class.
+fn classed_accumulate[N](state: &mut tensor[N] f32, x: &tensor[N] f32):
+    parallel for i in 0..N:
+        state[i] = state[i] + x[i]
+
+native classed_accumulate for metal from "metal/accumulate.metal":
+    params (BIAS in [0, 1], WIDTH in [32, 64])
+    launch accumulate:
+        threadgroups (ceil_div(N, WIDTH), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+native classed_accumulate for cuda from "cuda/accumulate.cu":
+    params (BIAS in [0, 1], WIDTH in [32, 64])
+    launch accumulate:
+        threadgroups (ceil_div(N, WIDTH), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+native classed_accumulate for vulkan from "vulkan/accumulate.comp":
+    params (BIAS in [0, 1], WIDTH in [32, 64])
+    launch accumulate:
+        threadgroups (ceil_div(N, WIDTH), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+native classed_accumulate for cpu from "cpu/accumulate.rs":
+    params (BIAS in [0, 1], WIDTH in [32, 64])
+    launch accumulate:
+        threadgroups (1, 1, 1)
+        threads_per_threadgroup (1, 1, 1)
+
+# Two row bands with independently named code and runtime parameters. The
+# same parameter names in both launches address distinct tuning choices.
+fn scoped_scale[N](x: &tensor[N] f32) -> tensor[N] f32:
+    let mut output = tensor[N] f32
+    parallel for i in 0..N:
+        output[i] = x[i] * 2.0
+    return output
+
+native scoped_scale for metal from "metal/scoped_scale.metal":
+    launch scoped_scale_small when N <= 16:
+        params (WIDTH in [32, 64], code ROWS in [1, 2])
+        threadgroups (ceil_div(N, WIDTH * ROWS), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+    launch scoped_scale_large when N > 16:
+        params (WIDTH in [64, 128], code ROWS in [4, 8])
+        threadgroups (ceil_div(N, WIDTH * ROWS), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+# The first two native choices share a defect; only the last implements the source.
+fn wrong_default[N](state: &mut tensor[N] f32, x: &tensor[N] f32):
+    parallel for i in 0..N:
+        state[i] = state[i] + x[i]
+
+native wrong_default for metal from "metal/accumulate.metal":
+    params (BIAS in [1, 2, 0], WIDTH in [32])
+    launch accumulate:
+        threadgroups (ceil_div(N, WIDTH), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+native wrong_default for cuda from "cuda/accumulate.cu":
+    params (BIAS in [1, 2, 0], WIDTH in [32])
+    launch accumulate:
+        threadgroups (ceil_div(N, WIDTH), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+native wrong_default for vulkan from "vulkan/accumulate.comp":
+    params (BIAS in [1, 2, 0], WIDTH in [32])
+    launch accumulate:
+        threadgroups (ceil_div(N, WIDTH), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+native wrong_default for cpu from "cpu/accumulate.rs":
+    params (BIAS in [1, 2, 0], WIDTH in [32])
+    launch accumulate:
+        threadgroups (1, 1, 1)
+        threads_per_threadgroup (1, 1, 1)
+
+# The defect of `wrong_default`, with choices that differ in cost by far
+# more than a host's timing moves: `PACE` is the rounds of work a call does
+# before its sum. Paces 2 to 5 write what the default (1) does and take that
+# many times its work; 0 does none of it and 6 the most, and each of those
+# two writes other bits than the default. A candidate that disagrees with
+# the default is here clearly faster than it, or clearly slower.
+fn paced_wrong_default[N](state: &mut tensor[N] f32, x: &tensor[N] f32):
+    parallel for i in 0..N:
+        state[i] = state[i] + x[i]
+
+native paced_wrong_default for metal from "metal/paced.metal":
+    params (PACE in [1, 2, 3, 4, 5, 0, 6])
+    launch paced:
+        threadgroups (ceil_div(N, 32), 1, 1)
+        threads_per_threadgroup (32, 1, 1)
+
+native paced_wrong_default for cuda from "cuda/paced.cu":
+    params (PACE in [1, 2, 3, 4, 5, 0, 6])
+    launch paced:
+        threadgroups (ceil_div(N, 32), 1, 1)
+        threads_per_threadgroup (32, 1, 1)
+
+native paced_wrong_default for vulkan from "vulkan/paced.comp":
+    params (PACE in [1, 2, 3, 4, 5, 0, 6])
+    launch paced:
+        threadgroups (ceil_div(N, 32), 1, 1)
+        threads_per_threadgroup (32, 1, 1)
+
+native paced_wrong_default for cpu from "cpu/paced.rs":
+    params (PACE in [1, 2, 3, 4, 5, 0, 6])
+    launch paced:
+        threadgroups (1, 1, 1)
+        threads_per_threadgroup (1, 1, 1)
+
+fn scoped_wrong_default[N](x: &tensor[N] f32) -> tensor[N] f32:
+    let mut output = tensor[N] f32
+    parallel for i in 0..N:
+        output[i] = x[i] * 2.0
+    return output
+
+native scoped_wrong_default for metal from "metal/scoped_faulty.metal":
+    launch scoped_scale_small when N <= 16:
+        params (WIDTH in [32, 64], code ROWS in [1, 2])
+        threadgroups (ceil_div(N, WIDTH * ROWS), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+    launch scoped_scale_large when N > 16:
+        params (WIDTH in [64, 128], code ROWS in [4, 8])
+        threadgroups (ceil_div(N, WIDTH * ROWS), 1, 1)
+        threads_per_threadgroup (WIDTH, 1, 1)
+
+# The second choice deliberately omits all result writes. Pooled results must
+# not preserve the preceding good candidate's output during validation.
+fn omitted_write[N](x: &tensor[N] f32) -> tensor[N] f32:
+    return to_owned(x)
+
+native omitted_write for metal from "metal/omitted_write.metal":
+    params (WRITE in [1, 0])
+    launch omitted_write:
+        threadgroups (ceil_div(N, 32), 1, 1)
+        threads_per_threadgroup (32, 1, 1)
+
+native omitted_write for cuda from "cuda/omitted_write.cu":
+    params (WRITE in [1, 0])
+    launch omitted_write:
+        threadgroups (ceil_div(N, 32), 1, 1)
+        threads_per_threadgroup (32, 1, 1)
+
+native omitted_write for vulkan from "vulkan/omitted_write.comp":
+    params (WRITE in [1, 0])
+    launch omitted_write:
+        threadgroups (ceil_div(N, 32), 1, 1)
+        threads_per_threadgroup (32, 1, 1)
+
+native omitted_write for cpu from "cpu/omitted_write.rs":
+    params (WRITE in [1, 0])
+    launch omitted_write:
+        threadgroups (1, 1, 1)
+        threads_per_threadgroup (1, 1, 1)
+
+# The second choice writes a wrong last row. A tuning point that declares
+# only the leading rows written does not observe it; a point observed whole
+# rejects it.
+fn stray_write[N](state: &mut tensor[N] f32, x: &tensor[N] f32):
+    parallel for i in 0..N:
+        state[i] = x[i]
+
+native stray_write for metal from "metal/stray_write.metal":
+    params (STRAY in [0, 1])
+    launch stray_write:
+        threadgroups (ceil_div(N, 32), 1, 1)
+        threads_per_threadgroup (32, 1, 1)
+
+native stray_write for cuda from "cuda/stray_write.cu":
+    params (STRAY in [0, 1])
+    launch stray_write:
+        threadgroups (ceil_div(N, 32), 1, 1)
+        threads_per_threadgroup (32, 1, 1)
+
+native stray_write for vulkan from "vulkan/stray_write.comp":
+    params (STRAY in [0, 1])
+    launch stray_write:
+        threadgroups (ceil_div(N, 32), 1, 1)
+        threads_per_threadgroup (32, 1, 1)
+
+native stray_write for cpu from "cpu/stray_write.rs":
+    params (STRAY in [0, 1])
+    launch stray_write:
+        threadgroups (1, 1, 1)
+        threads_per_threadgroup (1, 1, 1)

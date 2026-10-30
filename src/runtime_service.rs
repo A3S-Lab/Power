@@ -73,6 +73,19 @@ impl PowerRuntimeServiceProfile {
         });
         secrets.extend(self.secrets.clone());
 
+        // Runtime 0.8 defaults optional host services to an empty list. Use the
+        // common serialized contract so older compatible 0.8 sources omit it.
+        let network: RuntimeNetworkSpec = serde_json::from_value(serde_json::json!({
+            "mode": NetworkMode::Service,
+            "ports": [RuntimePort {
+                name: POWER_HTTP_PORT_NAME.into(),
+                container_port: self.port,
+                protocol: TransportProtocol::Tcp,
+            }],
+            "egress_allowlist": null,
+        }))
+        .map_err(|error| PowerRuntimeServiceError::InvalidRuntimeSpec(error.to_string()))?;
+
         let spec = RuntimeUnitSpec {
             schema: RuntimeUnitSpec::SCHEMA.into(),
             unit_id: self.unit_id.clone(),
@@ -95,16 +108,7 @@ impl PowerRuntimeServiceProfile {
             },
             mounts: self.mounts.clone(),
             secrets,
-            network: RuntimeNetworkSpec {
-                mode: NetworkMode::Service,
-                ports: vec![RuntimePort {
-                    name: POWER_HTTP_PORT_NAME.into(),
-                    container_port: self.port,
-                    protocol: TransportProtocol::Tcp,
-                }],
-                egress_allowlist: None,
-                host_services: Vec::new(),
-            },
+            network,
             resources: self.resources.clone(),
             isolation: self.isolation,
             health: Some(RuntimeHealthCheck {

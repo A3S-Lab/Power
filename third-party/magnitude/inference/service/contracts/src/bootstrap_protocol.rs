@@ -1,0 +1,110 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct IcnBinaryIdentity {
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
+    pub version: String,
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
+    pub api_version: u32,
+    /// Engine build identity: engine version plus kernel bundle identity.
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
+    pub native_build: String,
+    #[cfg_attr(feature = "openapi", schema(min_items = 1))]
+    pub capabilities: Vec<String>,
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
+    pub target: String,
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
+    pub profile: String,
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
+    pub rustc: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IcnStartupRecord {
+    #[serde(rename = "type")]
+    pub record_type: IcnStartupRecordType,
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 1))]
+    pub protocol_version: u32,
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
+    pub origin: String,
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
+    pub instance_id: String,
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
+    pub pid: u32,
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
+    pub api_version: u32,
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
+    pub native_build: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum IcnStartupRecordType {
+    IcnReady,
+}
+
+/// Private parent-to-child control; never exposed as a management HTTP endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct IcnParentCommand {
+    #[serde(rename = "type")]
+    pub command_type: IcnParentCommandType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum IcnParentCommandType {
+    Shutdown,
+}
+
+/// Installation declaration written by the installer or the local build beside the installed
+/// service. The service selects its execution device at runtime, so the declaration names no
+/// backend; it binds the installation to one engine build.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IcnInstallationDeclaration {
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 1))]
+    pub schema_version: u32,
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
+    pub native_build: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_and_installation_use_their_public_field_names() {
+        let startup = serde_json::to_value(IcnStartupRecord {
+            record_type: IcnStartupRecordType::IcnReady,
+            protocol_version: 1,
+            origin: "http://127.0.0.1:1".to_owned(),
+            instance_id: "instance".to_owned(),
+            pid: 1,
+            api_version: 1,
+            native_build: "native".to_owned(),
+        })
+        .expect("serialize startup");
+        assert_eq!(startup["type"], "icn_ready");
+        assert_eq!(startup["protocolVersion"], 1);
+        assert_eq!(startup["instanceId"], "instance");
+
+        let installation = serde_json::to_value(IcnInstallationDeclaration {
+            schema_version: 1,
+            native_build: "native".to_owned(),
+        })
+        .expect("serialize installation");
+        assert_eq!(
+            installation,
+            serde_json::json!({ "schemaVersion": 1, "nativeBuild": "native" })
+        );
+    }
+}

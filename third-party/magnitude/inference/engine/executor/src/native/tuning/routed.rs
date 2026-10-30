@@ -1,0 +1,1080 @@
+//! Tuning cases of the routed (mixture-of-experts) entries. `routed_route`
+//! serves every row class; the decode entries (`routed_expand`, or
+//! `routed_route_shared` and `routed_gate_up` where the backend declares the
+//! former, and `routed_output`) are tuned at the decode row points, the grouped
+//! entries (`routed_group`, `routed_experts`,
+//! `routed_combine`) at the grouped ones. Routing tables are synthetic:
+//! every row selects distinct experts with the uneven expert loads of real
+//! routing (`routes`), and the grouped tables are formed from them exactly as
+//! `routed_group` forms them.
+//!
+//! Route and group write their tables through `&mut` parameters; each
+//! argument set owns those tables as case state.
+
+use super::cases::scale_extent;
+use super::{
+    row_points, served_row_points, CaseState, EntryTuning, ModelInputs, PointShape, TuningInputs,
+    TuningLimits,
+};
+use crate::operators::routed::fused_graph::{grouped_blocks, DECODE_ROWS, TILE_ROWS};
+use magnitude_family_contracts::{Operator, RouteNormalization, WeightKind, WeightScope};
+use magnitude_kernels::{
+    routed_combine, routed_expand, routed_experts, routed_gate_up, routed_group, routed_output,
+    routed_route, routed_route_shared,
+};
+use seismic::{BuildError, Element, Tensor};
+
+/// The routed geometry every case of one binding shares.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RoutedShape {
+    pub hidden: u64,
+    pub experts: u64,
+    pub selected: u64,
+    pub features: u64,
+    pub shared: u64,
+}
+
+/// The decode points: row counts the decode form serves.
+pub(crate) fn decode_points(limits: TuningLimits) -> Vec<PointShape> {
+    served_row_points(limits, |rows| rows <= DECODE_ROWS)
+}
+
+/// The grouped points: row counts past the decode form.
+pub(crate) fn grouped_points(limits: TuningLimits) -> Vec<PointShape> {
+    served_row_points(limits, |rows| rows > DECODE_ROWS)
+}
+
+/// Distinct experts per row with the uneven expert loads of real routing: the
+/// expert of popularity rank r is (101 r) mod E (a permutation: 101 is prime
+/// and no expert count is a multiple of it) with popularity 1 / sqrt(r + 1),
+/// and each row draws its choices by popularity without replacement from a
+/// fixed-seed generator. A grouped point then holds blocks of every live-row
+/// count, from one row to full tiles, and experts with no rows.
+pub(crate) fn routes(rows: u64, shape: RoutedShape) -> Vec<i32> {
+    let experts = shape.experts as usize;
+    let popularity = (0..experts)
+        .map(|rank| 1.0 / ((rank + 1) as f64).sqrt())
+        .collect::<Vec<_>>();
+    let total = popularity.iter().sum::<f64>();
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut routes = Vec::with_capacity(rows as usize * shape.selected as usize);
+    for _ in 0..rows {
+        let mut taken = vec![false; experts];
+        let mut remaining = total;
+        for _ in 0..shape.selected {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let mut target = (state >> 11) as f64 / (1_u64 << 53) as f64 * remaining;
+            // The last untaken expert absorbs the rounding of `remaining`.
+            let mut rank = 0;
+            for candidate in (0..experts).filter(|&candidate| !taken[candidate]) {
+                rank = candidate;
+                target -= popularity[candidate];
+                if target < 0.0 {
+                    break;
+                }
+            }
+            taken[rank] = true;
+            remaining -= popularity[rank];
+            routes.push(((rank * 101) % experts) as i32);
+        }
+    }
+    routes
+}
+
+/// The tables `routed_group` forms from `routes`: (order [B, T],
+/// inverse [M, K], blocks [B]).
+pub(crate) fn group(
+    routes: &[i32],
+    rows: u64,
+    shape: RoutedShape,
+) -> Result<(Vec<i32>, Vec<i32>, Vec<i32>), String> {
+    let blocks = grouped_blocks(rows, shape.experts, shape.selected)?;
+    let tile = TILE_ROWS as usize;
+    let mut order = vec![-1; blocks as usize * tile];
+    let mut inverse = vec![0; routes.len()];
+    let mut table = vec![-1; blocks as usize];
+    let mut block = 0usize;
+    for expert in 0..shape.experts as i32 {
+        let mut lane = 0usize;
+        for (flat, route) in routes.iter().enumerate() {
+            if *route != expert {
+                continue;
+            }
+            table[block] = expert;
+            order[block * tile + lane] = (flat / shape.selected as usize) as i32;
+            inverse[flat] = (block * tile + lane) as i32;
+            lane += 1;
+            if lane == tile {
+                lane = 0;
+                block += 1;
+            }
+        }
+        if lane > 0 {
+            block += 1;
+        }
+    }
+    Ok((order, inverse, table))
+}
+
+fn scores(
+    inputs: &TuningInputs<'_, '_>,
+    rows: u64,
+    shape: RoutedShape,
+    seed: u64,
+) -> Result<Tensor, BuildError> {
+    inputs.activation(Element::f32(), &[rows, shape.selected], seed)
+}
+
+/// `routed_route`: RMS prologue, router softmax, top-k selection and the
+/// shared expert's coefficient. `SIMDGROUPS` reassociates the router's
+/// reductions (arithmetic); its integer routes are still compared exactly,
+/// so a configuration that flips a near-tie choice on the tuning rows is
+/// not chosen.
+#[derive(Clone)]
+pub(crate) struct RoutedRouteTuning {
+    pub norm: Element,
+    pub router: Element,
+    pub activation: Element,
+    pub shape: RoutedShape,
+    pub scopes: Vec<WeightScope>,
+    pub epsilon: f32,
+    /// Whether the route serves the decode rows too (the expand form), or
+    /// only the grouped rows (the shared-route form).
+    pub decode: bool,
+}
+
+pub(crate) struct RoutedRouteCase {
+    residual: Tensor,
+    norm: Tensor,
+    router: Tensor,
+    shared_router: Tensor,
+    routes: CaseState,
+    scores: CaseState,
+    epsilon: f32,
+    normalize: i32,
+    /// The down weight's per-expert scales the scores fold in (ES).
+    expert_scale: Tensor,
+}
+
+impl RoutedRouteTuning {
+    fn elements(&self) -> routed_route::Elements {
+        routed_route::Elements {
+            NW: self.norm,
+            RW: self.router,
+            A: self.activation,
+        }
+    }
+
+    /// Whether the model divides the selected scores by their sum.
+    fn normalize(&self, inputs: &TuningInputs<'_, '_>) -> Result<bool, String> {
+        match inputs.operator(&self.scopes)? {
+            Operator::RoutedFfn(routed) => {
+                Ok(routed.router.normalization == RouteNormalization::Sum)
+            }
+            other => Err(format!(
+                "a {} layer has no routed feed-forward",
+                other.name()
+            )),
+        }
+    }
+}
+
+impl EntryTuning for RoutedRouteTuning {
+    type Entry = routed_route::Entry;
+    type Case = RoutedRouteCase;
+
+    fn launches(&self) -> usize {
+        self.scopes.len()
+    }
+
+    fn bindings(&self) -> String {
+        format!(
+            "NW={},RW={},A={}",
+            self.norm.name(),
+            self.router.name(),
+            self.activation.name()
+        )
+    }
+
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let shape = self.shape;
+        let (parts, norm) = inputs.input_form(&self.scopes, shape.hidden)?;
+        Ok(vec![
+            ("H", shape.hidden),
+            ("E", shape.experts),
+            ("K", shape.selected),
+            ("PT", parts),
+            ("NM", norm),
+            (
+                "ES",
+                scale_extent(inputs, &self.scopes, WeightKind::ExpertDown)?,
+            ),
+        ])
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        if self.decode {
+            row_points(limits)
+        } else {
+            grouped_points(limits)
+        }
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let (shape, rows) = (self.shape, point.rows);
+        let normalize = i32::from(self.normalize(inputs)?);
+        let (parts, norm) = inputs.input_form(&self.scopes, shape.hidden)?;
+        TuningInputs::rotation_scopes(&self.scopes, point)
+            .into_iter()
+            .enumerate()
+            .map(|(index, scope)| {
+                let routes = inputs.scratch(Element::i32(), &[rows, shape.selected])?;
+                let scores = inputs.scratch(Element::f32(), &[rows, shape.selected])?;
+                Ok(RoutedRouteCase {
+                    residual: inputs.activation(
+                        Element::f32(),
+                        &[rows, parts * shape.hidden],
+                        index as u64 + 1,
+                    )?,
+                    norm: inputs.input_norm(scope, WeightKind::InputNorm, self.norm, norm)?,
+                    router: inputs.weight(scope, WeightKind::Router)?,
+                    shared_router: inputs.weight(scope, WeightKind::SharedRouter)?,
+                    routes: inputs.state(routes, 0..rows)?,
+                    scores: inputs.state(scores, 0..rows)?,
+                    epsilon: self.epsilon,
+                    normalize,
+                    expert_scale: inputs
+                        .unit_scale(inputs.scale_extent(scope, WeightKind::ExpertDown)?)?,
+                })
+            })
+            .collect()
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> routed_route::Args<'a> {
+        routed_route::Args {
+            residual: &case.residual,
+            norm: &case.norm,
+            router: &case.router,
+            shared_router: &case.shared_router,
+            routes: case.routes.tensor_mut(),
+            scores: case.scores.tensor_mut(),
+            eps: case.epsilon,
+            normalize: case.normalize,
+            expert_scale: &case.expert_scale,
+        }
+    }
+
+    fn state(case: &Self::Case) -> Vec<(&'static str, &CaseState)> {
+        vec![("routes", &case.routes), ("scores", &case.scores)]
+    }
+
+    generated_entry!(routed_route, this => this.elements());
+}
+
+/// `routed_route_shared`: `routed_route` with the shared expert's gate/up
+/// (decode rows). SIMDGROUPS and ROWS never change bits; LANES reassociates
+/// the shared expert's reductions (arithmetic). Routes are compared exactly,
+/// as for `routed_route`.
+#[derive(Clone)]
+pub(crate) struct RoutedRouteSharedTuning {
+    pub route: RoutedRouteTuning,
+    pub shared_gate: Element,
+    pub shared_up: Element,
+}
+
+pub(crate) struct RoutedRouteSharedCase {
+    route: RoutedRouteCase,
+    shared_gate: Tensor,
+    shared_up: Tensor,
+}
+
+impl EntryTuning for RoutedRouteSharedTuning {
+    type Entry = routed_route_shared::Entry;
+    type Case = RoutedRouteSharedCase;
+
+    fn launches(&self) -> usize {
+        self.route.scopes.len()
+    }
+
+    fn bindings(&self) -> String {
+        format!(
+            "NW={},RW={},SGW={},SUW={},A={}",
+            self.route.norm.name(),
+            self.route.router.name(),
+            self.shared_gate.name(),
+            self.shared_up.name(),
+            self.route.activation.name()
+        )
+    }
+
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let shape = self.route.shape;
+        let (parts, norm) = inputs.input_form(&self.route.scopes, shape.hidden)?;
+        Ok(vec![
+            ("H", shape.hidden),
+            ("E", shape.experts),
+            ("K", shape.selected),
+            ("S", shape.shared),
+            ("PT", parts),
+            ("NM", norm),
+            (
+                "ES",
+                scale_extent(inputs, &self.route.scopes, WeightKind::ExpertDown)?,
+            ),
+        ])
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        decode_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let scopes = TuningInputs::rotation_scopes(&self.route.scopes, point);
+        self.route
+            .rotation(inputs, point)?
+            .into_iter()
+            .zip(scopes)
+            .map(|(route, scope)| {
+                Ok(RoutedRouteSharedCase {
+                    route,
+                    shared_gate: inputs.weight(scope, WeightKind::SharedGate)?,
+                    shared_up: inputs.weight(scope, WeightKind::SharedUp)?,
+                })
+            })
+            .collect()
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> routed_route_shared::Args<'a> {
+        let route = &mut case.route;
+        routed_route_shared::Args {
+            residual: &route.residual,
+            norm: &route.norm,
+            router: &route.router,
+            shared_router: &route.shared_router,
+            shared_gate: &case.shared_gate,
+            shared_up: &case.shared_up,
+            routes: route.routes.tensor_mut(),
+            scores: route.scores.tensor_mut(),
+            eps: route.epsilon,
+            normalize: route.normalize,
+            expert_scale: &route.expert_scale,
+        }
+    }
+
+    fn state(case: &Self::Case) -> Vec<(&'static str, &CaseState)> {
+        RoutedRouteTuning::state(&case.route)
+    }
+
+    generated_entry!(routed_route_shared, this => routed_route_shared::Elements {
+        NW: this.route.norm,
+        RW: this.route.router,
+        SGW: this.shared_gate,
+        SUW: this.shared_up,
+        A: this.route.activation,
+    });
+}
+
+/// `routed_group`: the grouped form's expert tiles, formed from the
+/// routes. Its parameters are mappings.
+#[derive(Clone)]
+pub(crate) struct RoutedGroupTuning {
+    pub shape: RoutedShape,
+    /// Layers prepared with this specialization.
+    pub layers: usize,
+}
+
+pub(crate) struct RoutedGroupCase {
+    routes: Tensor,
+    counts: CaseState,
+    order: CaseState,
+    inverse: CaseState,
+    blocks: CaseState,
+}
+
+impl EntryTuning for RoutedGroupTuning {
+    type Entry = routed_group::Entry;
+    type Case = RoutedGroupCase;
+
+    fn launches(&self) -> usize {
+        self.layers
+    }
+
+    fn bindings(&self) -> String {
+        "fixed".into()
+    }
+
+    fn statics(&self, _: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        Ok(vec![("E", self.shape.experts), ("K", self.shape.selected)])
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        grouped_points(limits)
+    }
+
+    /// One argument set: the tables are small and stay cache resident in a
+    /// real step as well.
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let (shape, rows) = (self.shape, point.rows);
+        let blocks = grouped_blocks(rows, shape.experts, shape.selected)?;
+        let table = |extents: &[u64]| -> Result<CaseState, BuildError> {
+            let tensor = inputs.scratch(Element::i32(), extents)?;
+            inputs.state(tensor, 0..extents[0])
+        };
+        Ok(vec![RoutedGroupCase {
+            routes: inputs.i32s(&[rows, shape.selected], &routes(rows, shape))?,
+            counts: table(&[shape.experts])?,
+            order: table(&[blocks, TILE_ROWS])?,
+            inverse: table(&[rows, shape.selected])?,
+            blocks: table(&[blocks])?,
+        }])
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> routed_group::Args<'a> {
+        routed_group::Args {
+            routes: &case.routes,
+            counts: case.counts.tensor_mut(),
+            order: case.order.tensor_mut(),
+            inverse: case.inverse.tensor_mut(),
+            blocks: case.blocks.tensor_mut(),
+        }
+    }
+
+    fn state(case: &Self::Case) -> Vec<(&'static str, &CaseState)> {
+        vec![
+            ("counts", &case.counts),
+            ("order", &case.order),
+            ("inverse", &case.inverse),
+            ("blocks", &case.blocks),
+        ]
+    }
+
+    generated_entry!(routed_group);
+}
+
+/// Unit per-expert gate and up scale operands of an expansion at their
+/// planned extents (the gate's absent for up-only experts).
+pub(super) struct ExpansionScales {
+    pub(super) gate: Tensor,
+    pub(super) up: Tensor,
+}
+
+impl ExpansionScales {
+    pub(super) fn at(
+        inputs: &TuningInputs<'_, '_>,
+        scope: WeightScope,
+        gated: bool,
+    ) -> Result<Self, BuildError> {
+        let gate = match gated {
+            true => inputs.scale_extent(scope, WeightKind::ExpertGate)?,
+            false => 0,
+        };
+        Ok(Self {
+            gate: inputs.unit_scale(gate)?,
+            up: inputs.unit_scale(inputs.scale_extent(scope, WeightKind::ExpertUp)?)?,
+        })
+    }
+
+    /// The statics of the gate and up scales `scopes` share: GS (gated
+    /// experts only) and US.
+    pub(super) fn statics(
+        inputs: &ModelInputs<'_>,
+        scopes: &[WeightScope],
+        gated: bool,
+    ) -> Result<Vec<(&'static str, u64)>, String> {
+        let up = ("US", scale_extent(inputs, scopes, WeightKind::ExpertUp)?);
+        Ok(match gated {
+            true => vec![
+                ("GS", scale_extent(inputs, scopes, WeightKind::ExpertGate)?),
+                up,
+            ],
+            false => vec![up],
+        })
+    }
+}
+
+/// `routed_expand`: the selected experts' and the shared expert's
+/// gate/up with SiLU·mul (decode rows).
+#[derive(Clone)]
+pub(crate) struct RoutedExpandTuning {
+    pub expert_gate: Element,
+    pub expert_up: Element,
+    pub shared_gate: Element,
+    pub shared_up: Element,
+    pub activation: Element,
+    pub shape: RoutedShape,
+    pub scopes: Vec<WeightScope>,
+}
+
+pub(crate) struct RoutedExpandCase {
+    normalized: Tensor,
+    routes: Tensor,
+    expert_gate: Tensor,
+    expert_up: Tensor,
+    shared_gate: Tensor,
+    shared_up: Tensor,
+    /// The experts' gate and up scales.
+    scales: ExpansionScales,
+}
+
+impl RoutedExpandTuning {
+    fn elements(&self) -> routed_expand::Elements {
+        routed_expand::Elements {
+            EGW: self.expert_gate,
+            EUW: self.expert_up,
+            SGW: self.shared_gate,
+            SUW: self.shared_up,
+            A: self.activation,
+        }
+    }
+}
+
+impl EntryTuning for RoutedExpandTuning {
+    type Entry = routed_expand::Entry;
+    type Case = RoutedExpandCase;
+
+    fn launches(&self) -> usize {
+        self.scopes.len()
+    }
+
+    fn bindings(&self) -> String {
+        format!(
+            "EGW={},EUW={},SGW={},SUW={},A={}",
+            self.expert_gate.name(),
+            self.expert_up.name(),
+            self.shared_gate.name(),
+            self.shared_up.name(),
+            self.activation.name()
+        )
+    }
+
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let shape = self.shape;
+        let mut statics = vec![
+            ("H", shape.hidden),
+            ("K", shape.selected),
+            ("F", shape.features),
+            ("S", shape.shared),
+        ];
+        statics.extend(ExpansionScales::statics(inputs, &self.scopes, true)?);
+        Ok(statics)
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        decode_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let shape = self.shape;
+        TuningInputs::rotation_scopes(&self.scopes, point)
+            .into_iter()
+            .enumerate()
+            .map(|(index, scope)| {
+                Ok(RoutedExpandCase {
+                    normalized: inputs.activation(
+                        self.activation,
+                        &[point.rows, shape.hidden],
+                        index as u64 + 1,
+                    )?,
+                    routes: inputs
+                        .i32s(&[point.rows, shape.selected], &routes(point.rows, shape))?,
+                    expert_gate: inputs.weight(scope, WeightKind::ExpertGate)?,
+                    expert_up: inputs.weight(scope, WeightKind::ExpertUp)?,
+                    shared_gate: inputs.weight(scope, WeightKind::SharedGate)?,
+                    shared_up: inputs.weight(scope, WeightKind::SharedUp)?,
+                    scales: ExpansionScales::at(inputs, scope, true)?,
+                })
+            })
+            .collect()
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> routed_expand::Args<'a> {
+        routed_expand::Args {
+            normalized: &case.normalized,
+            routes: &case.routes,
+            expert_gate: &case.expert_gate,
+            expert_up: &case.expert_up,
+            shared_gate: &case.shared_gate,
+            shared_up: &case.shared_up,
+            gate_scale: &case.scales.gate,
+            up_scale: &case.scales.up,
+        }
+    }
+
+    generated_entry!(routed_expand, this => this.elements());
+}
+
+/// `routed_gate_up` (SiLU) of the shared-route form: the selected experts'
+/// gate/up (decode rows).
+#[derive(Clone)]
+pub(crate) struct RoutedChoicesTuning {
+    pub expert_gate: Element,
+    pub expert_up: Element,
+    pub activation: Element,
+    pub shape: RoutedShape,
+    pub scopes: Vec<WeightScope>,
+}
+
+pub(crate) struct RoutedChoicesCase {
+    normalized: Tensor,
+    routes: Tensor,
+    expert_gate: Tensor,
+    expert_up: Tensor,
+    /// The experts' gate and up scales.
+    scales: ExpansionScales,
+}
+
+impl EntryTuning for RoutedChoicesTuning {
+    type Entry = routed_gate_up::Entry;
+    type Case = RoutedChoicesCase;
+
+    fn launches(&self) -> usize {
+        self.scopes.len()
+    }
+
+    fn bindings(&self) -> String {
+        format!(
+            "EGW={},EUW={},A={}",
+            self.expert_gate.name(),
+            self.expert_up.name(),
+            self.activation.name()
+        )
+    }
+
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let shape = self.shape;
+        let mut statics = vec![
+            ("H", shape.hidden),
+            ("K", shape.selected),
+            ("F", shape.features),
+        ];
+        statics.extend(ExpansionScales::statics(inputs, &self.scopes, true)?);
+        Ok(statics)
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        decode_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let shape = self.shape;
+        TuningInputs::rotation_scopes(&self.scopes, point)
+            .into_iter()
+            .enumerate()
+            .map(|(index, scope)| {
+                Ok(RoutedChoicesCase {
+                    normalized: inputs.activation(
+                        self.activation,
+                        &[point.rows, shape.hidden],
+                        index as u64 + 1,
+                    )?,
+                    routes: inputs
+                        .i32s(&[point.rows, shape.selected], &routes(point.rows, shape))?,
+                    expert_gate: inputs.weight(scope, WeightKind::ExpertGate)?,
+                    expert_up: inputs.weight(scope, WeightKind::ExpertUp)?,
+                    scales: ExpansionScales::at(inputs, scope, true)?,
+                })
+            })
+            .collect()
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> routed_gate_up::Args<'a> {
+        routed_gate_up::Args {
+            normalized: &case.normalized,
+            routes: &case.routes,
+            expert_gate: &case.expert_gate,
+            expert_up: &case.expert_up,
+            // SiLU: the fused Qwen form's experts.
+            activation: 0,
+            gate_scale: &case.scales.gate,
+            up_scale: &case.scales.up,
+        }
+    }
+
+    generated_entry!(routed_gate_up, this => routed_gate_up::Elements {
+        EGW: this.expert_gate,
+        EUW: this.expert_up,
+        A: this.activation,
+    });
+}
+
+/// `routed_output`: the selected experts' down projections in slot
+/// order, the shared expert's, and the residual (decode rows).
+#[derive(Clone)]
+pub(crate) struct RoutedOutputTuning {
+    pub expert_down: Element,
+    pub shared_down: Element,
+    pub activation: Element,
+    pub shape: RoutedShape,
+    pub scopes: Vec<WeightScope>,
+}
+
+pub(crate) struct RoutedOutputCase {
+    residual: Tensor,
+    inject: Tensor,
+    expert_product: Tensor,
+    shared_product: Tensor,
+    routes: Tensor,
+    scores: Tensor,
+    coefficient: Tensor,
+    expert_down: Tensor,
+    shared_down: Tensor,
+}
+
+impl RoutedOutputTuning {
+    fn elements(&self) -> routed_output::Elements {
+        routed_output::Elements {
+            EDW: self.expert_down,
+            SDW: self.shared_down,
+            A: self.activation,
+        }
+    }
+}
+
+impl EntryTuning for RoutedOutputTuning {
+    type Entry = routed_output::Entry;
+    type Case = RoutedOutputCase;
+
+    fn launches(&self) -> usize {
+        self.scopes.len()
+    }
+
+    fn bindings(&self) -> String {
+        format!(
+            "EDW={},SDW={},A={}",
+            self.expert_down.name(),
+            self.shared_down.name(),
+            self.activation.name()
+        )
+    }
+
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let shape = self.shape;
+        let (streams, inject) = inputs.join(&self.scopes)?;
+        Ok(vec![
+            ("H", shape.hidden),
+            ("K", shape.selected),
+            ("F", shape.features),
+            ("S", shape.shared),
+            ("SN", streams),
+            ("IN", inject),
+        ])
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        decode_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let (shape, rows) = (self.shape, point.rows);
+        let (streams, inject) = inputs.join(&self.scopes)?;
+        TuningInputs::rotation_scopes(&self.scopes, point)
+            .into_iter()
+            .enumerate()
+            .map(|(index, scope)| {
+                let seed = 8 * index as u64;
+                Ok(RoutedOutputCase {
+                    residual: inputs.activation(
+                        Element::f32(),
+                        &[rows, streams * shape.hidden],
+                        seed + 1,
+                    )?,
+                    inject: inputs.activation(Element::f32(), &[rows, inject], seed + 6)?,
+                    expert_product: inputs.activation(
+                        self.activation,
+                        &[rows, shape.selected, shape.features],
+                        seed + 2,
+                    )?,
+                    shared_product: inputs.activation(
+                        self.activation,
+                        &[rows, shape.shared],
+                        seed + 3,
+                    )?,
+                    routes: inputs.i32s(&[rows, shape.selected], &routes(rows, shape))?,
+                    scores: scores(inputs, rows, shape, seed + 4)?,
+                    coefficient: inputs.activation(Element::f32(), &[rows], seed + 5)?,
+                    expert_down: inputs.weight(scope, WeightKind::ExpertDown)?,
+                    shared_down: inputs.weight(scope, WeightKind::SharedDown)?,
+                })
+            })
+            .collect()
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> routed_output::Args<'a> {
+        routed_output::Args {
+            residual: &case.residual,
+            inject: &case.inject,
+            expert_product: &case.expert_product,
+            shared_product: &case.shared_product,
+            routes: &case.routes,
+            scores: &case.scores,
+            coefficient: &case.coefficient,
+            expert_down: &case.expert_down,
+            shared_down: &case.shared_down,
+        }
+    }
+
+    generated_entry!(routed_output, this => this.elements());
+}
+
+/// `routed_experts`: grouped expert tiles (grouped rows).
+#[derive(Clone)]
+pub(crate) struct RoutedExpertsTuning {
+    pub expert_gate: Element,
+    pub expert_up: Element,
+    pub expert_down: Element,
+    pub activation: Element,
+    pub shape: RoutedShape,
+    pub scopes: Vec<WeightScope>,
+}
+
+pub(crate) struct RoutedExpertsCase {
+    normalized: Tensor,
+    order: Tensor,
+    blocks: Tensor,
+    expert_gate: Tensor,
+    expert_up: Tensor,
+    expert_down: Tensor,
+    /// The experts' gate and up scales.
+    scales: ExpansionScales,
+}
+
+impl RoutedExpertsTuning {
+    fn elements(&self) -> routed_experts::Elements {
+        routed_experts::Elements {
+            EGW: self.expert_gate,
+            EUW: self.expert_up,
+            EDW: self.expert_down,
+            A: self.activation,
+        }
+    }
+}
+
+impl EntryTuning for RoutedExpertsTuning {
+    type Entry = routed_experts::Entry;
+    type Case = RoutedExpertsCase;
+
+    fn launches(&self) -> usize {
+        self.scopes.len()
+    }
+
+    fn bindings(&self) -> String {
+        format!(
+            "EGW={},EUW={},EDW={},A={}",
+            self.expert_gate.name(),
+            self.expert_up.name(),
+            self.expert_down.name(),
+            self.activation.name()
+        )
+    }
+
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let mut statics = vec![("H", self.shape.hidden), ("F", self.shape.features)];
+        statics.extend(ExpansionScales::statics(inputs, &self.scopes, true)?);
+        Ok(statics)
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        grouped_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let (shape, rows) = (self.shape, point.rows);
+        let (order, _, table) = group(&routes(rows, shape), rows, shape)?;
+        let blocks = table.len() as u64;
+        TuningInputs::rotation_scopes(&self.scopes, point)
+            .into_iter()
+            .enumerate()
+            .map(|(index, scope)| {
+                Ok(RoutedExpertsCase {
+                    normalized: inputs.activation(
+                        self.activation,
+                        &[rows, shape.hidden],
+                        index as u64 + 1,
+                    )?,
+                    order: inputs.i32s(&[blocks, TILE_ROWS], &order)?,
+                    blocks: inputs.i32s(&[blocks], &table)?,
+                    expert_gate: inputs.weight(scope, WeightKind::ExpertGate)?,
+                    expert_up: inputs.weight(scope, WeightKind::ExpertUp)?,
+                    expert_down: inputs.weight(scope, WeightKind::ExpertDown)?,
+                    scales: ExpansionScales::at(inputs, scope, true)?,
+                })
+            })
+            .collect()
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> routed_experts::Args<'a> {
+        routed_experts::Args {
+            normalized: &case.normalized,
+            order: &case.order,
+            blocks: &case.blocks,
+            expert_gate: &case.expert_gate,
+            expert_up: &case.expert_up,
+            expert_down: &case.expert_down,
+            activation: 0,
+            gate_scale: &case.scales.gate,
+            up_scale: &case.scales.up,
+        }
+    }
+
+    generated_entry!(routed_experts, this => this.elements());
+}
+
+/// `routed_combine`: the shared expert over every row with the grouped
+/// unpermute and the residual (grouped rows).
+#[derive(Clone)]
+pub(crate) struct RoutedCombineTuning {
+    pub shared_gate: Element,
+    pub shared_up: Element,
+    pub shared_down: Element,
+    pub activation: Element,
+    pub shape: RoutedShape,
+    pub scopes: Vec<WeightScope>,
+}
+
+pub(crate) struct RoutedCombineCase {
+    residual: Tensor,
+    inject: Tensor,
+    expert_output: Tensor,
+    inverse: Tensor,
+    scores: Tensor,
+    normalized: Tensor,
+    coefficient: Tensor,
+    shared_gate: Tensor,
+    shared_up: Tensor,
+    shared_down: Tensor,
+}
+
+impl RoutedCombineTuning {
+    fn elements(&self) -> routed_combine::Elements {
+        routed_combine::Elements {
+            SGW: self.shared_gate,
+            SUW: self.shared_up,
+            SDW: self.shared_down,
+            A: self.activation,
+        }
+    }
+}
+
+impl EntryTuning for RoutedCombineTuning {
+    type Entry = routed_combine::Entry;
+    type Case = RoutedCombineCase;
+
+    fn launches(&self) -> usize {
+        self.scopes.len()
+    }
+
+    fn bindings(&self) -> String {
+        format!(
+            "SGW={},SUW={},SDW={},A={}",
+            self.shared_gate.name(),
+            self.shared_up.name(),
+            self.shared_down.name(),
+            self.activation.name()
+        )
+    }
+
+    fn statics(&self, inputs: &ModelInputs<'_>) -> Result<Vec<(&'static str, u64)>, String> {
+        let shape = self.shape;
+        let (streams, inject) = inputs.join(&self.scopes)?;
+        Ok(vec![
+            ("H", shape.hidden),
+            ("K", shape.selected),
+            ("S", shape.shared),
+            ("SN", streams),
+            ("IN", inject),
+        ])
+    }
+
+    fn points(&self, limits: TuningLimits) -> Vec<PointShape> {
+        grouped_points(limits)
+    }
+
+    fn rotation(
+        &self,
+        inputs: &mut TuningInputs<'_, '_>,
+        point: &PointShape,
+    ) -> Result<Vec<Self::Case>, BuildError> {
+        let (shape, rows) = (self.shape, point.rows);
+        let (_, inverse, table) = group(&routes(rows, shape), rows, shape)?;
+        let blocks = table.len() as u64;
+        let (streams, inject) = inputs.join(&self.scopes)?;
+        TuningInputs::rotation_scopes(&self.scopes, point)
+            .into_iter()
+            .enumerate()
+            .map(|(index, scope)| {
+                let seed = 8 * index as u64;
+                Ok(RoutedCombineCase {
+                    residual: inputs.activation(
+                        Element::f32(),
+                        &[rows, streams * shape.hidden],
+                        seed + 1,
+                    )?,
+                    inject: inputs.activation(Element::f32(), &[rows, inject], seed + 6)?,
+                    expert_output: inputs.activation(
+                        self.activation,
+                        &[blocks, TILE_ROWS, shape.hidden],
+                        seed + 2,
+                    )?,
+                    inverse: inputs.i32s(&[rows, shape.selected], &inverse)?,
+                    scores: scores(inputs, rows, shape, seed + 3)?,
+                    normalized: inputs.activation(
+                        self.activation,
+                        &[rows, shape.hidden],
+                        seed + 4,
+                    )?,
+                    coefficient: inputs.activation(Element::f32(), &[rows], seed + 5)?,
+                    shared_gate: inputs.weight(scope, WeightKind::SharedGate)?,
+                    shared_up: inputs.weight(scope, WeightKind::SharedUp)?,
+                    shared_down: inputs.weight(scope, WeightKind::SharedDown)?,
+                })
+            })
+            .collect()
+    }
+
+    fn args<'a>(case: &'a mut Self::Case) -> routed_combine::Args<'a> {
+        routed_combine::Args {
+            residual: &case.residual,
+            inject: &case.inject,
+            expert_output: &case.expert_output,
+            inverse: &case.inverse,
+            scores: &case.scores,
+            normalized: &case.normalized,
+            coefficient: &case.coefficient,
+            shared_gate: &case.shared_gate,
+            shared_up: &case.shared_up,
+            shared_down: &case.shared_down,
+        }
+    }
+
+    generated_entry!(routed_combine, this => this.elements());
+}

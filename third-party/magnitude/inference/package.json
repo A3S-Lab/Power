@@ -1,0 +1,28 @@
+{
+  "name": "@magnitudedev/inference",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@effect/platform": "^0.96.0",
+    "@effect/platform-bun": "^0.90.0",
+    "@magnitudedev/icn-protocol": "workspace:*",
+    "@magnitudedev/release": "workspace:*",
+    "@magnitudedev/utils": "workspace:*",
+    "effect": "3.21.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "vitest": "^3.2.4"
+  },
+  "scripts": {
+    "check": "cargo check --workspace",
+    "test": "cargo test --workspace",
+    "build": "bun run scripts/build-local.ts",
+    "serve": "bun run scripts/build-local.ts --serve",
+    "smoke": "bun run scripts/smoke.ts",
+    "kernels:form": "bun run scripts/kernels-form.ts",
+    "catalog:build-bundle": "cargo run -p magnitude-service-catalog-tool -- build-bundle --output target/catalog-inputs/model-planner-inputs.bundle --model-store ~/.magnitude/models --cache-root ~/.magnitude/cache",
+    "scripts:test": "bunx --bun vitest run scripts",
+    "scripts:typecheck": "bunx tsc --noEmit -p tsconfig.json"
+  }
+}

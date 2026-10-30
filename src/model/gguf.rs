@@ -212,7 +212,7 @@ fn skip_gguf_value<R: Read>(reader: &mut R, value_type: u32) -> Result<()> {
     match value_type {
         0 | 1 | 7 => discard_exact(reader, 1),
         2 | 3 => discard_exact(reader, 2),
-        4 | 5 | 6 => discard_exact(reader, 4),
+        4..=6 => discard_exact(reader, 4),
         8 => skip_gguf_string(reader),
         9 => {
             let elem_type = read_u32(reader)?;
@@ -241,7 +241,7 @@ fn skip_gguf_value<R: Read>(reader: &mut R, value_type: u32) -> Result<()> {
                 Ok(())
             }
         }
-        10 | 11 | 12 => discard_exact(reader, 8),
+        10..=12 => discard_exact(reader, 8),
         _ => Err(PowerError::Config(format!(
             "Unknown GGUF value type: {value_type}"
         ))),
@@ -252,8 +252,8 @@ fn fixed_gguf_width(value_type: u32) -> Result<Option<usize>> {
     match value_type {
         0 | 1 | 7 => Ok(Some(1)),
         2 | 3 => Ok(Some(2)),
-        4 | 5 | 6 => Ok(Some(4)),
-        10 | 11 | 12 => Ok(Some(8)),
+        4..=6 => Ok(Some(4)),
+        10..=12 => Ok(Some(8)),
         8 | 9 => Ok(None),
         _ => Err(PowerError::Config(format!(
             "Unknown GGUF value type: {value_type}"

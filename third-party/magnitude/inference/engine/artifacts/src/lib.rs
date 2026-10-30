@@ -1,0 +1,35 @@
+//! Family-neutral model artifact and immutable host-payload ownership.
+//!
+//! This crate validates containers, exposes literal metadata/tensor inventory,
+//! and owns bounded prepared media values before device execution. Model
+//! families assign numerical meaning to those facts elsewhere.
+
+pub mod catalog_headers;
+mod error;
+pub mod gguf;
+mod identity;
+mod layout;
+pub mod media;
+mod package;
+mod payload;
+mod preprocessing;
+mod source;
+pub mod support;
+mod uncached;
+
+pub use error::Error;
+pub use identity::{ArtifactIdentity, PackageIdentity};
+pub use layout::{BoundaryRule, InputLayout, InputSpan};
+pub use package::{ComponentFile, ComponentManifest, Package, PackageHeaders, PackageManifest};
+pub use payload::{TemplatePayload, TemplateSource, TokenizerPayload};
+pub use preprocessing::{
+    ImageProcessor, ImageProcessorConfig, ImageResize, Resampling, MAX_IMAGES_PER_REQUEST,
+};
+#[cfg(unix)]
+pub use source::MappedWindow;
+pub use source::{FileSource, SourceReader};
+pub use support::{UnsupportedReason, WeightTypeCount};
+pub use token::TokenId;
+pub use uncached::UncachedSource;
+
+mod token;

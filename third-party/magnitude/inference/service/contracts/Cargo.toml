@@ -1,0 +1,19 @@
+[package]
+publish = false
+name = "magnitude-service-contracts"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[features]
+default = []
+openapi = ["dep:utoipa"]
+
+[dependencies]
+base64 = { version = "0.22.1" }
+futures-util = { version = "0.3.31" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.149" }
+thiserror = { version = "2.0.17" }
+unicode-normalization = { version = "0.1.24" }
+utoipa = { version = "5.4.0", features = ["axum_extras", "preserve_order"], optional = true }

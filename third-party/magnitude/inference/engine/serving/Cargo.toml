@@ -1,0 +1,28 @@
+[package]
+publish = false
+name = "magnitude-serving"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+# The one implementation of the inference protocols (Chat Completions,
+# Responses, Anthropic Messages). Engine core only: no Seismic, no service
+# types. The service and the standalone engine mount its router.
+[dependencies]
+axum = { version = "0.8.9", features = ["ws"] }
+base64 = { version = "0.22.1" }
+futures-util = { version = "0.3.31" }
+magnitude-chat = { path = "../chat" }
+magnitude-engine = { path = ".." }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.149" }
+thiserror = { version = "2.0.17" }
+tokio = { version = "1.49.0", features = ["rt", "time"] }
+tokio-stream = "0.1.18"
+tracing = { version = "0.1.44" }
+utoipa = { version = "5.4.0", features = ["axum_extras", "preserve_order"] }
+
+[dev-dependencies]
+http-body-util = "0.1.3"
+tokio = { version = "1.49.0", features = ["rt-multi-thread", "test-util"] }
+tower = { version = "0.5.3", features = ["util"] }

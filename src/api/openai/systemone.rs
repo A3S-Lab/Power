@@ -7,9 +7,11 @@ use axum::response::IntoResponse;
 use axum::Json;
 
 use super::openai_error;
+#[cfg(test)]
+use crate::api::systemone_types::SystemOneState;
 use crate::api::systemone_types::{
     validate_systemone_request, SystemOneAnswer, SystemOneHttpRequest, SystemOneHttpResponse,
-    SystemOneQuestion, SystemOneState, SystemOneUsage,
+    SystemOneQuestion, SystemOneUsage,
 };
 use crate::backend::types::{
     SystemOneAnswerSpec, SystemOneQuestionSpec, SystemOneRequest, SystemOneResponse,
@@ -334,7 +336,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn handler_unsupported_systemone_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("A3S_POWER_HOME", dir.path());
         let state = test_state_with_mock(MockBackend::success().without_systemone());
         state
             .registry
@@ -355,6 +360,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(json["error"]["code"], "backend_unavailable");
+        std::env::remove_var("A3S_POWER_HOME");
     }
 
     #[test]

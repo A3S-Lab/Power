@@ -1,0 +1,662 @@
+//! Execution of explicitly authored top-level Metal implementations, whose
+//! pipelines the Metal toolchain forms. This path deliberately consumes
+//! source plus a closed ABI; it does not construct compiler kernels, plans,
+//! schedules, or portfolios.
+
+use crate::{MetalBuffer, MetalDevice};
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_foundation::NSRange;
+use objc2_metal::{
+    MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
+    MTLCommonCounterSetTimestamp, MTLComputeCommandEncoder, MTLComputePassDescriptor,
+    MTLComputePipelineState, MTLCounterSampleBuffer, MTLCounterSampleBufferDescriptor,
+    MTLCounterSamplingPoint, MTLCounterSet, MTLDevice, MTLDispatchType, MTLEvent, MTLSharedEvent,
+    MTLSize, MTLStorageMode,
+};
+use seismic_compiler::errors::ExecutionError;
+
+/// Metal's `setBytes` limit, which bounds a direct entry's argument words.
+pub const DIRECT_WORD_BYTES_LIMIT: usize = 4096;
+
+/// Metal's buffer argument table size, which bounds a direct entry's
+/// buffers, argument words and scalar-result slots together.
+pub const DIRECT_BUFFER_SLOTS: usize = 31;
+
+/// One kernel function of an authored Metal library, compiled into a
+/// pipeline.
+#[derive(Clone)]
+pub struct DirectPipeline {
+    state: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+}
+
+// Metal pipeline states are immutable and documented as thread-safe.
+unsafe impl Send for DirectPipeline {}
+unsafe impl Sync for DirectPipeline {}
+
+impl DirectPipeline {
+    pub(crate) fn from_state(state: Retained<ProtocolObject<dyn MTLComputePipelineState>>) -> Self {
+        Self { state }
+    }
+
+    pub fn max_threads_per_threadgroup(&self) -> u64 {
+        self.state.maxTotalThreadsPerThreadgroup() as u64
+    }
+
+    /// Threadgroup memory the compiled function declares statically.
+    pub fn static_threadgroup_bytes(&self) -> u64 {
+        self.state.staticThreadgroupMemoryLength() as u64
+    }
+}
+
+/// One direct launch as encoded.
+pub struct DirectLaunch<'a> {
+    pub pipeline: &'a DirectPipeline,
+    pub buffers: &'a [(&'a MetalBuffer, u64)],
+    pub words: &'a [u8],
+    /// Scalar-result slots, bound after the words.
+    pub scalar_results: (&'a MetalBuffer, u64),
+    pub threadgroups: [u64; 3],
+    pub threads_per_threadgroup: [u64; 3],
+    pub threadgroup_bytes: u64,
+}
+
+/// The host monotonic clock in seconds, in the time base of Metal's
+/// command-buffer `GPUStartTime`/`GPUEndTime` (mach absolute time).
+pub fn host_seconds() -> f64 {
+    unsafe extern "C" {
+        fn clock_gettime_nsec_np(clock_id: std::ffi::c_int) -> u64;
+    }
+    const CLOCK_UPTIME_RAW: std::ffi::c_int = 8;
+    // SAFETY: a pure libc clock read.
+    unsafe { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) as f64 / 1e9 }
+}
+
+/// A GPU timestamp correlated with the [`host_seconds`] clock.
+#[derive(Clone, Copy)]
+struct TimestampPair {
+    gpu: u64,
+    host: f64,
+}
+
+fn sample_timestamps(device: &MetalDevice) -> TimestampPair {
+    let mut cpu = 0u64;
+    let mut gpu = 0u64;
+    // `sampleTimestamps` pairs the GPU clock with a CPU clock of its own;
+    // the host clock read beside it is the time base every interval uses.
+    let host = host_seconds();
+    // SAFETY: both pointers are valid for one write.
+    crate::pooled(|| unsafe {
+        device.handle().raw().sampleTimestamps_gpuTimestamp(
+            std::ptr::NonNull::from(&mut cpu),
+            std::ptr::NonNull::from(&mut gpu),
+        )
+    });
+    TimestampPair { gpu, host }
+}
+
+/// The GPU timestamp samples shared by the timed batches of one measurement:
+/// one sample index space over pages of [`PAGE_SAMPLES`] samples, each a
+/// Metal sample buffer of its largest size, added as reservations reach
+/// them and kept for later ones. Metal bounds how many sample buffers may
+/// exist, so timed batches take ranges of these pages instead of allocating
+/// their own. A launch's start and end samples are a pair at an even index,
+/// so a pair never straddles two pages.
+pub struct LaunchTimestamps {
+    device: MetalDevice,
+    pages: std::sync::Mutex<Vec<Retained<ProtocolObject<dyn MTLCounterSampleBuffer>>>>,
+    /// First unreserved sample.
+    next: std::sync::Mutex<usize>,
+}
+
+/// Samples of one page: Metal's largest sample buffer, 32 KiB of 8-byte
+/// timestamps (even, so launch pairs never straddle a page).
+const PAGE_SAMPLES: usize = 4_096;
+
+// The sample buffers are written by the device and resolved after completion.
+unsafe impl Send for LaunchTimestamps {}
+unsafe impl Sync for LaunchTimestamps {}
+
+impl LaunchTimestamps {
+    /// Timestamp samples for timed launches (two per launch), with their
+    /// first page formed: a device that cannot sample them fails here.
+    pub fn new(device: &MetalDevice) -> Result<Self, ExecutionError> {
+        let first = crate::pooled(|| Self::page(device))?;
+        Ok(Self {
+            device: device.clone(),
+            pages: std::sync::Mutex::new(vec![first]),
+            next: std::sync::Mutex::new(0),
+        })
+    }
+
+    fn page(
+        device: &MetalDevice,
+    ) -> Result<Retained<ProtocolObject<dyn MTLCounterSampleBuffer>>, ExecutionError> {
+        let samples = PAGE_SAMPLES;
+        let failed = |detail: &str| ExecutionError::SubmissionFailed(detail.into());
+        let raw = device.handle().raw();
+        if !raw.supportsCounterSampling(MTLCounterSamplingPoint::AtStageBoundary) {
+            return Err(failed(
+                "Metal device does not sample counters at stage boundaries",
+            ));
+        }
+        let timestamp_set = raw
+            .counterSets()
+            .and_then(|sets| {
+                // SAFETY: a static Metal string constant.
+                let wanted = unsafe { MTLCommonCounterSetTimestamp };
+                sets.iter().find(|set| &*set.name() == wanted)
+            })
+            .ok_or_else(|| failed("Metal device has no timestamp counter set"))?;
+        let descriptor = MTLCounterSampleBufferDescriptor::new();
+        descriptor.setCounterSet(Some(&timestamp_set));
+        descriptor.setStorageMode(MTLStorageMode::Shared);
+        // SAFETY: Metal validates the count when forming the buffer.
+        unsafe { descriptor.setSampleCount(samples) };
+        raw.newCounterSampleBufferWithDescriptor_error(&descriptor)
+            .map_err(|error| {
+                ExecutionError::SubmissionFailed(format!(
+                    "Metal refused a {samples}-sample timestamp buffer: {}",
+                    error.localizedDescription()
+                ))
+            })
+    }
+
+    /// Reserve `samples` consecutive samples, adding the pages they reach.
+    fn reserve(&self, samples: usize) -> Result<usize, ExecutionError> {
+        let mut next = self
+            .next
+            .lock()
+            .expect("timestamp cursor lock is never poisoned");
+        let first = *next;
+        let mut pages = self
+            .pages
+            .lock()
+            .expect("timestamp page lock is never poisoned");
+        while pages.len() * PAGE_SAMPLES < first + samples {
+            pages.push(crate::pooled(|| Self::page(&self.device))?);
+        }
+        *next += samples;
+        Ok(first)
+    }
+
+    /// The page holding sample `index`, and the index within it.
+    fn locate(
+        &self,
+        index: usize,
+    ) -> (Retained<ProtocolObject<dyn MTLCounterSampleBuffer>>, usize) {
+        let pages = self
+            .pages
+            .lock()
+            .expect("timestamp page lock is never poisoned");
+        (pages[index / PAGE_SAMPLES].clone(), index % PAGE_SAMPLES)
+    }
+
+    /// The resolved ticks of samples `first..first + count`, page by page.
+    fn resolve(&self, first: usize, count: usize) -> Option<Vec<u64>> {
+        let mut ticks = Vec::with_capacity(count);
+        let mut index = first;
+        while index < first + count {
+            let (page, offset) = self.locate(index);
+            let length = (PAGE_SAMPLES - offset).min(first + count - index);
+            // SAFETY: the range lies inside the page and the batch's reserved samples.
+            let data = crate::pooled(|| unsafe {
+                page.resolveCounterRange(NSRange::new(offset, length))
+            })?;
+            ticks.extend(
+                data.to_vec()
+                    .chunks_exact(8)
+                    .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes"))),
+            );
+            index += length;
+        }
+        Some(ticks)
+    }
+
+    /// Release every range. Only valid once every timed batch that reserved
+    /// one has been resolved.
+    pub fn reset(&self) {
+        *self
+            .next
+            .lock()
+            .expect("timestamp cursor lock is never poisoned") = 0;
+    }
+}
+
+/// How a batch places its launches in compute encoders.
+enum Encoding {
+    /// Every launch between two event commands in one serial encoder: the
+    /// production form. `None` after an event command, until the next
+    /// launch opens the next encoder.
+    Serial(Option<Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>>),
+    /// Every launch in its own encoder, with the encoder's start and end
+    /// timestamps sampled at stage boundaries into its range of
+    /// `timestamps`. Encoders of one command buffer run in order over
+    /// tracked resources.
+    Timed {
+        timestamps: std::sync::Arc<LaunchTimestamps>,
+        /// First sample of this batch's range.
+        first: usize,
+        capacity: usize,
+        /// Per `encode` call, the launch's sample pair (absent when the
+        /// launch was empty and encoded nothing).
+        launches: Vec<Option<usize>>,
+        encoded: usize,
+        calibration: TimestampPair,
+    },
+}
+
+/// Ordered direct launches encoded into one command buffer. The production
+/// form uses one serial compute encoder, which orders every launch after the
+/// previous one's writes.
+pub struct DirectBatch {
+    device: MetalDevice,
+    command: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
+    encoding: Encoding,
+}
+
+fn command_buffer(
+    device: &MetalDevice,
+) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>, ExecutionError> {
+    crate::pooled(|| device.queue().commandBuffer()).ok_or_else(|| {
+        ExecutionError::SubmissionFailed("Metal could not create a native command buffer".into())
+    })
+}
+
+fn serial_encoder(
+    command: &ProtocolObject<dyn MTLCommandBuffer>,
+) -> Result<Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>, ExecutionError> {
+    crate::pooled(|| command.computeCommandEncoder()).ok_or_else(|| {
+        ExecutionError::SubmissionFailed("Metal could not create a native compute encoder".into())
+    })
+}
+
+/// A 64-bit value the host and the device's command buffers both advance
+/// and wait on (`MTLSharedEvent`).
+pub struct SharedEvent {
+    event: Retained<ProtocolObject<dyn MTLSharedEvent>>,
+}
+
+// A shared event is a thread-safe Metal object.
+unsafe impl Send for SharedEvent {}
+unsafe impl Sync for SharedEvent {}
+
+impl SharedEvent {
+    /// An event at 0.
+    pub fn new(device: &MetalDevice) -> Result<Self, ExecutionError> {
+        crate::pooled(|| device.handle().raw().newSharedEvent())
+            .map(|event| Self { event })
+            .ok_or_else(|| {
+                ExecutionError::AllocationFailed("Metal could not create a shared event".into())
+            })
+    }
+
+    fn as_event(&self) -> &ProtocolObject<dyn MTLEvent> {
+        ProtocolObject::from_ref(&*self.event)
+    }
+
+    /// Set the event to `value` from the host.
+    pub fn signal(&self, value: u64) {
+        crate::pooled(|| self.event.setSignaledValue(value));
+    }
+
+    pub fn value(&self) -> u64 {
+        crate::pooled(|| self.event.signaledValue())
+    }
+
+    /// Wait at most `timeout` for the event to reach `value`; whether it
+    /// did.
+    pub fn wait(&self, value: u64, timeout: std::time::Duration) -> bool {
+        let milliseconds = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        crate::pooled(|| {
+            self.event.signaledValue() >= value
+                || self
+                    .event
+                    .waitUntilSignaledValue_timeoutMS(value, milliseconds)
+        })
+    }
+}
+
+impl DirectBatch {
+    pub fn new(device: &MetalDevice) -> Result<Self, ExecutionError> {
+        let command = command_buffer(device)?;
+        let encoder = serial_encoder(&command)?;
+        Ok(Self {
+            device: device.clone(),
+            command,
+            encoding: Encoding::Serial(Some(encoder)),
+        })
+    }
+
+    /// The command buffer's following work waits until `event` reaches
+    /// `value` (`encodeWaitForEvent`): the host gate.
+    pub fn wait_event(&mut self, event: &SharedEvent, value: u64) {
+        self.end_serial();
+        crate::pooled(|| {
+            self.command
+                .encodeWaitForEvent_value(event.as_event(), value)
+        });
+    }
+
+    /// `event` reaches `value` once the work encoded before it completes
+    /// (`encodeSignalEvent`).
+    pub fn signal_event(&mut self, event: &SharedEvent, value: u64) {
+        self.end_serial();
+        crate::pooled(|| {
+            self.command
+                .encodeSignalEvent_value(event.as_event(), value)
+        });
+    }
+
+    /// End the open serial encoder: an event command is encoded between
+    /// encoders.
+    fn end_serial(&mut self) {
+        if let Encoding::Serial(encoder) = &mut self.encoding {
+            if let Some(encoder) = encoder.take() {
+                crate::pooled(|| encoder.endEncoding());
+            }
+        }
+    }
+
+    /// A measurement batch of at most `launches` launches: each launch gets
+    /// its own encoder, whose GPU start and end are timestamped. Encoder
+    /// boundaries add device time, so a timed batch attributes time to
+    /// launches but does not measure the production step.
+    pub fn timed(
+        device: &MetalDevice,
+        timestamps: &std::sync::Arc<LaunchTimestamps>,
+        launches: usize,
+    ) -> Result<Self, ExecutionError> {
+        let first = timestamps.reserve(2 * launches)?;
+        Ok(Self {
+            device: device.clone(),
+            command: command_buffer(device)?,
+            encoding: Encoding::Timed {
+                timestamps: timestamps.clone(),
+                first,
+                capacity: launches,
+                launches: Vec::new(),
+                encoded: 0,
+                calibration: sample_timestamps(device),
+            },
+        })
+    }
+
+    /// Record a launch that does no device work (inactive, or an empty
+    /// grid): nothing is encoded, and a timed batch keeps its place with no
+    /// interval.
+    pub fn skip(&mut self) {
+        if let Encoding::Timed { launches, .. } = &mut self.encoding {
+            launches.push(None);
+        }
+    }
+
+    pub fn encode(&mut self, launch: &DirectLaunch<'_>) -> Result<(), ExecutionError> {
+        if launch.threadgroups.contains(&0) || launch.threads_per_threadgroup.contains(&0) {
+            self.skip();
+            return Ok(());
+        }
+        let threads = launch
+            .threads_per_threadgroup
+            .iter()
+            .try_fold(1u64, |product, value| product.checked_mul(*value))
+            .ok_or_else(|| {
+                ExecutionError::SubmissionFailed("native threadgroup size overflowed".into())
+            })?;
+        if threads > launch.pipeline.max_threads_per_threadgroup() {
+            return Err(ExecutionError::SubmissionFailed(format!(
+                "native launch requests {threads} threads per threadgroup, but the pipeline allows {}",
+                launch.pipeline.max_threads_per_threadgroup()
+            )));
+        }
+        if launch.words.len() > DIRECT_WORD_BYTES_LIMIT {
+            return Err(ExecutionError::SubmissionFailed(
+                "native ABI words exceed Metal setBytes limit".into(),
+            ));
+        }
+        let command = &self.command;
+        match &mut self.encoding {
+            Encoding::Serial(encoder) => {
+                let encoder = match encoder {
+                    Some(encoder) => encoder,
+                    None => encoder.insert(serial_encoder(command)?),
+                };
+                crate::pooled(|| encode_launch(encoder, launch))
+            }
+            Encoding::Timed {
+                timestamps,
+                first,
+                capacity,
+                launches,
+                encoded,
+                ..
+            } => {
+                if *encoded == *capacity {
+                    return Err(ExecutionError::SubmissionFailed(
+                        "timed Metal batch exceeds its declared launch count".into(),
+                    ));
+                }
+                let (page, offset) = timestamps.locate(*first + 2 * *encoded);
+                crate::pooled(|| {
+                    let pass = MTLComputePassDescriptor::computePassDescriptor();
+                    pass.setDispatchType(MTLDispatchType::Serial);
+                    // SAFETY: index 0 always exists; the pair lies inside
+                    // one page of the batch's reserved range.
+                    unsafe {
+                        let attachment = pass.sampleBufferAttachments().objectAtIndexedSubscript(0);
+                        attachment.setSampleBuffer(Some(&page));
+                        attachment.setStartOfEncoderSampleIndex(offset);
+                        attachment.setEndOfEncoderSampleIndex(offset + 1);
+                    }
+                    let encoder = command
+                        .computeCommandEncoderWithDescriptor(&pass)
+                        .ok_or_else(|| {
+                            ExecutionError::SubmissionFailed(
+                                "Metal could not create a timed compute encoder".into(),
+                            )
+                        })?;
+                    encode_launch(&encoder, launch);
+                    encoder.endEncoding();
+                    Ok(())
+                })?;
+                launches.push(Some(*encoded));
+                *encoded += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Commit without waiting. The queue runs command buffers in commit
+    /// order.
+    pub fn commit(self) -> DirectSubmission {
+        let timing = match self.encoding {
+            Encoding::Serial(encoder) => {
+                if let Some(encoder) = encoder {
+                    crate::pooled(|| encoder.endEncoding());
+                }
+                None
+            }
+            Encoding::Timed {
+                timestamps,
+                first,
+                launches,
+                encoded,
+                calibration,
+                ..
+            } => Some(LaunchTiming {
+                timestamps,
+                first,
+                launches,
+                encoded,
+                calibration,
+            }),
+        };
+        crate::pooled(|| self.command.commit());
+        DirectSubmission {
+            device: self.device,
+            command: self.command,
+            timing,
+        }
+    }
+}
+
+fn encode_launch(
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    launch: &DirectLaunch<'_>,
+) {
+    encoder.setComputePipelineState(&launch.pipeline.state);
+    for (index, (buffer, offset)) in launch.buffers.iter().enumerate() {
+        unsafe { encoder.setBuffer_offset_atIndex(Some(buffer.raw()), *offset as usize, index) }
+    }
+    let zero = 0u8;
+    let words = if launch.words.is_empty() {
+        std::slice::from_ref(&zero)
+    } else {
+        launch.words
+    };
+    unsafe {
+        encoder.setBytes_length_atIndex(
+            std::ptr::NonNull::from(&words[0]).cast(),
+            words.len(),
+            launch.buffers.len(),
+        );
+        encoder.setBuffer_offset_atIndex(
+            Some(launch.scalar_results.0.raw()),
+            launch.scalar_results.1 as usize,
+            launch.buffers.len() + 1,
+        );
+    }
+    if launch.threadgroup_bytes != 0 {
+        // Metal requires threadgroup memory lengths in multiples of 16.
+        let bytes = launch.threadgroup_bytes.div_ceil(16) * 16;
+        unsafe { encoder.setThreadgroupMemoryLength_atIndex(bytes as usize, 0) };
+    }
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        MTLSize {
+            width: launch.threadgroups[0] as usize,
+            height: launch.threadgroups[1] as usize,
+            depth: launch.threadgroups[2] as usize,
+        },
+        MTLSize {
+            width: launch.threads_per_threadgroup[0] as usize,
+            height: launch.threads_per_threadgroup[1] as usize,
+            depth: launch.threads_per_threadgroup[2] as usize,
+        },
+    );
+}
+
+struct LaunchTiming {
+    timestamps: std::sync::Arc<LaunchTimestamps>,
+    first: usize,
+    launches: Vec<Option<usize>>,
+    encoded: usize,
+    calibration: TimestampPair,
+}
+
+/// How often a host wait polls a command buffer's status.
+///
+/// A host blocked in `waitUntilCompleted` leaves its CPU idle for the whole
+/// command buffer, and Apple silicon then runs the GPU's memory-bound work
+/// measurably slower: on an M4 Pro, 4B decode takes 3.5% more device time
+/// than while a host thread polls at this interval (every kernel 2–4%).
+/// Polling costs about 0.8 W of CPU (about 3% more energy per decoded
+/// token) and observes completion about 20 µs sooner than the blocking
+/// wait's wake-up. Polling every 100 µs keeps only a third of the gain.
+/// Measurements: `specs/26-09-23/benchmark-results.md`, "Metal host wait".
+const WAIT_POLL: std::time::Duration = std::time::Duration::from_micros(20);
+
+/// A committed direct command buffer.
+pub struct DirectSubmission {
+    device: MetalDevice,
+    command: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
+    timing: Option<LaunchTiming>,
+}
+
+// Waiting on and querying a committed command buffer is thread-safe.
+unsafe impl Send for DirectSubmission {}
+unsafe impl Sync for DirectSubmission {}
+
+impl DirectSubmission {
+    pub fn is_complete(&self) -> bool {
+        matches!(
+            crate::pooled(|| self.command.status()),
+            MTLCommandBufferStatus::Completed | MTLCommandBufferStatus::Error
+        )
+    }
+
+    /// Wait for completion by polling the status every [`WAIT_POLL`].
+    pub fn wait_complete(&self) {
+        while !self.is_complete() {
+            std::thread::sleep(WAIT_POLL);
+        }
+    }
+
+    /// Wait and report the command buffer's outcome.
+    pub fn finish(&self) -> Result<(), ExecutionError> {
+        self.wait_complete();
+        crate::pooled(|| match self.command.error() {
+            Some(error) => Err(ExecutionError::SubmissionFailed(
+                error.localizedDescription().to_string(),
+            )),
+            None => Ok(()),
+        })
+    }
+
+    /// Device execution time of the completed command buffer.
+    pub fn device_seconds(&self) -> f64 {
+        let (start, end) = self.device_interval();
+        end - start
+    }
+
+    /// The completed command buffer's device execution interval on the
+    /// [`host_seconds`] clock.
+    pub fn device_interval(&self) -> (f64, f64) {
+        crate::pooled(|| (self.command.GPUStartTime(), self.command.GPUEndTime()))
+    }
+
+    /// For a timed batch, each `encode` call's device interval on the
+    /// [`host_seconds`] clock, in encode order (`None` for an empty launch).
+    /// `None` for a production batch. Call after completion.
+    pub fn launch_intervals(&self) -> Result<Option<Vec<Option<(f64, f64)>>>, ExecutionError> {
+        let Some(timing) = &self.timing else {
+            return Ok(None);
+        };
+        let failed = |detail: &str| ExecutionError::SubmissionFailed(detail.into());
+        if !self.is_complete() {
+            return Err(failed("timed Metal batch is read before completion"));
+        }
+        let samples = if timing.encoded == 0 {
+            Vec::new()
+        } else {
+            timing
+                .timestamps
+                .resolve(timing.first, 2 * timing.encoded)
+                .ok_or_else(|| failed("Metal did not resolve the timed batch's samples"))?
+        };
+        // GPU ticks map linearly onto the host clock between the pair taken
+        // when the batch was formed and one taken now.
+        let early = timing.calibration;
+        let late = sample_timestamps(&self.device);
+        if late.gpu <= early.gpu {
+            return Err(failed("Metal GPU timestamps did not advance"));
+        }
+        let seconds_per_tick = (late.host - early.host) / (late.gpu - early.gpu) as f64;
+        let host = |tick: u64| early.host + (tick as f64 - early.gpu as f64) * seconds_per_tick;
+        timing
+            .launches
+            .iter()
+            .map(|slot| {
+                slot.map(|index| {
+                    let (start, end) = (samples[2 * index], samples[2 * index + 1]);
+                    // Metal reports a sample it could not take as all ones.
+                    if start == u64::MAX || end == u64::MAX || end < start {
+                        return Err(failed("Metal dropped a timed launch's timestamp"));
+                    }
+                    Ok((host(start), host(end)))
+                })
+                .transpose()
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+}

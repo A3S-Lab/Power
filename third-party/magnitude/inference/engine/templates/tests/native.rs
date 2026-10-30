@@ -1,0 +1,341 @@
+use magnitude_templates::{
+    build_info, Event, Relaxation, RelaxationReason, RelaxationSubject, Request, Template,
+    TerminalCause, ToolChoice,
+};
+use serde_json::json;
+
+const QWEN: &str = include_str!("assets/Qwen-Qwen3-0.6B.jinja");
+const QWEN35: &str = include_str!("assets/Qwen3.5-4B.jinja");
+const QWEN36: &str = include_str!("assets/Qwen3.6-35B-A3B.jinja");
+
+fn request() -> Request {
+    let mut request = Request::new(vec![json!({"role":"user","content":"Hello"})], 946684800);
+    request.tools = vec![json!({"type":"function","function":{
+        "name":"search","description":"Search","parameters":{
+            "type":"object","properties":{"query":{"type":"string"}},
+            "required":["query"],"additionalProperties":false
+        }
+    }})];
+    request
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Transcript {
+    content: String,
+    reasoning: String,
+    calls: Vec<(String, Option<String>, String, bool)>,
+    finish: Option<TerminalCause>,
+}
+impl Transcript {
+    fn accept(&mut self, events: Vec<Event>) {
+        for event in events {
+            match event {
+                Event::Content { text } => self.content.push_str(&text),
+                Event::Reasoning { text } => self.reasoning.push_str(&text),
+                Event::ToolStart { index, name, id } => {
+                    assert_eq!(index as usize, self.calls.len());
+                    self.calls.push((name, id, String::new(), false));
+                }
+                Event::ToolArguments { index, text } => {
+                    let call = &mut self.calls[index as usize];
+                    assert!(!call.3);
+                    call.2.push_str(&text);
+                }
+                Event::ToolComplete { index } => {
+                    let call = &mut self.calls[index as usize];
+                    assert!(!call.3);
+                    call.3 = true;
+                }
+                Event::Finish { cause } => assert!(self.finish.replace(cause).is_none()),
+            }
+        }
+    }
+}
+
+#[test]
+fn rendering_preserves_absent_controls_special_tokens_and_explicit_time() {
+    let build = build_info().unwrap();
+    assert_eq!(build.abi, 1);
+    assert_eq!(build.upstream, "930e2fa5995789efbf249a8bf61325bb626e417b");
+    assert_eq!(build.build.len(), 64);
+    assert!(build.build.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let template = Template::new(
+        "{{ bos_token }}{{ enable_thinking is defined }} {{ strftime_now('%Y-%m-%d') }}",
+        &[("bos_token".into(), "<s>".into())].into(),
+    )
+    .unwrap();
+    let rendered = template.render(&Default::default(), 0).unwrap();
+    assert_eq!(rendered, "<s>False 1970-01-01");
+    assert!(template
+        .render(json!({"bos_token":"other"}).as_object().unwrap(), 0)
+        .is_err());
+    let a = Template::new("hello", &Default::default()).unwrap();
+    let b = Template::new("hello", &Default::default()).unwrap();
+    assert_eq!(a.identity(), b.identity());
+    assert!(!a.capabilities().unwrap().is_empty());
+}
+
+#[test]
+fn prepared_and_stream_owners_outlive_their_sources() {
+    let plan = Template::new(QWEN, &Default::default())
+        .unwrap()
+        .prepare(&request())
+        .unwrap();
+    assert_eq!(plan.description().grammar_dialect, "gbnf");
+    let mut stream = plan.stream(4096).unwrap();
+    drop(plan);
+    let retained = stream.feed(b"first ").unwrap();
+    stream.feed(b"second").unwrap();
+    let mut result = Transcript::default();
+    result.accept(retained);
+    assert_eq!(result.content, "first ");
+    stream.finish(TerminalCause::Natural).unwrap();
+    assert!(stream.feed(b"late").is_err());
+}
+
+#[test]
+fn real_templates_preserve_tools_reasoning_and_unicode_at_every_byte_split() {
+    for (source, output, reasoning) in [
+        (
+            QWEN,
+            "<think>réflexion 世界</think><tool_call>\n{\"name\":\"search\",\"arguments\":{\"query\":\"héllo 世界\"}}\n</tool_call>",
+            "réflexion 世界",
+        ),
+        (
+            QWEN35,
+            "consider</think>\n\n<tool_call>\n<function=search>\n<parameter=query>\nhéllo 世界\n</parameter>\n</function>\n</tool_call>",
+            "consider",
+        ),
+    ] {
+        let plan = Template::new(source, &Default::default())
+            .unwrap()
+            .prepare(&request())
+            .unwrap();
+        let bytes = output.as_bytes();
+        let parse = |chunks: Vec<&[u8]>| {
+            let mut stream = plan.stream(4096).unwrap();
+            let mut result = Transcript::default();
+            for chunk in chunks {
+                result.accept(stream.feed(chunk).unwrap());
+            }
+            result.accept(stream.finish(TerminalCause::Natural).unwrap());
+            result
+        };
+        let expected = parse(vec![bytes]);
+        assert_eq!(expected.reasoning, reasoning);
+        assert_eq!(expected.calls.len(), 1);
+        assert_eq!(expected.calls[0].0, "search");
+        // Neither format writes call IDs; the stream invents none (the host
+        // assigns identities unique across responses).
+        assert_eq!(expected.calls[0].1, None);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&expected.calls[0].2).unwrap(),
+            json!({"query":"héllo 世界"})
+        );
+        assert!(expected.calls[0].3);
+        for split in 0..=bytes.len() {
+            assert_eq!(
+                parse(vec![&bytes[..split], &bytes[split..]]),
+                expected,
+                "split {split}"
+            );
+        }
+        assert_eq!(parse(bytes.chunks(1).collect()), expected);
+    }
+}
+
+#[test]
+fn truncation_never_completes_partial_tool_calls() {
+    let plan = Template::new(QWEN, &Default::default())
+        .unwrap()
+        .prepare(&request())
+        .unwrap();
+    let partial = b"<tool_call>\n{\"name\":\"search\",\"arguments\":{\"query\":\"hel";
+    for cause in [
+        TerminalCause::Length,
+        TerminalCause::UserStop,
+        TerminalCause::Cancelled,
+        TerminalCause::Failed,
+    ] {
+        let mut stream = plan.stream(4096).unwrap();
+        let mut result = Transcript::default();
+        result.accept(stream.feed(partial).unwrap());
+        assert_eq!(result.calls.len(), 1);
+        assert!(!result.calls[0].2.is_empty());
+        result.accept(stream.finish(cause).unwrap());
+        assert!(!result.calls[0].3);
+        assert_eq!(result.finish, Some(cause));
+    }
+    let mut stream = plan.stream(4096).unwrap();
+    stream.feed(partial).unwrap();
+    assert!(stream.finish(TerminalCause::Natural).is_err());
+}
+
+#[test]
+fn failures_are_local_and_output_limits_include_pending_utf8() {
+    let plan = Template::new(
+        "{% for message in messages %}{{ message.content }}{% endfor %}",
+        &Default::default(),
+    )
+    .unwrap()
+    .prepare(&Request::new(
+        vec![json!({"role":"user","content":"hi"})],
+        0,
+    ))
+    .unwrap();
+    assert!(plan.stream(0).is_err());
+    let mut bounded = plan.stream(2).unwrap();
+    bounded.feed(&[0xe4]).unwrap();
+    assert!(bounded.feed(&[0xb8, 0x96]).is_err());
+    assert!(bounded.finish(TerminalCause::Length).is_err());
+    let mut invalid = plan.stream(100).unwrap();
+    assert!(invalid.feed(&[0xff]).is_err());
+    let mut fresh = plan.stream(100).unwrap();
+    let mut result = Transcript::default();
+    result.accept(fresh.feed("世界".as_bytes()).unwrap());
+    result.accept(fresh.finish(TerminalCause::Natural).unwrap());
+    assert_eq!(result.content, "世界");
+}
+
+#[test]
+fn required_tools_fail_explicitly_and_every_schema_prepares() {
+    let template = Template::new(QWEN, &Default::default()).unwrap();
+    let mut request = request();
+    request.tool_choice = ToolChoice::Required;
+    let plan = template.prepare(&request).unwrap();
+    assert!(!plan.description().grammar.is_empty());
+    let mut stream = plan.stream(4096).unwrap();
+    // A native parser may reject when feeding or when finalizing.
+    assert!(stream
+        .feed(b"ordinary prose")
+        .and_then(|_| stream.finish(TerminalCause::Natural))
+        .is_err());
+    // A length bound is enforced by the JSON argument grammar, and an array
+    // keyword on a string constrains nothing.
+    let query = &mut request.tools[0]["function"]["parameters"]["properties"]["query"];
+    query["minLength"] = json!(3);
+    query["uniqueItems"] = json!(true);
+    let plan = template.prepare(&request).unwrap();
+    assert!(plan.description().relaxations.is_empty());
+    // A keyword no grammar enforces is loosened and recorded.
+    request.tools[0]["function"]["parameters"]["properties"]["query"]["not"] =
+        json!({"const": "x"});
+    let plan = template.prepare(&request).unwrap();
+    assert_eq!(
+        plan.description().relaxations,
+        vec![Relaxation {
+            subject: RelaxationSubject::Tool {
+                name: "search".into()
+            },
+            path: "#/properties/query".into(),
+            keyword: "not".into(),
+            reason: RelaxationReason::Unenforced,
+        }]
+    );
+}
+
+/// Qwen3.5's prompt opens reasoning and the model ends without closing it. The
+/// stream has already published that text as reasoning; ending the output
+/// closes the reasoning instead of reading it again as content.
+#[test]
+fn natural_end_inside_published_reasoning_keeps_it() {
+    let output = "He is the capital city of Australia.";
+    for request in [
+        Request::new(
+            vec![
+                json!({"role":"user","content":"What is the capital city of Australia? Reply with one word."}),
+            ],
+            0,
+        ),
+        request(),
+    ] {
+        let plan = Template::new(QWEN35, &Default::default())
+            .unwrap()
+            .prepare(&request)
+            .unwrap();
+        assert!(plan.description().prompt.ends_with("<think>\n"));
+        let bytes = output.as_bytes();
+        for split in 0..=bytes.len() {
+            let mut stream = plan.stream(4096).unwrap();
+            let mut result = Transcript::default();
+            result.accept(stream.feed(&bytes[..split]).unwrap());
+            result.accept(stream.feed(&bytes[split..]).unwrap());
+            result.accept(stream.finish(TerminalCause::Natural).unwrap());
+            assert_eq!(
+                result,
+                Transcript {
+                    reasoning: output.into(),
+                    finish: Some(TerminalCause::Natural),
+                    ..Default::default()
+                },
+                "split {split}"
+            );
+        }
+    }
+    // A call the model leaves open is still not a natural completion.
+    let plan = Template::new(QWEN35, &Default::default())
+        .unwrap()
+        .prepare(&request())
+        .unwrap();
+    let mut stream = plan.stream(4096).unwrap();
+    stream
+        .feed(b"consider</think>\n\n<tool_call>\n<function=search>\n<parameter=query>\nhel")
+        .unwrap();
+    assert!(stream.finish(TerminalCause::Natural).is_err());
+}
+
+/// The prompts of two consecutive tasks: the first mid-task, after a tool
+/// result, and the second at the next user message, after the first task's
+/// final reply. `arguments` are the caller's template arguments.
+fn two_task_prompts(source: &str, arguments: serde_json::Value) -> (String, String) {
+    let template = Template::new(source, &Default::default()).unwrap();
+    let first_task = vec![
+        json!({"role":"user","content":"Find the release notes."}),
+        json!({"role":"assistant","content":"","reasoning_content":"I should search first.",
+            "tool_calls":[{"id":"call_0","type":"function",
+                "function":{"name":"search","arguments":{"query":"release notes"}}}]}),
+        json!({"role":"tool","tool_call_id":"call_0","content":"Release 1.2 fixes the cache."}),
+    ];
+    let mut second_task = first_task.clone();
+    second_task.extend([
+        json!({"role":"assistant","content":"Release 1.2 fixes the cache.",
+            "reasoning_content":"The result answers the question."}),
+        json!({"role":"user","content":"Now summarize it."}),
+    ]);
+    let prompt = |messages: Vec<serde_json::Value>| {
+        let mut request = request();
+        request.messages = messages;
+        request.template_arguments = arguments.as_object().unwrap().clone();
+        template
+            .prepare(&request)
+            .unwrap()
+            .description()
+            .prompt
+            .clone()
+    };
+    (prompt(first_task), prompt(second_task))
+}
+
+#[test]
+fn templates_reading_preserve_thinking_keep_prompts_append_only_across_user_messages() {
+    let (first, second) = two_task_prompts(QWEN36, json!({}));
+    assert!(first.contains("I should search first."));
+    assert!(second.starts_with(&first), "{first:?}\n{second:?}");
+    assert!(second.contains("The result answers the question."));
+
+    let (first, second) = two_task_prompts(QWEN36, json!({"preserve_thinking": false}));
+    assert!(first.contains("I should search first."));
+    assert!(!second.contains("I should search first."));
+    assert!(!second.contains("The result answers the question."));
+}
+
+#[test]
+fn templates_without_preserve_thinking_render_unchanged() {
+    assert!(!QWEN35.contains("preserve_thinking"));
+    let defaults = two_task_prompts(QWEN35, json!({}));
+    assert_eq!(
+        defaults,
+        two_task_prompts(QWEN35, json!({"preserve_thinking": false}))
+    );
+    assert!(!defaults.1.contains("I should search first."));
+}

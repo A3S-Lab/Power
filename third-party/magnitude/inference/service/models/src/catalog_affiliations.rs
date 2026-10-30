@@ -1,0 +1,141 @@
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
+
+use magnitude_service_contracts::models::{
+    CatalogBaseId, CatalogPackageAffiliation, CatalogPackageRole, CatalogVariantId, ModelPackageId,
+};
+use serde::Serialize;
+use serde_json::Value;
+
+use crate::catalog::{valid_identity_component, valid_variant_id};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CatalogAffiliations {
+    entries: BTreeSet<CatalogPackageAffiliation>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredCatalogAffiliations<'a> {
+    affiliations: Vec<&'a CatalogPackageAffiliation>,
+}
+
+impl CatalogAffiliations {
+    pub(crate) fn load(root: &Path) -> Self {
+        let Ok(bytes) = fs::read(path(root)) else {
+            return Self::default();
+        };
+        let Ok(Value::Object(document)) = serde_json::from_slice::<Value>(&bytes) else {
+            tracing::warn!("discarding malformed catalog affiliation cache");
+            return Self::default();
+        };
+        let Some(Value::Array(entries)) = document.get("affiliations") else {
+            tracing::warn!("discarding catalog affiliation cache with an invalid shape");
+            return Self::default();
+        };
+        let entries = entries
+            .iter()
+            .filter_map(decode_entry)
+            .collect::<BTreeSet<_>>();
+        Self { entries }
+    }
+
+    pub(crate) fn entries(&self) -> impl Iterator<Item = &CatalogPackageAffiliation> {
+        self.entries.iter()
+    }
+
+    pub(crate) fn add(&mut self, affiliation: CatalogPackageAffiliation) -> bool {
+        if !valid_affiliation(&affiliation) {
+            return false;
+        }
+        self.entries.insert(affiliation)
+    }
+
+    /// Forgets every affiliation of `package_id`; whether there was one.
+    pub(crate) fn forget_package(&mut self, package_id: &ModelPackageId) -> bool {
+        let before = self.entries.len();
+        self.entries
+            .retain(|affiliation| &affiliation.package_id != package_id);
+        self.entries.len() != before
+    }
+
+    pub(crate) fn persist(&self, root: &Path) -> std::io::Result<()> {
+        let bytes = serde_json::to_vec_pretty(&StoredCatalogAffiliations {
+            affiliations: self.entries.iter().collect(),
+        })
+        .map_err(std::io::Error::other)?;
+        crate::store_fs::replace_file_sync(root, "catalog-affiliations.json", &bytes)
+    }
+}
+
+fn decode_entry(value: &Value) -> Option<CatalogPackageAffiliation> {
+    let entry = value.as_object()?;
+    let affiliation = CatalogPackageAffiliation {
+        model_id: CatalogBaseId::new(entry.get("modelId")?.as_str()?.to_owned()).ok()?,
+        variant_id: CatalogVariantId::new(entry.get("variantId")?.as_str()?.to_owned()).ok()?,
+        package_id: ModelPackageId(entry.get("packageId")?.as_str()?.to_owned()),
+        repository: entry.get("repository")?.as_str()?.to_owned(),
+        role: match entry.get("role")?.as_str()? {
+            "Target" => CatalogPackageRole::Target,
+            "Dependency" => CatalogPackageRole::Dependency,
+            _ => return None,
+        },
+    };
+    valid_affiliation(&affiliation).then_some(affiliation)
+}
+
+fn valid_affiliation(affiliation: &CatalogPackageAffiliation) -> bool {
+    valid_identity_component(affiliation.model_id.as_str())
+        && valid_variant_id(affiliation.variant_id.as_str())
+        && !affiliation.package_id.0.is_empty()
+        && affiliation.package_id.0.trim() == affiliation.package_id.0
+        && valid_repository(&affiliation.repository)
+}
+
+fn path(root: &Path) -> std::path::PathBuf {
+    root.join("catalog-affiliations.json")
+}
+
+fn valid_repository(value: &str) -> bool {
+    let Some((owner, name)) = value.split_once('/') else {
+        return false;
+    };
+    valid_repository_component(owner) && valid_repository_component(name) && !name.contains('/')
+}
+
+fn valid_repository_component(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && !value.contains('\\')
+        && !value.contains('\0')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_entries_are_isolated_and_round_trip_deterministically() {
+        let root = tempfile::tempdir().expect("temporary store");
+        fs::write(
+            path(root.path()),
+            br#"{
+              "unknown": true,
+              "affiliations": [
+                {"modelId":"model","variantId":"gguf:q4","packageId":"package","repository":"owner/repo","role":"Target"},
+                {"modelId":"model","variantId":"gguf:q4","packageId":"package","repository":"owner/repo","role":"Target"},
+                {"modelId":"bad:id","variantId":"gguf:q8","packageId":"other","repository":"owner/other","role":"Target"},
+                {"modelId":"other","variantId":"invalid","packageId":"other","repository":"owner/other","role":"Dependency"}
+              ]
+            }"#,
+        )
+        .expect("affiliations");
+
+        let affiliations = CatalogAffiliations::load(root.path());
+        assert_eq!(affiliations.entries.len(), 1);
+        affiliations.persist(root.path()).expect("persist");
+        assert_eq!(CatalogAffiliations::load(root.path()), affiliations);
+    }
+}

@@ -1,0 +1,19 @@
+[package]
+publish = false
+name = "magnitude-service-catalog-tool"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = { version = "1.0.100" }
+clap = { version = "4.5.54", features = ["derive", "env"] }
+flate2 = { version = "1.1" }
+futures-util = { version = "0.3.31" }
+magnitude-artifacts = { path = "../../engine/artifacts" }
+magnitude-service-contracts = { path = "../contracts" }
+magnitude-service-models = { path = "../models" }
+magnitude-executor = { path = "../../engine/executor" }
+serde_json = { version = "1.0.149" }
+sha2 = { version = "0.10.9" }
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "signal", "sync"] }

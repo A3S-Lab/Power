@@ -38,14 +38,14 @@ impl WorkerObservationSource {
         state: &AppState,
         observed_at: DateTime<Utc>,
     ) -> WorkerObservation {
-        let generation = self
-            .inner
-            .observation_generation
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(1))
-            })
-            .unwrap_or(u64::MAX)
-            .saturating_add(1);
+        let generation = crate::atomic_fetch_update!(
+            self.inner.observation_generation,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current: u64| Some(current.saturating_add(1))
+        )
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
         let supporting_backends =
             u64::try_from(state.backends.prompt_cache_backend_names().len()).unwrap_or(u64::MAX);
         let (entries, capacity) = state.backends.prompt_cache_metrics().into_iter().fold(

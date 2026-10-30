@@ -1,0 +1,18 @@
+[package]
+publish = false
+name = "seismic-compiler"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+path = "src/compiler.rs"
+
+[dependencies]
+seismic-ir = { path = "../ir" }
+seismic-estimator = { path = "../estimator/core" }
+seismic-lang = { path = "../lang" }
+seismic-native-target = { path = "../native-target" }
+magnitude-solver = { path = "../../solver" }
+sha2 = "=0.11.0"
+

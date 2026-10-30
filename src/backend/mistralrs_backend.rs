@@ -406,8 +406,8 @@ impl Backend for MistralRsBackend {
                             let (final_content, final_thinking, tool_calls, done_reason) =
                                 if is_done {
                                     let (fc, ft) = think_parser.flush();
-                                    let full_content = content_part + &fc;
-                                    let full_thinking = thinking_part + &ft;
+                                    let full_content = content_part + fc.as_str();
+                                    let full_thinking = thinking_part + ft.as_str();
                                     let tc = if has_tools {
                                         super::tool_parser::parse_tool_calls(&accumulated_raw)
                                     } else {

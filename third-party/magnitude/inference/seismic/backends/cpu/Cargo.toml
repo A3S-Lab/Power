@@ -1,0 +1,20 @@
+[package]
+publish = false
+name = "seismic-cpu"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+seismic-ir = { path = "../../ir" }
+seismic-estimator = { path = "../../estimator/core" }
+seismic-lang = { path = "../../lang" }
+seismic-native-target = { path = "../../native-target" }
+seismic-compiler = { path = "../../compiler" }
+sha2 = "=0.11.0"
+libc = "0.2"
+cranelift-codegen = "=0.125.4"
+cranelift-frontend = "=0.125.4"
+cranelift-module = "=0.125.4"
+cranelift-jit = "=0.125.4"
+cranelift-native = "=0.125.4"

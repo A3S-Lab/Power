@@ -137,6 +137,10 @@ impl PowerConfig {
 
         self.gpu.validate()?;
         self.serving_execution.validate()?;
+        #[cfg(feature = "magnitude")]
+        self.magnitude_device
+            .parse::<magnitude_executor::platform::DeviceRequest>()
+            .map_err(|error| PowerError::Config(format!("invalid magnitude_device: {error}")))?;
         if !(1..=100_000).contains(&self.max_concurrent_requests)
             || self.max_queued_requests > 100_000
             || !(1..=300_000).contains(&self.queue_timeout_ms)

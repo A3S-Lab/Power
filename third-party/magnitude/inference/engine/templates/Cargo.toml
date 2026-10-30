@@ -1,0 +1,16 @@
+[package]
+name = "magnitude-templates"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+links = "magnitude_templates"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.11.0"
+
+[build-dependencies]
+cc = "=1.4.7"
+sha2 = "=0.11.0"

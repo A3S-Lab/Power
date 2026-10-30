@@ -1,0 +1,11 @@
+[package]
+publish = false
+name = "magnitude-generation"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+magnitude-artifacts = { path = "../artifacts" }
+magnitude-executor = { path = "../executor" }
+serde = { version = "=1.0.229", features = ["derive"] }
